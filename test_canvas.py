@@ -63,6 +63,13 @@ class CourseContent:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CollectionFetchResult:
+    records: list[dict[str, Any]]
+    etag: str | None
+    not_modified: bool
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="通过 Canvas REST API 读取 active courses、公告和作业。"
@@ -247,6 +254,66 @@ def fetch_paginated(
     raise CanvasCheckError(f"分页超过安全上限 {MAX_PAGES} 页，已停止请求。")
 
 
+def fetch_paginated_with_etag(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: list[tuple[str, str]],
+    etag: str | None,
+) -> CollectionFetchResult:
+    """Fetch a collection, using ETag to skip unchanged resources."""
+    ensure_same_origin(client, url)
+    headers = {"If-None-Match": etag} if etag else None
+    try:
+        response = client.get(url, params=params, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise CanvasCheckError("Canvas API 请求超时，请检查网络后重试。") from exc
+    except httpx.NetworkError as exc:
+        raise CanvasCheckError(f"无法连接 Canvas API：{exc}") from exc
+    except httpx.HTTPError as exc:
+        raise CanvasCheckError(f"Canvas API 请求失败：{exc}") from exc
+
+    if response.status_code == 304:
+        return CollectionFetchResult(records=[], etag=etag, not_modified=True)
+    if response.status_code == 401:
+        raise CanvasCheckError("Canvas Access Token 无效或已过期（HTTP 401）。")
+    if response.status_code == 403:
+        raise CanvasCheckError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。")
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise CanvasCheckError(
+            f"Canvas API 返回 HTTP {response.status_code}。"
+        ) from exc
+    except ValueError as exc:
+        raise CanvasCheckError("Canvas API 返回的不是有效 JSON。") from exc
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise CanvasCheckError("Canvas API 返回了无法识别的数据格式。")
+
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    current_page = payload
+    next_link = response.links.get("next")
+    next_url = next_link.get("url") if next_link else None
+    was_paginated = next_url is not None
+    for _ in range(MAX_PAGES):
+        for record in current_page:
+            remote_id = str(record.get("id", ""))
+            if not remote_id or remote_id not in seen_ids:
+                if remote_id:
+                    seen_ids.add(remote_id)
+                records.append(record)
+        if next_url is None:
+            return CollectionFetchResult(
+                records=records,
+                etag=None if was_paginated else response.headers.get("etag"),
+                not_modified=False,
+            )
+        current_page, next_url = request_json(client, next_url)
+    raise CanvasCheckError(f"分页超过安全上限 {MAX_PAGES} 页，已停止请求。")
+
+
 def fetch_active_courses(client: httpx.Client) -> list[dict[str, Any]]:
     return fetch_paginated(
         client,
@@ -260,22 +327,68 @@ def fetch_active_courses(client: httpx.Client) -> list[dict[str, Any]]:
 
 
 def fetch_course_announcements(
-    client: httpx.Client, course_id: int | str
+    client: httpx.Client,
+    course_id: int | str,
+    *,
+    posted_since: str | None = None,
 ) -> list[dict[str, Any]]:
+    params = [
+        ("context_codes[]", f"course_{course_id}"),
+        ("per_page", str(DEFAULT_PAGE_SIZE)),
+    ]
+    if posted_since:
+        params.append(("start_date", posted_since))
     return fetch_paginated(
+        client,
+        "/api/v1/announcements",
+        params=params,
+    )
+
+
+def fetch_course_assignments(
+    client: httpx.Client,
+    course_id: int | str,
+    *,
+    updated_since: str | None = None,
+) -> list[dict[str, Any]]:
+    params = [
+        ("per_page", str(DEFAULT_PAGE_SIZE)),
+        ("order_by", "due_at"),
+        ("include[]", "submission"),
+    ]
+    if updated_since:
+        params.append(("updated_since", updated_since))
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/assignments",
+        params=params,
+    )
+
+
+def fetch_course_announcements_incremental(
+    client: httpx.Client,
+    course_id: int | str,
+    *,
+    etag: str | None,
+) -> CollectionFetchResult:
+    return fetch_paginated_with_etag(
         client,
         "/api/v1/announcements",
         params=[
             ("context_codes[]", f"course_{course_id}"),
             ("per_page", str(DEFAULT_PAGE_SIZE)),
         ],
+        etag=etag,
     )
 
 
-def fetch_course_assignments(
-    client: httpx.Client, course_id: int | str
-) -> list[dict[str, Any]]:
-    return fetch_paginated(
+def fetch_course_assignments_incremental(
+    client: httpx.Client,
+    course_id: int | str,
+    *,
+    etag: str | None,
+) -> CollectionFetchResult:
+    return fetch_paginated_with_etag(
         client,
         f"/api/v1/courses/{course_id}/assignments",
         params=[
@@ -283,6 +396,7 @@ def fetch_course_assignments(
             ("order_by", "due_at"),
             ("include[]", "submission"),
         ],
+        etag=etag,
     )
 
 

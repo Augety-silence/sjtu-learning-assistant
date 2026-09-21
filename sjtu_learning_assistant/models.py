@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Identity,
@@ -151,6 +152,18 @@ class UnifiedItem(TimestampMixin, Base):
     course_id: Mapped[int | None] = mapped_column(
         ForeignKey("courses.id", ondelete="SET NULL")
     )
+    announcement_id: Mapped[int | None] = mapped_column(
+        ForeignKey("announcements.id", ondelete="CASCADE")
+    )
+    assignment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("assignments.id", ondelete="CASCADE")
+    )
+    email_id: Mapped[int | None] = mapped_column(
+        ForeignKey("emails.id", ondelete="CASCADE")
+    )
+    course_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("course_files.id", ondelete="CASCADE")
+    )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     sender: Mapped[str | None] = mapped_column(Text)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -162,6 +175,14 @@ class UnifiedItem(TimestampMixin, Base):
 
     __table_args__ = (
         UniqueConstraint("source", "item_type", "source_id", name="uq_items_source"),
+        UniqueConstraint("announcement_id", name="uq_items_announcement_id"),
+        UniqueConstraint("assignment_id", name="uq_items_assignment_id"),
+        UniqueConstraint("email_id", name="uq_items_email_id"),
+        UniqueConstraint("course_file_id", name="uq_items_course_file_id"),
+        CheckConstraint(
+            "num_nonnulls(announcement_id, assignment_id, email_id, course_file_id) <= 1",
+            name="ck_items_single_source_record",
+        ),
         Index("ix_items_due_at", "due_at"),
         Index("ix_items_occurred_at", "occurred_at"),
     )

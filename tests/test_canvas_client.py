@@ -9,6 +9,7 @@ from test_canvas import (
     connect_and_fetch_all,
     fetch_active_courses,
     fetch_course_announcements,
+    fetch_course_announcements_incremental,
     fetch_course_assignments,
     normalize_base_url,
 )
@@ -73,6 +74,25 @@ class CanvasClientTests(unittest.TestCase):
         self.assertEqual(11, announcements[0]["id"])
         self.assertEqual("course_95040", captured[0].url.params["context_codes[]"])
         self.assertEqual("/api/v1/announcements", captured[0].url.path)
+
+    def test_incremental_fetch_uses_etag_and_accepts_304(self) -> None:
+        captured: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(304, request=request)
+
+        with httpx.Client(
+            base_url="https://oc.sjtu.edu.cn",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            result = fetch_course_announcements_incremental(
+                client, 95040, etag='"etag-value"'
+            )
+
+        self.assertTrue(result.not_modified)
+        self.assertEqual([], result.records)
+        self.assertEqual('"etag-value"', captured[0].headers["If-None-Match"])
 
     def test_fetches_assignments_with_submission(self) -> None:
         captured: list[httpx.Request] = []

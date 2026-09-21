@@ -5,9 +5,39 @@
 - **Phase 1A**：通过 IMAP SSL 只读访问交大邮箱。
 - **Phase 1B**：获取 Canvas active courses。
 - **Phase 1C**：逐门课程获取 Canvas 公告和作业。
-- **Phase 2A**：使用 PostgreSQL、SQLAlchemy 与 Alembic 建立本地持久化基础，并支持未来切换远程 PostgreSQL。
+- **Phase 2A**：建立 PostgreSQL、SQLAlchemy 与 Alembic 持久化基础。
+- **Phase 2B**：将 Canvas 公告、作业和邮件增量写入 PostgreSQL，并生成统一事项。
 
-目前尚未把公告、作业、邮件写入数据库，也未加入定时器、通知、文件归档或 UI。
+目前尚未加入定时器、系统通知、文件归档或 UI。
+
+## 数据表如何关联
+
+系统同时使用两类标识：
+
+- `id`：PostgreSQL 内部主键，用于表间外键关联。
+- `source_id`：Canvas 或 IMAP 的远端稳定 ID，用于重复同步时 Upsert 去重。
+
+关系如下：
+
+```text
+courses.id
+  ├── announcements.course_id
+  ├── assignments.course_id
+  ├── course_files.course_id
+  └── items.course_id
+
+announcements.id ── items.announcement_id
+assignments.id   ── items.assignment_id
+emails.id        ── items.email_id
+course_files.id  ── items.course_file_id
+
+sync_state(source, resource)  每类资源唯一同步游标
+sync_runs                     每次同步的审计记录
+```
+
+`items` 是统一信息层：Canvas 公告、Canvas 作业和邮件都会生成对应的 `items` 记录。除了 `(source, item_type, source_id)` 联合唯一键，还通过显式外键连接原始表，数据库会阻止一个 Item 同时指向多个原始记录。
+
+邮件通常不属于某门课程，因此 `emails` 不强制连接 `courses`；未来分类器识别出课程后，可以通过 `items.course_id` 建立课程归属。
 
 ## 当前目录
 
@@ -16,22 +46,20 @@ sjtu-learning-assistant-phase1a/
 ├── alembic.ini
 ├── db_manage.py
 ├── migrations/
-│   ├── env.py
-│   ├── script.py.mako
 │   └── versions/
-│       └── 0001_create_core_tables.py
+│       ├── 0001_create_core_tables.py
+│       └── 0002_link_items_to_sources.py
 ├── sjtu_learning_assistant/
-│   ├── __init__.py
 │   ├── database.py
+│   ├── mail_client.py
 │   ├── models.py
 │   └── repository.py
 ├── sync_courses_to_db.py
+├── sync_data_to_db.py
 ├── test_canvas.py
 ├── test_mail.py
 ├── requirements.txt
 └── tests/
-    ├── test_canvas_client.py
-    └── test_database.py
 ```
 
 ## 安装或更新依赖
@@ -42,33 +70,7 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-新增依赖：
-
-- SQLAlchemy 2.x：数据模型和事务
-- psycopg 3：PostgreSQL 驱动
-- Alembic：数据库结构迁移
-
-## Phase 2A：初始化本地 PostgreSQL
-
-默认连接使用 Postgres.app 的本地 Unix Socket：
-
-```text
-postgresql+psycopg:///sjtu_learning_assistant?host=/tmp&connect_timeout=5
-```
-
-默认配置不包含密码，也不会写入 `.env`。
-
-创建数据库：
-
-```bash
-createdb sjtu_learning_assistant
-```
-
-执行结构迁移：
-
-```bash
-python3 db_manage.py upgrade
-```
+## 数据库管理
 
 检查连接：
 
@@ -76,84 +78,90 @@ python3 db_manage.py upgrade
 python3 db_manage.py status
 ```
 
-同步 Canvas 课程到数据库：
+应用最新迁移：
 
 ```bash
-python3 sync_courses_to_db.py
+python3 db_manage.py upgrade
 ```
 
-第一次运行预期新增 7 门课程；第二次运行预期新增 0 门、更新 7 门，证明 Upsert 可以重复执行且不会产生重复记录。
+本地默认连接：
+
+```text
+postgresql+psycopg:///sjtu_learning_assistant?host=/tmp&connect_timeout=5
+```
+
+远程 PostgreSQL 连接必须启用 `sslmode=require`、`verify-ca` 或 `verify-full`。在 Mac 上可通过以下命令无回显地保存到 Keychain：
+
+```bash
+python3 db_manage.py configure
+```
+
+远程部署时应由部署平台的 Secrets Manager 注入 `SJTU_DATABASE_URL`，不要提交 `.env`。
+
+## Phase 2B：增量同步
+
+同时同步 Canvas 和邮箱：
+
+```bash
+python3 sync_data_to_db.py
+```
+
+脚本会从 Keychain 读取现有 Canvas Token 和邮箱密码，并提示输入邮箱地址。也可显式指定邮箱地址：
+
+```bash
+python3 sync_data_to_db.py --email "your.name@sjtu.edu.cn"
+```
+
+只同步 Canvas：
+
+```bash
+python3 sync_data_to_db.py --canvas-only
+```
+
+只同步邮箱：
+
+```bash
+python3 sync_data_to_db.py --mail-only --email "your.name@sjtu.edu.cn"
+```
+
+首次邮箱同步默认导入最近 100 封邮件，可调整：
+
+```bash
+python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
+```
+
+## 增量策略
+
+### Canvas
+
+- 每门课程的公告和作业分别保存 ETag。
+- 后续请求发送 `If-None-Match`。
+- 服务端返回 `304 Not Modified` 时不重复下载或写入该课程的数据。
+- 分页资源为避免漏页不会保存单页 ETag，下一次进行安全全量读取并依靠 Upsert 去重。
+
+### 邮箱
+
+- 使用 `(邮箱地址, INBOX, UIDVALIDITY, UID)` 组成 `source_id`。
+- `sync_state.cursor` 保存 UIDVALIDITY 和最高 UID。
+- 后续只搜索 `last_uid + 1` 之后的 UID。
+- 若 UIDVALIDITY 改变，自动执行安全的首次同步，而不是沿用失效游标。
+- 全程使用 `BODY.PEEK` 与只读 INBOX，不改变邮件已读状态。
+
+### 事务边界
+
+数据 Upsert、统一 Item 写入和同步游标推进在同一事务中。任一步失败都会回滚，因此不会出现“数据未保存但游标已经前进”的漏消息情况。
 
 ## 数据表
 
 - `courses`：Canvas 课程
 - `announcements`：Canvas 公告
 - `assignments`：Canvas 作业
-- `emails`：邮件
-- `course_files`：课程文件
+- `emails`：邮件元数据与摘要
+- `course_files`：后续课程文件归档
 - `items`：跨 Canvas 与邮件的统一事项
-- `sync_state`：每类资源的成功同步游标与状态
-- `sync_runs`：每次同步的数量、状态与错误记录
+- `sync_state`：资源级 ETag 或 IMAP UID 游标
+- `sync_runs`：同步数量、状态与执行时间
 - `alembic_version`：数据库结构版本
-
-所有业务表都使用稳定的远端 `source_id` 或联合唯一约束去重。数据库时间字段使用带时区的 PostgreSQL `timestamptz`。
-
-## 稳健性原则
-
-- Canvas 拉取成功后才进入数据库事务。
-- 课程写入与 `sync_state` 更新位于同一事务；写入失败不会推进同步时间。
-- PostgreSQL 使用 `pool_pre_ping` 检测失效连接，并设置 5 秒连接超时。
-- Upsert 可重复执行，不会重复创建相同课程。
-- Alembic 管理结构版本，禁止在业务代码中临时建表。
-- 数据库连接地址不会出现在日志中；显示时自动隐藏密码。
-- `.env`、数据库导出文件、虚拟环境、缓存和凭证不会提交 Git。
-
-## 切换远程 PostgreSQL
-
-远程数据库仍使用 PostgreSQL 时，业务代码无需修改。远程连接必须启用 `sslmode=require`、`verify-ca` 或 `verify-full`。连接地址优先级是：
-
-1. 部署环境中的 `SJTU_DATABASE_URL` Secret。
-2. macOS Keychain 中的数据库连接配置。
-3. Postgres.app 本地默认连接。
-
-在 Mac 上安全配置远程地址：
-
-```bash
-python3 db_manage.py configure
-```
-
-程序会无回显地读取并保存至 macOS Keychain。之后执行：
-
-```bash
-python3 db_manage.py upgrade
-python3 db_manage.py status
-```
-
-删除 Keychain 中的远程配置并恢复本地默认连接：
-
-```bash
-python3 db_manage.py forget-config
-```
-
-远程部署时应由部署平台的 Secrets Manager 注入 `SJTU_DATABASE_URL`，不要创建或提交 `.env`。
-
-## 数据迁移
-
-迁移到远程 PostgreSQL 时：
-
-```bash
-pg_dump --format=custom sjtu_learning_assistant > sjtu_learning_assistant.dump
-pg_restore --clean --if-exists --no-owner --dbname=<远程数据库> sjtu_learning_assistant.dump
-```
-
-导出文件已被 `.gitignore` 排除，不能提交 Git。正式迁移前应先备份并在测试数据库验证恢复。
-
-## Phase 1 验证命令
-
-```bash
-python3 test_mail.py
-python3 test_canvas.py
-```
 
 ## 自动化测试
 
@@ -161,7 +169,18 @@ python3 test_canvas.py
 python3 -m unittest discover -s tests -v
 ```
 
-测试不需要真实数据库密码，覆盖 Canvas API、安全分页、数据库 URL 校验和密码脱敏。
+测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏。
+
+数据库 Repository 集成测试默认跳过，避免误写正式库。使用专用测试库时运行：
+
+```bash
+createdb sjtu_learning_assistant_test
+env SJTU_DATABASE_URL='postgresql+psycopg:///sjtu_learning_assistant_test?host=/tmp&connect_timeout=5' .venv/bin/alembic upgrade head
+env SJTU_TEST_DATABASE_URL='postgresql+psycopg:///sjtu_learning_assistant_test?host=/tmp&connect_timeout=5' python3 -m unittest discover -s tests -v
+dropdb sjtu_learning_assistant_test
+```
+
+该测试会验证课程、公告、作业、邮件与统一 Item 的真实外键，以及重复执行不会产生重复数据。
 
 ## 版本管理
 
@@ -169,3 +188,4 @@ python3 -m unittest discover -s tests -v
 - 每个阶段使用独立的 `aime/<timestamp>-<stage>` 分支。
 - 每个阶段通过测试后单独提交。
 - 未经明确要求，不推送远程仓库。
+- `.venv`、缓存、密码、Token、`.env`、SQL 导出和数据库 Dump 永不提交。
