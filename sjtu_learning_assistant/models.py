@@ -208,6 +208,19 @@ class CourseFile(TimestampMixin, Base):
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     url: Mapped[str | None] = mapped_column(Text)
     local_path: Mapped[str | None] = mapped_column(Text)
+    download_status: Mapped[str] = mapped_column(
+        String(32), default="pending", nullable=False
+    )
+    download_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    downloaded_size: Mapped[int | None] = mapped_column(BigInteger)
+    download_sha256: Mapped[str | None] = mapped_column(String(64))
+    download_error: Mapped[str | None] = mapped_column(Text)
+    downloaded_source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -217,7 +230,18 @@ class CourseFile(TimestampMixin, Base):
 
     course: Mapped[Course] = relationship(back_populates="files")
 
-    __table_args__ = (Index("ix_course_files_folder_id", "folder_id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "download_status IN ('pending', 'downloaded', 'failed')",
+            name="ck_course_files_download_status",
+        ),
+        CheckConstraint(
+            "download_attempts >= 0",
+            name="ck_course_files_download_attempts_nonnegative",
+        ),
+        Index("ix_course_files_folder_id", "folder_id"),
+        Index("ix_course_files_download_status", "download_status"),
+    )
 
 
 class CourseModuleItem(TimestampMixin, Base):

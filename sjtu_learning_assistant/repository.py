@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Protocol, TypeVar
 
-from sqlalchemy import Engine, select, update
+from sqlalchemy import Engine, case, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -657,6 +657,14 @@ def _upsert_files(
     existing_ids = _existing_ids(session, CourseFile, source_ids)
     if rows:
         statement = insert(CourseFile).values(rows)
+        metadata_changed = or_(
+            CourseFile.source_updated_at.is_distinct_from(
+                statement.excluded.source_updated_at
+            ),
+            CourseFile.size.is_distinct_from(statement.excluded.size),
+            CourseFile.display_name.is_distinct_from(statement.excluded.display_name),
+            CourseFile.folder_id.is_distinct_from(statement.excluded.folder_id),
+        )
         statement = statement.on_conflict_do_update(
             index_elements=[CourseFile.source_id],
             set_={
@@ -668,6 +676,14 @@ def _upsert_files(
                 "size": statement.excluded.size,
                 "source_updated_at": statement.excluded.source_updated_at,
                 "url": statement.excluded.url,
+                "download_status": case(
+                    (metadata_changed, "pending"),
+                    else_=CourseFile.download_status,
+                ),
+                "download_error": case(
+                    (metadata_changed, None),
+                    else_=CourseFile.download_error,
+                ),
                 "hidden": statement.excluded.hidden,
                 "locked": statement.excluded.locked,
                 "is_active": True,

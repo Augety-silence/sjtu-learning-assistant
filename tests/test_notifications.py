@@ -5,6 +5,7 @@ import subprocess
 import unittest
 from argparse import Namespace
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -346,9 +347,22 @@ class NotificationServiceTests(unittest.TestCase):
 
 
 class NotificationCliTests(unittest.TestCase):
-    def test_sync_parser_supports_no_notify(self) -> None:
-        args = sync_data_to_db.parse_args(["--canvas-only", "--no-notify"])
+    def test_sync_parser_supports_archive_options(self) -> None:
+        args = sync_data_to_db.parse_args(
+            [
+                "--canvas-only",
+                "--no-notify",
+                "--no-download",
+                "--archive-root",
+                "/tmp/SJTU Archive",
+                "--current-term",
+                "2026-2027 Fall",
+            ]
+        )
         self.assertTrue(args.no_notify)
+        self.assertTrue(args.no_download)
+        self.assertEqual(Path("/tmp/SJTU Archive"), args.archive_root)
+        self.assertEqual("2026-2027 Fall", args.current_term)
 
     def test_sync_main_disables_notification_processing(self) -> None:
         engine = SimpleNamespace(dispose=lambda: None)
@@ -362,7 +376,42 @@ class NotificationCliTests(unittest.TestCase):
                 0,
                 sync_data_to_db.main(["--canvas-only", "--no-notify"]),
             )
-        sync_canvas.assert_called_once_with(engine, notify=False)
+        sync_canvas.assert_called_once_with(
+            engine,
+            notify=False,
+            download=True,
+            archive_root=Path.home() / "Documents" / "SJTU Study",
+            current_term=None,
+        )
+
+    def test_sync_main_propagates_no_download(self) -> None:
+        engine = SimpleNamespace(dispose=lambda: None)
+        health = SimpleNamespace(database="test", server_version="16")
+        with (
+            patch.object(sync_data_to_db, "create_database_engine", return_value=engine),
+            patch.object(sync_data_to_db, "check_database", return_value=health),
+            patch.object(sync_data_to_db, "sync_canvas") as sync_canvas,
+        ):
+            self.assertEqual(
+                0,
+                sync_data_to_db.main(
+                    [
+                        "--canvas-only",
+                        "--no-download",
+                        "--archive-root",
+                        "/tmp/SJTU Archive",
+                        "--current-term",
+                        "2026-2027 Fall",
+                    ]
+                ),
+            )
+        sync_canvas.assert_called_once_with(
+            engine,
+            notify=True,
+            download=False,
+            archive_root=Path("/tmp/SJTU Archive"),
+            current_term="2026-2027 Fall",
+        )
 
     def test_notification_failure_does_not_fail_completed_canvas_sync(self) -> None:
         empty = UpsertResult(0, 0, 0)
@@ -411,7 +460,7 @@ class NotificationCliTests(unittest.TestCase):
                 return_value=notification_service,
             ),
         ):
-            sync_data_to_db.sync_canvas(object(), notify=True)
+            sync_data_to_db.sync_canvas(object(), notify=True, download=False)
         notification_service.process_canvas_sync.assert_called_once()
 
     @staticmethod
@@ -421,16 +470,27 @@ class NotificationCliTests(unittest.TestCase):
             "mail_only": False,
             "email": None,
             "no_notify": True,
+            "no_download": False,
+            "archive_root": str(Path.home() / "Documents" / "SJTU Study"),
+            "current_term": None,
             "initial_mail_limit": 100,
         }
         values.update(overrides)
         return Namespace(**values)
 
-    def test_launchd_propagates_no_notify(self) -> None:
-        arguments = launchd_control.sync_arguments(self.launchd_options())
+    def test_launchd_propagates_archive_options(self) -> None:
+        options = self.launchd_options(
+            no_download=True,
+            archive_root="/tmp/SJTU Archive",
+            current_term="2026-2027 Fall",
+        )
+        arguments = launchd_control.sync_arguments(options)
         self.assertIn("--no-notify", arguments)
-        plist = launchd_control.build_plist(self.launchd_options())
-        self.assertIn("--no-notify", plist["ProgramArguments"])
+        self.assertIn("--no-download", arguments)
+        self.assertIn("/tmp/SJTU Archive", arguments)
+        self.assertIn("2026-2027 Fall", arguments)
+        plist = launchd_control.build_plist(options)
+        self.assertIn("--no-download", plist["ProgramArguments"])
 
     def test_launchd_rejects_blank_email(self) -> None:
         parser = launchd_control.build_parser()

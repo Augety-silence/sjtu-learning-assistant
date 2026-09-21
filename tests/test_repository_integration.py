@@ -4,7 +4,7 @@ import os
 import unittest
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.database import create_database_engine
@@ -162,6 +162,48 @@ class RepositoryIntegrationTests(unittest.TestCase):
             )
             state_count = session.scalar(select(func.count(SyncState.id)))
             self.assertGreaterEqual(state_count or 0, 10)
+
+        with Session(self.engine) as session:
+            session.execute(
+                update(CourseFile)
+                .where(CourseFile.source_id == "4001")
+                .values(
+                    download_status="downloaded",
+                    download_attempts=4,
+                    download_error=None,
+                )
+            )
+            session.commit()
+
+        persist_canvas_data(
+            self.engine,
+            raw_courses=(course,),
+            announcements_by_course=dict(),
+            assignments_by_course=dict(),
+            files_by_course=dict((("95040", (course_file,)),)),
+        )
+        with Session(self.engine) as session:
+            unchanged_file = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "4001")
+            )
+            self.assertEqual("downloaded", unchanged_file.download_status)
+            self.assertEqual(4, unchanged_file.download_attempts)
+
+        course_file.update(updated_at="2026-09-22T02:00:00Z")
+        persist_canvas_data(
+            self.engine,
+            raw_courses=(course,),
+            announcements_by_course=dict(),
+            assignments_by_course=dict(),
+            files_by_course=dict((("95040", (course_file,)),)),
+        )
+        with Session(self.engine) as session:
+            changed_file = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "4001")
+            )
+            self.assertEqual("pending", changed_file.download_status)
+            self.assertEqual(4, changed_file.download_attempts)
+            self.assertIsNone(changed_file.download_error)
 
         # Empty top-level maps mean the resource was not fetched (for example HTTP 304),
         # so existing rows must remain active.

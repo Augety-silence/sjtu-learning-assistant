@@ -10,8 +10,9 @@
 - **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
 - **Phase 3A**：增加单实例后台运行器、JSONL 审计日志、有限重试与 macOS LaunchAgent 管理。
 - **Phase 3B**：增加安全的 macOS 系统通知、首次同步基线、通知幂等账本与聚合限流。
+- **Phase 4A**：按当前学期自动下载 Canvas 课程文件，保留旧版本并记录校验与下载状态。
 
-系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。文件实际下载归档和 UI 尚未实现。
+系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。Phase 4A 已实现本地文件归档；UI 尚未实现。
 
 ## 数据表如何关联
 
@@ -62,8 +63,10 @@ sjtu-learning-assistant-phase1a/
 │       ├── 0002_link_items_to_sources.py
 │       ├── 0003_add_canvas_content_metadata.py
 │       ├── 0004_track_canvas_item_activity.py
-│       └── 0005_add_notification_events.py
+│       ├── 0005_add_notification_events.py
+│       └── 0006_add_course_file_download_fields.py
 ├── sjtu_learning_assistant/
+│   ├── archive_service.py
 │   ├── database.py
 │   ├── mail_client.py
 │   ├── models.py
@@ -87,7 +90,7 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-Phase 3B 不新增 Python 依赖；通知直接使用 macOS 自带的 `/usr/bin/osascript`。更新已有数据库后必须先运行 `python3 db_manage.py upgrade` 应用 Alembic `0005`。
+Phase 4A 不新增 Python 依赖。更新已有数据库后必须先运行 `python3 db_manage.py upgrade` 应用 Alembic `0006`。
 
 ## 数据库管理
 
@@ -156,6 +159,31 @@ python3 sync_data_to_db.py --no-notify
 ```bash
 python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 ```
+
+## Phase 4A：Canvas 文件归档
+
+默认归档根目录是 `~/Documents/SJTU Study`。程序仍同步所有 active courses 的公告、作业、文件夹、文件、模块和模块项元数据，但自动下载只选择“当前学期”。当前学期由运行日期推导：8–12 月为当学年 `Fall`，1–7 月为上一学年 `Spring`；Canvas 学期名按 `2026-2027 Fall` 这类格式匹配，不硬编码具体年份。
+
+```bash
+# 默认：同步元数据并自动下载当前学期文件
+python3 sync_data_to_db.py --canvas-only
+
+# 只同步全部元数据，不写归档目录
+python3 sync_data_to_db.py --canvas-only --no-download
+
+# 指定安全的测试/归档目录和当前学期
+python3 sync_data_to_db.py --canvas-only \
+  --archive-root "/path/to/SJTU Study" \
+  --current-term "2026-2027 Fall"
+```
+
+`launchd_control.py install` 和 `run-once` 同样接受 `--no-download`、`--archive-root`、`--current-term`，参数会完整透传到同步子进程。`--no-download` 不影响任何元数据同步。
+
+归档路径为 `<root>/<term>/<course>/<Canvas folder tree>/<filename>`。课程名、文件夹名和文件名都会清洗，最终路径必须位于 root 内；同目录同名文件追加 `[source_id]`。Canvas `folder_id`/`parent_folder_id` 用于还原目录树。
+
+下载流程先使用带 Bearer Token 的 Canvas 同源 client 请求 `/api/v1/files/{id}`，再用完全独立且不含 `Authorization` 的 client 流式下载其 HTTPS URL，并允许对象存储跨域跳转。每个文件限制 500 MiB，最多尝试 3 次；每次尝试均累计 `download_attempts`，成功后保留历史累计值；写入时计算 SHA256 和实际大小，先落同目录临时文件，成功后 `os.replace`。远端版本变化时，旧文件移入同目录 `.versions/` 后再替换。单文件失败会写回 `failed` 与错误信息，但不会阻断其他文件。
+
+`course_files` 的下载字段包括 `download_status`、`download_attempts`、`downloaded_at`、`downloaded_size`、`download_sha256`、`download_error`、`downloaded_source_updated_at` 和已有的 `local_path`。未来 UI 可构造 `ArchiveService` 并调用 `download_file_by_source_id(source_id)`，显式跨学期下载单个文件；自动任务仍只下载当前学期。
 
 ## Phase 3A：后台运行与 macOS LaunchAgent
 
@@ -306,7 +334,7 @@ launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
 python3 -m unittest discover -s tests -v
 ```
 
-测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏、后台运行器，以及通知命令安全性、通知专属首次基线、`items.id` 游标、发送失败跨轮重试、通知数据库异常隔离、跨轮幂等、每类最多 3 条并合并溢出、`--no-notify` 透传和空白邮箱拒绝。
+测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏、后台运行器，以及通知命令安全性、通知专属首次基线、`items.id` 游标、发送失败跨轮重试、通知数据库异常隔离、跨轮幂等、每类最多 3 条并合并溢出、`--no-notify` 透传和空白邮箱拒绝；还覆盖当前学期推导、路径清洗/root 边界、folder tree、同名 source id、独立无认证下载 client、流式下载、SHA256/size、500 MiB 限制、3 次重试、旧版保留、原子替换、单文件失败隔离及归档 CLI 参数透传。
 
 数据库 Repository 集成测试默认跳过，避免误写正式库。使用专用测试库时运行：
 

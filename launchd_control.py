@@ -34,6 +34,18 @@ def add_sync_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--email", help="交大邮箱地址（仅作为普通启动参数保存）。")
     parser.add_argument("--no-notify", action="store_true", help="禁用系统通知。")
     parser.add_argument(
+        "--no-download", action="store_true", help="同步文件元数据但不自动下载。"
+    )
+    parser.add_argument(
+        "--archive-root",
+        default=str(Path.home() / "Documents" / "SJTU Study"),
+        help="课程文件归档根目录。",
+    )
+    parser.add_argument(
+        "--current-term",
+        help="覆盖按日期推导的当前学期，例如 2026-2027 Fall。",
+    )
+    parser.add_argument(
         "--initial-mail-limit",
         type=int,
         default=100,
@@ -53,6 +65,15 @@ def validate_sync_options(
         parser.error("--email 不能是空白字符串。")
     if not 1 <= args.initial_mail_limit <= 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
+    if not args.archive_root.strip():
+        parser.error("--archive-root 不能是空白路径。")
+    if args.current_term is not None:
+        from sjtu_learning_assistant.archive_service import ArchiveError, normalize_term
+
+        try:
+            args.current_term = normalize_term(args.current_term)
+        except ArchiveError as exc:
+            parser.error(str(exc))
     if non_interactive and not args.canvas_only and not args.email:
         parser.error(
             "后台任务会同步邮箱，但未提供 --email；launchd 无法交互输入。"
@@ -70,6 +91,15 @@ def sync_arguments(args: argparse.Namespace) -> list[str]:
         result.extend(("--email", args.email.strip()))
     if args.no_notify:
         result.append("--no-notify")
+    if getattr(args, "no_download", False):
+        result.append("--no-download")
+    archive_root = getattr(
+        args, "archive_root", str(Path.home() / "Documents" / "SJTU Study")
+    )
+    result.extend(("--archive-root", archive_root))
+    current_term = getattr(args, "current_term", None)
+    if current_term:
+        result.extend(("--current-term", current_term))
     result.extend(("--initial-mail-limit", str(args.initial_mail_limit)))
     return result
 

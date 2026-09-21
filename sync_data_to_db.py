@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sjtu_learning_assistant.archive_service import (
+    DEFAULT_ARCHIVE_ROOT,
+    ArchiveError,
+    ArchiveService,
+    normalize_term,
+)
 from sjtu_learning_assistant.database import (
     DatabaseConfigError,
     check_database,
@@ -58,6 +65,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="本次同步不发送或登记系统通知。",
     )
     parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="仍同步全部文件元数据，但本次不自动下载课程文件。",
+    )
+    parser.add_argument(
+        "--archive-root",
+        default=str(DEFAULT_ARCHIVE_ROOT),
+        help=f"课程文件归档根目录，默认 {DEFAULT_ARCHIVE_ROOT}。",
+    )
+    parser.add_argument(
+        "--current-term",
+        help="覆盖按日期推导的当前学期，格式如 2026-2027 Fall。",
+    )
+    parser.add_argument(
         "--initial-mail-limit",
         type=int,
         default=DEFAULT_INITIAL_LIMIT,
@@ -68,10 +89,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
     if args.initial_mail_limit < 1 or args.initial_mail_limit > 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
+    if not args.archive_root.strip():
+        parser.error("--archive-root 不能是空白路径。")
+    args.archive_root = Path(args.archive_root).expanduser()
+    if args.current_term is not None:
+        try:
+            args.current_term = normalize_term(args.current_term)
+        except ArchiveError as exc:
+            parser.error(str(exc))
     return args
 
 
-def sync_canvas(engine, *, notify: bool = True) -> None:
+def sync_canvas(
+    engine,
+    *,
+    notify: bool = True,
+    download: bool = True,
+    archive_root: Path = DEFAULT_ARCHIVE_ROOT,
+    current_term: str | None = None,
+) -> None:
     token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
     with build_http_client(
@@ -174,6 +210,31 @@ def sync_canvas(engine, *, notify: bool = True) -> None:
         f"更新 {result.files.updated}，未变化课程 {unchanged_files}），"
         f"模块 {result.modules.fetched}，模块项 {result.module_items.fetched}。"
     )
+    if download:
+        with build_http_client(
+            DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
+        ) as archive_client:
+            archive_result = ArchiveService(
+                engine,
+                archive_client,
+                archive_root=archive_root,
+                current_term=current_term,
+            ).archive_current_term()
+        if archive_result.skipped:
+            print("文件归档跳过：%s" % archive_result.message)
+        else:
+            print(
+                "文件归档完成："
+                f"学期 {archive_result.term_name}，下载 {archive_result.downloaded}，"
+                f"未变化 {archive_result.unchanged}，失败 {archive_result.failed}。"
+            )
+        for file_result in archive_result.results:
+            if file_result.status == "failed":
+                print(
+                    f"警告：文件 {file_result.source_id} 下载失败：{file_result.error}",
+                    file=sys.stderr,
+                )
+
     if notify:
         try:
             notification_result = NotificationService(engine).process_canvas_sync()
@@ -222,14 +283,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         if not args.mail_only:
-            sync_canvas(engine, notify=not args.no_notify)
+            sync_canvas(
+                engine,
+                notify=not args.no_notify,
+                download=not args.no_download,
+                archive_root=args.archive_root,
+                current_term=args.current_term,
+            )
         if not args.canvas_only:
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()
             )
             sync_mail(engine, email_address, args.initial_mail_limit)
         return 0
-    except (CanvasCheckError, MailCheckError, DatabaseConfigError) as exc:
+    except (ArchiveError, CanvasCheckError, MailCheckError, DatabaseConfigError) as exc:
         print(f"同步失败：{exc}", file=sys.stderr)
         return 1
     except SQLAlchemyError as exc:
