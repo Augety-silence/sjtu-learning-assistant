@@ -85,7 +85,7 @@ sjtu-learning-assistant-phase1a/
 ## 安装或更新依赖
 
 ```bash
-cd "/Users/augety/Desktop/Academic/2609-2701/文本分析与大模型/Project/sjtu-learning-assistant-phase1a"
+cd sjtu-learning-assistant-phase1a
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
@@ -354,3 +354,70 @@ dropdb sjtu_learning_assistant_test
 - 每个阶段通过测试后单独提交。
 - 未经明确要求，不推送远程仓库。
 - `.venv`、缓存、密码、Token、`.env`、SQL 导出和数据库 Dump 永不提交。
+
+## Phase 5A：本地学习仪表盘
+
+Phase 5A 新增 `dashboard-web/` React + Vite + Tailwind 单页应用，以及仅绑定回环地址的 FastAPI 服务。界面包含“概览、截止事项、消息、课程资料”四个顶层视图；所有页面时间均按 `Asia/Shanghai` 显示，截止事项提供 24 小时 / 7 天 / 14 天筛选，消息提供全部 / 邮件 / 公告筛选，课程资料支持按学期、课程与下载状态筛选。已下载文件可安全打开，任意学期的未下载文件均可单文件下载。
+
+### 安装与构建
+
+```bash
+cd sjtu-learning-assistant-phase1a
+.venv/bin/python -m pip install -r requirements.txt
+cd dashboard-web
+npm install
+npm run test
+npm run lint
+npm run build
+cd ..
+```
+
+前端生产文件构建到 `dashboard-web/dist/`，由 FastAPI 同源托管；运行时不加载 CDN 或远程字体。五个导航 / 操作图标已经保存到 `dashboard-web/src/assets/icons/` 并通过模块 `import` 打包。
+
+### 前台启动（开发验证）
+
+```bash
+.venv/bin/python -m uvicorn dashboard_api:app \
+  --host 127.0.0.1 --port 17655 --no-access-log
+```
+
+另开终端访问 `http://127.0.0.1:17655/`。服务不会监听局域网地址。若课程归档目录不是默认的 `~/Documents/SJTU Study`，启动前可设置普通配置 `SJTU_ARCHIVE_ROOT`；不要把数据库 URL、Canvas Token 或邮箱密码写入命令、plist 或仓库。
+
+Dashboard 的所有 POST 请求都要求同源 `Origin` 和进程级 CSRF token；服务同时限制 Host 为 `127.0.0.1` / `localhost`，并返回 CSP、`frame-deny`、`nosniff` 与 `no-referrer` 安全响应头。API DTO 不返回 `raw_data`、邮箱地址、Token、密码或数据库 URL。
+
+### Dashboard LaunchAgent
+
+独立服务标签为 `com.sjtu.learningassistant.dashboard`，默认端口 `17655`，日志仍位于 `~/Library/Application Support/sjtu-learning-assistant/logs/`。plist 只包含解释器、工作目录、回环监听参数和非敏感环境变量。
+
+```bash
+# 安装并常驻（RunAtLoad + KeepAlive）；端口被占用时会明确拒绝
+.venv/bin/python dashboard_control.py install
+
+# 查看状态 / 立即重启 / 打开本地页面
+.venv/bin/python dashboard_control.py status
+.venv/bin/python dashboard_control.py kickstart
+.venv/bin/python dashboard_control.py open
+
+# 停止并卸载，不删除日志
+.venv/bin/python dashboard_control.py uninstall
+```
+
+Dashboard 内“立即同步”会优先 `kickstart` 已安装的同步 LaunchAgent；未安装时会异步启动既有 `launchd_control.py run-once --canvas-only --no-download`，继续复用 `sync_runner` 的进程锁，HTTP 请求会立即返回 `202 accepted`，前端随后轮询同步状态。单文件下载复用 `ArchiveService.download_file_by_source_id`，不受当前学期限制。
+
+### Phase 5A 验证
+
+```bash
+# 全部 Python 单元测试；不联网、不打开文件、不写 Documents
+.venv/bin/python -m unittest discover -s tests -v
+
+# 前端测试、静态检查与生产构建
+cd dashboard-web
+npm run test
+npm run lint
+npm run build
+cd ..
+
+git diff --check
+```
+
+本轮不自动安装 LaunchAgent、不启动长期服务，也不自动打开浏览器。

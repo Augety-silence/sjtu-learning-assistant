@@ -11,3 +11,6 @@ __pycache__/
 *.lock
 *.jsonl
 com.sjtu.learningassistant.sync.plist
+com.sjtu.learningassistant.dashboard.plist
+dashboard-web/node_modules/
+dashboard-web/dist/

@@ -1,0 +1,37 @@
+{
+  "name": "sjtu-learning-assistant-dashboard",
+  "private": true,
+  "version": "5.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.3.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.4",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.3",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^27.0.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4"
+  }
+}
