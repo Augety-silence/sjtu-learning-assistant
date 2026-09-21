@@ -7,8 +7,9 @@
 - **Phase 1C**：逐门课程获取 Canvas 公告和作业。
 - **Phase 2A**：建立 PostgreSQL、SQLAlchemy 与 Alembic 持久化基础。
 - **Phase 2B**：将 Canvas 公告、作业和邮件增量写入 PostgreSQL，并生成统一事项。
+- **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
 
-目前尚未加入定时器、系统通知、文件归档或 UI。
+目前尚未加入定时器、系统通知、文件实际下载归档或 UI。
 
 ## 数据表如何关联
 
@@ -23,19 +24,25 @@
 courses.id
   ├── announcements.course_id
   ├── assignments.course_id
+  ├── course_folders.course_id
   ├── course_files.course_id
+  ├── course_modules.course_id
+  ├── course_module_items.course_id
   └── items.course_id
 
-announcements.id ── items.announcement_id
-assignments.id   ── items.assignment_id
-emails.id        ── items.email_id
-course_files.id  ── items.course_file_id
+course_folders.id       ── course_files.folder_id
+course_modules.id       ── course_module_items.module_id
+course_files.id         ── course_module_items.content_file_id
+announcements.id        ── items.announcement_id
+assignments.id          ── items.assignment_id
+emails.id               ── items.email_id
+course_files.id         ── items.course_file_id
 
 sync_state(source, resource)  每类资源唯一同步游标
 sync_runs                     每次同步的审计记录
 ```
 
-`items` 是统一信息层：Canvas 公告、Canvas 作业和邮件都会生成对应的 `items` 记录。除了 `(source, item_type, source_id)` 联合唯一键，还通过显式外键连接原始表，数据库会阻止一个 Item 同时指向多个原始记录。
+`items` 是统一信息层：Canvas 公告、Canvas 作业、课程文件和邮件都会生成对应的 `items` 记录。除了 `(source, item_type, source_id)` 联合唯一键，还通过显式外键连接原始表，数据库会阻止一个 Item 同时指向多个原始记录。
 
 邮件通常不属于某门课程，因此 `emails` 不强制连接 `courses`；未来分类器识别出课程后，可以通过 `items.course_id` 建立课程归属。
 
@@ -48,7 +55,9 @@ sjtu-learning-assistant-phase1a/
 ├── migrations/
 │   └── versions/
 │       ├── 0001_create_core_tables.py
-│       └── 0002_link_items_to_sources.py
+│       ├── 0002_link_items_to_sources.py
+│       ├── 0003_add_canvas_content_metadata.py
+│       └── 0004_track_canvas_item_activity.py
 ├── sjtu_learning_assistant/
 │   ├── database.py
 │   ├── mail_client.py
@@ -98,7 +107,9 @@ python3 db_manage.py configure
 
 远程部署时应由部署平台的 Secrets Manager 注入 `SJTU_DATABASE_URL`，不要提交 `.env`。
 
-## Phase 2B：增量同步
+## Phase 2B / 2C：增量同步
+
+Phase 2C 仍使用现有 Canvas Personal Access Token，不需要额外申请 API Key。它只是在同一 Canvas REST API 下增加 Files、Folders、Modules 和 Module Items 接口调用。
 
 同时同步 Canvas 和邮箱：
 
@@ -134,9 +145,10 @@ python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 
 ### Canvas
 
-- 每门课程的公告和作业分别保存 ETag。
+- 每门课程的公告、作业和文件分别保存 ETag。
 - 后续请求发送 `If-None-Match`。
-- 服务端返回 `304 Not Modified` 时不重复下载或写入该课程的数据。
+- 服务端返回 `304 Not Modified` 时不重复下载或写入该课程的数据，也不会误将历史文件标记为失效。
+- 文件夹、模块和模块项进行完整分页读取；成功读取后，对远端已消失的记录做软下线，不硬删除历史数据。
 - 分页资源为避免漏页不会保存单页 ETag，下一次进行安全全量读取并依靠 Upsert 去重。
 
 ### 邮箱
@@ -157,8 +169,11 @@ python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 - `announcements`：Canvas 公告
 - `assignments`：Canvas 作业
 - `emails`：邮件元数据与摘要
-- `course_files`：后续课程文件归档
-- `items`：跨 Canvas 与邮件的统一事项
+- `course_folders`：Canvas 文件夹层级
+- `course_files`：课程文件元数据与后续本地归档路径
+- `course_modules`：Canvas 课程模块
+- `course_module_items`：模块中的文件、页面、作业等条目
+- `items`：跨 Canvas 与邮件的统一事项；课程文件也会生成对应事项
 - `sync_state`：资源级 ETag 或 IMAP UID 游标
 - `sync_runs`：同步数量、状态与执行时间
 - `alembic_version`：数据库结构版本
@@ -180,7 +195,7 @@ env SJTU_TEST_DATABASE_URL='postgresql+psycopg:///sjtu_learning_assistant_test?h
 dropdb sjtu_learning_assistant_test
 ```
 
-该测试会验证课程、公告、作业、邮件与统一 Item 的真实外键，以及重复执行不会产生重复数据。
+该测试会验证课程、公告、作业、课程文件/文件夹/模块、邮件与统一 Item 的真实外键，以及重复执行不会产生重复数据。
 
 ## 版本管理
 

@@ -61,6 +61,15 @@ class Course(TimestampMixin, Base):
     files: Mapped[list["CourseFile"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
     )
+    folders: Mapped[list["CourseFolder"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan"
+    )
+    modules: Mapped[list["CourseModule"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan"
+    )
+    module_items: Mapped[list["CourseModuleItem"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan"
+    )
 
 
 class Announcement(TimestampMixin, Base):
@@ -76,6 +85,9 @@ class Announcement(TimestampMixin, Base):
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     url: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="announcements")
@@ -97,6 +109,9 @@ class Assignment(TimestampMixin, Base):
     submission_state: Mapped[str | None] = mapped_column(String(64))
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     url: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="assignments")
@@ -122,6 +137,59 @@ class Email(TimestampMixin, Base):
     __table_args__ = (Index("ix_emails_sent_at", "sent_at"),)
 
 
+class CourseFolder(TimestampMixin, Base):
+    __tablename__ = "course_folders"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_folder_id: Mapped[int | None] = mapped_column(
+        ForeignKey("course_folders.id", ondelete="SET NULL")
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    full_name: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int | None] = mapped_column(Integer)
+    files_count: Mapped[int | None] = mapped_column(Integer)
+    folders_count: Mapped[int | None] = mapped_column(Integer)
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+    course: Mapped[Course] = relationship(back_populates="folders")
+
+    __table_args__ = (Index("ix_course_folders_course_id", "course_id"),)
+
+
+class CourseModule(TimestampMixin, Base):
+    __tablename__ = "course_modules"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int | None] = mapped_column(Integer)
+    workflow_state: Mapped[str | None] = mapped_column(String(64))
+    unlock_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    items_count: Mapped[int | None] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+    course: Mapped[Course] = relationship(back_populates="modules")
+    items: Mapped[list["CourseModuleItem"]] = relationship(
+        back_populates="module", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("ix_course_modules_course_id", "course_id"),)
+
+
 class CourseFile(TimestampMixin, Base):
     __tablename__ = "course_files"
 
@@ -130,6 +198,9 @@ class CourseFile(TimestampMixin, Base):
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
     )
+    folder_id: Mapped[int | None] = mapped_column(
+        ForeignKey("course_folders.id", ondelete="SET NULL")
+    )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str | None] = mapped_column(Text)
     content_type: Mapped[str | None] = mapped_column(String(255))
@@ -137,9 +208,52 @@ class CourseFile(TimestampMixin, Base):
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     url: Mapped[str | None] = mapped_column(Text)
     local_path: Mapped[str | None] = mapped_column(Text)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="files")
+
+    __table_args__ = (Index("ix_course_files_folder_id", "folder_id"),)
+
+
+class CourseModuleItem(TimestampMixin, Base):
+    __tablename__ = "course_module_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
+    )
+    module_id: Mapped[int] = mapped_column(
+        ForeignKey("course_modules.id", ondelete="CASCADE"), nullable=False
+    )
+    content_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("course_files.id", ondelete="SET NULL")
+    )
+    content_source_id: Mapped[str | None] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    item_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    position: Mapped[int | None] = mapped_column(Integer)
+    indent: Mapped[int | None] = mapped_column(Integer)
+    html_url: Mapped[str | None] = mapped_column(Text)
+    api_url: Mapped[str | None] = mapped_column(Text)
+    external_url: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+
+    course: Mapped[Course] = relationship(back_populates="module_items")
+    module: Mapped[CourseModule] = relationship(back_populates="items")
+
+    __table_args__ = (
+        Index("ix_course_module_items_course_id", "course_id"),
+        Index("ix_course_module_items_module_position", "module_id", "position"),
+    )
 
 
 class UnifiedItem(TimestampMixin, Base):
@@ -171,6 +285,7 @@ class UnifiedItem(TimestampMixin, Base):
     url: Mapped[str | None] = mapped_column(Text)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
     __table_args__ = (

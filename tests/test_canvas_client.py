@@ -11,6 +11,10 @@ from test_canvas import (
     fetch_course_announcements,
     fetch_course_announcements_incremental,
     fetch_course_assignments,
+    fetch_course_files_incremental,
+    fetch_course_folders,
+    fetch_course_module_items,
+    fetch_course_modules,
     normalize_base_url,
 )
 
@@ -114,6 +118,59 @@ class CanvasClientTests(unittest.TestCase):
         self.assertEqual(21, assignments[0]["id"])
         self.assertEqual("/api/v1/courses/95040/assignments", captured[0].url.path)
         self.assertEqual("submission", captured[0].url.params["include[]"])
+
+    def test_fetches_canvas_content_metadata_endpoints(self) -> None:
+        captured: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            payload_by_path = {
+                "/api/v1/courses/95040/folders": [{"id": 31, "name": "course files"}],
+                "/api/v1/courses/95040/modules": [{"id": 41, "name": "Week 1"}],
+                "/api/v1/courses/95040/modules/41/items": [
+                    {"id": 51, "module_id": 41, "type": "File", "content_id": 61}
+                ],
+            }
+            return httpx.Response(200, json=payload_by_path[request.url.path], request=request)
+
+        with httpx.Client(
+            base_url="https://oc.sjtu.edu.cn",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            folders = fetch_course_folders(client, 95040)
+            modules = fetch_course_modules(client, 95040)
+            module_items = fetch_course_module_items(client, 95040, 41)
+
+        self.assertEqual(31, folders[0]["id"])
+        self.assertEqual(41, modules[0]["id"])
+        self.assertEqual(51, module_items[0]["id"])
+        self.assertEqual(
+            [
+                "/api/v1/courses/95040/folders",
+                "/api/v1/courses/95040/modules",
+                "/api/v1/courses/95040/modules/41/items",
+            ],
+            [request.url.path for request in captured],
+        )
+
+    def test_file_incremental_fetch_uses_etag(self) -> None:
+        captured: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(304, request=request)
+
+        with httpx.Client(
+            base_url="https://oc.sjtu.edu.cn",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            result = fetch_course_files_incremental(
+                client, 95040, etag='"file-etag"'
+            )
+
+        self.assertTrue(result.not_modified)
+        self.assertEqual('"file-etag"', captured[0].headers["If-None-Match"])
+        self.assertEqual("/api/v1/courses/95040/files", captured[0].url.path)
 
     def test_partial_course_error_does_not_skip_other_endpoint(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

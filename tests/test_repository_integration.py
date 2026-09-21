@@ -13,6 +13,10 @@ from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
     Course,
+    CourseFile,
+    CourseFolder,
+    CourseModule,
+    CourseModuleItem,
     Email,
     SyncState,
     UnifiedItem,
@@ -52,14 +56,52 @@ class RepositoryIntegrationTests(unittest.TestCase):
             "points_possible": 100,
             "html_url": "https://oc.sjtu.edu.cn/assignment/2001",
         }
+        course_folder = {
+            "id": 3001,
+            "name": "课件",
+            "full_name": "course files/课件",
+            "files_count": 1,
+            "folders_count": 0,
+        }
+        course_file = {
+            "id": 4001,
+            "folder_id": 3001,
+            "display_name": "lecture-01.pdf",
+            "filename": "lecture-01.pdf",
+            "content-type": "application/pdf",
+            "size": 1024,
+            "updated_at": "2026-09-21T02:00:00Z",
+            "url": "https://oc.sjtu.edu.cn/files/4001/download",
+        }
+        course_module = {
+            "id": 5001,
+            "name": "第一周",
+            "position": 1,
+            "items_count": 1,
+            "state": "started",
+        }
+        course_module_item = {
+            "id": 6001,
+            "module_id": 5001,
+            "content_id": 4001,
+            "title": "第一讲课件",
+            "type": "File",
+            "position": 1,
+            "html_url": "https://oc.sjtu.edu.cn/courses/95040/modules/items/6001",
+        }
         for _ in range(2):
             persist_canvas_data(
                 self.engine,
                 raw_courses=[course],
                 announcements_by_course={"95040": [announcement]},
                 assignments_by_course={"95040": [assignment]},
+                folders_by_course={"95040": [course_folder]},
+                files_by_course={"95040": [course_file]},
+                modules_by_course={"95040": [course_module]},
+                module_items_by_course={"95040": [course_module_item]},
                 announcement_cursors={"95040": '"announcement-etag"'},
                 assignment_cursors={"95040": '"assignment-etag"'},
+                file_cursors={"95040": '"file-etag"'},
             )
 
         email = EmailRecord(
@@ -80,8 +122,12 @@ class RepositoryIntegrationTests(unittest.TestCase):
             self.assertEqual(1, session.scalar(select(func.count(Course.id))))
             self.assertEqual(1, session.scalar(select(func.count(Announcement.id))))
             self.assertEqual(1, session.scalar(select(func.count(Assignment.id))))
+            self.assertEqual(1, session.scalar(select(func.count(CourseFolder.id))))
+            self.assertEqual(1, session.scalar(select(func.count(CourseFile.id))))
+            self.assertEqual(1, session.scalar(select(func.count(CourseModule.id))))
+            self.assertEqual(1, session.scalar(select(func.count(CourseModuleItem.id))))
             self.assertEqual(1, session.scalar(select(func.count(Email.id))))
-            self.assertEqual(3, session.scalar(select(func.count(UnifiedItem.id))))
+            self.assertEqual(4, session.scalar(select(func.count(UnifiedItem.id))))
             self.assertEqual(
                 1,
                 session.scalar(
@@ -106,8 +152,64 @@ class RepositoryIntegrationTests(unittest.TestCase):
                     )
                 ),
             )
+            self.assertEqual(
+                1,
+                session.scalar(
+                    select(func.count(UnifiedItem.id)).where(
+                        UnifiedItem.course_file_id.is_not(None)
+                    )
+                ),
+            )
             state_count = session.scalar(select(func.count(SyncState.id)))
-            self.assertGreaterEqual(state_count or 0, 6)
+            self.assertGreaterEqual(state_count or 0, 10)
+
+        # Empty top-level maps mean the resource was not fetched (for example HTTP 304),
+        # so existing rows must remain active.
+        persist_canvas_data(
+            self.engine,
+            raw_courses=[course],
+            announcements_by_course={},
+            assignments_by_course={},
+        )
+        with Session(self.engine) as session:
+            self.assertTrue(
+                session.scalar(
+                    select(CourseFile.is_active).where(CourseFile.source_id == "4001")
+                )
+            )
+
+        # A present course key with an empty list means a successful empty response;
+        # previously seen rows should be retained but marked inactive.
+        persist_canvas_data(
+            self.engine,
+            raw_courses=[course],
+            announcements_by_course={"95040": []},
+            assignments_by_course={"95040": []},
+            folders_by_course={"95040": []},
+            files_by_course={"95040": []},
+            modules_by_course={"95040": []},
+            module_items_by_course={"95040": []},
+        )
+        with Session(self.engine) as session:
+            for model, source_id in (
+                (Announcement, "1001"),
+                (Assignment, "2001"),
+                (CourseFolder, "3001"),
+                (CourseFile, "4001"),
+                (CourseModule, "5001"),
+                (CourseModuleItem, "6001"),
+            ):
+                record = session.scalar(select(model).where(model.source_id == source_id))
+                self.assertIsNotNone(record)
+                self.assertFalse(record.is_active)
+                self.assertIsNotNone(record.deactivated_at)
+            inactive_item_count = session.scalar(
+                select(func.count(UnifiedItem.id)).where(
+                    UnifiedItem.item_type.in_(("announcement", "assignment", "file")),
+                    UnifiedItem.is_active.is_(False),
+                )
+            )
+            self.assertEqual(3, inactive_item_count)
 
 
 if __name__ == "__main__":

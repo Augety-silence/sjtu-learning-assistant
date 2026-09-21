@@ -400,6 +400,62 @@ def fetch_course_assignments_incremental(
     )
 
 
+def fetch_course_files(
+    client: httpx.Client, course_id: int | str
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/files",
+        params=[("per_page", str(DEFAULT_PAGE_SIZE)), ("sort", "updated_at")],
+    )
+
+
+def fetch_course_files_incremental(
+    client: httpx.Client,
+    course_id: int | str,
+    *,
+    etag: str | None,
+) -> CollectionFetchResult:
+    return fetch_paginated_with_etag(
+        client,
+        f"/api/v1/courses/{course_id}/files",
+        params=[("per_page", str(DEFAULT_PAGE_SIZE)), ("sort", "updated_at")],
+        etag=etag,
+    )
+
+
+def fetch_course_folders(
+    client: httpx.Client, course_id: int | str
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/folders",
+        params=[("per_page", str(DEFAULT_PAGE_SIZE))],
+    )
+
+
+def fetch_course_modules(
+    client: httpx.Client, course_id: int | str
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/modules",
+        params=[("per_page", str(DEFAULT_PAGE_SIZE))],
+    )
+
+
+def fetch_course_module_items(
+    client: httpx.Client,
+    course_id: int | str,
+    module_id: int | str,
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/modules/{module_id}/items",
+        params=[("per_page", str(DEFAULT_PAGE_SIZE))],
+    )
+
+
 def format_canvas_time(value: Any) -> str:
     if not isinstance(value, str) or not value:
         return "（时间未设置）"
