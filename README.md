@@ -8,8 +8,9 @@
 - **Phase 2A**：建立 PostgreSQL、SQLAlchemy 与 Alembic 持久化基础。
 - **Phase 2B**：将 Canvas 公告、作业和邮件增量写入 PostgreSQL，并生成统一事项。
 - **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
+- **Phase 3A**：增加单实例后台运行器、JSONL 审计日志、有限重试与 macOS LaunchAgent 管理。
 
-目前尚未加入定时器、系统通知、文件实际下载归档或 UI。
+目前尚未加入系统通知、文件实际下载归档或 UI。Phase 3A 只负责可靠调度现有同步脚本，不改变数据同步及事务核心逻辑。
 
 ## 数据表如何关联
 
@@ -65,6 +66,8 @@ sjtu-learning-assistant-phase1a/
 │   └── repository.py
 ├── sync_courses_to_db.py
 ├── sync_data_to_db.py
+├── sync_runner.py
+├── launchd_control.py
 ├── test_canvas.py
 ├── test_mail.py
 ├── requirements.txt
@@ -141,6 +144,83 @@ python3 sync_data_to_db.py --mail-only --email "your.name@sjtu.edu.cn"
 python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 ```
 
+## Phase 3A：后台运行与 macOS LaunchAgent
+
+后台入口不会改写 `sync_data_to_db.py` 的同步流程，而是将其作为子进程执行。运行器提供：
+
+- `fcntl.flock(LOCK_EX | LOCK_NB)` 单实例锁；若已有任务运行，本次写入 `skip_locked` 后以 0 退出。
+- 失败时最多执行 3 次，重试前分别等待 5 秒、30 秒；退出码 130 不重试。
+- 收到 `SIGTERM` 或 `SIGINT` 时向同步子进程转发信号，并等待子进程退出。
+- JSONL 日志只含时间、`run_id`、尝试次数、事件、退出码和耗时，不写命令参数、Token、密码或数据库 URL。
+
+运行时文件位于：
+
+```text
+~/Library/Application Support/sjtu-learning-assistant/
+├── logs/
+│   ├── sync.jsonl
+│   ├── launchd.stdout.log
+│   └── launchd.stderr.log
+└── run/
+    └── sync.lock
+```
+
+### 手动运行一次
+
+同时同步 Canvas 和邮箱（可在终端交互输入邮箱）：
+
+```bash
+.venv/bin/python launchd_control.py run-once
+```
+
+非交互方式示例：
+
+```bash
+.venv/bin/python launchd_control.py run-once --email "your.name@sjtu.edu.cn"
+.venv/bin/python launchd_control.py run-once --canvas-only
+.venv/bin/python launchd_control.py run-once --mail-only --email "your.name@sjtu.edu.cn" --initial-mail-limit 500
+```
+
+### 安装
+
+安装命令会根据当前项目绝对路径生成
+`~/Library/LaunchAgents/com.sjtu.learningassistant.sync.plist`，固定使用当前项目的 `.venv/bin/python`。任务登录后立即运行，之后每 900 秒触发一次。
+
+```bash
+.venv/bin/python launchd_control.py install --email "your.name@sjtu.edu.cn"
+```
+
+也可以只安装一个数据源：
+
+```bash
+.venv/bin/python launchd_control.py install --canvas-only
+.venv/bin/python launchd_control.py install --mail-only --email "your.name@sjtu.edu.cn" --initial-mail-limit 500
+```
+
+`--canvas-only` 与 `--mail-only` 不能同时使用。若未指定 `--canvas-only`，安装时必须提供 `--email`，从而避免 launchd 在无交互环境等待输入。邮箱密码、Canvas Token 和数据库凭据仍由既有 Keychain/环境配置提供，不写入 plist。
+
+### 验证与立即触发
+
+```bash
+.venv/bin/python launchd_control.py status
+.venv/bin/python launchd_control.py kickstart
+tail -n 20 "$HOME/Library/Application Support/sjtu-learning-assistant/logs/sync.jsonl"
+```
+
+查看 plist 的实际加载配置也可使用：
+
+```bash
+launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
+```
+
+### 卸载
+
+```bash
+.venv/bin/python launchd_control.py uninstall
+```
+
+卸载会停止 LaunchAgent 并删除 plist，不删除历史日志。Phase 3A 仅支持当前登录用户的 macOS `gui/<uid>` LaunchAgent；不包含系统级 daemon、跨平台调度、通知、监控告警或日志轮转。
+
 ## 增量策略
 
 ### Canvas
@@ -184,7 +264,7 @@ python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 python3 -m unittest discover -s tests -v
 ```
 
-测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏。
+测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏，以及后台运行器的成功、锁冲突、重试、退出码 130、plist 参数/转义和安全日志。
 
 数据库 Repository 集成测试默认跳过，避免误写正式库。使用专用测试库时运行：
 
