@@ -171,6 +171,7 @@ class LaunchdPlistTests(unittest.TestCase):
             "canvas_only": False,
             "mail_only": False,
             "email": "name&tag@example.com",
+            "no_notify": False,
             "initial_mail_limit": 321,
         }
         values.update(overrides)

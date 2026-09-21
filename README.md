@@ -9,8 +9,9 @@
 - **Phase 2B**：将 Canvas 公告、作业和邮件增量写入 PostgreSQL，并生成统一事项。
 - **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
 - **Phase 3A**：增加单实例后台运行器、JSONL 审计日志、有限重试与 macOS LaunchAgent 管理。
+- **Phase 3B**：增加安全的 macOS 系统通知、首次同步基线、通知幂等账本与聚合限流。
 
-目前尚未加入系统通知、文件实际下载归档或 UI。Phase 3A 只负责可靠调度现有同步脚本，不改变数据同步及事务核心逻辑。
+系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。文件实际下载归档和 UI 尚未实现。
 
 ## 数据表如何关联
 
@@ -38,9 +39,11 @@ announcements.id        ── items.announcement_id
 assignments.id          ── items.assignment_id
 emails.id               ── items.email_id
 course_files.id         ── items.course_file_id
+items.id                ── notification_events.item_id
 
 sync_state(source, resource)  每类资源唯一同步游标
 sync_runs                     每次同步的审计记录
+notification_events           通知幂等键、发送状态与失败信息
 ```
 
 `items` 是统一信息层：Canvas 公告、Canvas 作业、课程文件和邮件都会生成对应的 `items` 记录。除了 `(source, item_type, source_id)` 联合唯一键，还通过显式外键连接原始表，数据库会阻止一个 Item 同时指向多个原始记录。
@@ -58,11 +61,13 @@ sjtu-learning-assistant-phase1a/
 │       ├── 0001_create_core_tables.py
 │       ├── 0002_link_items_to_sources.py
 │       ├── 0003_add_canvas_content_metadata.py
-│       └── 0004_track_canvas_item_activity.py
+│       ├── 0004_track_canvas_item_activity.py
+│       └── 0005_add_notification_events.py
 ├── sjtu_learning_assistant/
 │   ├── database.py
 │   ├── mail_client.py
 │   ├── models.py
+│   ├── notifications.py
 │   └── repository.py
 ├── sync_courses_to_db.py
 ├── sync_data_to_db.py
@@ -81,6 +86,8 @@ cd "/Users/augety/Desktop/Academic/2609-2701/文本分析与大模型/Project/sj
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
+
+Phase 3B 不新增 Python 依赖；通知直接使用 macOS 自带的 `/usr/bin/osascript`。更新已有数据库后必须先运行 `python3 db_manage.py upgrade` 应用 Alembic `0005`。
 
 ## 数据库管理
 
@@ -136,6 +143,12 @@ python3 sync_data_to_db.py --canvas-only
 
 ```bash
 python3 sync_data_to_db.py --mail-only --email "your.name@sjtu.edu.cn"
+```
+
+不发送/登记通知，仅执行同步：
+
+```bash
+python3 sync_data_to_db.py --no-notify
 ```
 
 首次邮箱同步默认导入最近 100 封邮件，可调整：
@@ -197,7 +210,13 @@ python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 .venv/bin/python launchd_control.py install --mail-only --email "your.name@sjtu.edu.cn" --initial-mail-limit 500
 ```
 
-`--canvas-only` 与 `--mail-only` 不能同时使用。若未指定 `--canvas-only`，安装时必须提供 `--email`，从而避免 launchd 在无交互环境等待输入。邮箱密码、Canvas Token 和数据库凭据仍由既有 Keychain/环境配置提供，不写入 plist。
+也可以关闭已安装后台任务的通知：
+
+```bash
+.venv/bin/python launchd_control.py install --email "your.name@sjtu.edu.cn" --no-notify
+```
+
+`--canvas-only` 与 `--mail-only` 不能同时使用。`--email` 不能是空白字符串。若未指定 `--canvas-only`，安装时必须提供 `--email`，从而避免 launchd 在无交互环境等待输入。邮箱密码、Canvas Token 和数据库凭据仍由既有 Keychain/环境配置提供，不写入 plist。
 
 ### 验证与立即触发
 
@@ -219,7 +238,29 @@ launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
 .venv/bin/python launchd_control.py uninstall
 ```
 
-卸载会停止 LaunchAgent 并删除 plist，不删除历史日志。Phase 3A 仅支持当前登录用户的 macOS `gui/<uid>` LaunchAgent；不包含系统级 daemon、跨平台调度、通知、监控告警或日志轮转。
+卸载会停止 LaunchAgent 并删除 plist，不删除历史日志。后台调度仅支持当前登录用户的 macOS `gui/<uid>` LaunchAgent；不包含系统级 daemon、跨平台调度、监控告警或日志轮转。
+
+### 验证通知
+
+先确认当前终端进程拥有通知权限，再发送测试通知：
+
+```bash
+.venv/bin/python launchd_control.py notify-test
+```
+
+实现固定调用 `/usr/bin/osascript`，AppleScript 程序不拼接标题或正文；通知文本作为独立参数传入，不使用 shell。若 macOS 首次询问自动化/通知权限，请在“系统设置 → 通知”中允许对应终端或 Python 进程。
+
+### Phase 3B 通知规则
+
+- 首次通知基线只由 `sync_state(source='notification', resource='canvas_items')` 专属 marker 判断，不复用 Canvas 数据同步状态；因此即使 Phase 3B 安装前公告、作业和文件早已同步，首次启用通知仍不会弹出历史内容。
+- 首次通知处理会扫描数据库中全部现有 active 公告、作业、文件以及当前 24 小时内到期候选，将对应事件写为 `suppressed`，全部成功后才写入通知 marker。
+- 后续新增事件按 `items.id` 通知游标扫描，不依赖本轮数据 Upsert 返回的新增 ID；只有整轮通知候选都成功发送/记账后才推进游标。发送或账本失败时保留原游标，下一轮会重新扫描且不会漏事件。
+- 每次同步也检查未来 24 小时内截止、仍为未提交状态的有效作业；这类候选不使用 Item 游标，每轮扫描并由包含作业 ID 与截止时间的 `event_key` 去重，截止时间改变后可重新提醒。
+- 每个类别每轮最多显示 3 条系统通知；超过 3 条时显示前 2 条，并将其余内容合并为第 3 条。
+- 正常通知发送前只查询已有 `event_key`，不插入 `pending`；发送成功后才原子写入 `sent`。发送失败不留永久占位，下一轮可重试；并发唯一键冲突通过 PostgreSQL Upsert 安全收敛。
+- `notification_events.event_key` 唯一约束负责持久化幂等，稳定状态为 `sent` 或 `suppressed`；`pending`/`failed` 仅为兼容旧版本数据。
+- 通知发送、通知状态写入或通知游标异常都不回滚或改变已经成功提交的数据同步；失败事件保持可重试。
+- `--no-notify` 完全跳过通知生成和登记，适合临时静默同步。
 
 ## 增量策略
 
@@ -256,6 +297,7 @@ launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
 - `items`：跨 Canvas 与邮件的统一事项；课程文件也会生成对应事项
 - `sync_state`：资源级 ETag 或 IMAP UID 游标
 - `sync_runs`：同步数量、状态与执行时间
+- `notification_events`：通知幂等键、关联 Item、发送/抑制/失败状态
 - `alembic_version`：数据库结构版本
 
 ## 自动化测试
@@ -264,7 +306,7 @@ launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
 python3 -m unittest discover -s tests -v
 ```
 
-测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏，以及后台运行器的成功、锁冲突、重试、退出码 130、plist 参数/转义和安全日志。
+测试不需要真实凭证，覆盖 Canvas API、安全分页、ETag 304、IMAP UID 游标、数据库 URL 与密码脱敏、后台运行器，以及通知命令安全性、通知专属首次基线、`items.id` 游标、发送失败跨轮重试、通知数据库异常隔离、跨轮幂等、每类最多 3 条并合并溢出、`--no-notify` 透传和空白邮箱拒绝。
 
 数据库 Repository 集成测试默认跳过，避免误写正式库。使用专用测试库时运行：
 

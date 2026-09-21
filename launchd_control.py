@@ -12,6 +12,10 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+from sjtu_learning_assistant.notifications import (
+    NotificationError,
+    send_test_notification,
+)
 from sync_runner import APP_SUPPORT_DIR, run_once
 
 LABEL = "com.sjtu.learningassistant.sync"
@@ -28,6 +32,7 @@ def add_sync_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--canvas-only", action="store_true", help="只同步 Canvas。")
     parser.add_argument("--mail-only", action="store_true", help="只同步邮箱。")
     parser.add_argument("--email", help="交大邮箱地址（仅作为普通启动参数保存）。")
+    parser.add_argument("--no-notify", action="store_true", help="禁用系统通知。")
     parser.add_argument(
         "--initial-mail-limit",
         type=int,
@@ -44,6 +49,8 @@ def validate_sync_options(
 ) -> None:
     if args.canvas_only and args.mail_only:
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
+    if args.email is not None and not args.email.strip():
+        parser.error("--email 不能是空白字符串。")
     if not 1 <= args.initial_mail_limit <= 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
     if non_interactive and not args.canvas_only and not args.email:
@@ -60,7 +67,9 @@ def sync_arguments(args: argparse.Namespace) -> list[str]:
     if args.mail_only:
         result.append("--mail-only")
     if args.email:
-        result.extend(("--email", args.email))
+        result.extend(("--email", args.email.strip()))
+    if args.no_notify:
+        result.append("--no-notify")
     result.extend(("--initial-mail-limit", str(args.initial_mail_limit)))
     return result
 
@@ -184,8 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("uninstall", help="卸载任务并删除 plist。")
     subparsers.add_parser("status", help="显示 launchd 服务状态。")
     subparsers.add_parser("kickstart", help="立即触发已安装服务。")
+    subparsers.add_parser("notify-test", help="发送一条 macOS 系统测试通知。")
 
-    run_parser = subparsers.add_parser("run-once", help="前台执行一次受锁和重试保护的同步。")
+    run_parser = subparsers.add_parser(
+        "run-once", help="前台执行一次受锁和重试保护的同步。"
+    )
     add_sync_options(run_parser)
     return parser
 
@@ -202,6 +214,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return status()
     if args.command == "kickstart":
         return kickstart()
+    if args.command == "notify-test":
+        try:
+            send_test_notification()
+        except NotificationError as exc:
+            print(f"通知测试失败：{exc}", file=sys.stderr)
+            return 1
+        print("测试通知已发送。")
+        return 0
     if args.command == "run-once":
         validate_sync_options(parser, args, non_interactive=False)
         return run_once(sync_arguments(args))

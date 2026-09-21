@@ -50,6 +50,7 @@ class UpsertResult:
     fetched: int
     inserted: int
     updated: int
+    inserted_source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -130,10 +131,14 @@ def _existing_ids(
 
 def _result(source_ids: list[str], existing_ids: set[str]) -> UpsertResult:
     unique_ids = set(source_ids)
+    inserted_ids = unique_ids - existing_ids
     return UpsertResult(
         fetched=len(source_ids),
-        inserted=len(unique_ids - existing_ids),
+        inserted=len(inserted_ids),
         updated=len(unique_ids & existing_ids),
+        inserted_source_ids=tuple(
+            source_id for source_id in dict.fromkeys(source_ids) if source_id in inserted_ids
+        ),
     )
 
 

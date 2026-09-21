@@ -303,6 +303,33 @@ class UnifiedItem(TimestampMixin, Base):
     )
 
 
+class NotificationEvent(TimestampMixin, Base):
+    __tablename__ = "notification_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("items.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_notification_events_event_key"),
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'failed', 'suppressed')",
+            name="ck_notification_events_status",
+        ),
+        Index("ix_notification_events_event_type_status", "event_type", "status"),
+        Index("ix_notification_events_item_id", "item_id"),
+    )
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

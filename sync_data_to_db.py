@@ -18,6 +18,7 @@ from sjtu_learning_assistant.mail_client import (
     DEFAULT_INITIAL_LIMIT,
     fetch_incremental_mail,
 )
+from sjtu_learning_assistant.notifications import NotificationService
 from sjtu_learning_assistant.repository import (
     get_sync_state,
     persist_canvas_data,
@@ -52,6 +53,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--mail-only", action="store_true", help="只同步邮箱，不同步 Canvas。"
     )
     parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="本次同步不发送或登记系统通知。",
+    )
+    parser.add_argument(
         "--initial-mail-limit",
         type=int,
         default=DEFAULT_INITIAL_LIMIT,
@@ -65,7 +71,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def sync_canvas(engine) -> None:
+def sync_canvas(engine, *, notify: bool = True) -> None:
     token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
     with build_http_client(
@@ -168,6 +174,18 @@ def sync_canvas(engine) -> None:
         f"更新 {result.files.updated}，未变化课程 {unchanged_files}），"
         f"模块 {result.modules.fetched}，模块项 {result.module_items.fetched}。"
     )
+    if notify:
+        try:
+            notification_result = NotificationService(engine).process_canvas_sync()
+            print(
+                "通知处理完成："
+                f"发送 {notification_result.sent_batches} 批，"
+                f"失败 {notification_result.failed_batches} 批，"
+                f"首次基线抑制 {notification_result.suppressed_events} 条，"
+                f"幂等跳过 {notification_result.duplicate_events} 条。"
+            )
+        except Exception as exc:
+            print(f"警告：通知处理失败，但数据同步已成功：{exc}", file=sys.stderr)
 
 
 def sync_mail(engine, email_address: str, initial_limit: int) -> None:
@@ -204,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         if not args.mail_only:
-            sync_canvas(engine)
+            sync_canvas(engine, notify=not args.no_notify)
         if not args.canvas_only:
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()
