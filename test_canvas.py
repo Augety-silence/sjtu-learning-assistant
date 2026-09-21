@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Phase 1B: verify SJTU Canvas REST API access and list active courses.
+"""Phase 1C: verify SJTU Canvas courses, announcements, and assignments.
 
 The access token is read from macOS Keychain when available. A token entered
-with getpass is written to Keychain only after a successful API request.
+with getpass is written to Keychain only after the courses API authenticates.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
@@ -36,9 +37,35 @@ class CourseSummary:
     term_name: str
 
 
+@dataclass(frozen=True)
+class AnnouncementSummary:
+    announcement_id: int | str
+    title: str
+    posted_at: str
+    url: str
+
+
+@dataclass(frozen=True)
+class AssignmentSummary:
+    assignment_id: int | str
+    name: str
+    due_at: str
+    points_possible: str
+    submission_state: str
+    url: str
+
+
+@dataclass
+class CourseContent:
+    course: CourseSummary
+    announcements: list[AnnouncementSummary] = field(default_factory=list)
+    assignments: list[AssignmentSummary] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="通过 Canvas REST API 读取上海交大 Canvas 当前 active courses。"
+        description="通过 Canvas REST API 读取 active courses、公告和作业。"
     )
     parser.add_argument(
         "--base-url",
@@ -50,6 +77,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"每次请求超时秒数，默认 {DEFAULT_TIMEOUT_SECONDS:g}。",
+    )
+    parser.add_argument(
+        "--courses-only",
+        action="store_true",
+        help="仅执行 Phase 1B 课程列表验证，不请求公告和作业。",
     )
     parser.add_argument(
         "--no-keychain",
@@ -138,12 +170,26 @@ def delete_token() -> None:
     print("已从 macOS Keychain 删除 Canvas Token。")
 
 
+def ensure_same_origin(client: httpx.Client, url: str) -> None:
+    """Prevent an untrusted pagination Link from receiving the bearer token."""
+    target = client.base_url.join(url)
+    base_port = client.base_url.port or 443
+    target_port = target.port or 443
+    if (
+        target.scheme != client.base_url.scheme
+        or target.host != client.base_url.host
+        or target_port != base_port
+    ):
+        raise CanvasCheckError("Canvas 分页链接指向了其他站点，已停止以保护 Token。")
+
+
 def request_json(
     client: httpx.Client,
     url: str,
     *,
     params: list[tuple[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    ensure_same_origin(client, url)
     try:
         response = client.get(url, params=params)
     except httpx.TimeoutException as exc:
@@ -156,7 +202,7 @@ def request_json(
     if response.status_code == 401:
         raise CanvasCheckError("Canvas Access Token 无效或已过期（HTTP 401）。")
     if response.status_code == 403:
-        raise CanvasCheckError("当前 Token 没有访问课程列表的权限（HTTP 403）。")
+        raise CanvasCheckError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。")
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -169,34 +215,87 @@ def request_json(
     except ValueError as exc:
         raise CanvasCheckError("Canvas API 返回的不是有效 JSON。") from exc
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-        raise CanvasCheckError("Canvas API 返回了无法识别的课程数据格式。")
+        raise CanvasCheckError("Canvas API 返回了无法识别的数据格式。")
 
     next_link = response.links.get("next")
     next_url = next_link.get("url") if next_link else None
     return payload, next_url
 
 
-def fetch_active_courses(client: httpx.Client) -> list[dict[str, Any]]:
-    next_url: str | None = "/api/v1/courses"
-    params: list[tuple[str, str]] | None = [
-        ("enrollment_state", "active"),
-        ("per_page", str(DEFAULT_PAGE_SIZE)),
-        ("include[]", "term"),
-    ]
-    courses: list[dict[str, Any]] = []
+def fetch_paginated(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    next_url: str | None = url
+    next_params: list[tuple[str, str]] | None = params
+    records: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
     for _ in range(MAX_PAGES):
         if next_url is None:
-            return courses
-        page, next_url = request_json(client, next_url, params=params)
-        params = None  # Canvas 的 next Link 已经包含后续分页参数。
-        for course in page:
-            course_id = str(course.get("id", ""))
-            if course_id and course_id not in seen_ids:
-                seen_ids.add(course_id)
-                courses.append(course)
+            return records
+        page, next_url = request_json(client, next_url, params=next_params)
+        next_params = None  # Canvas 的 next Link 已经包含后续分页参数。
+        for record in page:
+            remote_id = str(record.get("id", ""))
+            if not remote_id or remote_id not in seen_ids:
+                if remote_id:
+                    seen_ids.add(remote_id)
+                records.append(record)
     raise CanvasCheckError(f"分页超过安全上限 {MAX_PAGES} 页，已停止请求。")
+
+
+def fetch_active_courses(client: httpx.Client) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        "/api/v1/courses",
+        params=[
+            ("enrollment_state", "active"),
+            ("per_page", str(DEFAULT_PAGE_SIZE)),
+            ("include[]", "term"),
+        ],
+    )
+
+
+def fetch_course_announcements(
+    client: httpx.Client, course_id: int | str
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        "/api/v1/announcements",
+        params=[
+            ("context_codes[]", f"course_{course_id}"),
+            ("per_page", str(DEFAULT_PAGE_SIZE)),
+        ],
+    )
+
+
+def fetch_course_assignments(
+    client: httpx.Client, course_id: int | str
+) -> list[dict[str, Any]]:
+    return fetch_paginated(
+        client,
+        f"/api/v1/courses/{course_id}/assignments",
+        params=[
+            ("per_page", str(DEFAULT_PAGE_SIZE)),
+            ("order_by", "due_at"),
+            ("include[]", "submission"),
+        ],
+    )
+
+
+def format_canvas_time(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return "（时间未设置）"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    except ValueError:
+        return value
 
 
 def summarize_course(course: dict[str, Any]) -> CourseSummary:
@@ -210,20 +309,77 @@ def summarize_course(course: dict[str, Any]) -> CourseSummary:
     )
 
 
-def connect_and_fetch(base_url: str, token: str, timeout: float) -> list[CourseSummary]:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "SJTU-Learning-Assistant/Phase-1B",
-    }
-    with httpx.Client(
+def summarize_announcement(announcement: dict[str, Any]) -> AnnouncementSummary:
+    return AnnouncementSummary(
+        announcement_id=announcement.get("id", "（未知）"),
+        title=str(announcement.get("title") or "（无标题公告）"),
+        posted_at=format_canvas_time(announcement.get("posted_at")),
+        url=str(announcement.get("html_url") or ""),
+    )
+
+
+def summarize_assignment(assignment: dict[str, Any]) -> AssignmentSummary:
+    submission = assignment.get("submission")
+    submission_state = (
+        submission.get("workflow_state") if isinstance(submission, dict) else None
+    )
+    points = assignment.get("points_possible")
+    return AssignmentSummary(
+        assignment_id=assignment.get("id", "（未知）"),
+        name=str(assignment.get("name") or "（无标题作业）"),
+        due_at=format_canvas_time(assignment.get("due_at")),
+        points_possible="（未设置）" if points is None else str(points),
+        submission_state=str(submission_state or "（状态未知）"),
+        url=str(assignment.get("html_url") or ""),
+    )
+
+
+def build_http_client(base_url: str, token: str, timeout: float) -> httpx.Client:
+    return httpx.Client(
         base_url=base_url,
-        headers=headers,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "SJTU-Learning-Assistant/Phase-1C",
+        },
         timeout=httpx.Timeout(timeout),
         follow_redirects=False,
-    ) as client:
+    )
+
+
+def connect_and_fetch(
+    base_url: str, token: str, timeout: float
+) -> list[CourseSummary]:
+    """Phase 1B-compatible courses-only entry point."""
+    with build_http_client(base_url, token, timeout) as client:
         raw_courses = fetch_active_courses(client)
     return [summarize_course(course) for course in raw_courses]
+
+
+def connect_and_fetch_all(
+    base_url: str, token: str, timeout: float
+) -> list[CourseContent]:
+    with build_http_client(base_url, token, timeout) as client:
+        raw_courses = fetch_active_courses(client)
+        contents: list[CourseContent] = []
+        for raw_course in raw_courses:
+            course = summarize_course(raw_course)
+            content = CourseContent(course=course)
+            try:
+                announcements = fetch_course_announcements(client, course.course_id)
+                content.announcements = [
+                    summarize_announcement(item) for item in announcements
+                ]
+            except CanvasCheckError as exc:
+                content.errors.append(f"公告读取失败：{exc}")
+
+            try:
+                assignments = fetch_course_assignments(client, course.course_id)
+                content.assignments = [summarize_assignment(item) for item in assignments]
+            except CanvasCheckError as exc:
+                content.errors.append(f"作业读取失败：{exc}")
+            contents.append(content)
+    return contents
 
 
 def print_courses(courses: list[CourseSummary]) -> None:
@@ -238,6 +394,44 @@ def print_courses(courses: list[CourseSummary]) -> None:
         print(f"   学期：{course.term_name}")
 
 
+def print_course_contents(contents: list[CourseContent]) -> None:
+    print(f"\nPhase 1C 验证完成，共读取 {len(contents)} 门 active courses。")
+    if not contents:
+        print("当前账号没有可访问的 active courses。")
+        return
+
+    for index, content in enumerate(contents, start=1):
+        print(f"\n{'=' * 72}")
+        print(f"{index}. {content.course.name}（ID: {content.course.course_id}）")
+        print(
+            f"   公告 {len(content.announcements)} 条；"
+            f"作业 {len(content.assignments)} 项"
+        )
+
+        print("\n   [公告]")
+        if not content.announcements:
+            print("   暂无可见公告。")
+        for item_index, announcement in enumerate(content.announcements, start=1):
+            print(f"   {item_index}. {announcement.title}")
+            print(f"      发布时间：{announcement.posted_at}")
+            if announcement.url:
+                print(f"      链接：{announcement.url}")
+
+        print("\n   [作业]")
+        if not content.assignments:
+            print("   暂无可见作业。")
+        for item_index, assignment in enumerate(content.assignments, start=1):
+            print(f"   {item_index}. {assignment.name}")
+            print(f"      截止时间：{assignment.due_at}")
+            print(f"      分值：{assignment.points_possible}")
+            print(f"      提交状态：{assignment.submission_state}")
+            if assignment.url:
+                print(f"      链接：{assignment.url}")
+
+        for error in content.errors:
+            print(f"\n   警告：{error}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parse_args(argv)
@@ -246,12 +440,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         token, from_keychain = get_token(use_keychain=not args.no_keychain)
-        print(f"正在请求 {args.base_url}/api/v1/courses …")
-        courses = connect_and_fetch(args.base_url, token, args.timeout)
+        if args.courses_only:
+            print(f"正在请求 {args.base_url}/api/v1/courses …")
+            courses = connect_and_fetch(args.base_url, token, args.timeout)
+            if not args.no_keychain and not from_keychain:
+                save_token(token)
+            print_courses(courses)
+            return 0
 
+        print("正在读取 active courses、announcements 和 assignments …")
+        contents = connect_and_fetch_all(args.base_url, token, args.timeout)
         if not args.no_keychain and not from_keychain:
             save_token(token)
-        print_courses(courses)
+        print_course_contents(contents)
+        partial_errors = sum(len(content.errors) for content in contents)
+        if partial_errors:
+            print(
+                f"\n部分完成：有 {partial_errors} 个课程接口读取失败，请查看警告。",
+                file=sys.stderr,
+            )
+            return 2
         return 0
     except CanvasCheckError as exc:
         print(f"\n错误：{exc}", file=sys.stderr)
