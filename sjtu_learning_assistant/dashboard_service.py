@@ -6,6 +6,7 @@ import base64
 import fcntl
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -66,6 +67,7 @@ DONE_STATES = {"submitted", "graded", "pending_review"}
 MESSAGE_KINDS = frozenset({"email", "announcement", "assignment"})
 CANVAS_ORIGIN = ("https", "oc.sjtu.edu.cn", 443)
 CANVAS_REDIRECT_LIMIT = 5
+CANVAS_FILE_API_PATH = re.compile(r"/api/v1/courses/[0-9]+/files/[0-9]+")
 INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
 INLINE_IMAGE_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -138,6 +140,11 @@ class DashboardService:
         )
         self.canvas_client_factory = canvas_client_factory
         self._sync_lock = threading.Lock()
+        self._client_lock = threading.RLock()
+        self._canvas_client: Any | None = None
+        self._ai_client: OpenAIClassificationClient | None = None
+        self._ai_client_config: tuple[str, str] | None = None
+        self._closed = False
 
     def now(self) -> datetime:
         value = self.now_provider()
@@ -376,6 +383,52 @@ class DashboardService:
             port,
         ) == CANVAS_ORIGIN and parsed.username is None and parsed.password is None
 
+    @classmethod
+    def _canvas_file_api_url(cls, value: str) -> bool:
+        if not cls._canvas_url_allowed(value):
+            return False
+        parsed = urlsplit(value)
+        return (
+            not parsed.query
+            and not parsed.fragment
+            and CANVAS_FILE_API_PATH.fullmatch(parsed.path) is not None
+        )
+
+    @staticmethod
+    def _https_origin(value: str) -> tuple[str, str, int] | None:
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port if parsed.port is not None else 443
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.casefold() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        return ("https", parsed.hostname.casefold(), port)
+
+    @classmethod
+    def _sjtu_static_origin(cls, value: str) -> tuple[str, str, int] | None:
+        """Validate a standard HTTPS URL on a controlled SJTU static host."""
+        origin = cls._https_origin(value)
+        if origin is None:
+            return None
+        _scheme, host, port = origin
+        parsed = urlsplit(value)
+        if (
+            port != 443
+            or host == CANVAS_ORIGIN[1]
+            or parsed.netloc.casefold() not in (host, host + ":443")
+            or any(ord(character) <= 32 or ord(character) == 127 for character in value)
+        ):
+            return None
+        if host != "s3.jcloud.sjtu.edu.cn" and not host.endswith(".sjtu.edu.cn"):
+            return None
+        return origin
+
     @staticmethod
     def _mail_attachment_name(value: str) -> str:
         leaf = value.replace("\\", "/").split("/")[-1]
@@ -590,77 +643,215 @@ class DashboardService:
     def reveal_mail_attachment(self, source_id: str, attachment_id: str) -> dict[str, str]:
         return self._mail_attachment_action(source_id, attachment_id, reveal=True)
 
-    def _new_canvas_resource_client(self) -> Any:
-        if self.canvas_client_factory is not None:
-            return self.canvas_client_factory()
-        from test_canvas import (
-            DEFAULT_BASE_URL,
-            DEFAULT_TIMEOUT_SECONDS,
-            build_http_client,
-            get_token,
-        )
+    def _get_canvas_client(self) -> Any:
+        """Return the service-owned Canvas client, creating it at most once."""
+        with self._client_lock:
+            if self._closed:
+                raise DashboardError("Dashboard 服务已关闭。")
+            if self._canvas_client is None:
+                if self.canvas_client_factory is not None:
+                    self._canvas_client = self.canvas_client_factory()
+                else:
+                    from test_canvas import (
+                        DEFAULT_BASE_URL,
+                        DEFAULT_TIMEOUT_SECONDS,
+                        build_http_client,
+                        get_token,
+                    )
 
-        token, _ = get_token(use_keychain=True)
-        return build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS)
+                    token, _ = get_token(use_keychain=True)
+                    self._canvas_client = build_http_client(
+                        DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
+                    )
+            return self._canvas_client
+
+    @staticmethod
+    def _send_canvas_request(
+        client: Any, url: str, accept: str, stream: bool
+    ) -> Any:
+        try:
+            request = client.build_request("GET", url, headers=dict(Accept=accept))
+            if not DashboardService._canvas_url_allowed(url):
+                request.headers.pop("authorization", None)
+                request.headers.pop("cookie", None)
+            return client.send(request, stream=stream, follow_redirects=False)
+        except Exception as exc:
+            raise DashboardError("Canvas 图片读取失败。") from exc
+
+    @staticmethod
+    def _canvas_file_metadata(payload: object) -> tuple[list[str], str, int]:
+        if not isinstance(payload, Mapping):
+            raise DashboardError("Canvas 文件信息无效。")
+        url = payload.get("url")
+        content_type = payload.get("content-type")
+        size = payload.get("size")
+        display_name = payload.get("display_name")
+        if (
+            type(url) is not str
+            or DashboardService._https_origin(url) is None
+            or type(content_type) is not str
+            or content_type not in INLINE_IMAGE_TYPES
+            or type(size) is not int
+            or not 0 <= size <= INLINE_IMAGE_LIMIT
+            or type(display_name) is not str
+            or not display_name.strip()
+            or len(display_name) > 255
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in display_name
+            )
+        ):
+            raise DashboardError("Canvas 文件信息无效。")
+        thumbnail_url = payload.get("thumbnail_url")
+        if thumbnail_url is not None and (
+            type(thumbnail_url) is not str
+            or DashboardService._https_origin(thumbnail_url) is None
+        ):
+            raise DashboardError("Canvas 文件信息无效。")
+        urls = list((url,))
+        if thumbnail_url:
+            urls.insert(0, thumbnail_url)
+        return urls, content_type, size
+
+    def _download_canvas_image(
+        self,
+        client: Any,
+        download_url: str,
+        expected_content_type: str | None = None,
+        expected_size: int | None = None,
+        allow_sjtu_static_redirect: bool = False,
+    ) -> str:
+        allowed_origin = self._https_origin(download_url)
+        if allowed_origin is None:
+            raise DashboardError("Canvas 图片下载地址不安全。")
+        current_url = download_url
+        crossed_origin = False
+        for redirect_count in range(CANVAS_REDIRECT_LIMIT + 1):
+            if self._https_origin(current_url) != allowed_origin:
+                raise DashboardError("Canvas 图片跳转地址不安全。")
+            response = self._send_canvas_request(
+                client,
+                current_url,
+                ", ".join(sorted(INLINE_IMAGE_TYPES)),
+                True,
+            )
+            try:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    if redirect_count >= CANVAS_REDIRECT_LIMIT:
+                        raise DashboardError("Canvas 图片跳转次数过多。")
+                    location = response.headers.get("location")
+                    if not location:
+                        raise DashboardError("Canvas 图片跳转响应无效。")
+                    next_url = urljoin(str(response.url), location)
+                    next_origin = self._https_origin(next_url)
+                    if next_origin != allowed_origin:
+                        if (
+                            next_origin is None
+                            or not allow_sjtu_static_redirect
+                            or crossed_origin
+                            or allowed_origin != CANVAS_ORIGIN
+                            or self._sjtu_static_origin(next_url) is None
+                        ):
+                            raise DashboardError("Canvas 图片跳转地址不安全。")
+                        allowed_origin = next_origin
+                        crossed_origin = True
+                    current_url = next_url
+                    continue
+                if response.status_code != 200:
+                    raise DashboardError("Canvas 图片读取失败。")
+                content_type = response.headers.get(
+                    "content-type", ""
+                ).split(";", 1)[0].casefold()
+                if content_type not in INLINE_IMAGE_TYPES:
+                    raise DashboardError("Canvas 资源不是受支持的图片。")
+                if (
+                    expected_content_type is not None
+                    and content_type != expected_content_type
+                ):
+                    raise DashboardError("Canvas 图片类型与文件信息不一致。")
+                content_length = response.headers.get("content-length")
+                try:
+                    declared_length = (
+                        int(content_length) if content_length is not None else None
+                    )
+                except ValueError as exc:
+                    raise DashboardError("Canvas 图片大小信息无效。") from exc
+                if declared_length is not None and (
+                    declared_length < 0 or declared_length > INLINE_IMAGE_LIMIT
+                ):
+                    raise DashboardError("Canvas 图片超过大小限制。")
+                if (
+                    expected_size is not None
+                    and declared_length is not None
+                    and declared_length != expected_size
+                ):
+                    raise DashboardError("Canvas 图片大小与文件信息不一致。")
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > INLINE_IMAGE_LIMIT:
+                        raise DashboardError("Canvas 图片超过大小限制。")
+                    chunks.append(chunk)
+                if expected_size is not None and size != expected_size:
+                    raise DashboardError("Canvas 图片大小与文件信息不一致。")
+                encoded = base64.b64encode(b"".join(chunks)).decode("ascii")
+                return f"data:{content_type};base64,{encoded}"
+            finally:
+                response.close()
+        raise DashboardError("Canvas 图片跳转次数过多。")
 
     def _canvas_image_data_url(self, resource_url: str) -> str:
         if not self._canvas_url_allowed(resource_url):
             raise NotFoundError("消息资源不可用。")
-        client = self._new_canvas_resource_client()
-        current_url = resource_url
+        is_file_api = self._canvas_file_api_url(resource_url)
+        if urlsplit(resource_url).path.startswith("/api/") and not is_file_api:
+            raise NotFoundError("消息资源不可用。")
+        client = self._get_canvas_client()
         try:
-            for redirect_count in range(CANVAS_REDIRECT_LIMIT + 1):
-                if not self._canvas_url_allowed(current_url):
-                    raise DashboardError("Canvas 图片跳转地址不安全。")
+            if not is_file_api:
+                return self._download_canvas_image(client, resource_url)
+            response = self._send_canvas_request(
+                client,
+                resource_url,
+                "application/json",
+                False,
+            )
+            try:
+                if response.status_code != 200:
+                    raise DashboardError("Canvas 文件信息读取失败。")
+                response_type = response.headers.get(
+                    "content-type", ""
+                ).split(";", 1)[0].casefold()
+                if response_type != "application/json":
+                    raise DashboardError("Canvas 文件信息无效。")
                 try:
-                    request = client.build_request(
-                        "GET",
-                        current_url,
-                        headers={"Accept": ", ".join(sorted(INLINE_IMAGE_TYPES))},
-                    )
-                    response = client.send(
-                        request, stream=True, follow_redirects=False
-                    )
-                except Exception as exc:
-                    raise DashboardError("Canvas 图片读取失败。") from exc
+                    payload = response.json()
+                except (TypeError, ValueError) as exc:
+                    raise DashboardError("Canvas 文件信息无效。") from exc
+            finally:
+                response.close()
+            download_urls, content_type, size = self._canvas_file_metadata(payload)
+            last_error: DashboardError | None = None
+            for index, download_url in enumerate(download_urls):
                 try:
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        if redirect_count >= CANVAS_REDIRECT_LIMIT:
-                            raise DashboardError("Canvas 图片跳转次数过多。")
-                        location = response.headers.get("location")
-                        if not location:
-                            raise DashboardError("Canvas 图片跳转响应无效。")
-                        current_url = urljoin(str(response.url), location)
-                        if not self._canvas_url_allowed(current_url):
-                            raise DashboardError("Canvas 图片跳转地址不安全。")
-                        continue
-                    if response.status_code != 200:
-                        raise DashboardError("Canvas 图片读取失败。")
-                    content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()
-                    if content_type not in INLINE_IMAGE_TYPES:
-                        raise DashboardError("Canvas 资源不是受支持的图片。")
-                    content_length = response.headers.get("content-length")
-                    try:
-                        if content_length is not None and int(content_length) > INLINE_IMAGE_LIMIT:
-                            raise DashboardError("Canvas 图片超过大小限制。")
-                    except ValueError:
-                        pass
-                    chunks: list[bytes] = []
-                    size = 0
-                    for chunk in response.iter_bytes():
-                        size += len(chunk)
-                        if size > INLINE_IMAGE_LIMIT:
-                            raise DashboardError("Canvas 图片超过大小限制。")
-                        chunks.append(chunk)
-                    encoded = base64.b64encode(b"".join(chunks)).decode("ascii")
-                    return f"data:{content_type};base64,{encoded}"
-                finally:
-                    response.close()
-            raise DashboardError("Canvas 图片跳转次数过多。")
+                    return self._download_canvas_image(
+                        client,
+                        download_url,
+                        expected_content_type=content_type,
+                        expected_size=(
+                            size if index == len(download_urls) - 1 else None
+                        ),
+                        allow_sjtu_static_redirect=True,
+                    )
+                except DashboardError as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+            raise DashboardError("Canvas 图片读取失败。")
         finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
+            # DashboardService owns this reusable client and closes it on shutdown.
+            pass
 
     def message_resource(
         self, kind: str, source_id: str, resource_id: str
@@ -751,44 +942,61 @@ class DashboardService:
     def _effective_settings(self) -> LocalSettings:
         return self.settings_store.resolve(archive_root=self._archive_root_override)
 
-    def _new_archive_service(self) -> ArchiveService:
-        if self.archive_service_factory is not None:
-            return self.archive_service_factory()
-        settings = self._effective_settings()
-        self.archive_root = Path(settings.archive_root)
-        from test_canvas import (
-            DEFAULT_BASE_URL,
-            DEFAULT_TIMEOUT_SECONDS,
-            build_http_client,
-            get_token,
-        )
-
-        token, _ = get_token(use_keychain=True)
-        client = build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS)
-        ai_client = None
-        if settings.ai_enabled and settings.ai_key_saved:
+    def _get_ai_client(
+        self, settings: LocalSettings, *, required: bool = False
+    ) -> OpenAIClassificationClient | None:
+        """Return one process-lifetime AI client without repeated Keychain reads."""
+        if not settings.ai_key_saved:
+            if required:
+                raise DashboardError("请先保存 AI 连接配置。")
+            return None
+        if not settings.ai_enabled and not required:
+            return None
+        config = (settings.ai_base_url, settings.ai_model)
+        with self._client_lock:
+            if self._closed:
+                raise DashboardError("Dashboard 服务已关闭。")
+            if self._ai_client_config == config:
+                if self._ai_client is None and required:
+                    raise DashboardError("未找到已保存的 AI API key。")
+                return self._ai_client
+            self._close_client(self._ai_client)
+            self._ai_client = None
+            # Cache the attempted config too: a missing/inaccessible key must not
+            # trigger another macOS authorization prompt during this process.
+            self._ai_client_config = config
             try:
                 key = self.ai_key_loader()
                 if key:
-                    ai_client = self.ai_client_factory(
+                    self._ai_client = self.ai_client_factory(
                         api_key=key,
                         base_url=settings.ai_base_url,
                         model=settings.ai_model,
                     )
-            except (AIKeychainError, AIClassificationError):
-                ai_client = None
+            except (AIKeychainError, AIClassificationError) as exc:
+                if required:
+                    raise DashboardError("AI 归档连接初始化失败。") from exc
+            if self._ai_client is None and required:
+                raise DashboardError("未找到已保存的 AI API key。")
+            return self._ai_client
+
+    def _new_archive_service(self, *, require_canvas: bool = False) -> ArchiveService:
+        if self.archive_service_factory is not None:
+            return self.archive_service_factory()
+        settings = self._effective_settings()
+        self.archive_root = Path(settings.archive_root)
         return ArchiveService(
             self.engine,
-            client,
+            self._get_canvas_client() if require_canvas else None,
             archive_root=self.archive_root,
             organize_by_category=settings.organize_by_category,
             use_recent_active_courses=True,
-            ai_client=ai_client,
+            ai_client=self._get_ai_client(settings),
             ai_enabled=settings.ai_enabled,
         )
 
     def download_material(self, source_id: str) -> dict[str, Any]:
-        service = self._new_archive_service()
+        service = self._new_archive_service(require_canvas=True)
         try:
             result = service.download_file_by_source_id(source_id)
         finally:
@@ -911,44 +1119,67 @@ class DashboardService:
                     "ai_key_saved": True,
                 }
             )
+            self._discard_ai_client()
         except (SettingsError, AIKeychainError) as exc:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
     def test_ai_connection(self) -> dict[str, Any]:
         settings = self._effective_settings()
-        if not settings.ai_key_saved:
-            raise DashboardError("请先保存 AI 连接配置。")
         try:
-            key = self.ai_key_loader()
-            if not key:
-                raise DashboardError("未找到已保存的 AI API key。")
-            client = self.ai_client_factory(
-                api_key=key,
-                base_url=settings.ai_base_url,
-                model=settings.ai_model,
-            )
-            try:
-                category = client.test_connection()
-            finally:
-                client.close()
+            client = self._get_ai_client(settings, required=True)
+            assert client is not None
+            category = client.test_connection()
         except DashboardError:
             raise
-        except (AIKeychainError, AIClassificationError) as exc:
+        except AIClassificationError as exc:
             raise DashboardError("AI 归档连接测试失败。") from exc
         return {"ok": True, "model": settings.ai_model, "category": category}
 
     @staticmethod
-    def _close_archive_service(service: ArchiveService) -> None:
+    def _close_client(client: Any | None) -> None:
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                # Shutdown must remain best-effort and must close the other client.
+                pass
+
+    def _close_archive_service(self, service: ArchiveService) -> None:
         for client_name in ("canvas_client", "ai_client"):
             client = getattr(service, client_name, None)
-            if client is not None and hasattr(client, "close"):
-                client.close()
+            if client is self._canvas_client or client is self._ai_client:
+                continue
+            self._close_client(client)
+
+    def _discard_ai_client(self) -> None:
+        with self._client_lock:
+            client = self._ai_client
+            self._ai_client = None
+            self._ai_client_config = None
+        self._close_client(client)
+
+    def close(self) -> None:
+        """Idempotently close all service-owned network clients."""
+        with self._client_lock:
+            if self._closed:
+                return
+            self._closed = True
+            canvas_client = self._canvas_client
+            ai_client = self._ai_client
+            self._canvas_client = None
+            self._ai_client = None
+            self._ai_client_config = None
+        self._close_client(canvas_client)
+        self._close_client(ai_client)
 
     def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.settings_store.update(dict(payload))
         if self._archive_root_override is None:
             self.archive_root = Path(settings.archive_root)
+        if {"ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"} & set(payload):
+            self._discard_ai_client()
         return self.settings_status()
 
     def pick_archive_root(self) -> dict[str, Any]:
@@ -981,7 +1212,7 @@ class DashboardService:
         }
 
     def download_current_term(self) -> dict[str, Any]:
-        service = self._new_archive_service()
+        service = self._new_archive_service(require_canvas=True)
         try:
             summary = service.archive_current_term()
         finally:

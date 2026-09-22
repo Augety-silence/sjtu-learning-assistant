@@ -215,6 +215,35 @@ describe("MessageDetailContent", () => {
     );
   });
 
+  it("图片加载失败后可重试并重新请求资源", async () => {
+    vi.mocked(getMessageResource)
+      .mockRejectedValueOnce(new Error("暂时失败"))
+      .mockResolvedValueOnce({ data_url: "data:image/png;base64,retried" });
+
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-resource-id="retry-image">',
+          format: "html",
+          resources: [{ id: "retry-image", type: "image" }],
+        })}
+        kind="announcement"
+        sourceId="announcement-1"
+      />,
+    );
+
+    const retry = await screen.findByRole("button", { name: "重试" });
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(document.querySelector("img")?.getAttribute("src")).toBe(
+        "data:image/png;base64,retried",
+      ),
+    );
+    expect(getMessageResource).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+  });
+
   it("显示邮件附件信息并执行打开、Finder 操作，未缓存附件禁用操作", async () => {
     render(
       <MessageDetailContent

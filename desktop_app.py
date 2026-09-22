@@ -385,6 +385,7 @@ def run_desktop_app() -> int:
 
     engine = create_database_engine()
     scheduler: DesktopScheduler | None = None
+    service: DashboardService | None = None
     try:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
@@ -412,6 +413,8 @@ def run_desktop_app() -> int:
     finally:
         if scheduler is not None:
             scheduler.stop()
+        if service is not None:
+            service.close()
         engine.dispose()
 
 

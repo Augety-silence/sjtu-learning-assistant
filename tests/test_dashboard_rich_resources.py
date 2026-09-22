@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -24,19 +25,26 @@ from sjtu_learning_assistant.mail_client import EmailAttachment as AttachmentDTO
 from sjtu_learning_assistant.mail_client import EmailRecord
 from sjtu_learning_assistant.models import Email, EmailAttachment
 from sjtu_learning_assistant.repository import persist_canvas_data, persist_emails
+from sjtu_learning_assistant.text_content import sanitize_html_with_resources
 
 
 class FakeCanvasClient:
     def __init__(self, responses: list[tuple[int, dict[str, str], bytes]]) -> None:
         self.responses = list(responses)
         self.requests: list[str] = []
+        self.request_headers: list[dict[str, str]] = []
         self.closed = False
 
-    def build_request(self, method: str, url: str, **_kwargs: object) -> httpx.Request:
-        return httpx.Request(method, url)
+    def build_request(self, method: str, url: str, **kwargs: object) -> httpx.Request:
+        headers = {"Authorization": "Bearer test-secret"}
+        headers.update(kwargs.get("headers") or {})
+        request = httpx.Request(method, url, headers=headers)
+        request.headers["Cookie"] = "canvas_session=test-session"
+        return request
 
     def send(self, request: httpx.Request, **_kwargs: object) -> httpx.Response:
         self.requests.append(str(request.url))
+        self.request_headers.append(dict(request.headers))
         status, headers, content = self.responses.pop(0)
         return httpx.Response(
             status, headers=headers, content=content, request=request
@@ -202,7 +210,10 @@ class DashboardRichResourceTests(unittest.TestCase):
                         "id": 11,
                         "title": "公告",
                         "message": (
-                            '<p onclick="bad()">公告<img src="https://oc.sjtu.edu.cn/files/1/preview">'
+                            '<p onclick="bad()">公告<img '
+                            'src="https://oc.sjtu.edu.cn/courses/1/files/13898044/preview?verifier=old" '
+                            'data-api-endpoint="https://oc.sjtu.edu.cn/api/v1/courses/1/files/13898044" '
+                            'data-api-returntype="File">'
                             '<a href="https://example.edu/info">链接</a></p><script>bad()</script>'
                         ),
                         "posted_at": "2026-09-22T01:00:00Z",
@@ -255,6 +266,237 @@ class DashboardRichResourceTests(unittest.TestCase):
         self.assertEqual("说明", assignment["body"])
         self.assertEqual(announcement["resources"], service.message_detail("announcement", "11")["resources"])
 
+    def test_invalid_file_endpoint_falls_back_to_same_origin_preview(self) -> None:
+        preview = "https://oc.sjtu.edu.cn/courses/95004/files/13898044/preview?verifier=ok"
+        html = (
+            f'<img src="{preview}" '
+            'data-api-endpoint="https://evil.example/api/v1/courses/95004/files/13898044">'
+        )
+        _cleaned, resources = sanitize_html_with_resources(html)
+        self.assertEqual([preview], list(resources.values()))
+
+    def test_canvas_file_endpoint_is_preferred_and_signed_download_has_no_token(self) -> None:
+        html = (
+            '<img src="https://oc.sjtu.edu.cn/courses/95004/files/13898044/preview?verifier=old" '
+            'data-api-endpoint="https://oc.sjtu.edu.cn/api/v1/courses/95004/files/13898044" '
+            'data-api-returntype="File">'
+        )
+        cleaned, resources = sanitize_html_with_resources(html)
+        self.assertNotIn("data-api-endpoint", cleaned or "")
+        self.assertEqual(
+            ["https://oc.sjtu.edu.cn/api/v1/courses/95004/files/13898044"],
+            list(resources.values()),
+        )
+
+        self.persist_canvas()
+        api_payload = {
+            "url": "https://signed.canvas-cdn.example/download/once?signature=secret",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "课程群聊.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (200, {"content-type": "image/png", "content-length": "5"}, b"image"),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+        result = service.message_resource("announcement", "11", resource_id)
+
+        self.assertTrue(result["data_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            "https://oc.sjtu.edu.cn/api/v1/courses/1/files/13898044",
+            client.requests[0],
+        )
+        self.assertEqual(api_payload["url"], client.requests[1])
+        self.assertIn("authorization", client.request_headers[0])
+        self.assertNotIn("authorization", client.request_headers[1])
+
+    def test_canvas_file_oc_redirects_once_to_sjtu_static_host_without_credentials(self) -> None:
+        self.persist_canvas()
+        download_url = "https://oc.sjtu.edu.cn/files/13898044/download?download_frd=1"
+        static_url = "https://s3.jcloud.sjtu.edu.cn/canvas/13898044/image.png"
+        api_payload = {
+            "url": download_url,
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "课程群聊.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (302, {"location": static_url}, b""),
+                (200, {"content-type": "image/png", "content-length": "5"}, b"image"),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+
+        result = service.message_resource("announcement", "11", resource_id)
+
+        self.assertTrue(result["data_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(download_url, client.requests[1])
+        self.assertEqual(static_url, client.requests[2])
+        self.assertIn("authorization", client.request_headers[1])
+        self.assertIn("cookie", client.request_headers[1])
+        self.assertNotIn("authorization", client.request_headers[2])
+        self.assertNotIn("cookie", client.request_headers[2])
+
+    def test_canvas_file_oc_redirect_rejects_untrusted_third_domain(self) -> None:
+        self.persist_canvas()
+        api_payload = {
+            "url": "https://oc.sjtu.edu.cn/files/13898044/download",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "image.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (302, {"location": "https://cdn.example/image.png"}, b""),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+
+        with self.assertRaisesRegex(DashboardError, "不安全"):
+            service.message_resource("announcement", "11", resource_id)
+        self.assertEqual(2, len(client.requests))
+
+    def test_canvas_file_oc_redirect_rejects_second_cross_origin(self) -> None:
+        self.persist_canvas()
+        api_payload = {
+            "url": "https://oc.sjtu.edu.cn/files/13898044/download",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "image.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (302, {"location": "https://s3.jcloud.sjtu.edu.cn/first.png"}, b""),
+                (302, {"location": "https://static.sjtu.edu.cn/second.png"}, b""),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+
+        with self.assertRaisesRegex(DashboardError, "不安全"):
+            service.message_resource("announcement", "11", resource_id)
+        self.assertEqual(3, len(client.requests))
+        self.assertNotIn("authorization", client.request_headers[2])
+        self.assertNotIn("cookie", client.request_headers[2])
+
+    def test_canvas_file_oc_redirect_rejects_http_target(self) -> None:
+        self.persist_canvas()
+        api_payload = {
+            "url": "https://oc.sjtu.edu.cn/files/13898044/download",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "image.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (302, {"location": "http://s3.jcloud.sjtu.edu.cn/image.png"}, b""),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+
+        with self.assertRaisesRegex(DashboardError, "不安全"):
+            service.message_resource("announcement", "11", resource_id)
+        self.assertEqual(2, len(client.requests))
+
+    def test_sjtu_static_redirect_host_requires_canonical_https_authority(self) -> None:
+        self.assertIsNotNone(
+            DashboardService._sjtu_static_origin(
+                "https://s3.jcloud.sjtu.edu.cn/image.png"
+            )
+        )
+        for url in (
+            "https://user" + "@" + "s3.jcloud.sjtu.edu.cn/image.png",
+            "https://s3.jcloud.sjtu.edu.cn:444/image.png",
+            "https://s3.jcloud.sjtu.edu.cn\n.evil.example/image.png",
+            "http://s3.jcloud.sjtu.edu.cn/image.png",
+            "https://s3.jcloud.sjtu.edu.cn.evil.example/image.png",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(DashboardService._sjtu_static_origin(url))
+
+    def test_thumbnail_html_falls_back_to_file_url(self) -> None:
+        self.persist_canvas()
+        api_payload = {
+            "url": "https://signed.canvas-cdn.example/download/image",
+            "thumbnail_url": "https://thumb.canvas-cdn.example/preview",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "课程群聊.png",
+        }
+        client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(api_payload).encode()),
+                (200, {"content-type": "text/html"}, b"<html>preview</html>"),
+                (200, {"content-type": "image/png", "content-length": "5"}, b"image"),
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+        result = service.message_resource("announcement", "11", resource_id)
+
+        self.assertTrue(result["data_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(api_payload["thumbnail_url"], client.requests[1])
+        self.assertEqual(api_payload["url"], client.requests[2])
+        self.assertNotIn("authorization", client.request_headers[1])
+        self.assertNotIn("authorization", client.request_headers[2])
+
+    def test_canvas_file_api_rejects_illegal_urls_and_cross_origin_redirect(self) -> None:
+        self.persist_canvas()
+        service = self.service(canvas_client_factory=lambda: FakeCanvasClient([]))
+        with self.assertRaises(NotFoundError):
+            service._canvas_image_data_url(
+                "https://oc.sjtu.edu.cn/api/v1/courses/not-a-number/files/1"
+            )
+        with self.assertRaises(NotFoundError):
+            service._canvas_image_data_url(
+                "http://oc.sjtu.edu.cn/api/v1/courses/1/files/1"
+            )
+
+        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+        http_payload = {
+            "url": "http://signed.canvas-cdn.example/image",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "image.png",
+        }
+        http_client = FakeCanvasClient(
+            [(200, {"content-type": "application/json"}, json.dumps(http_payload).encode())]
+        )
+        with self.assertRaisesRegex(DashboardError, "文件信息"):
+            self.service(canvas_client_factory=lambda: http_client).message_resource(
+                "announcement", "11", resource_id
+            )
+
+        redirect_payload = {
+            "url": "https://signed-a.example/image",
+            "content-type": "image/png",
+            "size": 5,
+            "display_name": "image.png",
+        }
+        redirect_client = FakeCanvasClient(
+            [
+                (200, {"content-type": "application/json"}, json.dumps(redirect_payload).encode()),
+                (302, {"location": "https://signed-b.example/image"}, b""),
+            ]
+        )
+        with self.assertRaisesRegex(DashboardError, "不安全"):
+            self.service(canvas_client_factory=lambda: redirect_client).message_resource(
+                "announcement", "11", resource_id
+            )
+        self.assertNotIn("authorization", redirect_client.request_headers[1])
+
     def test_canvas_resource_allows_same_origin_redirect_and_returns_only_data_url(self) -> None:
         self.persist_canvas()
         client = FakeCanvasClient(
@@ -264,8 +506,8 @@ class DashboardRichResourceTests(unittest.TestCase):
             ]
         )
         service = self.service(canvas_client_factory=lambda: client)
-        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
-        result = service.message_resource("announcement", "11", resource_id)
+        resource_id = service.message_detail("assignment", "12")["resources"][0]["id"]
+        result = service.message_resource("assignment", "12", resource_id)
         self.assertEqual(
             "data:image/png;base64," + base64.b64encode(b"image").decode("ascii"),
             result["data_url"],
@@ -273,7 +515,23 @@ class DashboardRichResourceTests(unittest.TestCase):
         self.assertEqual(2, len(client.requests))
         self.assertTrue(all(url.startswith("https://oc.sjtu.edu.cn/") for url in client.requests))
         self.assertEqual({"data_url"}, set(result))
-        self.assertTrue(client.closed)
+        self.assertFalse(client.closed)
+
+    def test_canvas_resource_rejects_more_than_five_redirects(self) -> None:
+        self.persist_canvas()
+        client = FakeCanvasClient(
+            [
+                (302, {"location": f"/images/redirect-{index}"}, b"")
+                for index in range(6)
+            ]
+        )
+        service = self.service(canvas_client_factory=lambda: client)
+        resource_id = service.message_detail("assignment", "12")["resources"][0]["id"]
+
+        with self.assertRaisesRegex(DashboardError, "次数过多"):
+            service.message_resource("assignment", "12", resource_id)
+        self.assertEqual(6, len(client.requests))
+        self.assertFalse(client.closed)
 
     def test_canvas_resource_rejects_illegal_id_redirect_type_and_size(self) -> None:
         self.persist_canvas()
@@ -289,23 +547,24 @@ class DashboardRichResourceTests(unittest.TestCase):
             service.message_resource("announcement", "11", "invented")
         self.assertEqual(0, factory_calls)
 
-        resource_id = service.message_detail("announcement", "11")["resources"][0]["id"]
+        resource_id = service.message_detail("assignment", "12")["resources"][0]["id"]
         for response, error in (
             ((302, {"location": "https://evil.example/image"}, b""), "不安全"),
+            ((302, {"location": "https://s3.jcloud.sjtu.edu.cn/image"}, b""), "不安全"),
             ((200, {"content-type": "text/html"}, b"not-image"), "图片"),
         ):
             client = FakeCanvasClient([response])
             with self.subTest(error=error), self.assertRaisesRegex(DashboardError, error):
                 self.service(canvas_client_factory=lambda client=client: client).message_resource(
-                    "announcement", "11", resource_id
+                    "assignment", "12", resource_id
                 )
-            self.assertTrue(client.closed)
+            self.assertFalse(client.closed)
 
         client = FakeCanvasClient([(200, {"content-type": "image/png"}, b"1234")])
         with patch("sjtu_learning_assistant.dashboard_service.INLINE_IMAGE_LIMIT", 3):
             with self.assertRaisesRegex(DashboardError, "大小"):
                 self.service(canvas_client_factory=lambda: client).message_resource(
-                    "announcement", "11", resource_id
+                    "assignment", "12", resource_id
                 )
 
 

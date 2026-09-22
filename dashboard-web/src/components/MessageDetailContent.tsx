@@ -166,13 +166,61 @@ export function MessageDetailContent({
     )) {
       const resourceId = image.dataset.resourceId;
       if (!resourceId) continue;
+      const originalAlt = image.alt;
+      let retryButton: HTMLButtonElement | null = null;
+
+      const clearFailure = () => {
+        image.classList.remove("message-resource-failed");
+        image.alt = originalAlt;
+        retryButton?.remove();
+        retryButton = null;
+      };
       const markFailed = () => {
         image.removeAttribute("src");
         image.classList.add("message-resource-failed");
-        image.alt = image.alt || "图片加载失败";
+        image.alt = originalAlt || "图片加载失败";
+        if (retryButton) return;
+        retryButton = document.createElement("button");
+        retryButton.type = "button";
+        retryButton.className = "message-resource-retry";
+        retryButton.textContent = "重试";
+        image.insertAdjacentElement("afterend", retryButton);
       };
-      image.addEventListener("error", markFailed);
-      cleanups.push(() => image.removeEventListener("error", markFailed));
+      const loadRemoteImage = (force = false) => {
+        clearFailure();
+        let request = force ? undefined : requests.get(resourceId);
+        if (!request) {
+          request = getMessageResource(kind, sourceId, resourceId).then(
+            (result) => result.data_url,
+          );
+          requests.set(resourceId, request);
+        }
+        void request
+          .then((dataUrl) => {
+            if (!cancelled) {
+              clearFailure();
+              image.src = dataUrl;
+            }
+          })
+          .catch(() => {
+            requests.delete(resourceId);
+            if (!cancelled) markFailed();
+          });
+      };
+      const handleImageError = () => markFailed();
+      const handleRetry = (event: Event) => {
+        if (event.target !== retryButton) return;
+        event.preventDefault();
+        event.stopPropagation();
+        loadRemoteImage(true);
+      };
+      image.addEventListener("error", handleImageError);
+      container.addEventListener("click", handleRetry);
+      cleanups.push(() => {
+        image.removeEventListener("error", handleImageError);
+        container.removeEventListener("click", handleRetry);
+        retryButton?.remove();
+      });
 
       const inlineUrl = inlineData.get(resourceId);
       if (inlineUrl) {
@@ -183,20 +231,7 @@ export function MessageDetailContent({
         markFailed();
         continue;
       }
-      let request = requests.get(resourceId);
-      if (!request) {
-        request = getMessageResource(kind, sourceId, resourceId).then(
-          (result) => result.data_url,
-        );
-        requests.set(resourceId, request);
-      }
-      void request
-        .then((dataUrl) => {
-          if (!cancelled) image.src = dataUrl;
-        })
-        .catch(() => {
-          if (!cancelled) markFailed();
-        });
+      loadRemoteImage();
     }
 
     return () => {

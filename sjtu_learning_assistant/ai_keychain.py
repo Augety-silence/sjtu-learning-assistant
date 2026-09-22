@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 AI_KEYCHAIN_SERVICE = "SJTU Learning Assistant - AI Classification"
 AI_KEYCHAIN_ACCOUNT = "openai-api-key"
 MAX_API_KEY_LENGTH = 4096
+
+_credential_cache_lock = threading.RLock()
+_cached_api_key: str | None = None
 
 
 class AIKeychainError(RuntimeError):
@@ -34,21 +38,73 @@ def validate_ai_api_key(value: object) -> str:
     return key
 
 
+def clear_ai_credential_cache() -> None:
+    """Clear the process-local AI credential cache."""
+    global _cached_api_key
+    with _credential_cache_lock:
+        _cached_api_key = None
+
+
 def save_ai_api_key(value: object, *, keyring_module: Any | None = None) -> None:
+    global _cached_api_key
     key = validate_ai_api_key(value)
-    backend = keyring_module or load_keyring_module()
-    try:
-        backend.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
-    except Exception:
-        raise AIKeychainError("无法保存 AI API key 到 macOS Keychain。") from None
+    if keyring_module is not None:
+        try:
+            keyring_module.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
+        except Exception:
+            raise AIKeychainError("无法保存 AI API key 到 macOS Keychain。") from None
+        return
+
+    with _credential_cache_lock:
+        backend = load_keyring_module()
+        try:
+            backend.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
+        except Exception:
+            raise AIKeychainError("无法保存 AI API key 到 macOS Keychain。") from None
+        _cached_api_key = key
 
 
 def get_ai_api_key(*, keyring_module: Any | None = None) -> str | None:
-    backend = keyring_module or load_keyring_module()
-    try:
-        value = backend.get_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
-    except Exception:
-        raise AIKeychainError("无法读取 AI API key。") from None
-    if value is None:
-        return None
-    return validate_ai_api_key(value)
+    global _cached_api_key
+    if keyring_module is not None:
+        try:
+            value = keyring_module.get_password(
+                AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT
+            )
+        except Exception:
+            raise AIKeychainError("无法读取 AI API key。") from None
+        if value is None:
+            return None
+        return validate_ai_api_key(value)
+
+    with _credential_cache_lock:
+        if _cached_api_key is not None:
+            return _cached_api_key
+        backend = load_keyring_module()
+        try:
+            value = backend.get_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
+        except Exception:
+            raise AIKeychainError("无法读取 AI API key。") from None
+        if value is None:
+            return None
+        key = validate_ai_api_key(value)
+        _cached_api_key = key
+        return key
+
+
+def delete_ai_api_key(*, keyring_module: Any | None = None) -> None:
+    global _cached_api_key
+    if keyring_module is not None:
+        try:
+            keyring_module.delete_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
+        except Exception:
+            raise AIKeychainError("无法从 macOS Keychain 删除 AI API key。") from None
+        return
+
+    with _credential_cache_lock:
+        _cached_api_key = None
+        backend = load_keyring_module()
+        try:
+            backend.delete_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
+        except Exception:
+            raise AIKeychainError("无法从 macOS Keychain 删除 AI API key。") from None

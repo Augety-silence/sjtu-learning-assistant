@@ -368,7 +368,7 @@ class ArchiveService:
     def __init__(
         self,
         engine: Engine,
-        canvas_client: httpx.Client,
+        canvas_client: httpx.Client | None = None,
         *,
         archive_root: Path = DEFAULT_ARCHIVE_ROOT,
         current_term: str | None = None,
@@ -410,6 +410,7 @@ class ArchiveService:
 
     def archive_current_term(self) -> ArchiveSummary:
         """下载本轮 Canvas active 课程；无显式 active 集合时兼容学期匹配。"""
+        self._require_canvas_client()
         if self.active_course_source_ids is not None or self.use_recent_active_courses:
             course_ids = self._active_course_ids()
             if not course_ids:
@@ -521,6 +522,7 @@ class ArchiveService:
 
     def download_file_by_source_id(self, source_id: str) -> DownloadResult:
         """供未来 UI 调用：显式下载任意学期的一项文件。"""
+        self._require_canvas_client()
         clean_source_id = str(source_id).strip()
         if not clean_source_id:
             raise ArchiveError("source_id 不能为空。")
@@ -1504,11 +1506,17 @@ class ArchiveService:
                 digest.update(chunk)
         return digest.hexdigest() == context.downloaded_sha256
 
+    def _require_canvas_client(self) -> httpx.Client:
+        if self.canvas_client is None:
+            raise ArchiveError("下载操作需要 Canvas 客户端。")
+        return self.canvas_client
+
     def _fetch_download_url(self, source_id: str) -> str:
+        canvas_client = self._require_canvas_client()
         api_path = f"/api/v1/files/{quote(source_id, safe="")}"
-        ensure_same_origin(self.canvas_client, api_path)
+        ensure_same_origin(canvas_client, api_path)
         try:
-            response = self.canvas_client.get(api_path)
+            response = canvas_client.get(api_path)
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:

@@ -354,7 +354,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.mail_only:
             sync_options = {}
             ai_client = None
-            if settings.ai_enabled and settings.ai_key_saved:
+            if (
+                settings.auto_download_current_term
+                and settings.ai_enabled
+                and settings.ai_key_saved
+            ):
                 try:
                     ai_key = get_ai_api_key()
                     if ai_key:

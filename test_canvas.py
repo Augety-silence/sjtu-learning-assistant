@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Sequence
@@ -23,6 +24,9 @@ DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 100
 KEYCHAIN_SERVICE = "SJTU Learning Assistant - oc.sjtu.edu.cn"
 KEYCHAIN_ACCOUNT = "canvas-access-token"
+
+_credential_cache_lock = threading.RLock()
+_cached_token: str | None = None
 
 
 class CanvasCheckError(RuntimeError):
@@ -132,18 +136,30 @@ def load_keyring_module():
     return keyring, KeyringError
 
 
+def clear_canvas_credential_cache() -> None:
+    """Clear the process-local Canvas credential cache."""
+    global _cached_token
+    with _credential_cache_lock:
+        _cached_token = None
+
+
 def get_token(use_keychain: bool) -> tuple[str, bool]:
     """Return (token, came_from_keychain)."""
+    global _cached_token
     if use_keychain:
-        keyring, KeyringError = load_keyring_module()
-        try:
-            stored = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-        except KeyringError as exc:
-            print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
-        else:
-            if stored:
-                print("已从 macOS Keychain 读取 Canvas Access Token。")
-                return stored, True
+        with _credential_cache_lock:
+            if _cached_token is not None:
+                return _cached_token, True
+            keyring, KeyringError = load_keyring_module()
+            try:
+                stored = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+            except KeyringError as exc:
+                print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
+            else:
+                if stored:
+                    _cached_token = stored
+                    print("已从 macOS Keychain 读取 Canvas Access Token。")
+                    return stored, True
 
     try:
         token = getpass.getpass("请输入 Canvas Access Token（输入内容不会显示）：").strip()
@@ -155,25 +171,31 @@ def get_token(use_keychain: bool) -> tuple[str, bool]:
 
 
 def save_token(token: str) -> None:
+    global _cached_token
     keyring, KeyringError = load_keyring_module()
-    try:
-        keyring.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
-    except KeyringError as exc:
-        print(f"提示：API 验证已成功，但 Token 未能保存到 Keychain（{exc}）。")
-    else:
-        print("Canvas Access Token 已安全保存到 macOS Keychain。")
+    with _credential_cache_lock:
+        try:
+            keyring.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
+        except KeyringError as exc:
+            print(f"提示：API 验证已成功，但 Token 未能保存到 Keychain（{exc}）。")
+        else:
+            _cached_token = token
+            print("Canvas Access Token 已安全保存到 macOS Keychain。")
 
 
 def delete_token() -> None:
-    keyring, KeyringError = load_keyring_module()
-    try:
-        existing = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-        if existing is None:
-            print("Keychain 中没有找到已保存的 Canvas Token。")
-            return
-        keyring.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-    except KeyringError as exc:
-        raise CanvasCheckError(f"无法删除 Keychain 中的 Canvas Token：{exc}") from exc
+    global _cached_token
+    with _credential_cache_lock:
+        _cached_token = None
+        keyring, KeyringError = load_keyring_module()
+        try:
+            existing = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+            if existing is None:
+                print("Keychain 中没有找到已保存的 Canvas Token。")
+                return
+            keyring.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        except KeyringError as exc:
+            raise CanvasCheckError(f"无法删除 Keychain 中的 Canvas Token：{exc}") from exc
     print("已从 macOS Keychain 删除 Canvas Token。")
 
 

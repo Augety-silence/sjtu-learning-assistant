@@ -287,8 +287,12 @@ export function SettingsView({
         </div>
         <label className="ai-json-field" htmlFor="ai-connection-json">
           <span>粘贴连接配置 JSON</span>
+          <small>
+            首次 macOS 授权请选择“始终允许”；本次运行后不再重复询问。
+          </small>
           <textarea
             id="ai-connection-json"
+            aria-label="粘贴连接配置 JSON"
             value={connectionJson}
             disabled={Boolean(busy)}
             autoComplete="off"

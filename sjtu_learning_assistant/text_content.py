@@ -30,6 +30,9 @@ _BLOCK_TAGS = frozenset(
 )
 _HIDDEN_TAGS = _SUPPRESSED_TAGS | {"head"}
 _HTML_TAG = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+_CANVAS_FILE_API_PATH = re.compile(
+    r"/api/v1/courses/[0-9]+/files/[0-9]+"
+)
 
 
 def _canvas_image_url(value: str) -> str | None:
@@ -47,6 +50,16 @@ def _canvas_image_url(value: str) -> str | None:
     ):
         return None
     return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, ""))
+
+
+def _canvas_file_api_url(value: str) -> str | None:
+    canvas_url = _canvas_image_url(value)
+    if canvas_url is None:
+        return None
+    parsed = urlsplit(canvas_url)
+    if parsed.query or _CANVAS_FILE_API_PATH.fullmatch(parsed.path) is None:
+        return None
+    return canvas_url
 
 
 def _valid_resource_id(value: str) -> bool:
@@ -82,7 +95,10 @@ class _HTMLSanitizer(HTMLParser):
                 if _valid_resource_id(resource_id):
                     self.resource_ids.add(resource_id)
                     return [("data-resource-id", resource_id)]
-            canvas_url = _canvas_image_url(src)
+            canvas_url = _canvas_file_api_url(
+                (values.get("data-api-endpoint") or "").strip()
+            )
+            canvas_url = canvas_url or _canvas_image_url(src)
             if canvas_url is not None:
                 resource_id = "canvas-" + hashlib.sha256(
                     canvas_url.encode("utf-8")

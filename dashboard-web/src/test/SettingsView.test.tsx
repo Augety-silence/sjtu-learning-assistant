@@ -78,6 +78,9 @@ describe("SettingsView", () => {
       screen.getByText(/未设置邮箱账号；当前同步仅运行 Canvas/),
     ).toBeTruthy();
     expect(screen.getByText(/不会上传文件正文/)).toBeTruthy();
+    expect(
+      screen.getByText(/首次 macOS 授权请选择“始终允许”/),
+    ).toBeTruthy();
     expect(getSettings).toHaveBeenCalledTimes(1);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[0]);

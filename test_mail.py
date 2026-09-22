@@ -14,6 +14,7 @@ import re
 import socket
 import ssl
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from email import policy
@@ -27,6 +28,9 @@ IMAP_PORT = 993
 KEYCHAIN_SERVICE = "SJTU Learning Assistant - mail.sjtu.edu.cn"
 DEFAULT_LIMIT = 10
 DEFAULT_TIMEOUT_SECONDS = 20
+
+_credential_cache_lock = threading.RLock()
+_cached_passwords: dict[str, str] = dict()
 
 
 class MailCheckError(RuntimeError):
@@ -96,18 +100,29 @@ def load_keyring_module():
     return keyring, KeyringError
 
 
+def clear_mail_credential_cache() -> None:
+    """Clear the process-local mail credential cache."""
+    with _credential_cache_lock:
+        _cached_passwords.clear()
+
+
 def get_password(email_address: str, use_keychain: bool) -> tuple[str, bool]:
     """Return (password, came_from_keychain)."""
     if use_keychain:
-        keyring, KeyringError = load_keyring_module()
-        try:
-            stored = keyring.get_password(KEYCHAIN_SERVICE, email_address)
-        except KeyringError as exc:
-            print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
-        else:
-            if stored:
-                print("已从 macOS Keychain 读取邮箱密码。")
-                return stored, True
+        with _credential_cache_lock:
+            cached = _cached_passwords.get(email_address)
+            if cached is not None:
+                return cached, True
+            keyring, KeyringError = load_keyring_module()
+            try:
+                stored = keyring.get_password(KEYCHAIN_SERVICE, email_address)
+            except KeyringError as exc:
+                print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
+            else:
+                if stored:
+                    _cached_passwords[email_address] = stored
+                    print("已从 macOS Keychain 读取邮箱密码。")
+                    return stored, True
 
     try:
         password = getpass.getpass("请输入邮箱密码（输入内容不会显示）：")
@@ -120,24 +135,28 @@ def get_password(email_address: str, use_keychain: bool) -> tuple[str, bool]:
 
 def save_password(email_address: str, password: str) -> None:
     keyring, KeyringError = load_keyring_module()
-    try:
-        keyring.set_password(KEYCHAIN_SERVICE, email_address, password)
-    except KeyringError as exc:
-        print(f"提示：登录已成功，但密码未能保存到 Keychain（{exc}）。")
-    else:
-        print("密码已安全保存到 macOS Keychain。")
+    with _credential_cache_lock:
+        try:
+            keyring.set_password(KEYCHAIN_SERVICE, email_address, password)
+        except KeyringError as exc:
+            print(f"提示：登录已成功，但密码未能保存到 Keychain（{exc}）。")
+        else:
+            _cached_passwords[email_address] = password
+            print("密码已安全保存到 macOS Keychain。")
 
 
 def delete_password(email_address: str) -> None:
-    keyring, KeyringError = load_keyring_module()
-    try:
-        existing = keyring.get_password(KEYCHAIN_SERVICE, email_address)
-        if existing is None:
-            print("Keychain 中没有找到该邮箱的已保存密码。")
-            return
-        keyring.delete_password(KEYCHAIN_SERVICE, email_address)
-    except KeyringError as exc:
-        raise MailCheckError(f"无法删除 Keychain 密码：{exc}") from exc
+    with _credential_cache_lock:
+        _cached_passwords.pop(email_address, None)
+        keyring, KeyringError = load_keyring_module()
+        try:
+            existing = keyring.get_password(KEYCHAIN_SERVICE, email_address)
+            if existing is None:
+                print("Keychain 中没有找到该邮箱的已保存密码。")
+                return
+            keyring.delete_password(KEYCHAIN_SERVICE, email_address)
+        except KeyringError as exc:
+            raise MailCheckError(f"无法删除 Keychain 密码：{exc}") from exc
     print("已从 macOS Keychain 删除该邮箱密码。")
 
 
