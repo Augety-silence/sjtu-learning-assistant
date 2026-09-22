@@ -137,16 +137,45 @@ class ArchiveOrganizerTests(unittest.TestCase):
         source = self.root / "legacy.pdf"
         context = self.context(source)
         self.assertEqual(
-            ("2026-2027 Fall", "NLP", "课件", "Week 1", "lecture.pdf"),
+            ("2026-2027 Fall", "NLP", "课件", "week 1", "lecture.pdf"),
             self.target(context).relative_to(self.root).parts,
         )
         legacy = ArchiveService(
             SimpleNamespace(), self.client, archive_root=self.root, organize_by_category=False
         )
         self.assertEqual(
-            ("2026-2027 Fall", "NLP", "Week 1", "lecture.pdf"),
+            ("2026-2027 Fall", "NLP", "week 1", "lecture.pdf"),
             legacy._planned_paths([context])[context.source_id].relative_to(self.root).parts,
         )
+
+    def test_organize_moves_old_repeated_directory_layout_to_canonical_path(self) -> None:
+        source = (
+            self.root
+            / "2026-2027 Fall"
+            / "NLP"
+            / "NLP"
+            / "课件"
+            / "课 件"
+            / "Week 1"
+            / "week-1"
+            / "lecture.pdf"
+        )
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"same")
+        context = self.context(source)
+        target = self.target(context)
+
+        self.service._active_course_ids = lambda: set((context.course_id,))
+        self.service._load_contexts = lambda course_ids=None: (context,)
+        summary = self.service.organize_current_term()
+
+        self.assertEqual(1, summary.moved)
+        self.assertFalse(source.exists())
+        self.assertEqual(
+            ("2026-2027 Fall", "NLP", "课件", "week 1", "lecture.pdf"),
+            target.relative_to(self.root).parts,
+        )
+        self.assertEqual(b"same", target.read_bytes())
 
     def test_move_is_idempotent_and_recovers_interrupted_db_update(self) -> None:
         source = self.root / "2026-2027 Fall" / "NLP" / "Week 1" / "lecture.pdf"

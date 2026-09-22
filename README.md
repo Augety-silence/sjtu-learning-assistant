@@ -457,7 +457,7 @@ cd ..
 
 `desktop_app.py` 要求前端已构建。Vite 使用相对资源基址 `./`，运行时不加载 CDN 或远程字体。桌面 App 启动后在进程内每 15 分钟请求同步；手动和定时同步共享防重入锁，已有同步运行时不会重复启动。退出窗口会停止调度线程。
 
-设置页显示凭据是否齐全以及非敏感归档偏好，不显示凭据值。Canvas Token 和邮箱密码继续从 macOS Keychain 读取；邮箱账号来自 `SJTU_EMAIL`。课程归档目录默认是 `~/Documents/SJTU Study`，可在设置页选择，也可通过 `SJTU_ARCHIVE_ROOT` 显式覆盖。不要把数据库 URL、Canvas Token、邮箱或密码写入 settings.json、命令、plist 或仓库。
+设置页只显示非敏感的归档与同步偏好，加载时不会读取或探测任何凭据。Canvas Token 和邮箱密码仅在实际同步时按需从 macOS Keychain 读取；邮箱账号来自 `SJTU_EMAIL`。课程归档目录默认是 `~/Documents/SJTU Study`，可在设置页选择，也可通过 `SJTU_ARCHIVE_ROOT` 显式覆盖。不要把数据库 URL、Canvas Token、邮箱或密码写入 settings.json、命令、plist 或仓库。
 
 资料操作会重新按数据库 `source_id` 查询文件，并校验解析后的本地路径位于配置的归档根目录内；打开和 Reveal 均使用固定参数数组调用 macOS `/usr/bin/open`。外部链接只允许无内嵌账号密码的 HTTPS URL。
 
@@ -541,11 +541,13 @@ git diff --check
 scripts/build_macos_app.sh
 ```
 
-脚本会创建/复用 `.venv`、安装开发依赖、执行前端 test/lint/build、Python 单测、许可证和秘密扫描，生成原创中性图标，随后用 `packaging/desktop.spec` 输出：
+脚本会创建/复用 `.venv`、安装开发依赖，先从保留的 AI 源图生成透明 1024 PNG、UI Logo、`.iconset` 与 `app.icns`，再执行前端 test/lint/build、Python 单测、许可证和秘密扫描，随后用 `packaging/desktop.spec` 输出：
 
 ```text
 dist/SJTU Learning Assistant.app
 ```
+
+品牌源图保存在 `packaging/assets/app-icon-source.jpg` 与 `dashboard-web/src/assets/app-logo-source.jpg`，生成物分别为 `packaging/assets/app-icon.png`、`packaging/app.icns` 和 `dashboard-web/src/assets/app-logo.png`，可通过 `scripts/generate_macos_icon.py` 重现。
 
 Bundle identifier 为 `io.github.sjtu-learning-assistant`，版本来自 `sjtu_learning_assistant.__version__`。打包只包含本地前端、许可证和默认运行依赖，不包含 `psycopg`，也不包含 FastAPI/Uvicorn 或监听端口的服务。`MACOS_CODESIGN_IDENTITY` 与 `MACOS_NOTARY_PROFILE` 仅预留给未来经审核的发布流程；当前脚本即使检测到变量也不会执行 `codesign` 或 `notarytool`。
 

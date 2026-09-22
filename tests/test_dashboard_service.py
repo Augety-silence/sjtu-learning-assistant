@@ -74,6 +74,27 @@ class DashboardFileSafetyTests(unittest.TestCase):
             self.service.open_material("missing")
 
 
+class DashboardSettingsTests(unittest.TestCase):
+    def test_settings_status_never_loads_or_reads_keychain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "archive"
+            root.mkdir()
+            service = DashboardService(SimpleNamespace(), archive_root=root)
+            with patch("test_canvas.load_keyring_module") as load_keyring:
+                status = service.settings_status()
+        load_keyring.assert_not_called()
+        self.assertEqual(str(root), status["archive_root"])
+        self.assertEqual(
+            {
+                "archive_root_ready",
+                "archive_root",
+                "auto_download_current_term",
+                "organize_by_category",
+            },
+            set(status),
+        )
+
+
 class DashboardActionTests(unittest.TestCase):
     def test_download_calls_existing_archive_service(self) -> None:
         archive = SimpleNamespace(

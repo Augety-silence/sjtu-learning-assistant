@@ -363,41 +363,14 @@ class DashboardService:
         }
 
     def settings_status(self) -> dict[str, Any]:
-        from test_canvas import KEYCHAIN_ACCOUNT as CANVAS_ACCOUNT
-        from test_canvas import KEYCHAIN_SERVICE as CANVAS_SERVICE
-        from test_canvas import load_keyring_module as load_canvas_keyring
-        from test_mail import KEYCHAIN_SERVICE as MAIL_SERVICE
-
+        """Return non-sensitive preferences without probing Keychain credentials."""
         settings = self._effective_settings()
         self.archive_root = Path(settings.archive_root)
-        email = os.environ.get("SJTU_EMAIL", "").strip()
-        canvas_configured = False
-        mail_configured = False
-        keychain_available = True
-        try:
-            keyring, _ = load_canvas_keyring()
-            canvas_configured = bool(keyring.get_password(CANVAS_SERVICE, CANVAS_ACCOUNT))
-            if email:
-                mail_configured = bool(keyring.get_password(MAIL_SERVICE, email))
-        except Exception:
-            keychain_available = False
-        missing: list[str] = []
-        if not canvas_configured:
-            missing.append("canvas_token")
-        if not email:
-            missing.append("mail_account")
-        elif not mail_configured:
-            missing.append("mail_password")
         return {
-            "keychain_available": keychain_available,
-            "canvas_configured": canvas_configured,
-            "mail_account_configured": bool(email),
-            "mail_password_configured": mail_configured,
             "archive_root_ready": self.archive_root.is_dir(),
             "archive_root": str(self.archive_root),
             "auto_download_current_term": settings.auto_download_current_term,
             "organize_by_category": settings.organize_by_category,
-            "missing": missing,
         }
 
     def _release_sync_when_done(self, process: Any) -> None:

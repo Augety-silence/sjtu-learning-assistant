@@ -9,6 +9,7 @@ import re
 import stat
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -38,6 +39,8 @@ REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 TERM_PATTERN = re.compile(r"^(\d{4})-(\d{4})\s+(Fall|Spring)$", re.IGNORECASE)
 INVALID_PATH_CHARS = re.compile(r"[\x00-\x1f\x7f/:\\]+")
 SPACE_RUN = re.compile(r"\s+")
+PATH_SEPARATOR_RUN = re.compile(r"[\s\-_—–·•/\\:：.()\[\]（）【】]+")
+BRACKETED_TEXT = re.compile(r"[（(\[【].*?[）)\]】]")
 
 
 class ArchiveError(RuntimeError):
@@ -62,6 +65,7 @@ class ArchiveFileContext:
     file_id: int = 0
     course_id: int = 0
     category: str = "other"
+    course_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,71 @@ def sanitize_component(value: str, *, fallback: str, max_length: int = 120) -> s
         suffix = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:10]
         cleaned = f"{cleaned[: max_length - 13].rstrip()} [{suffix}]"
     return cleaned
+
+
+def normalized_path_key(value: str) -> str:
+    """Comparable directory key: Unicode/case/spacing/separator insensitive."""
+    normalized = unicodedata.normalize("NFKC", str(value)).strip().casefold()
+    return PATH_SEPARATOR_RUN.sub("", normalized)
+
+
+def _canonical_folder_component(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value)).strip().casefold()
+    normalized = PATH_SEPARATOR_RUN.sub(" ", normalized).strip()
+    return sanitize_component(normalized, fallback="Unnamed Folder")
+
+
+def _course_alias_keys(course_name: str, course_code: str | None) -> set[str]:
+    name_key = normalized_path_key(course_name)
+    code_key = normalized_path_key(course_code or "")
+    aliases = {key for key in (name_key, code_key) if key}
+    without_brackets = normalized_path_key(BRACKETED_TEXT.sub("", course_name))
+    if without_brackets:
+        aliases.add(without_brackets)
+    if code_key and code_key in name_key:
+        without_code = name_key.replace(code_key, "")
+        if without_code:
+            aliases.add(without_code)
+    return aliases
+
+
+def canonical_folder_chain(
+    folder_names: Iterable[str],
+    *,
+    course_name: str,
+    course_code: str | None,
+    category: str | None,
+) -> tuple[str, ...]:
+    """Remove pseudo roots/category layers and collapse repeated folder blocks."""
+    ignored = _course_alias_keys(course_name, course_code)
+    if category:
+        ignored.update(
+            (normalized_path_key(category), normalized_path_key(category_label(category)))
+        )
+
+    reduced: list[tuple[str, str]] = []
+    for raw_name in folder_names:
+        display = _canonical_folder_component(raw_name)
+        key = normalized_path_key(display)
+        if not key or key in ignored:
+            continue
+        if reduced and reduced[-1][1] == key:
+            continue
+        reduced.append((display, key))
+        while True:
+            keys = [item[1] for item in reduced]
+            duplicate_width = next(
+                (
+                    width
+                    for width in range(1, len(keys) // 2 + 1)
+                    if keys[-2 * width : -width] == keys[-width:]
+                ),
+                None,
+            )
+            if duplicate_width is None:
+                break
+            del reduced[-duplicate_width:]
+    return tuple(item[0] for item in reduced)
 
 
 def add_source_id_suffix(filename: str, source_id: str) -> str:
@@ -483,6 +552,7 @@ class ArchiveService:
                             folder_names=reversed(folder_names),
                             filename=file.display_name or file.filename or "unnamed-file",
                         ),
+                        course_code=course.course_code,
                     )
                 )
             return contexts
@@ -500,9 +570,11 @@ class ArchiveService:
     ) -> dict[str, Path]:
         values = list(contexts)
         base_paths: dict[str, Path] = {}
-        buckets: dict[str, list[str]] = {}
+        buckets: dict[tuple[tuple[str, ...], str], list[str]] = {}
         root = self.archive_root.expanduser()
         for context in values:
+            if context.source_id in base_paths:
+                continue
             components = [
                 sanitize_component(context.term_name, fallback="Unknown Term"),
                 sanitize_component(context.course_name, fallback="Unnamed Course"),
@@ -511,9 +583,11 @@ class ArchiveService:
                     if self.organize_by_category
                     else []
                 ),
-                *(
-                    sanitize_component(name, fallback="Unnamed Folder")
-                    for name in context.folder_names
+                *canonical_folder_chain(
+                    context.folder_names,
+                    course_name=context.course_name,
+                    course_code=context.course_code,
+                    category=context.category if self.organize_by_category else None,
                 ),
             ]
             filename = sanitize_component(
@@ -524,13 +598,20 @@ class ArchiveService:
             candidate = root.joinpath(*components, filename)
             candidate = ensure_within_root(root, candidate)
             base_paths[context.source_id] = candidate
-            buckets.setdefault(os.path.normcase(str(candidate)).casefold(), []).append(context.source_id)
+            directory_key = tuple(
+                normalized_path_key(part) for part in candidate.parent.parts
+            )
+            filename_key = unicodedata.normalize("NFKC", candidate.name).casefold()
+            buckets.setdefault((directory_key, filename_key), []).append(
+                context.source_id
+            )
 
         planned = dict(base_paths)
         for source_ids in buckets.values():
-            if len(source_ids) < 2:
+            unique_source_ids = tuple(dict.fromkeys(source_ids))
+            if len(unique_source_ids) < 2:
                 continue
-            for source_id in source_ids:
+            for source_id in unique_source_ids:
                 original = base_paths[source_id]
                 planned[source_id] = ensure_within_root(
                     root,

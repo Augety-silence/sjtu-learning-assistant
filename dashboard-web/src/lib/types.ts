@@ -60,13 +60,8 @@ export interface SyncStatus {
 }
 
 export interface SettingsStatus {
-  keychain_available: boolean;
-  canvas_configured: boolean;
-  mail_account_configured: boolean;
-  mail_password_configured: boolean;
   archive_root_ready: boolean;
   archive_root: string;
   auto_download_current_term: boolean;
   organize_by_category: boolean;
-  missing: Array<"canvas_token" | "mail_account" | "mail_password">;
 }

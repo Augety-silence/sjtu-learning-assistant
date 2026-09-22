@@ -25,15 +25,10 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const status: SettingsStatus = {
-  keychain_available: true,
-  canvas_configured: true,
-  mail_account_configured: false,
-  mail_password_configured: false,
   archive_root_ready: true,
-  archive_root: "/Users/test/Documents/SJTU Study",
+  archive_root: "/tmp/SJTU Study",
   auto_download_current_term: true,
   organize_by_category: true,
-  missing: ["mail_account", "mail_password"],
 };
 
 describe("SettingsView", () => {
@@ -55,6 +50,10 @@ describe("SettingsView", () => {
   it("loads settings and sends a strict toggle payload", async () => {
     render(<SettingsView />);
     expect(await screen.findByText(status.archive_root)).toBeTruthy();
+    expect(screen.queryByText("Canvas Token")).toBeNull();
+    expect(screen.queryByText("邮箱密码")).toBeNull();
+    expect(screen.queryByText("macOS Keychain")).toBeNull();
+    expect(getSettings).toHaveBeenCalledTimes(1);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[0]);
     await waitFor(() =>

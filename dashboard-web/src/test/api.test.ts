@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke, openExternal, updateSettings } from "@/lib/api";
+import { getSettings, invoke, openExternal, updateSettings } from "@/lib/api";
 
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
@@ -34,6 +34,17 @@ describe("pywebview bridge client", () => {
       },
     });
     await expect(invoke("overview")).rejects.toThrow("操作失败");
+  });
+
+  it("loads settings through the non-secret status action only", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { archive_root: "/tmp/archive" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await getSettings();
+    expect(bridge).toHaveBeenCalledOnce();
+    expect(bridge).toHaveBeenCalledWith("settings_status", {});
   });
 
   it("sends only the settings update payload through the bridge", async () => {

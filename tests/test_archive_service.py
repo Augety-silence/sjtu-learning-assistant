@@ -17,6 +17,7 @@ from sjtu_learning_assistant.archive_service import (
     ArchiveFileContext,
     ArchiveService,
     add_source_id_suffix,
+    canonical_folder_chain,
     derive_current_term,
     ensure_within_root,
     normalize_term,
@@ -49,6 +50,36 @@ class ArchivePathAndTermTests(unittest.TestCase):
 
     def test_same_name_gets_source_id_suffix(self) -> None:
         self.assertEqual("lecture [42].pdf", add_source_id_suffix("lecture.pdf", "42"))
+
+    def test_folder_chain_removes_pseudo_roots_categories_and_repeated_blocks(self) -> None:
+        self.assertEqual(
+            ("单元 a", "章节 b"),
+            canonical_folder_chain(
+                (
+                    "文本分析与大模型",
+                    "文本分析与大模型-AI3601",
+                    "AI-3601",
+                    "course ware",
+                    "课 件",
+                    "单元 A",
+                    "章节 B",
+                    "单元-A",
+                    "章节　B",
+                ),
+                course_name="文本分析与大模型 (AI3601)",
+                course_code="AI3601",
+                category="courseware",
+            ),
+        )
+        self.assertEqual(
+            ("week 1",),
+            canonical_folder_chain(
+                ("Ｗｅｅｋ　１", "week-1", " week_1 "),
+                course_name="文本分析",
+                course_code=None,
+                category="other",
+            ),
+        )
 
     def test_folder_id_parent_chain_is_reconstructed(self) -> None:
         root_folder = SimpleNamespace(id=1, parent_folder_id=None, name="course files")
@@ -311,14 +342,24 @@ class ArchiveDownloadTests(unittest.TestCase):
 
     def test_same_name_collisions_are_suffixed_and_folder_tree_is_used(self) -> None:
         service = self.make_service()
-        first = self.context("42")
-        second = self.context("43")
+        first = replace(self.context("42"), folder_names=("course files", "Week 1"))
+        second = replace(
+            self.context("43"),
+            folder_names=("course files", "Ｗｅｅｋ－１"),
+        )
         planned = service._planned_paths([first, second])
         self.assertEqual("lecture [42].pdf", planned["42"].name)
         self.assertEqual("lecture [43].pdf", planned["43"].name)
         self.assertIn("2026-2027 Fall", planned["42"].parts)
         self.assertIn("文本_分析", planned["42"].parts)
-        self.assertIn("第一周", planned["42"].parts)
+        self.assertIn("week 1", planned["42"].parts)
+
+    def test_same_source_id_keeps_one_unsuffixed_target(self) -> None:
+        service = self.make_service()
+        first = self.context("42")
+        duplicate = replace(first, folder_names=("different",))
+        planned = service._planned_paths((first, duplicate))
+        self.assertEqual("lecture.pdf", planned.get("42").name)
 
     def test_old_local_path_outside_new_root_is_never_touched(self) -> None:
         service = self.make_service()

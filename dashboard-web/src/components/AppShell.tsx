@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Settings,
 } from "lucide-react";
+import appLogo from "@/assets/app-logo.png";
 import { Button } from "@/components/ui/Button";
 import type { SyncStatus, ViewName } from "@/lib/types";
 
@@ -75,7 +76,7 @@ export function AppShell({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">SJ</span>
+          <img className="brand-mark" src={appLogo} alt="SJTU 学习助手标志" />
           <div>
             <p>SJTU</p>
             <span>学习助手</span>
@@ -97,7 +98,11 @@ export function AppShell({
           />
           <aside className="mobile-drawer">
             <div className="brand">
-              <span className="brand-mark">SJ</span>
+              <img
+                className="brand-mark"
+                src={appLogo}
+                alt="SJTU 学习助手标志"
+              />
               <div>
                 <p>SJTU</p>
                 <span>学习助手</span>

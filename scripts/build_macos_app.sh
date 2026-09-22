@@ -36,6 +36,7 @@ clean_packaging_xattrs() {
 "$PYTHON_BIN" -m pip install --upgrade pip
 "$PYTHON_BIN" -m pip install -r requirements-dev.txt
 
+"$PYTHON_BIN" scripts/generate_macos_icon.py
 npm --prefix dashboard-web ci
 npm --prefix dashboard-web run test
 npm --prefix dashboard-web run lint
@@ -44,7 +45,6 @@ npm --prefix dashboard-web run build
 "$PYTHON_BIN" scripts/check_licenses.py
 node scripts/check_licenses.mjs
 "$PYTHON_BIN" scripts/scan_secrets.py
-"$PYTHON_BIN" scripts/generate_macos_icon.py
 
 clean_bundle_xattrs() {
   local attribute
