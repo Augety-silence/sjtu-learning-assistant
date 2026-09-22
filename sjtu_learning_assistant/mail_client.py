@@ -10,9 +10,12 @@ import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
+from email.message import Message
 from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
-from typing import Any
+from typing import Any, Iterable, Protocol
+
+from sjtu_learning_assistant.text_content import html_to_plain_text, normalize_plain_text
 
 from test_mail import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -36,6 +39,7 @@ class EmailRecord:
     body_preview: str | None
     is_unread: bool
     raw_data: dict[str, Any]
+    body_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,28 @@ class MailFetchResult:
     uid_validity: str
     highest_uid: int
     bootstrap_truncated: bool
+
+
+class EmailBodyBackfillTarget(Protocol):
+    source_id: str
+    uid: int
+    uid_validity: str
+
+
+@dataclass(frozen=True)
+class EmailBodyUpdate:
+    source_id: str
+    body_text: str
+    body_preview: str
+
+
+@dataclass(frozen=True)
+class MailBodyBackfillResult:
+    updates: tuple[EmailBodyUpdate, ...]
+    selected: int
+    attempted: int
+    failed: int
+    uid_validity_mismatched: int
 
 
 def parse_cursor(cursor: str | None) -> tuple[str | None, int]:
@@ -85,7 +111,7 @@ def _extract_fetch_parts(fetch_data: list[object]) -> tuple[bytes, bytes]:
             if isinstance(item[1], bytes):
                 headers += item[1]
     if not headers:
-        raise MailCheckError("服务器返回了无法识别的邮件头数据。")
+        raise MailCheckError("服务器返回了无法识别的邮件数据。")
     return metadata, headers
 
 
@@ -108,6 +134,55 @@ def _parse_internal_date(metadata: bytes) -> datetime | None:
     return _parse_datetime(match.group(1).decode("ascii", errors="replace"))
 
 
+def _decode_text_part(part: Message) -> str | None:
+    payload = part.get_payload(decode=True)
+    if payload is None:
+        raw_payload = part.get_payload()
+        return raw_payload if isinstance(raw_payload, str) else None
+    charset = part.get_content_charset()
+    if charset:
+        try:
+            return payload.decode(charset, errors="replace")
+        except LookupError:
+            pass
+    return payload.decode("utf-8", errors="replace")
+
+
+def _message_body_text(message: Message) -> str | None:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    def collect(part: Message) -> None:
+        disposition = (part.get_content_disposition() or "").casefold()
+        if disposition == "attachment" or part.get_filename():
+            # Do not descend into attached messages and accidentally expose their body.
+            return
+        if part.is_multipart():
+            payload = part.get_payload()
+            if isinstance(payload, list):
+                for child in payload:
+                    collect(child)
+            return
+        content_type = part.get_content_type().casefold()
+        if content_type not in {"text/plain", "text/html"}:
+            return
+        decoded = _decode_text_part(part)
+        if decoded is None:
+            return
+        if content_type == "text/plain":
+            text = normalize_plain_text(decoded)
+            if text:
+                plain_parts.append(text)
+        else:
+            text = html_to_plain_text(decoded)
+            if text:
+                html_parts.append(text)
+
+    collect(message)
+    selected = plain_parts or html_parts
+    return normalize_plain_text("\n\n".join(selected)) if selected else None
+
+
 def _parse_message(
     *,
     email_address: str,
@@ -116,7 +191,9 @@ def _parse_message(
     metadata: bytes,
     headers: bytes,
 ) -> EmailRecord:
-    message = BytesParser(policy=policy.compat32).parsebytes(headers)
+    # ``headers`` retains its historical name so header-only callers remain compatible.
+    message = BytesParser(policy=policy.default).parsebytes(headers)
+    body_text = _message_body_text(message)
     sender_raw = decode_mime_text(message.get("From"), "")
     sender_name, sender_address = parseaddr(sender_raw)
     sender_name = decode_mime_text(sender_name, "") or None
@@ -135,7 +212,7 @@ def _parse_message(
         sender_address=sender_address,
         sent_at=sent_at,
         received_at=received_at,
-        body_preview=None,
+        body_preview=body_text[:300] if body_text else None,
         is_unread=is_unread,
         raw_data={
             "folder": "INBOX",
@@ -143,7 +220,80 @@ def _parse_message(
             "uid_validity": uid_validity,
             "message_id": message_id,
         },
+        body_text=body_text,
     )
+
+
+def fetch_email_body_backfill(
+    email_address: str,
+    password: str,
+    targets: Iterable[EmailBodyBackfillTarget],
+) -> MailBodyBackfillResult:
+    """Fetch missing bodies without changing any remote message flags."""
+    selected_targets = list(targets)
+    if not selected_targets:
+        return MailBodyBackfillResult((), 0, 0, 0, 0)
+
+    tls_context = ssl.create_default_context()
+    try:
+        with imaplib.IMAP4_SSL(
+            IMAP_HOST,
+            IMAP_PORT,
+            ssl_context=tls_context,
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+        ) as client:
+            client.login(email_address, password)
+            status, _ = client.select("INBOX", readonly=True)
+            if status != "OK":
+                raise MailCheckError("无法以只读方式打开 INBOX。")
+
+            current_uid_validity = _uid_validity(client)
+            eligible = [
+                target
+                for target in selected_targets
+                if target.uid_validity == current_uid_validity
+            ]
+            mismatched = len(selected_targets) - len(eligible)
+            updates: list[EmailBodyUpdate] = []
+            failed = 0
+            for target in eligible:
+                try:
+                    status, fetch_data = client.uid(
+                        "fetch", str(target.uid), "(BODY.PEEK[])"
+                    )
+                    if status != "OK" or not fetch_data:
+                        raise MailCheckError("旧邮件正文读取失败。")
+                    _, raw_message = _extract_fetch_parts(fetch_data)
+                    message = BytesParser(policy=policy.default).parsebytes(raw_message)
+                    body_text = _message_body_text(message)
+                    if not body_text:
+                        raise MailCheckError("旧邮件没有可回填的文本正文。")
+                    updates.append(
+                        EmailBodyUpdate(
+                            source_id=target.source_id,
+                            body_text=body_text,
+                            body_preview=body_text[:300],
+                        )
+                    )
+                except Exception:
+                    # One malformed or unavailable legacy message must not stop the batch.
+                    failed += 1
+
+            return MailBodyBackfillResult(
+                updates=tuple(updates),
+                selected=len(selected_targets),
+                attempted=len(eligible),
+                failed=failed,
+                uid_validity_mismatched=mismatched,
+            )
+    except imaplib.IMAP4.error as exc:
+        raise MailCheckError("IMAP 登录或旧邮件正文回填失败。") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise MailCheckError("IMAP 正文回填连接超时，请检查网络后重试。") from exc
+    except ssl.SSLError as exc:
+        raise MailCheckError(f"IMAP TLS 连接失败：{exc}") from exc
+    except OSError as exc:
+        raise MailCheckError(f"无法连接 {IMAP_HOST}:{IMAP_PORT}：{exc}") from exc
 
 
 def fetch_incremental_mail(
@@ -194,11 +344,10 @@ def fetch_incremental_mail(
                 status, fetch_data = client.uid(
                     "fetch",
                     str(uid),
-                    "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)] "
-                    "FLAGS INTERNALDATE)",
+                    "(BODY.PEEK[] FLAGS INTERNALDATE)",
                 )
                 if status != "OK" or not fetch_data:
-                    raise MailCheckError(f"UID {uid} 邮件头读取失败。")
+                    raise MailCheckError(f"UID {uid} 邮件读取失败。")
                 metadata, headers = _extract_fetch_parts(fetch_data)
                 messages.append(
                     _parse_message(

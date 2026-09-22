@@ -34,6 +34,16 @@ class FakeService:
     def download_material(self, source_id):
         return {"source_id": source_id, "status": "downloaded"}
 
+    def move_material(self, source_id, target_node_id):
+        return {
+            "source_id": source_id,
+            "target_node_id": target_node_id,
+            "status": "saved",
+        }
+
+    def restore_material_auto(self, source_id):
+        return {"source_id": source_id, "status": "saved"}
+
     def open_material(self, source_id):
         return {"source_id": source_id, "status": "opened"}
 
@@ -60,6 +70,22 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("not_allowed", self.bridge.invoke("__dict__")["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("messages", {"kind": "secret"})["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("material_open", {"source_id": ""})["error"]["code"])
+        moved = self.bridge.invoke(
+            "material_move",
+            {"source_id": "file-1", "target_node_id": "category:course-1:other"},
+        )
+        self.assertEqual("category:course-1:other", moved["data"]["target_node_id"])
+        self.assertEqual(
+            "operation_failed",
+            self.bridge.invoke("material_move", {"source_id": "file-1"})["error"]["code"],
+        )
+        self.assertEqual(
+            "operation_failed",
+            self.bridge.invoke(
+                "material_move",
+                {"source_id": "file-1", "target_node_id": 1},
+            )["error"]["code"],
+        )
 
     def test_errors_are_sanitized_or_hidden(self):
         text = safe_message("postgresql://user:password@db/token=placeholder /Users/example/private/file")

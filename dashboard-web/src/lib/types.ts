@@ -14,13 +14,32 @@ export interface Deadline {
   url: string | null;
 }
 
+export type MessageKind = "email" | "announcement" | "assignment";
+export type MessageFilter = "all" | MessageKind;
+
 export interface MessageItem {
-  kind: "email" | "announcement";
+  source_id: string;
+  kind: MessageKind;
   title: string;
   source_label: string;
   occurred_at: string | null;
   is_unread: boolean;
   url: string | null;
+}
+
+export interface MessageDetail {
+  title: string;
+  source_label: string;
+  occurred_at: string | null;
+  body: string;
+  url: string | null;
+  is_unread: boolean;
+}
+
+export interface MessageMarkReadPayload extends Record<string, unknown> {
+  kind: MessageFilter;
+  ids?: string[];
+  all?: boolean;
 }
 
 export interface MaterialNode {
@@ -31,6 +50,7 @@ export interface MaterialNode {
   source_id?: string;
   course_id?: string;
   category?: string;
+  manual_override?: boolean;
   size?: number | null;
   updated_at?: string | null;
   download_status?: "pending" | "downloaded" | "failed";
@@ -65,4 +85,23 @@ export interface SettingsStatus {
   auto_download_current_term: boolean;
   organize_by_category: boolean;
   mail_account: string;
+  ai_enabled: boolean;
+  ai_base_url: string;
+  ai_model: string;
+  ai_key_saved: boolean;
+}
+
+export interface MaterialMoveResult {
+  source_id: string;
+  status: "saved" | "moved" | "unchanged";
+  local_path: string | null;
+}
+
+export interface ArchiveActionResult {
+  classified: number;
+  reused: number;
+  fallback: number;
+  moved: number;
+  unchanged: number;
+  failed: number;
 }

@@ -10,6 +10,11 @@ from typing import Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sjtu_learning_assistant.ai_classifier import (
+    AIClassificationError,
+    OpenAIClassificationClient,
+)
+from sjtu_learning_assistant.ai_keychain import AIKeychainError, get_ai_api_key
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveError,
@@ -28,12 +33,15 @@ from sjtu_learning_assistant.desktop_database import (
 from sjtu_learning_assistant.local_settings import SettingsError, SettingsStore
 from sjtu_learning_assistant.mail_client import (
     DEFAULT_INITIAL_LIMIT,
+    fetch_email_body_backfill,
     fetch_incremental_mail,
 )
 from sjtu_learning_assistant.notifications import NotificationService
 from sjtu_learning_assistant.repository import (
+    get_email_body_backfill_targets,
     get_sync_state,
     persist_canvas_data,
+    persist_email_body_backfill,
     persist_emails,
 )
 from test_canvas import (
@@ -51,6 +59,8 @@ from test_canvas import (
     get_token,
 )
 from test_mail import MailCheckError, get_password, normalize_email, prompt_email
+
+DEFAULT_EMAIL_BODY_BACKFILL_LIMIT = 50
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -124,6 +134,8 @@ def sync_canvas(
     archive_root: Path = DEFAULT_ARCHIVE_ROOT,
     current_term: str | None = None,
     organize_by_category: bool = True,
+    ai_client: OpenAIClassificationClient | None = None,
+    ai_enabled: bool = False,
 ) -> None:
     token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
@@ -238,6 +250,8 @@ def sync_canvas(
                 current_term=current_term,
                 organize_by_category=organize_by_category,
                 active_course_source_ids={str(course["id"]) for course in raw_courses},
+                ai_client=ai_client,
+                ai_enabled=ai_enabled,
             ).archive_current_term()
         if archive_result.skipped:
             print("文件归档跳过：%s" % archive_result.message)
@@ -268,7 +282,13 @@ def sync_canvas(
             print(f"警告：通知处理失败，但数据同步已成功：{exc}", file=sys.stderr)
 
 
-def sync_mail(engine, email_address: str, initial_limit: int) -> None:
+def sync_mail(
+    engine,
+    email_address: str,
+    initial_limit: int,
+    *,
+    body_backfill_limit: int = DEFAULT_EMAIL_BODY_BACKFILL_LIMIT,
+) -> None:
     password, _ = get_password(email_address, use_keychain=True)
     state = get_sync_state(engine, "email", "inbox")
     result = fetch_incremental_mail(
@@ -283,6 +303,28 @@ def sync_mail(engine, email_address: str, initial_limit: int) -> None:
         f"获取 {persisted.fetched}，新增 {persisted.inserted}，"
         f"更新 {persisted.updated}；最高 UID {result.highest_uid}。"
     )
+
+    try:
+        targets = get_email_body_backfill_targets(
+            engine, email_address, limit=body_backfill_limit
+        )
+        if targets:
+            backfill = fetch_email_body_backfill(email_address, password, targets)
+            updated = persist_email_body_backfill(engine, backfill.updates)
+            print(
+                "旧邮件正文回填："
+                f"候选 {backfill.selected}，尝试 {backfill.attempted}，"
+                f"成功 {updated}，失败 {backfill.failed}，"
+                f"UIDVALIDITY 不匹配 {backfill.uid_validity_mismatched}。"
+            )
+    except (MailCheckError, SQLAlchemyError):
+        # Incremental mail is already committed. Keep the backfill retryable and do not
+        # print exception details that might contain server data or credentials.
+        print(
+            "警告：旧邮件正文回填本次未完成；新邮件同步已成功，稍后可安全重试。",
+            file=sys.stderr,
+        )
+
     if result.bootstrap_truncated:
         print(
             f"提示：首次同步仅导入最近 {initial_limit} 封邮件；"
@@ -311,16 +353,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not args.mail_only:
             sync_options = {}
+            ai_client = None
+            if settings.ai_enabled and settings.ai_key_saved:
+                try:
+                    ai_key = get_ai_api_key()
+                    if ai_key:
+                        ai_client = OpenAIClassificationClient(
+                            api_key=ai_key,
+                            base_url=settings.ai_base_url,
+                            model=settings.ai_model,
+                        )
+                except (AIKeychainError, AIClassificationError):
+                    ai_client = None
             if not settings.organize_by_category:
                 sync_options["organize_by_category"] = False
-            sync_canvas(
-                engine,
-                notify=not args.no_notify,
-                download=settings.auto_download_current_term,
-                archive_root=Path(settings.archive_root),
-                current_term=args.current_term,
-                **sync_options,
-            )
+            if settings.ai_enabled:
+                sync_options["ai_client"] = ai_client
+                sync_options["ai_enabled"] = True
+            try:
+                sync_canvas(
+                    engine,
+                    notify=not args.no_notify,
+                    download=settings.auto_download_current_term,
+                    archive_root=Path(settings.archive_root),
+                    current_term=args.current_term,
+                    **sync_options,
+                )
+            finally:
+                if ai_client is not None:
+                    ai_client.close()
         if not args.canvas_only:
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()

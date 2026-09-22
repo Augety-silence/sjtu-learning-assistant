@@ -1,3 +1,12 @@
+import type {
+  MaterialMoveResult,
+  MessageDetail,
+  MessageFilter,
+  MessageItem,
+  MessageKind,
+  MessageMarkReadPayload,
+} from "@/lib/types";
+
 export interface BridgeError {
   code: string;
   message: string;
@@ -51,6 +60,34 @@ export async function invoke<T>(
   return response.data as T;
 }
 
+export function getMessages(kind: MessageFilter) {
+  return invoke<{ items: MessageItem[] }>("messages", { kind });
+}
+
+export function getMessageDetail(kind: MessageKind, sourceId: string) {
+  return invoke<MessageDetail>("message_detail", {
+    kind,
+    source_id: sourceId,
+  });
+}
+
+export function markMessagesRead(payload: MessageMarkReadPayload) {
+  return invoke<{ updated: number }>("message_mark_read", payload);
+}
+
+export function moveMaterial(sourceId: string, targetNodeId: string) {
+  return invoke<MaterialMoveResult>("material_move", {
+    source_id: sourceId,
+    target_node_id: targetNodeId,
+  });
+}
+
+export function restoreMaterialAuto(sourceId: string) {
+  return invoke<MaterialMoveResult>("material_restore_auto", {
+    source_id: sourceId,
+  });
+}
+
 export function getSettings() {
   return invoke<import("@/lib/types").SettingsStatus>("settings_status");
 }
@@ -59,13 +96,30 @@ export function updateSettings(
   payload: Partial<
     Pick<
       import("@/lib/types").SettingsStatus,
-      "auto_download_current_term" | "organize_by_category" | "mail_account"
+      | "auto_download_current_term"
+      | "organize_by_category"
+      | "mail_account"
+      | "ai_enabled"
+      | "ai_base_url"
+      | "ai_model"
     >
   >,
 ) {
   return invoke<import("@/lib/types").SettingsStatus>(
     "settings_update",
     payload,
+  );
+}
+
+export function importAiConnection(configJson: string) {
+  return invoke<import("@/lib/types").SettingsStatus>("settings_ai_import", {
+    config_json: configJson,
+  });
+}
+
+export function testAiConnection() {
+  return invoke<{ ok: boolean; model: string; category: string }>(
+    "settings_ai_test",
   );
 }
 
@@ -77,9 +131,7 @@ export function pickArchiveRoot() {
 }
 
 export function organizeArchive() {
-  return invoke<{ moved: number; unchanged: number; failed: number }>(
-    "archive_organize",
-  );
+  return invoke<import("@/lib/types").ArchiveActionResult>("archive_organize");
 }
 
 export function openExternal(url: string): Promise<{ status: string }> {

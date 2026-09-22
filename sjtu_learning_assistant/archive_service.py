@@ -10,16 +10,23 @@ import stat
 import tempfile
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.ai_classifier import (
+    AIClassificationError,
+    ClassificationInput,
+    OpenAIClassificationClient,
+    classification_fingerprint,
+)
 from sjtu_learning_assistant.material_classifier import (
     CATEGORY_LABELS,
     category_label,
@@ -66,6 +73,17 @@ class ArchiveFileContext:
     course_id: int = 0
     category: str = "other"
     course_code: str | None = None
+    module_names: tuple[str, ...] = ()
+    module_item_names: tuple[str, ...] = ()
+    ai_category: str | None = None
+    ai_fingerprint: str | None = None
+    ai_model: str | None = None
+    rule_category: str = "other"
+    canvas_folder_names: tuple[str, ...] = ()
+    manual_category: str | None = None
+    manual_folder_id: int | None = None
+    manual_override: bool = False
+    course_source_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,6 +105,9 @@ class ArchiveSummary:
     results: tuple[DownloadResult, ...]
     skipped: bool = False
     message: str | None = None
+    classified: int = 0
+    reused: int = 0
+    fallback: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,6 +116,16 @@ class OrganizeSummary:
     unchanged: int
     failed: int
     results: tuple[DownloadResult, ...]
+    classified: int = 0
+    reused: int = 0
+    fallback: int = 0
+
+
+@dataclass(frozen=True)
+class ClassificationSummary:
+    classified: int = 0
+    reused: int = 0
+    fallback: int = 0
 
 
 def derive_current_term(on_date: date | None = None) -> str:
@@ -346,6 +377,9 @@ class ArchiveService:
         use_recent_active_courses: bool = False,
         download_client_factory: Callable[[], httpx.Client] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        ai_client: OpenAIClassificationClient | None = None,
+        ai_enabled: bool = False,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.engine = engine
         self.canvas_client = canvas_client
@@ -361,6 +395,9 @@ class ArchiveService:
         self.use_recent_active_courses = use_recent_active_courses
         self.download_client_factory = download_client_factory or self._default_download_client
         self.sleeper = sleeper
+        self.ai_client = ai_client
+        self.ai_enabled = ai_enabled
+        self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
     @staticmethod
     def _default_download_client() -> httpx.Client:
@@ -385,7 +422,9 @@ class ArchiveService:
                     skipped=True,
                     message="本轮 Canvas 同步没有 active 课程，已安全跳过文件归档。",
                 )
-            contexts = self._load_contexts(course_ids=course_ids)
+            contexts, ai_summary = self._apply_ai_classification(
+                self._load_contexts(course_ids=course_ids)
+            )
             # IDs come directly from Canvas fetch_active_courses and deliberately
             # take precedence over localised or imprecise term names.
             results = self._download_contexts(contexts)
@@ -397,6 +436,9 @@ class ArchiveService:
                 unchanged=sum(item.status == "unchanged" for item in results),
                 failed=sum(item.status == "failed" for item in results),
                 results=tuple(results),
+                classified=ai_summary.classified,
+                reused=ai_summary.reused,
+                fallback=ai_summary.fallback,
             )
 
         expected_term = self.current_term or derive_current_term()
@@ -420,7 +462,9 @@ class ArchiveService:
                 skipped=True,
                 message="%s，已安全跳过文件归档。" % reason,
             )
-        contexts = self._load_contexts(term_name=matches[0])
+        contexts, ai_summary = self._apply_ai_classification(
+            self._load_contexts(term_name=matches[0])
+        )
         results = self._download_contexts(contexts)
         return ArchiveSummary(
             term_name=expected_term,
@@ -428,6 +472,9 @@ class ArchiveService:
             unchanged=sum(item.status == "unchanged" for item in results),
             failed=sum(item.status == "failed" for item in results),
             results=tuple(results),
+            classified=ai_summary.classified,
+            reused=ai_summary.reused,
+            fallback=ai_summary.fallback,
         )
 
     def _active_course_ids(self) -> set[int]:
@@ -482,7 +529,12 @@ class ArchiveService:
             raise ArchiveError(f"未找到 Canvas 文件 source_id={clean_source_id}。")
         # 对同课程同文件夹的文件整体规划名称，确保单文件下载也稳定处理重名。
         target_context = contexts[0]
-        peers = self._load_contexts(course_ids={target_context.course_id})
+        peers, _summary = self._apply_ai_classification(
+            self._load_contexts(course_ids={target_context.course_id})
+        )
+        target_context = next(
+            item for item in peers if item.source_id == target_context.source_id
+        )
         planned = self._planned_paths(peers)
         return self._download_one(target_context, planned[target_context.source_id])
 
@@ -527,8 +579,31 @@ class ArchiveService:
             module_signals = load_module_signals(session, course_ids=course_ids)
             contexts: list[ArchiveFileContext] = []
             for file, course in rows:
-                folder_names = self._folder_chain(file.folder_id, folder_by_id)
+                canvas_folder_names = self._folder_chain(file.folder_id, folder_by_id)
                 module_names, module_item_names = module_signals.get(file.id, ((), ()))
+                rule_category = classify_material(
+                    module_names=module_names,
+                    module_item_names=module_item_names,
+                    folder_names=reversed(canvas_folder_names),
+                    filename=file.display_name or file.filename or "unnamed-file",
+                )
+                manual_override = bool(
+                    file.manual_override and file.manual_category in CATEGORY_LABELS
+                )
+                manual_folder = folder_by_id.get(file.manual_folder_id)
+                manual_folder_names = (
+                    self._folder_chain(file.manual_folder_id, folder_by_id)
+                    if manual_override
+                    and file.manual_folder_id is not None
+                    and manual_folder is not None
+                    and manual_folder.course_id == file.course_id
+                    else ()
+                )
+                automatic_category = (
+                    file.ai_category
+                    if file.ai_category in CATEGORY_LABELS
+                    else rule_category
+                )
                 contexts.append(
                     ArchiveFileContext(
                         file_id=file.id,
@@ -545,17 +620,113 @@ class ArchiveService:
                         downloaded_size=file.downloaded_size,
                         downloaded_sha256=file.download_sha256,
                         downloaded_source_updated_at=file.downloaded_source_updated_at,
-                        folder_names=folder_names,
-                        category=classify_material(
-                            module_names=module_names,
-                            module_item_names=module_item_names,
-                            folder_names=reversed(folder_names),
-                            filename=file.display_name or file.filename or "unnamed-file",
+                        folder_names=(
+                            manual_folder_names
+                            if manual_override
+                            else canvas_folder_names
+                        ),
+                        category=(
+                            str(file.manual_category)
+                            if manual_override
+                            else automatic_category
                         ),
                         course_code=course.course_code,
+                        module_names=module_names,
+                        module_item_names=module_item_names,
+                        ai_category=file.ai_category,
+                        ai_fingerprint=file.ai_fingerprint,
+                        ai_model=file.ai_model,
+                        rule_category=rule_category,
+                        canvas_folder_names=canvas_folder_names,
+                        manual_category=file.manual_category,
+                        manual_folder_id=file.manual_folder_id,
+                        manual_override=manual_override,
+                        course_source_id=course.source_id,
                     )
                 )
             return contexts
+
+    def _apply_ai_classification(
+        self, contexts: list[ArchiveFileContext]
+    ) -> tuple[list[ArchiveFileContext], ClassificationSummary]:
+        if not contexts:
+            return contexts, ClassificationSummary()
+        if self.ai_client is None:
+            return contexts, ClassificationSummary(
+                fallback=len(contexts) if self.ai_enabled else 0
+            )
+
+        prepared: list[tuple[ArchiveFileContext, ClassificationInput, str]] = []
+        output: dict[str, ArchiveFileContext] = {}
+        pending: list[ClassificationInput] = []
+        reused = 0
+        for context in contexts:
+            if context.manual_override:
+                output[context.source_id] = context
+                continue
+            item = ClassificationInput(
+                source_id=context.source_id,
+                course_name=context.course_name,
+                filename=context.display_name,
+                folder_names=context.canvas_folder_names or context.folder_names,
+                module_names=context.module_names,
+                module_item_names=context.module_item_names,
+                source_updated_at=context.source_updated_at,
+            )
+            fingerprint = classification_fingerprint(item)
+            prepared.append((context, item, fingerprint))
+            if (
+                context.ai_category in CATEGORY_LABELS
+                and context.ai_fingerprint == fingerprint
+                and context.ai_model == self.ai_client.model
+            ):
+                output[context.source_id] = replace(
+                    context, category=str(context.ai_category)
+                )
+                reused += 1
+            else:
+                pending.append(item)
+
+        if not pending:
+            return [output[item.source_id] for item in contexts], ClassificationSummary(
+                reused=reused
+            )
+        try:
+            categories = self.ai_client.classify_many(pending)
+        except AIClassificationError:
+            return [
+                output.get(item.source_id, item) for item in contexts
+            ], ClassificationSummary(reused=reused, fallback=len(pending))
+
+        classified_at = self.now_provider()
+        if classified_at.tzinfo is None:
+            classified_at = classified_at.replace(tzinfo=timezone.utc)
+        reused_output = dict(output)
+        try:
+            with Session(self.engine) as session, session.begin():
+                for context, item, fingerprint in prepared:
+                    if item.source_id not in categories:
+                        continue
+                    category = categories[item.source_id]
+                    output[item.source_id] = replace(context, category=category)
+                    session.execute(
+                        update(CourseFile)
+                        .where(CourseFile.id == context.file_id)
+                        .values(
+                            ai_category=category,
+                            ai_fingerprint=fingerprint,
+                            ai_model=self.ai_client.model,
+                            ai_classified_at=classified_at,
+                        )
+                    )
+        except SQLAlchemyError:
+            # AI cache write failures must never break ordinary archive/sync work.
+            return [
+                reused_output.get(item.source_id, item) for item in contexts
+            ], ClassificationSummary(reused=reused, fallback=len(pending))
+        return [output.get(item.source_id, item) for item in contexts], ClassificationSummary(
+            classified=len(categories), reused=reused
+        )
 
     @staticmethod
     def _folder_chain(
@@ -563,6 +734,254 @@ class ArchiveService:
     ) -> tuple[str, ...]:
         return tuple(
             folder.name for folder in safe_folder_chain(folder_id, folder_by_id)
+        )
+
+    @staticmethod
+    def _find_tree_node(root: dict[str, object], node_id: str) -> dict[str, object] | None:
+        if root.get("id") == node_id:
+            return root
+        children = root.get("children")
+        if not isinstance(children, list):
+            return None
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            found = ArchiveService._find_tree_node(child, node_id)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _validate_source_id(source_id: object) -> str:
+        if (
+            type(source_id) is not str
+            or not source_id.strip()
+            or len(source_id) > 255
+            or any(ord(character) < 32 or ord(character) == 127 for character in source_id)
+        ):
+            raise ArchiveError("文件标识不正确。")
+        return source_id.strip()
+
+    def _resolve_manual_target(
+        self, source_id: str, target_node_id: str
+    ) -> tuple[ArchiveFileContext, str, int | None, tuple[str, ...]]:
+        source_id = self._validate_source_id(source_id)
+        if (
+            type(target_node_id) is not str
+            or not target_node_id.strip()
+            or len(target_node_id) > 512
+            or any(ord(character) < 32 or ord(character) == 127 for character in target_node_id)
+        ):
+            raise ArchiveError("目标目录标识不正确。")
+        contexts = self._load_contexts(source_id=source_id)
+        if len(contexts) != 1:
+            raise ArchiveError("未找到可归档的 Canvas 文件。")
+        context = contexts[0]
+        target_node_id = target_node_id.strip()
+        with Session(self.engine) as session:
+            from sjtu_learning_assistant.material_tree import build_material_tree
+
+            target = self._find_tree_node(
+                build_material_tree(session)["root"], target_node_id
+            )
+            if target is None or target.get("kind") not in {"category", "folder"}:
+                raise ArchiveError("目标目录无效或已不可用。")
+            category = target.get("category")
+            if category not in CATEGORY_LABELS:
+                raise ArchiveError("目标分类不在允许范围内。")
+            if target.get("course_id") != context.course_source_id:
+                raise ArchiveError("不能将资料移动到其他课程。")
+            folder_id: int | None = None
+            folder_names: tuple[str, ...] = ()
+            expected_category_id = (
+                "category:" + context.course_source_id + ":" + str(category)
+            )
+            if target.get("kind") == "category":
+                if target_node_id != expected_category_id:
+                    raise ArchiveError("目标目录标识不正确。")
+            else:
+                parts = target_node_id.split(":")
+                if len(parts) != 4 or parts[0] != "folder":
+                    raise ArchiveError("目标目录标识不正确。")
+                try:
+                    target_course_id = int(parts[1])
+                    folder_id = int(parts[3])
+                except ValueError as exc:
+                    raise ArchiveError("目标目录标识不正确。") from exc
+                if (
+                    target_course_id != context.course_id
+                    or parts[2] != category
+                ):
+                    raise ArchiveError("不能将资料移动到其他课程。")
+                folders = {
+                    folder.id: folder
+                    for folder in session.scalars(
+                        select(CourseFolder).where(
+                            CourseFolder.course_id == context.course_id,
+                            CourseFolder.is_active.is_(True),
+                        )
+                    ).all()
+                }
+                folder = folders.get(folder_id)
+                if folder is None:
+                    raise ArchiveError("目标 Canvas 文件夹不存在或不属于当前课程。")
+                chain = safe_folder_chain(folder_id, folders)
+                if not chain or chain[-1].id != folder_id:
+                    raise ArchiveError("目标 Canvas 文件夹层级无效。")
+                folder_names = tuple(item.name for item in chain)
+        return context, str(category), folder_id, folder_names
+
+    def _set_manual_fields(
+        self,
+        source_id: str,
+        *,
+        course_id: int,
+        manual_override: bool,
+        category: str | None,
+        folder_id: int | None,
+        local_path: Path | None = None,
+        update_local_path: bool = False,
+    ) -> None:
+        if manual_override and category not in CATEGORY_LABELS:
+            raise ArchiveError("目标分类不在允许范围内。")
+        if not manual_override and (category is not None or folder_id is not None):
+            raise ArchiveError("自动分类状态参数无效。")
+        with Session(self.engine) as session, session.begin():
+            record = session.scalar(
+                select(CourseFile)
+                .where(CourseFile.source_id == source_id)
+                .with_for_update()
+            )
+            if record is None or record.course_id != course_id or not record.is_active:
+                raise ArchiveError("文件元数据已变化，请刷新后重试。")
+            if folder_id is not None:
+                folder = session.scalar(
+                    select(CourseFolder).where(
+                        CourseFolder.id == folder_id,
+                        CourseFolder.course_id == course_id,
+                        CourseFolder.is_active.is_(True),
+                    )
+                )
+                if folder is None:
+                    raise ArchiveError("目标 Canvas 文件夹不存在或不属于当前课程。")
+            record.manual_override = manual_override
+            record.manual_category = category
+            record.manual_folder_id = folder_id
+            if update_local_path:
+                record.local_path = str(local_path) if local_path is not None else None
+
+    def _persist_organized_path(
+        self,
+        context: ArchiveFileContext,
+        target: Path,
+        manual_state: tuple[bool, str | None, int | None] | None,
+    ) -> None:
+        if manual_state is None:
+            self._update_local_path(context.source_id, target)
+            return
+        override, category, folder_id = manual_state
+        self._set_manual_fields(
+            context.source_id,
+            course_id=context.course_id,
+            manual_override=override,
+            category=category,
+            folder_id=folder_id,
+            local_path=target,
+            update_local_path=True,
+        )
+
+    def move_file_by_source_id(
+        self, source_id: str, target_node_id: str
+    ) -> DownloadResult:
+        context, category, folder_id, folder_names = self._resolve_manual_target(
+            source_id, target_node_id
+        )
+        contexts, _summary = self._apply_ai_classification(
+            self._load_contexts(course_ids={context.course_id})
+        )
+        current = next(item for item in contexts if item.source_id == context.source_id)
+        desired = replace(
+            current,
+            category=category,
+            folder_names=folder_names,
+            manual_category=category,
+            manual_folder_id=folder_id,
+            manual_override=True,
+        )
+        planned_contexts = [
+            desired if item.source_id == desired.source_id else item for item in contexts
+        ]
+        if current.download_status == "downloaded" and current.local_path:
+            target = self._planned_paths(planned_contexts)[current.source_id]
+            return self._organize_one(
+                desired,
+                target,
+                manual_state=(True, category, folder_id),
+            )
+        self._set_manual_fields(
+            current.source_id,
+            course_id=current.course_id,
+            manual_override=True,
+            category=category,
+            folder_id=folder_id,
+        )
+        return DownloadResult(
+            source_id=current.source_id,
+            status="saved",
+            local_path=current.local_path,
+        )
+
+    def restore_file_auto(self, source_id: str) -> DownloadResult:
+        source_id = self._validate_source_id(source_id)
+        contexts = self._load_contexts(source_id=source_id)
+        if len(contexts) != 1:
+            raise ArchiveError("未找到可归档的 Canvas 文件。")
+        original = contexts[0]
+        if not original.manual_override:
+            return DownloadResult(
+                source_id=original.source_id,
+                status="unchanged",
+                local_path=original.local_path,
+            )
+        course_contexts = self._load_contexts(course_ids={original.course_id})
+        automatic_seed = replace(
+            original,
+            category=(
+                str(original.ai_category)
+                if original.ai_category in CATEGORY_LABELS
+                else original.rule_category
+            ),
+            folder_names=original.canvas_folder_names,
+            manual_category=None,
+            manual_folder_id=None,
+            manual_override=False,
+        )
+        seeded = [
+            automatic_seed if item.source_id == original.source_id else item
+            for item in course_contexts
+        ]
+        effective, _summary = self._apply_ai_classification(seeded)
+        automatic = next(
+            item for item in effective if item.source_id == original.source_id
+        )
+        if original.download_status == "downloaded" and original.local_path:
+            target = self._planned_paths(effective)[original.source_id]
+            return self._organize_one(
+                automatic,
+                target,
+                manual_state=(False, None, None),
+            )
+        self._set_manual_fields(
+            original.source_id,
+            course_id=original.course_id,
+            manual_override=False,
+            category=None,
+            folder_id=None,
+        )
+        return DownloadResult(
+            source_id=original.source_id,
+            status="saved",
+            local_path=original.local_path,
         )
 
     def _planned_paths(
@@ -575,19 +994,22 @@ class ArchiveService:
         for context in values:
             if context.source_id in base_paths:
                 continue
+            # A user-selected category is an explicit physical archive target even
+            # when automatic category organization is disabled in settings.
+            use_category = self.organize_by_category or context.manual_override
             components = [
                 sanitize_component(context.term_name, fallback="Unknown Term"),
                 sanitize_component(context.course_name, fallback="Unnamed Course"),
                 *(
                     [sanitize_component(category_label(context.category), fallback="其他")]
-                    if self.organize_by_category
+                    if use_category
                     else []
                 ),
                 *canonical_folder_chain(
                     context.folder_names,
                     course_name=context.course_name,
                     course_code=context.course_code,
-                    category=context.category if self.organize_by_category else None,
+                    category=context.category if use_category else None,
                 ),
             ]
             filename = sanitize_component(
@@ -623,7 +1045,9 @@ class ArchiveService:
         """将最近 active 课程的已下载文件安全、幂等地整理到当前规划路径。"""
         if not self.organize_by_category:
             raise ArchiveError("按类别整理已关闭，未移动任何文件。")
-        all_contexts = self._load_contexts(course_ids=self._active_course_ids())
+        all_contexts, ai_summary = self._apply_ai_classification(
+            self._load_contexts(course_ids=self._active_course_ids())
+        )
         contexts = [
             item
             for item in all_contexts
@@ -647,6 +1071,9 @@ class ArchiveService:
             unchanged=sum(item.status == "unchanged" for item in results),
             failed=sum(item.status == "failed" for item in results),
             results=tuple(results),
+            classified=ai_summary.classified,
+            reused=ai_summary.reused,
+            fallback=ai_summary.fallback,
         )
 
     @staticmethod
@@ -811,8 +1238,19 @@ class ArchiveService:
                 break
             current = current.parent
 
-    def _organize_one(self, context: ArchiveFileContext, target: Path) -> DownloadResult:
+    def _organize_one(
+        self,
+        context: ArchiveFileContext,
+        target: Path,
+        *,
+        manual_state: tuple[bool, str | None, int | None] | None = None,
+    ) -> DownloadResult:
         source_path = Path(context.local_path or "")
+        previous_manual_state = (
+            context.manual_override,
+            context.manual_category,
+            context.manual_folder_id,
+        )
         _ensure_safe_directory(self.archive_root, target.parent)
         target = ensure_within_root(self.archive_root, target)
 
@@ -821,7 +1259,7 @@ class ArchiveService:
             if recovered is None:
                 raise ArchiveError("已下载文件不存在，且未找到可恢复的目标文件。")
             recovered_path, size, digest = recovered
-            self._update_local_path(context.source_id, recovered_path)
+            self._persist_organized_path(context, recovered_path, manual_state)
             return DownloadResult(
                 context.source_id, "unchanged", str(recovered_path), size, digest
             )
@@ -830,7 +1268,7 @@ class ArchiveService:
         source_root = self._source_archive_root(context, source)
         size, digest = self._verified_content(context, source)
         if source == target:
-            self._update_local_path(context.source_id, target)
+            self._persist_organized_path(context, target, manual_state)
             return DownloadResult(
                 context.source_id, "unchanged", str(target), size, digest
             )
@@ -841,14 +1279,18 @@ class ArchiveService:
                 raise ArchiveError("目标路径已存在且不是普通文件。")
             target_size, target_digest = self._file_digest(final_target)
             if target_size == size and target_digest == digest:
-                self._update_local_path(context.source_id, final_target)
+                self._persist_organized_path(context, final_target, manual_state)
                 try:
                     source.unlink()
                 except OSError:
                     # The DB must not claim the duplicate target while the source
                     # could not be removed. Restore the old path when possible.
                     try:
-                        self._update_local_path(context.source_id, source)
+                        self._persist_organized_path(
+                            context,
+                            source,
+                            previous_manual_state if manual_state is not None else None,
+                        )
                     except Exception:
                         pass
                     raise
@@ -873,7 +1315,7 @@ class ArchiveService:
                     raise
                 self._copy_across_volume(source, final_target)
             try:
-                self._update_local_path(context.source_id, final_target)
+                self._persist_organized_path(context, final_target, manual_state)
                 database_updated = True
             except Exception:
                 if renamed:
@@ -888,7 +1330,11 @@ class ArchiveService:
                 except OSError:
                     restored = False
                     try:
-                        self._update_local_path(context.source_id, source)
+                        self._persist_organized_path(
+                            context,
+                            source,
+                            previous_manual_state if manual_state is not None else None,
+                        )
                         restored = True
                     except Exception:
                         pass

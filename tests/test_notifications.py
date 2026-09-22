@@ -369,7 +369,18 @@ class NotificationCliTests(unittest.TestCase):
     def test_sync_main_disables_notification_processing(self) -> None:
         engine = SimpleNamespace(dispose=lambda: None)
         health = SimpleNamespace(database="test", server_version="16")
+        settings = SimpleNamespace(
+            archive_root=str(Path.home() / "Documents" / "SJTU Study"),
+            auto_download_current_term=True,
+            organize_by_category=True,
+            ai_enabled=False,
+            ai_key_saved=False,
+        )
         with (
+            patch.object(
+                sync_data_to_db.SettingsStore, "resolve", return_value=settings
+            ),
+            patch.object(sync_data_to_db, "get_ai_api_key") as get_ai_api_key,
             patch.object(sync_data_to_db, "create_database_engine", return_value=engine),
             patch.object(sync_data_to_db, "check_database", return_value=health),
             patch.object(sync_data_to_db, "sync_canvas") as sync_canvas,
@@ -385,11 +396,23 @@ class NotificationCliTests(unittest.TestCase):
             archive_root=Path.home() / "Documents" / "SJTU Study",
             current_term=None,
         )
+        get_ai_api_key.assert_not_called()
 
     def test_sync_main_propagates_no_download(self) -> None:
         engine = SimpleNamespace(dispose=lambda: None)
         health = SimpleNamespace(database="test", server_version="16")
+        settings = SimpleNamespace(
+            archive_root="/tmp/SJTU Archive",
+            auto_download_current_term=False,
+            organize_by_category=True,
+            ai_enabled=False,
+            ai_key_saved=False,
+        )
         with (
+            patch.object(
+                sync_data_to_db.SettingsStore, "resolve", return_value=settings
+            ),
+            patch.object(sync_data_to_db, "get_ai_api_key") as get_ai_api_key,
             patch.object(sync_data_to_db, "create_database_engine", return_value=engine),
             patch.object(sync_data_to_db, "check_database", return_value=health),
             patch.object(sync_data_to_db, "sync_canvas") as sync_canvas,
@@ -414,6 +437,7 @@ class NotificationCliTests(unittest.TestCase):
             archive_root=Path("/tmp/SJTU Archive"),
             current_term="2026-2027 Fall",
         )
+        get_ai_api_key.assert_not_called()
 
     def test_notification_failure_does_not_fail_completed_canvas_sync(self) -> None:
         empty = UpsertResult(0, 0, 0)

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Protocol, TypeVar
 
-from sqlalchemy import Engine, case, or_, select, update
+from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,20 @@ class EmailLike(Protocol):
     body_preview: str | None
     is_unread: bool
     raw_data: dict[str, Any]
+    body_text: str | None
+
+
+class EmailBodyUpdateLike(Protocol):
+    source_id: str
+    body_text: str
+    body_preview: str
+
+
+@dataclass(frozen=True)
+class EmailBodyBackfillTarget:
+    source_id: str
+    uid: int
+    uid_validity: str
 
 
 @dataclass(frozen=True)
@@ -684,6 +698,8 @@ def _upsert_files(
         )
         statement = statement.on_conflict_do_update(
             index_elements=[CourseFile.source_id],
+            # Do not include ai_category/fingerprint/model/classified_at here: Canvas
+            # metadata refreshes must preserve the independently managed AI cache.
             set_={
                 "course_id": statement.excluded.course_id,
                 "folder_id": statement.excluded.folder_id,
@@ -929,7 +945,6 @@ def _upsert_items(
             "due_at": statement.excluded.due_at,
             "url": statement.excluded.url,
             "priority": statement.excluded.priority,
-            "is_read": statement.excluded.is_read,
             "is_active": statement.excluded.is_active,
             "raw_data": statement.excluded.raw_data,
             "updated_at": now,
@@ -1058,6 +1073,7 @@ def persist_emails(
             "sent_at": item.sent_at,
             "received_at": item.received_at,
             "body_preview": item.body_preview,
+            "body_text": getattr(item, "body_text", None),
             "is_unread": item.is_unread,
             "priority": 0,
             "raw_data": item.raw_data,
@@ -1093,6 +1109,7 @@ def persist_emails(
                     "sent_at": statement.excluded.sent_at,
                     "received_at": statement.excluded.received_at,
                     "body_preview": statement.excluded.body_preview,
+                    "body_text": statement.excluded.body_text,
                     "is_unread": statement.excluded.is_unread,
                     "raw_data": statement.excluded.raw_data,
                     "updated_at": now,
@@ -1121,6 +1138,86 @@ def persist_emails(
         )
 
     return result
+
+
+def get_email_body_backfill_targets(
+    engine: Engine,
+    email_address: str,
+    *,
+    limit: int,
+) -> tuple[EmailBodyBackfillTarget, ...]:
+    """Select a bounded batch of blank legacy bodies with consistent IMAP identity."""
+    if limit < 1:
+        return ()
+
+    normalized_address = email_address.casefold()
+    targets: list[EmailBodyBackfillTarget] = []
+    with Session(engine) as session:
+        records = session.scalars(
+            select(Email)
+            .where(or_(Email.body_text.is_(None), func.trim(Email.body_text) == ""))
+            .order_by(Email.id)
+        ).yield_per(limit)
+        for record in records:
+            parts = record.source_id.rsplit(":", 3)
+            if len(parts) != 4:
+                continue
+            source_address, source_folder, source_validity, source_uid = parts
+            if (
+                source_address.casefold() != normalized_address
+                or source_folder.casefold() != "inbox"
+                or not source_validity
+            ):
+                continue
+            try:
+                parsed_source_uid = int(source_uid)
+            except (TypeError, ValueError):
+                continue
+            raw_data = record.raw_data if isinstance(record.raw_data, dict) else {}
+            raw_uid = raw_data.get("uid", parsed_source_uid)
+            raw_validity = raw_data.get("uid_validity", source_validity)
+            raw_folder = str(raw_data.get("folder", source_folder))
+            try:
+                parsed_raw_uid = int(raw_uid)
+            except (TypeError, ValueError):
+                continue
+            parsed_raw_validity = str(raw_validity)
+            if (
+                parsed_source_uid < 1
+                or parsed_raw_uid != parsed_source_uid
+                or parsed_raw_validity != source_validity
+                or raw_folder.casefold() != "inbox"
+            ):
+                continue
+            targets.append(
+                EmailBodyBackfillTarget(
+                    source_id=record.source_id,
+                    uid=parsed_source_uid,
+                    uid_validity=source_validity,
+                )
+            )
+            if len(targets) >= limit:
+                break
+    return tuple(targets)
+
+
+def persist_email_body_backfill(
+    engine: Engine, updates: Iterable[EmailBodyUpdateLike]
+) -> int:
+    """Atomically fill body columns only, preserving all local/remote read state."""
+    updated = 0
+    with Session(engine) as session, session.begin():
+        for item in updates:
+            result = session.execute(
+                update(Email)
+                .where(
+                    Email.source_id == item.source_id,
+                    or_(Email.body_text.is_(None), func.trim(Email.body_text) == ""),
+                )
+                .values(body_text=item.body_text, body_preview=item.body_preview)
+            )
+            updated += max(result.rowcount or 0, 0)
+    return updated
 
 
 def upsert_courses(engine: Engine, courses: Iterable[CourseLike]) -> UpsertResult:

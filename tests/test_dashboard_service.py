@@ -95,6 +95,10 @@ class DashboardSettingsTests(unittest.TestCase):
                 "mail_account",
                 "auto_download_current_term",
                 "organize_by_category",
+                "ai_enabled",
+                "ai_base_url",
+                "ai_model",
+                "ai_key_saved",
             },
             set(status),
         )

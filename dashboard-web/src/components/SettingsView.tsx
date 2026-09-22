@@ -3,11 +3,22 @@ import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import {
   getSettings,
+  importAiConnection,
   organizeArchive,
   pickArchiveRoot,
+  testAiConnection,
   updateSettings,
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
+
+const AI_MODELS = [
+  "deepseek-chat",
+  "deepseek-reasoner",
+  "minimax",
+  "minimax-m2.7",
+  "qwen",
+  "qwen3.8-27b",
+] as const;
 
 export function SettingsView({
   onArchiveChanged,
@@ -19,13 +30,21 @@ export function SettingsView({
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
   const [mailAccount, setMailAccount] = useState("");
+  const [aiBaseUrl, setAiBaseUrl] = useState("");
+  const [aiModel, setAiModel] = useState("");
+  const [connectionJson, setConnectionJson] = useState("");
+
+  const applyStatus = (next: SettingsStatus) => {
+    setStatus(next);
+    setMailAccount(next.mail_account);
+    setAiBaseUrl(next.ai_base_url);
+    setAiModel(next.ai_model);
+  };
 
   const load = useCallback(async () => {
     setError("");
     try {
-      const next = await getSettings();
-      setStatus(next);
-      setMailAccount(next.mail_account);
+      applyStatus(await getSettings());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置状态读取失败");
     }
@@ -39,7 +58,12 @@ export function SettingsView({
     changes: Partial<
       Pick<
         SettingsStatus,
-        "auto_download_current_term" | "organize_by_category" | "mail_account"
+        | "auto_download_current_term"
+        | "organize_by_category"
+        | "mail_account"
+        | "ai_enabled"
+        | "ai_base_url"
+        | "ai_model"
       >
     >,
   ) => {
@@ -47,12 +71,39 @@ export function SettingsView({
     setError("");
     setNotice("");
     try {
-      const next = await updateSettings(changes);
-      setStatus(next);
-      setMailAccount(next.mail_account);
+      applyStatus(await updateSettings(changes));
       setNotice("设置已保存。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置保存失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const importConnection = async () => {
+    setBusy("ai-import");
+    setError("");
+    setNotice("");
+    try {
+      applyStatus(await importAiConnection(connectionJson));
+      setConnectionJson("");
+      setNotice("AI 连接已保存；API key 仅存入 macOS Keychain。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AI 连接保存失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const testConnection = async () => {
+    setBusy("ai-test");
+    setError("");
+    setNotice("");
+    try {
+      const result = await testAiConnection();
+      setNotice(`AI 连接测试成功：${result.model} 返回 ${result.category}。`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "AI 连接测试失败");
     } finally {
       setBusy("");
     }
@@ -64,7 +115,7 @@ export function SettingsView({
     setNotice("");
     try {
       const result = await pickArchiveRoot();
-      setStatus(result.settings);
+      applyStatus(result.settings);
       setNotice(
         result.cancelled ? "已取消选择，归档目录未更改。" : "归档目录已更新。",
       );
@@ -82,7 +133,7 @@ export function SettingsView({
     try {
       const result = await organizeArchive();
       setNotice(
-        `整理完成：移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
+        `AI 归档完成：新分类 ${result.classified}，复用 ${result.reused}，规则回退 ${result.fallback}；移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
       );
       onArchiveChanged?.();
     } catch (reason) {
@@ -101,7 +152,7 @@ export function SettingsView({
       <div className="view-intro">
         <div>
           <h2>归档与同步偏好</h2>
-          <p>配置当前学期资料的自动归档与目录整理方式。</p>
+          <p>配置当前学期资料的自动归档、AI 分类与目录整理方式。</p>
         </div>
       </div>
       {error && (
@@ -176,12 +227,102 @@ export function SettingsView({
           onChange={(checked) => void update({ organize_by_category: checked })}
         />
       </div>
+
+      <section className="ai-settings" aria-labelledby="ai-settings-title">
+        <div>
+          <h3 id="ai-settings-title">AI 增量归档分类</h3>
+          <p>
+            AI 只处理课程名、文件名、Canvas
+            文件夹及模块元数据，不会上传文件正文。
+          </p>
+        </div>
+        <ToggleRow
+          label="启用 AI 归档分类"
+          description={
+            status.ai_key_saved
+              ? "API key 已保存在 macOS Keychain。"
+              : "尚未保存 API key；未配置时会安全回退规则分类。"
+          }
+          checked={status.ai_enabled}
+          disabled={Boolean(busy)}
+          onChange={(checked) => void update({ ai_enabled: checked })}
+        />
+        <div className="ai-settings-grid">
+          <label htmlFor="ai-base-url">
+            <span>Base URL</span>
+            <input
+              id="ai-base-url"
+              value={aiBaseUrl}
+              disabled={Boolean(busy)}
+              onChange={(event) => setAiBaseUrl(event.target.value)}
+            />
+          </label>
+          <label htmlFor="ai-model">
+            <span>模型</span>
+            <select
+              id="ai-model"
+              value={aiModel}
+              disabled={Boolean(busy)}
+              onChange={(event) => setAiModel(event.target.value)}
+            >
+              {AI_MODELS.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Button
+            variant="outline"
+            disabled={Boolean(busy)}
+            onClick={() =>
+              void update({
+                ai_base_url: aiBaseUrl.trim(),
+                ai_model: aiModel,
+              })
+            }
+          >
+            保存 AI 参数
+          </Button>
+        </div>
+        <label className="ai-json-field" htmlFor="ai-connection-json">
+          <span>粘贴连接配置 JSON</span>
+          <textarea
+            id="ai-connection-json"
+            value={connectionJson}
+            disabled={Boolean(busy)}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setConnectionJson(event.target.value)}
+            placeholder={
+              '{"_type":"newapi_channel_conn","url":"https://…/api/v1","key":"…","model":"deepseek-chat"}'
+            }
+          />
+        </label>
+        <div className="ai-settings-actions">
+          <Button
+            variant="outline"
+            disabled={Boolean(busy) || !connectionJson.trim()}
+            onClick={() => void importConnection()}
+          >
+            {busy === "ai-import" ? "保存中…" : "保存连接配置"}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={Boolean(busy) || !status.ai_key_saved}
+            onClick={() => void testConnection()}
+          >
+            {busy === "ai-test" ? "测试中…" : "测试 AI 归档连接"}
+          </Button>
+        </div>
+      </section>
+
       <div className="settings-actions">
         <Button
           disabled={Boolean(busy) || !status.organize_by_category}
           onClick={() => void organize()}
         >
-          {busy === "organize" ? "正在整理…" : "立即整理现有文件"}
+          {busy === "organize" ? "正在分类整理…" : "AI 归档分类/整理"}
         </Button>
         <span>仅处理最近同步的 Canvas active 课程，不触碰历史课程。</span>
       </div>

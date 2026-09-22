@@ -31,7 +31,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0006"
+SCHEMA_VERSION = "0009"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
@@ -100,6 +100,39 @@ def bootstrap_sqlite(engine: Engine) -> str:
     metadata.create_all(engine)
     now = datetime.now(timezone.utc)
     with engine.begin() as connection:
+        # create_all intentionally does not alter existing SQLite tables. Apply the
+        # additive desktop migration explicitly and only after inspecting the table.
+        email_columns = {
+            str(column["name"])
+            for column in inspect(connection).get_columns("emails")
+        }
+        if "body_text" not in email_columns:
+            connection.exec_driver_sql("ALTER TABLE emails ADD COLUMN body_text TEXT")
+        file_columns = {
+            str(column["name"])
+            for column in inspect(connection).get_columns("course_files")
+        }
+        ai_columns = {
+            "ai_category": "VARCHAR(32)",
+            "ai_fingerprint": "VARCHAR(64)",
+            "ai_model": "VARCHAR(64)",
+            "ai_classified_at": "DATETIME",
+        }
+        for name, sql_type in ai_columns.items():
+            if name not in file_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE course_files ADD COLUMN {name} {sql_type}"
+                )
+        manual_columns = (
+            ("manual_category", "VARCHAR(32)"),
+            ("manual_folder_id", "INTEGER"),
+            ("manual_override", "BOOLEAN NOT NULL DEFAULT 0"),
+        )
+        for name, sql_type in manual_columns:
+            if name not in file_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE course_files ADD COLUMN " + name + " " + sql_type
+                )
         existing = connection.scalar(select(schema_version.c.id).where(schema_version.c.id == 1))
         if existing is None:
             connection.execute(

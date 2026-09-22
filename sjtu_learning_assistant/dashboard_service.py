@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import stat
 import subprocess
@@ -14,16 +15,28 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, func, or_, select
+from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.ai_classifier import (
+    AIClassificationError,
+    OpenAIClassificationClient,
+)
+from sjtu_learning_assistant.ai_keychain import (
+    AIKeychainError,
+    get_ai_api_key,
+    save_ai_api_key,
+)
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
 )
 from sjtu_learning_assistant.local_settings import (
     LocalSettings,
+    SettingsError,
     SettingsStore,
+    validate_ai_base_url,
+    validate_ai_model,
 )
 from sjtu_learning_assistant.material_tree import build_material_tree
 from sjtu_learning_assistant.models import (
@@ -34,12 +47,15 @@ from sjtu_learning_assistant.models import (
     Email,
     SyncRun,
     SyncState,
+    UnifiedItem,
 )
+from sjtu_learning_assistant.text_content import content_to_plain_text
 from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DONE_STATES = {"submitted", "graded", "pending_review"}
+MESSAGE_KINDS = frozenset({"email", "announcement", "assignment"})
 
 
 class DashboardError(RuntimeError):
@@ -84,6 +100,9 @@ class DashboardService:
         archive_service_factory: Callable[[], ArchiveService] | None = None,
         command_runner: Callable[..., Any] | None = None,
         process_launcher: Callable[..., Any] | None = None,
+        ai_key_loader: Callable[[], str | None] = get_ai_api_key,
+        ai_key_saver: Callable[[object], None] = save_ai_api_key,
+        ai_client_factory: Callable[..., OpenAIClassificationClient] = OpenAIClassificationClient,
     ) -> None:
         self.engine = engine
         self.settings_store = settings_store or SettingsStore()
@@ -95,6 +114,9 @@ class DashboardService:
         self.archive_service_factory = archive_service_factory
         self.command_runner = command_runner or subprocess.run
         self.process_launcher = process_launcher or subprocess.Popen
+        self.ai_key_loader = ai_key_loader
+        self.ai_key_saver = ai_key_saver
+        self.ai_client_factory = ai_client_factory
         self._sync_lock = threading.Lock()
 
     def now(self) -> datetime:
@@ -132,7 +154,12 @@ class DashboardService:
                 )
             ) or 0
             unread = session.scalar(
-                select(func.count(Email.id)).where(Email.is_unread.is_(True))
+                select(func.count(UnifiedItem.id)).where(
+                    UnifiedItem.source == "email",
+                    UnifiedItem.item_type == "email",
+                    UnifiedItem.is_active.is_(True),
+                    UnifiedItem.is_read.is_(False),
+                )
             ) or 0
         return {
             "courses": int(courses),
@@ -165,47 +192,203 @@ class DashboardService:
             for assignment, course in rows
         ]
 
+    @staticmethod
+    def _validate_message_kind(kind: str, *, allow_all: bool = True) -> str:
+        allowed = MESSAGE_KINDS | ({"all"} if allow_all else set())
+        if type(kind) is not str or kind not in allowed:
+            raise DashboardError("消息筛选条件无效。")
+        return kind
+
     def messages(self, kind: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        kind = self._validate_message_kind(kind)
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("消息数量限制无效。")
         rows: list[dict[str, Any]] = []
         with Session(self.engine) as session:
             if kind in {"all", "announcement"}:
                 announcement_rows = session.execute(
-                    select(Announcement, Course)
+                    select(UnifiedItem, Announcement, Course)
+                    .join(Announcement, Announcement.id == UnifiedItem.announcement_id)
                     .join(Course, Course.id == Announcement.course_id)
-                    .where(Announcement.is_active.is_(True))
-                    .order_by(Announcement.posted_at.desc().nulls_last())
+                    .where(
+                        UnifiedItem.item_type == "announcement",
+                        UnifiedItem.is_active.is_(True),
+                        Announcement.is_active.is_(True),
+                    )
+                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
                 ).all()
                 rows.extend(
                     {
+                        "source_id": unified.source_id,
                         "kind": "announcement",
                         "title": item.title,
                         "source_label": _course_name(course.name),
-                        "occurred_at": to_shanghai(item.posted_at),
-                        "is_unread": False,
+                        "occurred_at": to_shanghai(unified.occurred_at),
+                        "is_unread": not bool(unified.is_read),
                         "url": item.url,
                     }
-                    for item, course in announcement_rows
+                    for unified, item, course in announcement_rows
                 )
-            if kind in {"all", "email"}:
-                email_rows = session.scalars(
-                    select(Email)
-                    .order_by(Email.sent_at.desc().nulls_last())
+            if kind in {"all", "assignment"}:
+                assignment_rows = session.execute(
+                    select(UnifiedItem, Assignment, Course)
+                    .join(Assignment, Assignment.id == UnifiedItem.assignment_id)
+                    .join(Course, Course.id == Assignment.course_id)
+                    .where(
+                        UnifiedItem.item_type == "assignment",
+                        UnifiedItem.is_active.is_(True),
+                        Assignment.is_active.is_(True),
+                    )
+                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
                 ).all()
                 rows.extend(
                     {
+                        "source_id": unified.source_id,
+                        "kind": "assignment",
+                        "title": item.name,
+                        "source_label": _course_name(course.name),
+                        "occurred_at": to_shanghai(unified.occurred_at),
+                        "is_unread": not bool(unified.is_read),
+                        "url": item.url,
+                    }
+                    for unified, item, course in assignment_rows
+                )
+            if kind in {"all", "email"}:
+                email_rows = session.execute(
+                    select(UnifiedItem, Email)
+                    .join(Email, Email.id == UnifiedItem.email_id)
+                    .where(
+                        UnifiedItem.item_type == "email",
+                        UnifiedItem.is_active.is_(True),
+                    )
+                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
+                    .limit(limit)
+                ).all()
+                rows.extend(
+                    {
+                        "source_id": unified.source_id,
                         "kind": "email",
                         "title": item.subject,
                         "source_label": _sender_name(item.sender_name),
-                        "occurred_at": to_shanghai(item.sent_at or item.received_at),
-                        "is_unread": bool(item.is_unread),
-                        "url": None,
+                        "occurred_at": to_shanghai(unified.occurred_at),
+                        "is_unread": not bool(unified.is_read),
+                        "url": unified.url,
                     }
-                    for item in email_rows
+                    for unified, item in email_rows
                 )
         rows.sort(key=lambda row: row["occurred_at"] or "", reverse=True)
         return rows[:limit]
+
+    @staticmethod
+    def _assignment_body(raw_data: object) -> str | None:
+        if not isinstance(raw_data, Mapping):
+            return None
+        for key in ("description", "instructions", "details", "body", "message"):
+            value = raw_data.get(key)
+            if isinstance(value, str) and value.strip():
+                return content_to_plain_text(value)
+        return None
+
+    def message_detail(self, kind: str, source_id: str) -> dict[str, Any]:
+        kind = self._validate_message_kind(kind, allow_all=False)
+        if type(source_id) is not str or not source_id:
+            raise DashboardError("消息标识不正确。")
+        with Session(self.engine) as session:
+            if kind == "email":
+                row = session.execute(
+                    select(UnifiedItem, Email)
+                    .join(Email, Email.id == UnifiedItem.email_id)
+                    .where(
+                        UnifiedItem.item_type == kind,
+                        UnifiedItem.source_id == source_id,
+                        UnifiedItem.is_active.is_(True),
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise NotFoundError("未找到消息详情。")
+                unified, item = row
+                title = item.subject
+                source_label = _sender_name(item.sender_name)
+                body = item.body_text
+                url = unified.url
+            elif kind == "announcement":
+                row = session.execute(
+                    select(UnifiedItem, Announcement, Course)
+                    .join(Announcement, Announcement.id == UnifiedItem.announcement_id)
+                    .join(Course, Course.id == Announcement.course_id)
+                    .where(
+                        UnifiedItem.item_type == kind,
+                        UnifiedItem.source_id == source_id,
+                        UnifiedItem.is_active.is_(True),
+                        Announcement.is_active.is_(True),
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise NotFoundError("未找到消息详情。")
+                unified, item, course = row
+                title = item.title
+                source_label = _course_name(course.name)
+                body = content_to_plain_text(item.body)
+                url = item.url
+            else:
+                row = session.execute(
+                    select(UnifiedItem, Assignment, Course)
+                    .join(Assignment, Assignment.id == UnifiedItem.assignment_id)
+                    .join(Course, Course.id == Assignment.course_id)
+                    .where(
+                        UnifiedItem.item_type == kind,
+                        UnifiedItem.source_id == source_id,
+                        UnifiedItem.is_active.is_(True),
+                        Assignment.is_active.is_(True),
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise NotFoundError("未找到消息详情。")
+                unified, item, course = row
+                title = item.name
+                source_label = _course_name(course.name)
+                body = self._assignment_body(item.raw_data)
+                url = item.url
+            return {
+                "title": title,
+                "source_label": source_label,
+                "occurred_at": to_shanghai(unified.occurred_at),
+                "body": body or "",
+                "url": url,
+                "is_unread": not bool(unified.is_read),
+            }
+
+    def message_mark_read(
+        self, kind: str, source_ids: Sequence[str] | None = None
+    ) -> dict[str, Any]:
+        kind = self._validate_message_kind(kind)
+        conditions = [
+            UnifiedItem.is_active.is_(True),
+            UnifiedItem.is_read.is_(False),
+            UnifiedItem.item_type.in_(MESSAGE_KINDS),
+        ]
+        if kind != "all":
+            conditions.append(UnifiedItem.item_type == kind)
+        if source_ids is not None:
+            if isinstance(source_ids, (str, bytes)) or len(source_ids) > 500:
+                raise DashboardError("消息标识列表不正确。")
+            unique_ids = tuple(dict.fromkeys(source_ids))
+            if not unique_ids or any(
+                type(source_id) is not str
+                or not source_id.strip()
+                or len(source_id) > 255
+                or any(ord(character) < 32 or ord(character) == 127 for character in source_id)
+                for source_id in unique_ids
+            ):
+                raise DashboardError("消息标识列表不正确。")
+            conditions.append(UnifiedItem.source_id.in_(unique_ids))
+        with Session(self.engine) as session, session.begin():
+            result = session.execute(
+                update(UnifiedItem).where(*conditions).values(is_read=True)
+            )
+        return {"updated": max(int(result.rowcount or 0), 0)}
 
     def material_tree(self) -> dict[str, Any]:
         with Session(self.engine) as session:
@@ -228,12 +411,26 @@ class DashboardService:
 
         token, _ = get_token(use_keychain=True)
         client = build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS)
+        ai_client = None
+        if settings.ai_enabled and settings.ai_key_saved:
+            try:
+                key = self.ai_key_loader()
+                if key:
+                    ai_client = self.ai_client_factory(
+                        api_key=key,
+                        base_url=settings.ai_base_url,
+                        model=settings.ai_model,
+                    )
+            except (AIKeychainError, AIClassificationError):
+                ai_client = None
         return ArchiveService(
             self.engine,
             client,
             archive_root=self.archive_root,
             organize_by_category=settings.organize_by_category,
             use_recent_active_courses=True,
+            ai_client=ai_client,
+            ai_enabled=settings.ai_enabled,
         )
 
     def download_material(self, source_id: str) -> dict[str, Any]:
@@ -241,15 +438,37 @@ class DashboardService:
         try:
             result = service.download_file_by_source_id(source_id)
         finally:
-            client = getattr(service, "canvas_client", None)
-            if client is not None and hasattr(client, "close"):
-                client.close()
+            self._close_archive_service(service)
         if result.status == "failed":
             raise DashboardError("文件下载失败，请稍后重试。")
         return {
             "source_id": result.source_id,
             "status": result.status,
             "size": result.size,
+        }
+
+    def move_material(self, source_id: str, target_node_id: str) -> dict[str, Any]:
+        service = self._new_archive_service()
+        try:
+            result = service.move_file_by_source_id(source_id, target_node_id)
+        finally:
+            self._close_archive_service(service)
+        return {
+            "source_id": result.source_id,
+            "status": result.status,
+            "local_path": result.local_path,
+        }
+
+    def restore_material_auto(self, source_id: str) -> dict[str, Any]:
+        service = self._new_archive_service()
+        try:
+            result = service.restore_file_auto(source_id)
+        finally:
+            self._close_archive_service(service)
+        return {
+            "source_id": result.source_id,
+            "status": result.status,
+            "local_path": result.local_path,
         }
 
     def _local_path_for_source_id(self, source_id: str) -> str | None:
@@ -312,6 +531,66 @@ class DashboardService:
             raise DashboardError("无法打开外部链接。")
         return {"status": "opened"}
 
+    def save_ai_connection_json(self, raw_config: object) -> dict[str, Any]:
+        if type(raw_config) is not str or not raw_config.strip() or len(raw_config) > 16384:
+            raise DashboardError("AI 连接配置 JSON 格式不正确。")
+        try:
+            payload = json.loads(raw_config)
+        except json.JSONDecodeError:
+            raise DashboardError("AI 连接配置 JSON 格式不正确。") from None
+        if type(payload) is not dict or set(payload) - {"_type", "url", "key", "model"}:
+            raise DashboardError("AI 连接配置字段不正确。")
+        if payload.get("_type") != "newapi_channel_conn":
+            raise DashboardError("AI 连接配置类型不受支持。")
+        if "url" not in payload or "key" not in payload:
+            raise DashboardError("AI 连接配置缺少 url 或 key。")
+        try:
+            base_url = validate_ai_base_url(payload["url"])
+            model = validate_ai_model(
+                payload.get("model", self._effective_settings().ai_model)
+            )
+            self.ai_key_saver(payload["key"])
+            self.settings_store.update(
+                {
+                    "ai_base_url": base_url,
+                    "ai_model": model,
+                    "ai_key_saved": True,
+                }
+            )
+        except (SettingsError, AIKeychainError) as exc:
+            raise DashboardError(str(exc)) from exc
+        return self.settings_status()
+
+    def test_ai_connection(self) -> dict[str, Any]:
+        settings = self._effective_settings()
+        if not settings.ai_key_saved:
+            raise DashboardError("请先保存 AI 连接配置。")
+        try:
+            key = self.ai_key_loader()
+            if not key:
+                raise DashboardError("未找到已保存的 AI API key。")
+            client = self.ai_client_factory(
+                api_key=key,
+                base_url=settings.ai_base_url,
+                model=settings.ai_model,
+            )
+            try:
+                category = client.test_connection()
+            finally:
+                client.close()
+        except DashboardError:
+            raise
+        except (AIKeychainError, AIClassificationError) as exc:
+            raise DashboardError("AI 归档连接测试失败。") from exc
+        return {"ok": True, "model": settings.ai_model, "category": category}
+
+    @staticmethod
+    def _close_archive_service(service: ArchiveService) -> None:
+        for client_name in ("canvas_client", "ai_client"):
+            client = getattr(service, client_name, None)
+            if client is not None and hasattr(client, "close"):
+                client.close()
+
     def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.settings_store.update(dict(payload))
         if self._archive_root_override is None:
@@ -337,10 +616,11 @@ class DashboardService:
         try:
             summary = service.organize_current_term()
         finally:
-            client = getattr(service, "canvas_client", None)
-            if client is not None and hasattr(client, "close"):
-                client.close()
+            self._close_archive_service(service)
         return {
+            "classified": summary.classified,
+            "reused": summary.reused,
+            "fallback": summary.fallback,
             "moved": summary.moved,
             "unchanged": summary.unchanged,
             "failed": summary.failed,
@@ -351,10 +631,11 @@ class DashboardService:
         try:
             summary = service.archive_current_term()
         finally:
-            client = getattr(service, "canvas_client", None)
-            if client is not None and hasattr(client, "close"):
-                client.close()
+            self._close_archive_service(service)
         return {
+            "classified": summary.classified,
+            "reused": summary.reused,
+            "fallback": summary.fallback,
             "downloaded": summary.downloaded,
             "unchanged": summary.unchanged,
             "failed": summary.failed,
@@ -372,6 +653,10 @@ class DashboardService:
             "auto_download_current_term": settings.auto_download_current_term,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,
+            "ai_enabled": settings.ai_enabled,
+            "ai_base_url": settings.ai_base_url,
+            "ai_model": settings.ai_model,
+            "ai_key_saved": settings.ai_key_saved,
         }
 
     def _release_sync_when_done(self, process: Any) -> None:

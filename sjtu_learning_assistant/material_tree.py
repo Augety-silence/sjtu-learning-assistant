@@ -62,6 +62,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 CATEGORY_LABELS[category],
             )
             node["category"] = category
+            node["course_id"] = course.source_id
             course_node["children"].append(node)
             category_nodes[(course.id, category)] = node
 
@@ -80,14 +81,30 @@ def build_material_tree(session: Any) -> dict[str, Any]:
         if file.source_id in seen_source_ids or file.course_id not in course_nodes:
             continue
         seen_source_ids.add(file.source_id)
-        chain = safe_folder_chain(file.folder_id, folder_by_id)
+        canvas_chain = safe_folder_chain(file.folder_id, folder_by_id)
         module_names, module_item_names = module_signals.get(file.id, ((), ()))
-        category = classify_material(
+        rule_category = classify_material(
             module_names=module_names,
             module_item_names=module_item_names,
-            folder_names=[folder.name for folder in reversed(chain)],
+            folder_names=[folder.name for folder in reversed(canvas_chain)],
             filename=file.display_name or file.filename or "无名文件",
         )
+        automatic_category = (
+            file.ai_category if file.ai_category in CATEGORY_ORDER else rule_category
+        )
+        manual_override = bool(
+            file.manual_override and file.manual_category in CATEGORY_ORDER
+        )
+        category = file.manual_category if manual_override else automatic_category
+        if manual_override and file.manual_folder_id is not None:
+            manual_folder = folder_by_id.get(file.manual_folder_id)
+            chain = (
+                safe_folder_chain(file.manual_folder_id, folder_by_id)
+                if manual_folder is not None and manual_folder.course_id == file.course_id
+                else ()
+            )
+        else:
+            chain = () if manual_override else canvas_chain
         parent = category_nodes[(file.course_id, category)]
         for folder in chain:
             node_id = f"folder:{file.course_id}:{category}:{folder.id}"
@@ -97,6 +114,8 @@ def build_material_tree(session: Any) -> dict[str, Any]:
             if existing is None:
                 existing = _new_node(node_id, "folder", folder.name)
                 existing["position"] = folder.position
+                existing["course_id"] = course_by_id[file.course_id].source_id
+                existing["category"] = category
                 parent["children"].append(existing)
             parent = existing
         parent["children"].append(
@@ -107,6 +126,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 "source_id": file.source_id,
                 "course_id": course_by_id[file.course_id].source_id,
                 "category": category,
+                "manual_override": manual_override,
                 "size": file.size,
                 "updated_at": file.source_updated_at.isoformat()
                 if file.source_updated_at

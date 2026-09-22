@@ -149,6 +149,7 @@ class Email(TimestampMixin, Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     body_preview: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str | None] = mapped_column(Text)
     is_unread: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
@@ -240,6 +241,17 @@ class CourseFile(TimestampMixin, Base):
     downloaded_source_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    ai_category: Mapped[str | None] = mapped_column(String(32))
+    ai_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    ai_model: Mapped[str | None] = mapped_column(String(64))
+    ai_classified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    manual_category: Mapped[str | None] = mapped_column(String(32))
+    manual_folder_id: Mapped[int | None] = mapped_column(
+        ForeignKey("course_folders.id", ondelete="SET NULL")
+    )
+    manual_override: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -258,7 +270,18 @@ class CourseFile(TimestampMixin, Base):
             "download_attempts >= 0",
             name="ck_course_files_download_attempts_nonnegative",
         ),
+        CheckConstraint(
+            "manual_category IS NULL OR manual_category IN "
+            "('assignments', 'courseware', 'supplementary', 'other')",
+            name="ck_course_files_manual_category",
+        ),
+        CheckConstraint(
+            "(manual_override AND manual_category IS NOT NULL) OR "
+            "(NOT manual_override AND manual_category IS NULL AND manual_folder_id IS NULL)",
+            name="ck_course_files_manual_override",
+        ),
         Index("ix_course_files_folder_id", "folder_id"),
+        Index("ix_course_files_manual_folder_id", "manual_folder_id"),
         Index("ix_course_files_download_status", "download_status"),
     )
 

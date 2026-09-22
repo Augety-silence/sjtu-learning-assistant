@@ -1,8 +1,16 @@
-import { ChevronDown, File, Folder, Search } from "lucide-react";
+import { File, Folder, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  isMaterialDropTarget,
+  type MaterialDragSource,
+  type MaterialDropHandler,
+  MaterialTreeBranch,
+  materialDropClass,
+  materialTargetAriaLabel,
+} from "@/components/MaterialTreeBranch";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
-import { invoke } from "@/lib/api";
+import { invoke, moveMaterial, restoreMaterialAuto } from "@/lib/api";
 import { formatDateTime, formatSize } from "@/lib/format";
 import {
   containerChildren,
@@ -11,69 +19,6 @@ import {
   findNodePath,
 } from "@/lib/materialTree";
 import type { MaterialNode, MaterialTree } from "@/lib/types";
-
-function TreeBranch({
-  node,
-  selected,
-  select,
-}: {
-  node: MaterialNode;
-  selected: string;
-  select: (node: MaterialNode) => void;
-}) {
-  const [expanded, setExpanded] = useState(
-    node.kind === "root" || node.kind === "term",
-  );
-  const children = containerChildren(node);
-  if (node.kind === "root") {
-    return (
-      <>
-        {children.map((child) => (
-          <TreeBranch
-            key={child.id}
-            node={child}
-            selected={selected}
-            select={select}
-          />
-        ))}
-      </>
-    );
-  }
-  return (
-    <div className="tree-branch">
-      <button
-        type="button"
-        className={`tree-row ${selected === node.id ? "tree-selected" : ""}`}
-        onClick={() => select(node)}
-      >
-        {children.length > 0 && (
-          <ChevronDown
-            className={`tree-chevron ${expanded ? "tree-chevron-open" : ""}`}
-            aria-hidden="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setExpanded((value) => !value);
-            }}
-          />
-        )}
-        <Folder className="tree-kind-icon" aria-hidden="true" />
-        <span>{node.name}</span>
-      </button>
-      {expanded && children.length > 0 && (
-        <div className="tree-children">
-          {children.map((child) => (
-            <TreeBranch
-              key={child.id}
-              node={child}
-              selected={selected}
-              select={select}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function MaterialsView() {
   const [tree, setTree] = useState<MaterialTree | null>(null);
@@ -84,6 +29,8 @@ export function MaterialsView() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<Record<string, string>>({});
+  const [dragSource, setDragSource] = useState<MaterialDragSource | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -149,14 +96,87 @@ export function MaterialsView() {
     }
   };
 
+  const move = useCallback(
+    async (file: MaterialNode, target: MaterialNode) => {
+      if (!file.source_id || !file.course_id) return;
+      if (!isMaterialDropTarget(target)) {
+        setNotice("文件只能归档到分类目录或 Canvas 子文件夹。");
+        return;
+      }
+      if (target.course_id !== file.course_id) {
+        setNotice(`不能将“${file.name}”移动到其他课程。`);
+        return;
+      }
+      setBusy((value) => ({ ...value, [file.source_id as string]: "move" }));
+      setNotice("");
+      try {
+        await moveMaterial(file.source_id, target.id);
+        setSelectedId(target.id);
+        await load();
+        setNotice(`已将“${file.name}”归档到“${target.name}”。`);
+      } catch (reason) {
+        setNotice(reason instanceof Error ? reason.message : "移动资料失败");
+      } finally {
+        setBusy((value) => {
+          const next = { ...value };
+          delete next[file.source_id as string];
+          return next;
+        });
+      }
+    },
+    [load],
+  );
+
+  const drop: MaterialDropHandler = useCallback(
+    (event, target) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setDropTargetId(null);
+      if (!dragSource || !tree) {
+        setNotice("未识别要移动的资料，请重试。");
+        return;
+      }
+      const sourcePath = findNodePath(tree.root, `file:${dragSource.sourceId}`);
+      const file = sourcePath?.[sourcePath.length - 1];
+      if (!file || file.kind !== "file") {
+        setNotice("资料已变化，请刷新后重试。");
+        return;
+      }
+      void move(file, target);
+    },
+    [dragSource, move, tree],
+  );
+
+  const restoreAuto = async (file: MaterialNode) => {
+    if (!file.source_id) return;
+    setBusy((value) => ({ ...value, [file.source_id as string]: "restore" }));
+    setNotice("");
+    try {
+      await restoreMaterialAuto(file.source_id);
+      await load();
+      setNotice(`“${file.name}”已恢复自动分类。`);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "恢复自动分类失败");
+    } finally {
+      setBusy((value) => {
+        const next = { ...value };
+        delete next[file.source_id as string];
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="section-stack materials-page">
       <div className="view-intro">
         <div>
           <h2>资料库</h2>
-          <p>按学期、课程、动态分类与 Canvas 目录浏览，不修改原始数据。</p>
+          <p>按学期、课程、动态分类与 Canvas 目录浏览，可人工拖拽归档。</p>
         </div>
       </div>
+      <p id="material-drop-help" className="sr-only">
+        仅可将文件移动到同一课程的四个分类或其现有 Canvas 子文件夹。
+      </p>
       <div className="finder-toolbar" role="search">
         <label className="search-control">
           <Search aria-hidden="true" />
@@ -195,7 +215,7 @@ export function MaterialsView() {
         </label>
       </div>
       {notice && (
-        <div className="notice" role="status">
+        <div className="notice" role="status" aria-live="polite">
           {notice}
         </div>
       )}
@@ -219,10 +239,14 @@ export function MaterialsView() {
               <Folder className="tree-kind-icon" aria-hidden="true" />
               <span>全部资料</span>
             </button>
-            <TreeBranch
+            <MaterialTreeBranch
               node={tree.root}
               selected={selectedId}
               select={(node) => setSelectedId(node.id)}
+              dragSource={dragSource}
+              dropTargetId={dropTargetId}
+              hoverTarget={(node) => setDropTargetId(node?.id ?? null)}
+              drop={drop}
             />
           </aside>
           <section className="finder-content">
@@ -237,26 +261,100 @@ export function MaterialsView() {
               ))}
             </nav>
             <div className="finder-list" role="list">
-              {childFolders.map((folder) => (
-                <button
-                  type="button"
-                  role="listitem"
-                  className="finder-row folder-row"
-                  key={folder.id}
-                  onDoubleClick={() => setSelectedId(folder.id)}
-                  onClick={() => setSelectedId(folder.id)}
-                >
-                  <Folder aria-hidden="true" />
-                  <span className="finder-name">{folder.name}</span>
-                  <span className="finder-meta">文件夹</span>
-                </button>
-              ))}
+              {childFolders.map((folder) => {
+                const target = isMaterialDropTarget(folder);
+                return (
+                  <button
+                    type="button"
+                    role="listitem"
+                    aria-label={materialTargetAriaLabel(folder)}
+                    aria-describedby={target ? "material-drop-help" : undefined}
+                    data-material-target-id={target ? folder.id : undefined}
+                    className={`finder-row folder-row${materialDropClass(folder, dragSource, dropTargetId)}`}
+                    key={folder.id}
+                    onDoubleClick={() => setSelectedId(folder.id)}
+                    onClick={() => setSelectedId(folder.id)}
+                    onDragEnter={
+                      target
+                        ? (event) => {
+                            event.preventDefault();
+                            setDropTargetId(folder.id);
+                          }
+                        : undefined
+                    }
+                    onDragOver={
+                      target
+                        ? (event) => {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect =
+                              dragSource?.courseId === folder.course_id
+                                ? "move"
+                                : "none";
+                            setDropTargetId(folder.id);
+                          }
+                        : undefined
+                    }
+                    onDragLeave={
+                      target
+                        ? (event) => {
+                            if (
+                              !event.currentTarget.contains(
+                                event.relatedTarget as Node,
+                              )
+                            ) {
+                              setDropTargetId(null);
+                            }
+                          }
+                        : undefined
+                    }
+                    onDrop={target ? (event) => drop(event, folder) : undefined}
+                  >
+                    <Folder aria-hidden="true" />
+                    <span className="finder-name">{folder.name}</span>
+                    <span className="finder-meta">文件夹</span>
+                  </button>
+                );
+              })}
               {visibleFiles.map(({ file, path: filePath }) => {
                 const active = file.source_id
                   ? busy[file.source_id]
                   : undefined;
                 return (
-                  <div className="finder-row" role="listitem" key={file.id}>
+                  <div
+                    className={`finder-row material-file-row${dragSource?.sourceId === file.source_id ? " material-dragging" : ""}`}
+                    role="listitem"
+                    aria-label={`拖动资料：${file.name}`}
+                    aria-describedby="material-drop-help"
+                    draggable={Boolean(
+                      file.source_id && file.course_id && !active,
+                    )}
+                    onDragStart={(event) => {
+                      if (!file.source_id || !file.course_id) {
+                        event.preventDefault();
+                        return;
+                      }
+                      const source = {
+                        sourceId: file.source_id,
+                        courseId: file.course_id,
+                        name: file.name,
+                      };
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData(
+                        "application/x-sjtu-material",
+                        JSON.stringify(source),
+                      );
+                      event.dataTransfer.setData("text/plain", file.source_id);
+                      setDragSource(source);
+                      setNotice(
+                        `正在移动“${file.name}”，请选择同课程目标目录。`,
+                      );
+                    }}
+                    onDragEnd={() => {
+                      setDragSource(null);
+                      setDropTargetId(null);
+                    }}
+                    key={file.id}
+                  >
                     <File aria-hidden="true" />
                     <div className="finder-file-details">
                       <button
@@ -292,6 +390,45 @@ export function MaterialsView() {
                       {formatDateTime(file.updated_at ?? null)}
                     </span>
                     <div className="finder-actions">
+                      {file.course_id && (
+                        <label className="material-move-menu">
+                          <span className="sr-only">
+                            选择“{file.name}”的归档分类
+                          </span>
+                          <select
+                            aria-label={`归档“${file.name}”到分类`}
+                            value=""
+                            disabled={Boolean(active)}
+                            onChange={(event) => {
+                              const selectedCategory = event.target.value;
+                              if (!selectedCategory || !tree) return;
+                              const targetPath = findNodePath(
+                                tree.root,
+                                `category:${file.course_id}:${selectedCategory}`,
+                              );
+                              const target =
+                                targetPath?.[targetPath.length - 1];
+                              if (target) void move(file, target);
+                            }}
+                          >
+                            <option value="">归档到…</option>
+                            {tree.categories.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      {file.manual_override && (
+                        <Button
+                          variant="link"
+                          disabled={Boolean(active)}
+                          onClick={() => void restoreAuto(file)}
+                        >
+                          恢复自动分类
+                        </Button>
+                      )}
                       {file.can_open ? (
                         <>
                           <Button

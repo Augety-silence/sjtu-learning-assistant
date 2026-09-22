@@ -9,7 +9,13 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
+from sjtu_learning_assistant.ai_classifier import (
+    ALLOWED_AI_MODELS,
+    DEFAULT_AI_BASE_URL,
+    DEFAULT_AI_MODEL,
+)
 from sjtu_learning_assistant.archive_service import DEFAULT_ARCHIVE_ROOT
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 
@@ -20,10 +26,17 @@ ALLOWED_KEYS = frozenset(
         "auto_download_current_term",
         "organize_by_category",
         "mail_account",
+        "ai_enabled",
+        "ai_base_url",
+        "ai_model",
+        "ai_key_saved",
     }
 )
-LEGACY_KEYS = ALLOWED_KEYS - {"mail_account"}
-SENSITIVE_KEY_PARTS = ("token", "password", "secret", "email", "credential")
+PRE_AI_KEYS = ALLOWED_KEYS - {
+    "ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"
+}
+LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
+SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
 
 
 class SettingsError(ValueError):
@@ -36,6 +49,10 @@ class LocalSettings:
     auto_download_current_term: bool = True
     organize_by_category: bool = True
     mail_account: str = ""
+    ai_enabled: bool = False
+    ai_base_url: str = DEFAULT_AI_BASE_URL
+    ai_model: str = DEFAULT_AI_MODEL
+    ai_key_saved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,6 +99,33 @@ def validate_mail_account(value: object) -> str:
     return account
 
 
+def validate_ai_base_url(value: object) -> str:
+    if type(value) is not str:
+        raise SettingsError("AI Base URL 必须是字符串。")
+    normalized = value.strip().rstrip("/")
+    if not normalized or len(normalized) > 2048:
+        raise SettingsError("AI Base URL 格式不正确。")
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.params
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise SettingsError("AI Base URL 必须是无账号、查询参数和片段的 HTTPS 地址。")
+    return normalized
+
+
+def validate_ai_model(value: object) -> str:
+    if type(value) is not str or value.strip() not in ALLOWED_AI_MODELS:
+        raise SettingsError("AI 模型不受支持。")
+    return value.strip()
+
+
 def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SettingsError("设置参数必须是对象。")
@@ -107,7 +151,16 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         result["archive_root"] = validate_archive_root(payload["archive_root"])
     if "mail_account" in payload:
         result["mail_account"] = validate_mail_account(payload["mail_account"])
-    for key in ("auto_download_current_term", "organize_by_category"):
+    if "ai_base_url" in payload:
+        result["ai_base_url"] = validate_ai_base_url(payload["ai_base_url"])
+    if "ai_model" in payload:
+        result["ai_model"] = validate_ai_model(payload["ai_model"])
+    for key in (
+        "auto_download_current_term",
+        "organize_by_category",
+        "ai_enabled",
+        "ai_key_saved",
+    ):
         if key in payload:
             value = payload[key]
             if type(value) is not bool:
@@ -141,6 +194,14 @@ class SettingsStore:
             raise SettingsError("本地设置文件无法读取。") from exc
         if isinstance(payload, dict) and set(payload) == LEGACY_KEYS:
             payload = {**payload, "mail_account": initial_mail_account}
+        if isinstance(payload, dict) and set(payload) == PRE_AI_KEYS:
+            payload = {
+                **payload,
+                "ai_enabled": False,
+                "ai_base_url": DEFAULT_AI_BASE_URL,
+                "ai_model": DEFAULT_AI_MODEL,
+                "ai_key_saved": False,
+            }
         values = _validate_mapping(payload, partial=False)
         return LocalSettings(**values)
 
