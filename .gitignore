@@ -1,16 +1,64 @@
+# Python
+.venv/
+.venv-*/
 __pycache__/
 *.py[cod]
-.venv/
-.vscode/
-.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend and build output
+node_modules/
+dashboard-web/node_modules/
+dashboard-web/dist/
+dist/
+build/
+*.app/
+*.dmg
+*.spec.work/
+*.spec.tmp
+
+# Local configuration and credentials
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+# macOS Keychain credentials are never files in this repository; never export them here.
+
+# Local databases and migration exports
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
 *.sql
 *.dump
+
+# Runtime state and logs
 /run/
 /logs/
 *.lock
+*.log
 *.jsonl
-com.sjtu.learningassistant.sync.plist
-com.sjtu.learningassistant.dashboard.plist
-dashboard-web/node_modules/
-dashboard-web/dist/
+*.plist
+
+# Downloaded course materials and local archives
+/downloads/
+/SJTU Study/
+course-materials/
+
+# Editors, OS metadata, and test caches
+.vscode/
+.idea/
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db

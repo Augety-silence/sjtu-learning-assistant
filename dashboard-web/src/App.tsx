@@ -4,10 +4,17 @@ import { DeadlinesView } from "@/components/DeadlinesView";
 import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
-import { getJson, postJson } from "@/lib/api";
+import { SettingsView } from "@/components/SettingsView";
+import { invoke } from "@/lib/api";
 import type { SyncStatus, ViewName } from "@/lib/types";
 
-const views: ViewName[] = ["overview", "deadlines", "messages", "materials"];
+const views: ViewName[] = [
+  "overview",
+  "deadlines",
+  "messages",
+  "materials",
+  "settings",
+];
 
 function initialView(): ViewName {
   const value = window.location.hash.replace("#/", "") as ViewName;
@@ -34,7 +41,7 @@ export default function App() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const next = await getJson<SyncStatus>("/api/sync-status");
+      const next = await invoke<SyncStatus>("sync_status");
       setSyncStatus(next);
       if (syncRequested && next.status === "idle") {
         setSyncRequested(false);
@@ -63,8 +70,12 @@ export default function App() {
     setMessage("");
     setSyncRequested(true);
     try {
-      await postJson<{ status: string }>("/api/sync-trigger");
-      setMessage("同步请求已接受，正在后台执行。 ");
+      const result = await invoke<{ status: string }>("sync_trigger");
+      setMessage(
+        result.status === "already_running"
+          ? "同步已在运行。"
+          : "同步请求已接受，正在后台执行。",
+      );
     } catch (reason) {
       setSyncRequested(false);
       setMessage(reason instanceof Error ? reason.message : "同步触发失败");
@@ -92,6 +103,7 @@ export default function App() {
         {view === "deadlines" && <DeadlinesView />}
         {view === "messages" && <MessagesView />}
         {view === "materials" && <MaterialsView />}
+        {view === "settings" && <SettingsView />}
       </div>
     </AppShell>
   );

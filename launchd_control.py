@@ -34,6 +34,9 @@ def add_sync_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--email", help="交大邮箱地址（仅作为普通启动参数保存）。")
     parser.add_argument("--no-notify", action="store_true", help="禁用系统通知。")
     parser.add_argument(
+        "--skip-import", action="store_true", help="不自动导入旧 PostgreSQL 数据。"
+    )
+    parser.add_argument(
         "--no-download", action="store_true", help="同步文件元数据但不自动下载。"
     )
     parser.add_argument(
@@ -91,6 +94,8 @@ def sync_arguments(args: argparse.Namespace) -> list[str]:
         result.extend(("--email", args.email.strip()))
     if args.no_notify:
         result.append("--no-notify")
+    if getattr(args, "skip_import", False):
+        result.append("--skip-import")
     if getattr(args, "no_download", False):
         result.append("--no-download")
     archive_root = getattr(

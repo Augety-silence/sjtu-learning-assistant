@@ -1,39 +1,56 @@
-let csrfToken: string | null = null;
+export interface BridgeError {
+  code: string;
+  message: string;
+}
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as {
-      detail?: string;
+export interface BridgeResponse<T> {
+  ok: boolean;
+  data?: T;
+  error?: BridgeError;
+}
+
+declare global {
+  interface Window {
+    pywebview?: {
+      api?: {
+        invoke: <T>(
+          action: string,
+          payload?: Record<string, unknown>,
+        ) => Promise<BridgeResponse<T>>;
+      };
     };
-    throw new Error(body.detail || `请求失败（${response.status}）`);
   }
-  return response.json() as Promise<T>;
 }
 
-export async function getJson<T>(path: string): Promise<T> {
-  return parseResponse<T>(
-    await fetch(path, { headers: { Accept: "application/json" } }),
-  );
-}
-
-async function getCsrfToken(): Promise<string> {
-  if (csrfToken) return csrfToken;
-  const payload = await getJson<{ csrf_token: string }>("/api/csrf");
-  csrfToken = payload.csrf_token;
-  return csrfToken;
-}
-
-export async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  const token = await getCsrfToken();
-  const response = await fetch(path, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-CSRF-Token": token,
-    },
-    body: JSON.stringify(body ?? {}),
+async function bridgeApi() {
+  if (window.pywebview?.api) return window.pywebview.api;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(
+      () => reject(new Error("桌面 Bridge 尚未就绪，请重新打开应用。")),
+      5000,
+    );
+    window.addEventListener(
+      "pywebviewready",
+      () => {
+        window.clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
   });
-  if (response.status === 403) csrfToken = null;
-  return parseResponse<T>(response);
+  if (!window.pywebview?.api) throw new Error("桌面 Bridge 不可用。");
+  return window.pywebview.api;
+}
+
+export async function invoke<T>(
+  action: string,
+  payload: Record<string, unknown> = {},
+): Promise<T> {
+  const response = await (await bridgeApi()).invoke<T>(action, payload);
+  if (!response.ok) throw new Error(response.error?.message || "操作失败");
+  return response.data as T;
+}
+
+export function openExternal(url: string): Promise<{ status: string }> {
+  return invoke("open_external", { url });
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch active Canvas courses and persist them to PostgreSQL."""
+"""Fetch active Canvas courses and persist them to the configured database."""
 
 from __future__ import annotations
 
@@ -11,6 +11,10 @@ from sjtu_learning_assistant.database import (
     DatabaseConfigError,
     check_database,
     create_database_engine,
+)
+from sjtu_learning_assistant.desktop_database import (
+    DesktopDatabaseError,
+    initialize_desktop_database,
 )
 from sjtu_learning_assistant.repository import upsert_courses
 from test_canvas import (
@@ -32,9 +36,11 @@ def main() -> int:
 
         engine = create_database_engine()
         try:
+            if engine.dialect.name == "sqlite":
+                initialize_desktop_database(engine)
             health = check_database(engine)
             print(
-                f"已连接 PostgreSQL：{health.database} "
+                f"已连接数据库：{health.database} "
                 f"（server {health.server_version}）"
             )
             result = upsert_courses(engine, courses)
@@ -46,11 +52,11 @@ def main() -> int:
             f"获取 {result.fetched}，新增 {result.inserted}，更新 {result.updated}。"
         )
         return 0
-    except (CanvasCheckError, DatabaseConfigError) as exc:
+    except (CanvasCheckError, DatabaseConfigError, DesktopDatabaseError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
-    except SQLAlchemyError as exc:
-        print(f"数据库事务失败，未推进同步状态：{exc}", file=sys.stderr)
+    except SQLAlchemyError:
+        print("数据库事务失败，未推进同步状态。", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n已取消。", file=sys.stderr)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
-import { getJson } from "@/lib/api";
+import { invoke, openExternal } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { MessageItem } from "@/lib/types";
 
@@ -19,9 +19,7 @@ export function MessagesView() {
     setItems(null);
     setError("");
     try {
-      const data = await getJson<{ items: MessageItem[] }>(
-        `/api/messages?kind=${kind}`,
-      );
+      const data = await invoke<{ items: MessageItem[] }>("messages", { kind });
       setItems(data.items);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "未知错误");
@@ -30,6 +28,12 @@ export function MessagesView() {
   useEffect(() => {
     void load();
   }, [load]);
+  const open = (url: string | null) => {
+    if (url)
+      void openExternal(url).catch((reason) =>
+        setError(reason instanceof Error ? reason.message : "链接打开失败"),
+      );
+  };
 
   return (
     <div className="section-stack">
@@ -60,12 +64,12 @@ export function MessagesView() {
       ) : (
         <div className="list-surface">
           {items.map((item) => (
-            <a
-              className="list-row"
+            <button
+              type="button"
+              className="list-row list-row-button"
               key={`${item.kind}-${item.title}-${item.occurred_at}`}
-              href={item.url || undefined}
-              target={item.url ? "_blank" : undefined}
-              rel="noreferrer"
+              disabled={!item.url}
+              onClick={() => open(item.url)}
             >
               <div className="min-w-0">
                 <div className="message-title">
@@ -80,7 +84,7 @@ export function MessagesView() {
               <span className="row-time">
                 {formatDateTime(item.occurred_at)}
               </span>
-            </a>
+            </button>
           ))}
         </div>
       )}

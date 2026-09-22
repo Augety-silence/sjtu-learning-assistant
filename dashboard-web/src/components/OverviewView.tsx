@@ -6,7 +6,7 @@ import {
   Section,
 } from "@/components/States";
 import { Button } from "@/components/ui/Button";
-import { getJson } from "@/lib/api";
+import { invoke, openExternal } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { OverviewData, ViewName } from "@/lib/types";
 
@@ -20,7 +20,7 @@ export function OverviewView({
   const load = useCallback(async () => {
     setError("");
     try {
-      setData(await getJson<OverviewData>("/api/overview"));
+      setData(await invoke<OverviewData>("overview"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "未知错误");
     }
@@ -28,6 +28,12 @@ export function OverviewView({
   useEffect(() => {
     void load();
   }, [load]);
+  const open = (url: string | null) => {
+    if (url)
+      void openExternal(url).catch((reason) =>
+        setError(reason instanceof Error ? reason.message : "链接打开失败"),
+      );
+  };
   if (error) return <ErrorState message={error} retry={() => void load()} />;
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
 
@@ -66,12 +72,12 @@ export function OverviewView({
             />
           ) : (
             data.deadlines.map((item) => (
-              <a
-                className="list-row"
+              <button
+                type="button"
+                className="list-row list-row-button"
                 key={item.source_id}
-                href={item.url || undefined}
-                target={item.url ? "_blank" : undefined}
-                rel="noreferrer"
+                disabled={!item.url}
+                onClick={() => open(item.url)}
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium">{item.title}</p>
@@ -83,7 +89,7 @@ export function OverviewView({
                   </span>
                   <span>{formatDateTime(item.due_at)}</span>
                 </div>
-              </a>
+              </button>
             ))
           )}
         </div>
@@ -104,12 +110,12 @@ export function OverviewView({
             />
           ) : (
             data.messages.map((item) => (
-              <a
-                className="list-row"
+              <button
+                type="button"
+                className="list-row list-row-button"
                 key={`${item.kind}-${item.title}-${item.occurred_at}`}
-                href={item.url || undefined}
-                target={item.url ? "_blank" : undefined}
-                rel="noreferrer"
+                disabled={!item.url}
+                onClick={() => open(item.url)}
               >
                 <div className="min-w-0">
                   <div className="message-title">
@@ -124,7 +130,7 @@ export function OverviewView({
                 <span className="row-time">
                   {formatDateTime(item.occurred_at)}
                 </span>
-              </a>
+              </button>
             ))
           )}
         </div>

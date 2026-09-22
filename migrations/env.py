@@ -15,9 +15,17 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def migration_database_url() -> str:
+    configured = config.get_main_option("sqlalchemy.url")
+    database_url = configured or get_database_url()
+    if database_url.startswith("sqlite"):
+        raise RuntimeError("SQLite 使用 metadata bootstrap；Alembic 仅用于 PostgreSQL。")
+    return database_url
+
+
 def run_migrations_offline() -> None:
     context.configure(
-        url=get_database_url(),
+        url=migration_database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -29,7 +37,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
-    configuration["sqlalchemy.url"] = get_database_url()
+    configuration["sqlalchemy.url"] = migration_database_url()
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

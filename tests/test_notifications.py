@@ -352,6 +352,7 @@ class NotificationCliTests(unittest.TestCase):
             [
                 "--canvas-only",
                 "--no-notify",
+                "--skip-import",
                 "--no-download",
                 "--archive-root",
                 "/tmp/SJTU Archive",
@@ -360,6 +361,7 @@ class NotificationCliTests(unittest.TestCase):
             ]
         )
         self.assertTrue(args.no_notify)
+        self.assertTrue(args.skip_import)
         self.assertTrue(args.no_download)
         self.assertEqual(Path("/tmp/SJTU Archive"), args.archive_root)
         self.assertEqual("2026-2027 Fall", args.current_term)
@@ -470,6 +472,7 @@ class NotificationCliTests(unittest.TestCase):
             "mail_only": False,
             "email": None,
             "no_notify": True,
+            "skip_import": False,
             "no_download": False,
             "archive_root": str(Path.home() / "Documents" / "SJTU Study"),
             "current_term": None,
@@ -481,16 +484,19 @@ class NotificationCliTests(unittest.TestCase):
     def test_launchd_propagates_archive_options(self) -> None:
         options = self.launchd_options(
             no_download=True,
+            skip_import=True,
             archive_root="/tmp/SJTU Archive",
             current_term="2026-2027 Fall",
         )
         arguments = launchd_control.sync_arguments(options)
         self.assertIn("--no-notify", arguments)
         self.assertIn("--no-download", arguments)
+        self.assertIn("--skip-import", arguments)
         self.assertIn("/tmp/SJTU Archive", arguments)
         self.assertIn("2026-2027 Fall", arguments)
         plist = launchd_control.build_plist(options)
         self.assertIn("--no-download", plist["ProgramArguments"])
+        self.assertIn("--skip-import", plist["ProgramArguments"])
 
     def test_launchd_rejects_blank_email(self) -> None:
         parser = launchd_control.build_parser()

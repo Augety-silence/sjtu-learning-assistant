@@ -1,36 +1,49 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { getJson, postJson } from "@/lib/api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke, openExternal } from "@/lib/api";
 
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => {
+  vi.stubGlobal("window", globalThis);
+});
 
-describe("api client", () => {
-  it("loads data", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
-        ),
-    );
-    await expect(getJson("/api/health")).resolves.toEqual({ status: "ok" });
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("pywebview bridge client", () => {
+  it("invokes the allowlisted bridge without fetch", async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValue({ ok: true, data: { status: "ok" } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(invoke<{ status: string }>("health")).resolves.toEqual({
+      status: "ok",
+    });
+    expect(bridge).toHaveBeenCalledWith("health", {});
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("adds process csrf token to POST", async () => {
-    const fetchMock = vi
+  it("surfaces sanitized bridge errors", async () => {
+    vi.stubGlobal("pywebview", {
+      api: {
+        invoke: vi.fn().mockResolvedValue({
+          ok: false,
+          error: { code: "operation_failed", message: "操作失败" },
+        }),
+      },
+    });
+    await expect(invoke("overview")).rejects.toThrow("操作失败");
+  });
+
+  it("routes external URLs through the bridge", async () => {
+    const bridge = vi
       .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ csrf_token: "csrf" }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ status: "accepted" }), { status: 202 }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-    await postJson("/api/sync-trigger");
-    const options = fetchMock.mock.calls[1][1] as RequestInit;
-    expect((options.headers as Record<string, string>)["X-CSRF-Token"]).toBe(
-      "csrf",
-    );
-    expect(options.method).toBe("POST");
+      .mockResolvedValue({ ok: true, data: { status: "opened" } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await openExternal("https://example.edu");
+    expect(bridge).toHaveBeenCalledWith("open_external", {
+      url: "https://example.edu",
+    });
   });
 });

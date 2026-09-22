@@ -1,4 +1,4 @@
-"""Transactional PostgreSQL repository operations."""
+"""Transactional cross-dialect repository operations."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Protocol, TypeVar
 
 from sqlalchemy import Engine, case, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.models import (
@@ -75,6 +75,17 @@ ModelType = TypeVar(
     CourseModule,
     CourseModuleItem,
 )
+
+
+def _dialect_insert(session: Session, model: Any):
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(model)
+    if dialect == "sqlite":
+        return sqlite_insert(model)
+    raise RuntimeError(f"不支持的数据库方言：{dialect}")
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:
@@ -150,7 +161,7 @@ def _upsert_sync_state(
     now: datetime,
     cursor: str | None = None,
 ) -> None:
-    statement = insert(SyncState).values(
+    statement = _dialect_insert(session, SyncState).values(
         source=source,
         resource=resource,
         cursor=cursor,
@@ -160,7 +171,7 @@ def _upsert_sync_state(
         last_error=None,
     )
     statement = statement.on_conflict_do_update(
-        constraint="uq_sync_state_source_resource",
+        index_elements=[SyncState.source, SyncState.resource],
         set_={
             "cursor": cursor,
             "last_sync_at": now,
@@ -220,7 +231,7 @@ def _upsert_courses(session: Session, rows: list[dict[str, Any]], now: datetime)
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Course, source_ids)
     if rows:
-        statement = insert(Course).values(rows)
+        statement = _dialect_insert(session, Course).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[Course.source_id],
             set_={
@@ -309,7 +320,7 @@ def _upsert_announcements(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Announcement, source_ids)
     if rows:
-        statement = insert(Announcement).values(rows)
+        statement = _dialect_insert(session, Announcement).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[Announcement.source_id],
             set_={
@@ -427,7 +438,7 @@ def _upsert_assignments(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Assignment, source_ids)
     if rows:
-        statement = insert(Assignment).values(rows)
+        statement = _dialect_insert(session, Assignment).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[Assignment.source_id],
             set_={
@@ -536,7 +547,7 @@ def _upsert_folders(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseFolder, source_ids)
     if rows:
-        statement = insert(CourseFolder).values(rows)
+        statement = _dialect_insert(session, CourseFolder).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseFolder.source_id],
             set_={
@@ -656,7 +667,7 @@ def _upsert_files(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseFile, source_ids)
     if rows:
-        statement = insert(CourseFile).values(rows)
+        statement = _dialect_insert(session, CourseFile).values(rows)
         metadata_changed = or_(
             CourseFile.source_updated_at.is_distinct_from(
                 statement.excluded.source_updated_at
@@ -761,7 +772,7 @@ def _upsert_modules(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseModule, source_ids)
     if rows:
-        statement = insert(CourseModule).values(rows)
+        statement = _dialect_insert(session, CourseModule).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseModule.source_id],
             set_={
@@ -857,7 +868,7 @@ def _upsert_module_items(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseModuleItem, source_ids)
     if rows:
-        statement = insert(CourseModuleItem).values(rows)
+        statement = _dialect_insert(session, CourseModuleItem).values(rows)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseModuleItem.source_id],
             set_={
@@ -897,9 +908,9 @@ def _upsert_items(
 ) -> None:
     if not rows:
         return
-    statement = insert(UnifiedItem).values(rows)
+    statement = _dialect_insert(session, UnifiedItem).values(rows)
     statement = statement.on_conflict_do_update(
-        constraint="uq_items_source",
+        index_elements=[UnifiedItem.source, UnifiedItem.item_type, UnifiedItem.source_id],
         set_={
             "course_id": statement.excluded.course_id,
             "announcement_id": statement.excluded.announcement_id,
@@ -1066,7 +1077,7 @@ def persist_emails(
         source_ids = [row["source_id"] for row in rows]
         existing_ids = _existing_ids(session, Email, source_ids)
         if rows:
-            statement = insert(Email).values(rows)
+            statement = _dialect_insert(session, Email).values(rows)
             statement = statement.on_conflict_do_update(
                 index_elements=[Email.source_id],
                 set_={

@@ -1,16 +1,21 @@
-import calendarIcon from "@/assets/icons/calendar.svg";
-import folderIcon from "@/assets/icons/folder.svg";
-import homeIcon from "@/assets/icons/home.svg";
-import mailIcon from "@/assets/icons/mail.svg";
-import refreshIcon from "@/assets/icons/refresh.svg";
+import {
+  CalendarDays,
+  FolderOpen,
+  Home,
+  type LucideIcon,
+  Mail,
+  RefreshCw,
+  Settings,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import type { SyncStatus, ViewName } from "@/lib/types";
 
-const navigation: Array<{ id: ViewName; label: string; icon: string }> = [
-  { id: "overview", label: "概览", icon: homeIcon },
-  { id: "deadlines", label: "截止事项", icon: calendarIcon },
-  { id: "messages", label: "消息", icon: mailIcon },
-  { id: "materials", label: "课程资料", icon: folderIcon },
+const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
+  { id: "overview", label: "概览", icon: Home },
+  { id: "deadlines", label: "截止事项", icon: CalendarDays },
+  { id: "messages", label: "消息", icon: Mail },
+  { id: "materials", label: "课程资料", icon: FolderOpen },
+  { id: "settings", label: "设置", icon: Settings },
 ];
 
 interface AppShellProps {
@@ -33,18 +38,21 @@ function NavItems({
 }) {
   return (
     <nav aria-label="主导航">
-      {navigation.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          className={`nav-item ${view === item.id ? "nav-selected" : ""}`}
-          aria-current={view === item.id ? "page" : undefined}
-          onClick={() => select(item.id)}
-        >
-          <img src={item.icon} alt="" />
-          <span>{item.label}</span>
-        </button>
-      ))}
+      {navigation.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            className={`nav-item ${view === item.id ? "nav-selected" : ""}`}
+            aria-current={view === item.id ? "page" : undefined}
+            onClick={() => select(item.id)}
+          >
+            <Icon aria-hidden="true" />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 }
@@ -131,9 +139,8 @@ export function AppShell({
             </div>
           </div>
           <Button onClick={onSync} disabled={syncing}>
-            <img
-              src={refreshIcon}
-              alt=""
+            <RefreshCw
+              aria-hidden="true"
               className={syncing ? "animate-spin" : ""}
             />
             {syncing ? "同步中" : "立即同步"}

@@ -10,7 +10,7 @@ from typing import Iterable, Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, func, or_, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.models import (
@@ -91,6 +91,17 @@ class EventStore(Protocol):
     def load_canvas_cursor(self) -> int | None: ...
 
     def advance_canvas_cursor(self, cursor: int) -> None: ...
+
+
+def _dialect_insert(session: Session, model):
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(model)
+    if dialect == "sqlite":
+        return sqlite_insert(model)
+    raise RuntimeError(f"不支持的数据库方言：{dialect}")
 
 
 def sanitize_notification_text(value: object, *, limit: int = MAX_TEXT_LENGTH) -> str:
@@ -200,27 +211,27 @@ class SqlNotificationEventStore:
             ]
 
         now = datetime.now(timezone.utc)
-        statement = insert(NotificationEvent).values(
-            self._event_rows(unique.values(), status="suppressed", now=now)
-        )
-        # 兼容旧实现遗留的 pending/failed 占位：新通知基线应将它们抑制；
-        # 已经 sent/suppressed 的记录保持原样。并发唯一键冲突不会抛错。
-        statement = statement.on_conflict_do_update(
-            constraint="uq_notification_events_event_key",
-            set_={
-                "event_type": statement.excluded.event_type,
-                "item_id": statement.excluded.item_id,
-                "title": statement.excluded.title,
-                "body": statement.excluded.body,
-                "status": "suppressed",
-                "attempted_at": now,
-                "sent_at": None,
-                "last_error": None,
-                "updated_at": now,
-            },
-            where=NotificationEvent.status.in_(("pending", "failed")),
-        ).returning(NotificationEvent.event_key)
         with Session(self.engine) as session, session.begin():
+            statement = _dialect_insert(session, NotificationEvent).values(
+                self._event_rows(unique.values(), status="suppressed", now=now)
+            )
+            # 兼容旧实现遗留的 pending/failed 占位：新通知基线应将它们抑制；
+            # 已经 sent/suppressed 的记录保持原样。并发唯一键冲突不会抛错。
+            statement = statement.on_conflict_do_update(
+                index_elements=[NotificationEvent.event_key],
+                set_={
+                    "event_type": statement.excluded.event_type,
+                    "item_id": statement.excluded.item_id,
+                    "title": statement.excluded.title,
+                    "body": statement.excluded.body,
+                    "status": "suppressed",
+                    "attempted_at": now,
+                    "sent_at": None,
+                    "last_error": None,
+                    "updated_at": now,
+                },
+                where=NotificationEvent.status.in_(("pending", "failed")),
+            ).returning(NotificationEvent.event_key)
             recorded_keys = set(session.scalars(statement).all())
         return [
             candidate
@@ -233,27 +244,27 @@ class SqlNotificationEventStore:
         if not unique:
             return
         now = datetime.now(timezone.utc)
-        statement = insert(NotificationEvent).values(
-            self._event_rows(unique.values(), status="sent", now=now)
-        )
-        # 正常路径为成功发送后的 INSERT。若与并发写入或旧版失败占位冲突，
-        # 只把 pending/failed 修正为 sent；既有 sent/suppressed 保持不变。
-        statement = statement.on_conflict_do_update(
-            constraint="uq_notification_events_event_key",
-            set_={
-                "event_type": statement.excluded.event_type,
-                "item_id": statement.excluded.item_id,
-                "title": statement.excluded.title,
-                "body": statement.excluded.body,
-                "status": "sent",
-                "attempted_at": now,
-                "sent_at": now,
-                "last_error": None,
-                "updated_at": now,
-            },
-            where=NotificationEvent.status.in_(("pending", "failed")),
-        )
         with Session(self.engine) as session, session.begin():
+            statement = _dialect_insert(session, NotificationEvent).values(
+                self._event_rows(unique.values(), status="sent", now=now)
+            )
+            # 正常路径为成功发送后的 INSERT。若与并发写入或旧版失败占位冲突，
+            # 只把 pending/failed 修正为 sent；既有 sent/suppressed 保持不变。
+            statement = statement.on_conflict_do_update(
+                index_elements=[NotificationEvent.event_key],
+                set_={
+                    "event_type": statement.excluded.event_type,
+                    "item_id": statement.excluded.item_id,
+                    "title": statement.excluded.title,
+                    "body": statement.excluded.body,
+                    "status": "sent",
+                    "attempted_at": now,
+                    "sent_at": now,
+                    "last_error": None,
+                    "updated_at": now,
+                },
+                where=NotificationEvent.status.in_(("pending", "failed")),
+            )
             session.execute(statement)
 
     def load_canvas_cursor(self) -> int | None:
@@ -278,27 +289,27 @@ class SqlNotificationEventStore:
         if cursor < 0:
             raise ValueError("通知游标不能为负数")
         now = datetime.now(timezone.utc)
-        statement = insert(SyncState).values(
-            source=self.NOTIFICATION_SOURCE,
-            resource=self.CANVAS_CURSOR_RESOURCE,
-            cursor=str(cursor),
-            last_sync_at=now,
-            last_success_at=now,
-            status="success",
-            last_error=None,
-        )
-        statement = statement.on_conflict_do_update(
-            constraint="uq_sync_state_source_resource",
-            set_={
-                "cursor": str(cursor),
-                "last_sync_at": now,
-                "last_success_at": now,
-                "status": "success",
-                "last_error": None,
-                "updated_at": now,
-            },
-        )
         with Session(self.engine) as session, session.begin():
+            statement = _dialect_insert(session, SyncState).values(
+                source=self.NOTIFICATION_SOURCE,
+                resource=self.CANVAS_CURSOR_RESOURCE,
+                cursor=str(cursor),
+                last_sync_at=now,
+                last_success_at=now,
+                status="success",
+                last_error=None,
+            )
+            statement = statement.on_conflict_do_update(
+                index_elements=[SyncState.source, SyncState.resource],
+                set_={
+                    "cursor": str(cursor),
+                    "last_sync_at": now,
+                    "last_success_at": now,
+                    "status": "success",
+                    "last_error": None,
+                    "updated_at": now,
+                },
+            )
             session.execute(statement)
 
 

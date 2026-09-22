@@ -32,7 +32,7 @@ a { color: inherit; text-decoration: none; }
 .nav-item { width: 100%; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 12px; border: 0; border-radius: 6px; background: transparent; color: #1f2329; text-align: left; cursor: pointer; }
 .nav-item:hover { background: #1f23290a; }
 .nav-item:focus-visible { outline: 2px solid #1456f0; outline-offset: 2px; }
-.nav-item img { width: 20px; height: 20px; opacity: 0.72; }
+.nav-item svg { width: 20px; height: 20px; opacity: 0.72; }
 .nav-selected { background: #1f23290d; font-weight: 500; }
 .nav-selected:hover { background: #1f23290d; }
 .sidebar-footer { margin-top: auto; padding: 12px; display: flex; align-items: center; gap: 8px; color: #646a73; font-size: 12px; }
@@ -44,7 +44,7 @@ a { color: inherit; text-decoration: none; }
 .page-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .page-heading h1 { margin: 0; font-size: 24px; line-height: 36px; font-weight: 600; }
 .page-heading p { margin: 0; color: #646a73; font-size: 12px; line-height: 20px; }
-.page-header img { width: 16px; height: 16px; filter: brightness(0) invert(1); }
+.page-header svg { width: 16px; height: 16px; }
 .mobile-menu { display: none; }
 .content { width: 100%; padding: 32px var(--page-x) 48px; }
 .section-stack { display: flex; flex-direction: column; gap: var(--section-gap); }
@@ -127,4 +127,65 @@ a { color: inherit; text-decoration: none; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* Finder-style materials browser */
+.materials-page { gap: 24px; }
+.finder-toolbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 16px; }
+.finder-toolbar > label { display: grid; gap: 4px; color: #646a73; font-size: 12px; }
+.finder-toolbar select, .search-control { height: 36px; border: 1px solid #d0d3d6; border-radius: 6px; background: #fff; }
+.finder-toolbar select { width: 176px; padding: 0 32px 0 12px; color: #1f2329; }
+.search-control { width: 280px; padding: 0 12px; display: flex !important; grid-template-columns: 16px 1fr; align-items: center; gap: 8px !important; }
+.search-control svg { width: 16px; height: 16px; opacity: 0.65; }
+.search-control input { min-width: 0; height: 32px; padding: 0; border: 0; outline: 0; color: #1f2329; background: transparent; font: inherit; }
+.finder-toolbar select:focus, .search-control:focus-within { outline: 2px solid #1456f0; outline-offset: 1px; }
+.finder { min-height: 480px; display: grid; grid-template-columns: 280px minmax(0, 1fr); overflow: hidden; border: 0.5px solid #dee0e3; border-radius: 8px; background: #fff; }
+.finder-tree { padding: 12px 8px; overflow: auto; border-right: 0.5px solid #1f232926; background: #f9f9f9; }
+.tree-row { width: 100%; min-height: 36px; padding: 4px 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 6px; background: transparent; color: #1f2329; text-align: left; cursor: pointer; }
+.tree-row:hover { background: #1f23290a; }
+.tree-row:focus-visible, .finder-row:focus-visible, .breadcrumbs button:focus-visible { outline: 2px solid #1456f0; outline-offset: 0; }
+.tree-selected, .tree-selected:hover { background: #1f23290d; font-weight: 500; }
+.tree-children { margin-left: 16px; }
+.tree-chevron { width: 14px; height: 14px; opacity: 0.65; transform: rotate(-90deg); transition: transform 120ms ease; }
+.tree-chevron-open { transform: rotate(0deg); }
+.tree-kind-icon { width: 18px; height: 18px; opacity: 0.72; }
+.finder-content { min-width: 0; display: flex; flex-direction: column; }
+.breadcrumbs { min-height: 44px; padding: 8px 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 0.5px solid #1f232926; }
+.breadcrumbs > span { display: inline-flex; align-items: center; gap: 8px; color: #8f959e; }
+.breadcrumbs button { padding: 0; border: 0; background: transparent; color: #646a73; cursor: pointer; }
+.breadcrumbs button:hover { color: #1456f0; }
+.finder-list { overflow: auto; }
+.finder-row { width: 100%; min-height: 52px; padding: 8px 16px; display: grid; grid-template-columns: 20px minmax(160px, 1fr) auto minmax(160px, auto) auto; align-items: center; gap: 12px; border: 0; border-bottom: 0.5px solid #1f232914; background: #fff; color: #1f2329; text-align: left; }
+.finder-row:hover { background: #1f23290a; }
+.finder-row > svg { width: 20px; height: 20px; opacity: 0.72; }
+.folder-row { cursor: pointer; grid-template-columns: 20px minmax(160px, 1fr) auto; }
+.finder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name { padding: 0; border: 0; background: transparent; color: #1f2329; text-align: left; cursor: default; font: inherit; }
+.finder-meta { color: #646a73; font-size: 12px; white-space: nowrap; }
+.finder-actions { display: flex; align-items: center; gap: 4px; }
+.finder-empty { padding: 48px 24px; color: #646a73; text-align: center; }
+.settings-page { max-width: 720px; }
+.settings-missing { padding: 16px 20px; border: 0.5px solid #f2b8b5; border-radius: 8px; background: #fff8f7; }
+.settings-missing h3 { margin: 0 0 8px; font-size: 16px; line-height: 24px; font-weight: 500; }
+.settings-missing p { margin: 0; color: #646a73; }
+.settings-list { overflow: hidden; border: 0.5px solid #dee0e3; border-radius: 8px; }
+.settings-row { min-height: 52px; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 0.5px solid #1f232914; }
+.settings-row:last-child { border-bottom: 0; }
+.list-row-button { width: 100%; border-left: 0; border-right: 0; border-top: 0; background: #fff; color: inherit; text-align: left; }
+.table-link { padding: 0; border: 0; background: transparent; font: inherit; cursor: pointer; }
+.table-link:disabled, .list-row-button:disabled { color: inherit; cursor: default; }
+
+@media (max-width: 1023px) {
+  .finder { grid-template-columns: 224px minmax(0, 1fr); }
+  .finder-row { grid-template-columns: 20px minmax(140px, 1fr) auto auto; }
+  .finder-meta { display: none; }
+}
+
+@media (max-width: 599px) {
+  .finder-toolbar { align-items: stretch; flex-direction: column; }
+  .finder-toolbar select, .search-control { width: 100%; }
+  .finder { min-height: 560px; grid-template-columns: 1fr; }
+  .finder-tree { max-height: 220px; border-right: 0; border-bottom: 0.5px solid #1f232926; }
+  .finder-row { grid-template-columns: 20px minmax(100px, 1fr) auto; }
+  .finder-row .status-tag { display: none; }
 }

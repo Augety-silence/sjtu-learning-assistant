@@ -7,6 +7,8 @@ import os
 import stat
 import subprocess
 import sys
+import threading
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -19,6 +21,7 @@ from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
 )
+from sjtu_learning_assistant.material_tree import build_material_tree
 from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
@@ -32,7 +35,6 @@ from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SYNC_LAUNCH_LABEL = "com.sjtu.learningassistant.sync"
 DONE_STATES = {"submitted", "graded", "pending_review"}
 
 
@@ -83,6 +85,7 @@ class DashboardService:
         self.archive_service_factory = archive_service_factory
         self.command_runner = command_runner or subprocess.run
         self.process_launcher = process_launcher or subprocess.Popen
+        self._sync_lock = threading.Lock()
 
     def now(self) -> datetime:
         value = self.now_provider()
@@ -194,80 +197,9 @@ class DashboardService:
         rows.sort(key=lambda row: row["occurred_at"] or "", reverse=True)
         return rows[:limit]
 
-    def material_filters(self) -> dict[str, Any]:
+    def material_tree(self) -> dict[str, Any]:
         with Session(self.engine) as session:
-            terms = [
-                value
-                for value in session.scalars(
-                    select(Course.term_name)
-                    .where(Course.term_name.is_not(None))
-                    .distinct()
-                    .order_by(Course.term_name.desc())
-                ).all()
-                if value
-            ]
-            courses = [
-                {"id": source_id, "name": name, "term": term_name}
-                for source_id, name, term_name in session.execute(
-                    select(Course.source_id, Course.name, Course.term_name).order_by(
-                        Course.term_name.desc(), Course.name.asc()
-                    )
-                ).all()
-            ]
-        return {
-            "terms": terms,
-            "courses": courses,
-            "download_statuses": ["all", "downloaded", "pending", "failed"],
-        }
-
-    def materials(
-        self,
-        *,
-        term: str | None = None,
-        course_id: str | None = None,
-        status_filter: str | None = None,
-        limit: int = 500,
-    ) -> list[dict[str, Any]]:
-        with Session(self.engine) as session:
-            statement = (
-                select(CourseFile, Course)
-                .join(Course, Course.id == CourseFile.course_id)
-                .where(CourseFile.is_active.is_(True))
-            )
-            if term:
-                statement = statement.where(Course.term_name == term)
-            if course_id:
-                statement = statement.where(Course.source_id == course_id)
-            if status_filter and status_filter != "all":
-                if status_filter == "pending":
-                    statement = statement.where(
-                        CourseFile.download_status.not_in({"downloaded", "failed"})
-                    )
-                else:
-                    statement = statement.where(
-                        CourseFile.download_status == status_filter
-                    )
-            rows = session.execute(
-                statement.order_by(
-                    Course.term_name.desc(),
-                    Course.name.asc(),
-                    CourseFile.display_name.asc(),
-                ).limit(limit)
-            ).all()
-        return [
-            {
-                "source_id": file.source_id,
-                "name": file.display_name,
-                "course": course.name,
-                "course_id": course.source_id,
-                "term": course.term_name or "未分组学期",
-                "size": file.size,
-                "updated_at": to_shanghai(file.source_updated_at),
-                "download_status": file.download_status,
-                "can_open": file.download_status == "downloaded" and bool(file.local_path),
-            }
-            for file, course in rows
-        ]
+            return build_material_tree(session)
 
     def _new_archive_service(self) -> ArchiveService:
         if self.archive_service_factory is not None:
@@ -347,45 +279,104 @@ class DashboardService:
             raise DashboardError("无法通过 macOS 打开本地文件。")
         return {"source_id": source_id, "status": "opened"}
 
+    def reveal_material(self, source_id: str) -> dict[str, str]:
+        path = self._resolve_local_file(source_id)
+        completed = self.command_runner(["/usr/bin/open", "-R", str(path)], check=False)
+        if getattr(completed, "returncode", 0) != 0:
+            raise DashboardError("无法在 Finder 中显示本地文件。")
+        return {"source_id": source_id, "status": "revealed"}
+
+    def open_external(self, url: str) -> dict[str, str]:
+        parsed = urlparse(url.strip())
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise DashboardError("只允许打开安全的 HTTPS 链接。")
+        completed = self.command_runner(["/usr/bin/open", url.strip()], check=False)
+        if getattr(completed, "returncode", 0) != 0:
+            raise DashboardError("无法打开外部链接。")
+        return {"status": "opened"}
+
+    def settings_status(self) -> dict[str, Any]:
+        from test_canvas import KEYCHAIN_ACCOUNT as CANVAS_ACCOUNT
+        from test_canvas import KEYCHAIN_SERVICE as CANVAS_SERVICE
+        from test_canvas import load_keyring_module as load_canvas_keyring
+        from test_mail import KEYCHAIN_SERVICE as MAIL_SERVICE
+
+        email = os.environ.get("SJTU_EMAIL", "").strip()
+        canvas_configured = False
+        mail_configured = False
+        keychain_available = True
+        try:
+            keyring, _ = load_canvas_keyring()
+            canvas_configured = bool(keyring.get_password(CANVAS_SERVICE, CANVAS_ACCOUNT))
+            if email:
+                mail_configured = bool(keyring.get_password(MAIL_SERVICE, email))
+        except Exception:
+            keychain_available = False
+        missing: list[str] = []
+        if not canvas_configured:
+            missing.append("canvas_token")
+        if not email:
+            missing.append("mail_account")
+        elif not mail_configured:
+            missing.append("mail_password")
+        return {
+            "keychain_available": keychain_available,
+            "canvas_configured": canvas_configured,
+            "mail_account_configured": bool(email),
+            "mail_password_configured": mail_configured,
+            "archive_root_ready": self.archive_root.is_dir(),
+            "missing": missing,
+        }
+
+    def _release_sync_when_done(self, process: Any) -> None:
+        try:
+            waiter = getattr(process, "wait", None)
+            if waiter is not None:
+                waiter()
+        finally:
+            self._sync_lock.release()
+
     def trigger_sync(self) -> dict[str, str]:
-        if sys.platform == "darwin":
-            target = f"gui/{os.getuid()}/{SYNC_LAUNCH_LABEL}"
-            probe = self.command_runner(
-                ["launchctl", "print", target],
+        if not self._sync_lock.acquire(blocking=False):
+            return {"status": "already_running", "mode": "in_app"}
+        try:
+            process = self.process_launcher(
+                self._fallback_sync_command(),
+                cwd=str(PROJECT_ROOT),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                check=False,
+                close_fds=True,
+                start_new_session=True,
             )
-            if probe.returncode == 0:
-                self.process_launcher(
-                    ["launchctl", "kickstart", "-k", target],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                )
-                return {"status": "accepted", "mode": "launchd"}
+            threading.Thread(
+                target=self._release_sync_when_done,
+                args=(process,),
+                name="sjtu-sync-waiter",
+                daemon=True,
+            ).start()
+            return {"status": "accepted", "mode": "sync_runner"}
+        except Exception:
+            if self._sync_lock.locked():
+                self._sync_lock.release()
+            raise DashboardError("无法启动同步，请稍后重试。")
 
+    @staticmethod
+    def _fallback_sync_command() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, "--background-sync"]
         python = PROJECT_ROOT / ".venv" / "bin" / "python"
         if not python.is_file():
             python = Path(sys.executable)
-        self.process_launcher(
-            [
-                str(python),
-                str(PROJECT_ROOT / "launchd_control.py"),
-                "run-once",
-                "--canvas-only",
-                "--no-download",
-            ],
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=True,
-        )
-        return {"status": "accepted", "mode": "sync_runner"}
+        return [
+            str(python),
+            str(PROJECT_ROOT / "launchd_control.py"),
+            "run-once",
+            "--canvas-only",
+            "--no-download",
+        ]
 
     def sync_status(self) -> dict[str, Any]:
-        running = False
+        running = self._sync_lock.locked()
         lock = Path(DEFAULT_LOCK_PATH)
         if lock.exists():
             fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)

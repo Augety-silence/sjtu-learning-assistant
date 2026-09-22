@@ -9,7 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/Table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
-import { getJson } from "@/lib/api";
+import { invoke, openExternal } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { Deadline } from "@/lib/types";
 
@@ -27,9 +27,9 @@ export function DeadlinesView() {
     setItems(null);
     setError("");
     try {
-      const data = await getJson<{ items: Deadline[] }>(
-        `/api/deadlines?window=${windowValue}`,
-      );
+      const data = await invoke<{ items: Deadline[] }>("deadlines", {
+        window: windowValue,
+      });
       setItems(data.items);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "未知错误");
@@ -38,6 +38,13 @@ export function DeadlinesView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const open = (url: string | null) => {
+    if (url)
+      void openExternal(url).catch((reason) =>
+        setError(reason instanceof Error ? reason.message : "链接打开失败"),
+      );
+  };
 
   return (
     <div className="section-stack">
@@ -80,14 +87,14 @@ export function DeadlinesView() {
               {items.map((item) => (
                 <TableRow key={item.source_id}>
                   <TableCell>
-                    <a
+                    <button
+                      type="button"
                       className="table-link"
-                      href={item.url || undefined}
-                      target={item.url ? "_blank" : undefined}
-                      rel="noreferrer"
+                      disabled={!item.url}
+                      onClick={() => open(item.url)}
                     >
                       {item.title}
-                    </a>
+                    </button>
                   </TableCell>
                   <TableCell>{item.course}</TableCell>
                   <TableCell title={formatDateTime(item.due_at)}>

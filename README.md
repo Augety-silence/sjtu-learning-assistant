@@ -1,12 +1,82 @@
 # SJTU Learning Assistant
 
+## 数据库架构（桌面版）
+
+桌面 App 默认使用单用户 SQLite，不需要本地数据库服务或端口：
+
+```text
+~/Library/Application Support/SJTU Learning Assistant/data/app.db
+```
+
+首次打开 SQLite 时通过 SQLAlchemy metadata 创建当前 schema，并在
+`desktop_schema_version` 记录版本 `0006`。每条 SQLite 连接都会启用
+`foreign_keys=ON`、WAL 和 5000 ms `busy_timeout`。`sync_data_to_db.py`、
+`sync_runner.py`、LaunchAgent 与 Dashboard 都通过同一个默认 URL 写入这个文件；
+LaunchAgent 无需数据库参数，也不会保存秘密。
+
+只有以下情况使用 PostgreSQL：
+
+- 当前进程显式设置 `SJTU_DATABASE_URL=postgresql+psycopg://...`；
+- 数据库 CLI 使用 `use-postgres-status` / `use-postgres-upgrade`；
+- 使用 `import-postgres` 将旧数据一次性导入 SQLite。
+
+PostgreSQL URL 仍只保存在 macOS Keychain（或由进程环境显式注入），不会写入
+SQLite、plist 或日志。SQLite 采用 metadata bootstrap，历史 Alembic `0001`–`0006`
+保持不变且只继续用于 PostgreSQL。
+
+### 初始化与安全导入
+
+```bash
+# 创建/检查默认 SQLite schema；若空库且 Keychain 有旧 PostgreSQL URL，会一次性导入
+python3 db_manage.py upgrade
+
+# 只建 SQLite schema，明确跳过自动导入
+python3 db_manage.py upgrade --skip-import
+
+# 之后显式发起一次旧 PostgreSQL -> 空 SQLite 导入
+python3 db_manage.py import-postgres
+
+# 查看默认 SQLite
+python3 db_manage.py status
+```
+
+导入按外键依赖顺序复制全部业务表，保留 ID、时间与 JSON，并输出每张表的精确行数。
+仅允许目标 SQLite 全新且所有业务表为空时导入；任一表非空会拒绝，任一步失败会回滚
+整个导入事务。数据库本来不保存 Canvas Token、邮箱密码或其他凭据，因此这些内容不会迁移。
+
+### PostgreSQL 兼容与回滚
+
+```bash
+# 安全保存/更新旧 PostgreSQL URL
+python3 db_manage.py configure
+
+# 显式检查旧 PostgreSQL
+python3 db_manage.py use-postgres-status
+
+# 显式对旧 PostgreSQL 运行未修改的 Alembic 历史迁移
+python3 db_manage.py use-postgres-upgrade
+
+# 临时让任意现有入口回到 PostgreSQL（不要把 URL 写进 plist 或仓库）
+env SJTU_DATABASE_URL='postgresql+psycopg://...' python3 sync_data_to_db.py --canvas-only
+
+# 首次运行但明确不导入旧 PostgreSQL
+python3 sync_data_to_db.py --canvas-only --skip-import
+```
+
+回滚到 PostgreSQL 不会删除或覆盖 SQLite 文件；去掉环境变量后程序恢复使用默认 SQLite。
+`psycopg` 保留为 PostgreSQL 导入/回滚的可选运行依赖；需要这些功能时另行安装：
+
+```bash
+python3 -m pip install -r requirements-postgres.txt
+```
+
 当前完成阶段：
 
 - **Phase 1A**：通过 IMAP SSL 只读访问交大邮箱。
 - **Phase 1B**：获取 Canvas active courses。
 - **Phase 1C**：逐门课程获取 Canvas 公告和作业。
-- **Phase 2A**：建立 PostgreSQL、SQLAlchemy 与 Alembic 持久化基础。
-- **Phase 2B**：将 Canvas 公告、作业和邮件增量写入 PostgreSQL，并生成统一事项。
+- **Phase 2A**：建立 SQLAlchemy 持久化基础（SQLite 默认、PostgreSQL 兼容）。
+- **Phase 2B**：将 Canvas 公告、作业和邮件增量写入数据库，并生成统一事项。
 - **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
 - **Phase 3A**：增加单实例后台运行器、JSONL 审计日志、有限重试与 macOS LaunchAgent 管理。
 - **Phase 3B**：增加安全的 macOS 系统通知、首次同步基线、通知幂等账本与聚合限流。
@@ -18,7 +88,7 @@
 
 系统同时使用两类标识：
 
-- `id`：PostgreSQL 内部主键，用于表间外键关联。
+- `id`：数据库内部主键，用于表间外键关联。
 - `source_id`：Canvas 或 IMAP 的远端稳定 ID，用于重复同步时 Upsert 去重。
 
 关系如下：
@@ -68,6 +138,7 @@ sjtu-learning-assistant-phase1a/
 ├── sjtu_learning_assistant/
 │   ├── archive_service.py
 │   ├── database.py
+│   ├── desktop_database.py
 │   ├── mail_client.py
 │   ├── models.py
 │   ├── notifications.py
@@ -79,6 +150,7 @@ sjtu-learning-assistant-phase1a/
 ├── test_canvas.py
 ├── test_mail.py
 ├── requirements.txt
+├── requirements-postgres.txt
 └── tests/
 ```
 
@@ -90,35 +162,13 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-Phase 4A 不新增 Python 依赖。更新已有数据库后必须先运行 `python3 db_manage.py upgrade` 应用 Alembic `0006`。
+Phase 4A 不新增 Python 依赖。更新已有数据库后先运行 `python3 db_manage.py upgrade`；SQLite 使用 metadata bootstrap，显式 PostgreSQL 使用 Alembic `0006`。
 
 ## 数据库管理
 
-检查连接：
-
-```bash
-python3 db_manage.py status
-```
-
-应用最新迁移：
-
-```bash
-python3 db_manage.py upgrade
-```
-
-本地默认连接：
-
-```text
-postgresql+psycopg:///sjtu_learning_assistant?host=/tmp&connect_timeout=5
-```
-
-远程 PostgreSQL 连接必须启用 `sslmode=require`、`verify-ca` 或 `verify-full`。在 Mac 上可通过以下命令无回显地保存到 Keychain：
-
-```bash
-python3 db_manage.py configure
-```
-
-远程部署时应由部署平台的 Secrets Manager 注入 `SJTU_DATABASE_URL`，不要提交 `.env`。
+默认 SQLite 初始化、状态检查、一次性 PostgreSQL 导入及回滚命令见本文开头的
+“数据库架构（桌面版）”。远程部署只允许通过 Secrets Manager 显式注入
+`SJTU_DATABASE_URL`，不要提交 `.env`。
 
 ## Phase 2B / 2C：增量同步
 
@@ -285,7 +335,7 @@ launchctl print "gui/$(id -u)/com.sjtu.learningassistant.sync"
 - 后续新增事件按 `items.id` 通知游标扫描，不依赖本轮数据 Upsert 返回的新增 ID；只有整轮通知候选都成功发送/记账后才推进游标。发送或账本失败时保留原游标，下一轮会重新扫描且不会漏事件。
 - 每次同步也检查未来 24 小时内截止、仍为未提交状态的有效作业；这类候选不使用 Item 游标，每轮扫描并由包含作业 ID 与截止时间的 `event_key` 去重，截止时间改变后可重新提醒。
 - 每个类别每轮最多显示 3 条系统通知；超过 3 条时显示前 2 条，并将其余内容合并为第 3 条。
-- 正常通知发送前只查询已有 `event_key`，不插入 `pending`；发送成功后才原子写入 `sent`。发送失败不留永久占位，下一轮可重试；并发唯一键冲突通过 PostgreSQL Upsert 安全收敛。
+- 正常通知发送前只查询已有 `event_key`，不插入 `pending`；发送成功后才原子写入 `sent`。发送失败不留永久占位，下一轮可重试；并发唯一键冲突通过当前数据库方言的 Upsert 安全收敛。
 - `notification_events.event_key` 唯一约束负责持久化幂等，稳定状态为 `sent` 或 `suppressed`；`pending`/`failed` 仅为兼容旧版本数据。
 - 通知发送、通知状态写入或通知游标异常都不回滚或改变已经成功提交的数据同步；失败事件保持可重试。
 - `--no-notify` 完全跳过通知生成和登记，适合临时静默同步。
@@ -355,54 +405,31 @@ dropdb sjtu_learning_assistant_test
 - 未经明确要求，不推送远程仓库。
 - `.venv`、缓存、密码、Token、`.env`、SQL 导出和数据库 Dump 永不提交。
 
-## Phase 5A：本地学习仪表盘
+## Phase 5A：无端口 macOS 桌面应用
 
-Phase 5A 新增 `dashboard-web/` React + Vite + Tailwind 单页应用，以及仅绑定回环地址的 FastAPI 服务。界面包含“概览、截止事项、消息、课程资料”四个顶层视图；所有页面时间均按 `Asia/Shanghai` 显示，截止事项提供 24 小时 / 7 天 / 14 天筛选，消息提供全部 / 邮件 / 公告筛选，课程资料支持按学期、课程与下载状态筛选。已下载文件可安全打开，任意学期的未下载文件均可单文件下载。
+Phase 5A 使用 `pywebview` 打开本地 `dashboard-web/dist/index.html`，不启动 HTTP 服务、不监听端口，也不自动打开浏览器。React 仅通过 `window.pywebview.api.invoke(action, payload)` 调用白名单 Bridge；Bridge 只返回脱敏业务 DTO，异常不会透出凭据、数据库 URL、归档绝对路径或 Python 堆栈。
 
-### 安装与构建
+界面包含“概览、截止事项、消息、课程资料、设置”五个顶层视图。资料页按“学期 → 课程 → 课程作业/课件/补充资料/其他 → Canvas 目录 → 文件”动态构树，分类不写回数据库，判定优先级为模块、目录、文件名，并包含去重和目录循环保护。Finder 风格双栏支持面包屑、搜索、分类/下载状态筛选、下载、打开和在 Finder 中显示。
+
+### 安装、构建与启动
 
 ```bash
 cd sjtu-learning-assistant-phase1a
 .venv/bin/python -m pip install -r requirements.txt
 cd dashboard-web
-npm install
+npm ci
 npm run test
 npm run lint
 npm run build
 cd ..
+.venv/bin/python desktop_app.py
 ```
 
-前端生产文件构建到 `dashboard-web/dist/`，由 FastAPI 同源托管；运行时不加载 CDN 或远程字体。五个导航 / 操作图标已经保存到 `dashboard-web/src/assets/icons/` 并通过模块 `import` 打包。
+`desktop_app.py` 要求前端已构建。Vite 使用相对资源基址 `./`，运行时不加载 CDN 或远程字体。桌面 App 启动后在进程内每 15 分钟请求同步；手动和定时同步共享防重入锁，已有同步运行时不会重复启动。退出窗口会停止调度线程。
 
-### 前台启动（开发验证）
+设置页只显示配置是否齐全，不显示凭据值。Canvas Token 和邮箱密码继续从 macOS Keychain 读取；邮箱账号来自 `SJTU_EMAIL`。课程归档目录默认是 `~/Documents/SJTU Study`，可通过普通配置 `SJTU_ARCHIVE_ROOT` 调整。不要把数据库 URL、Canvas Token 或邮箱密码写入命令、plist 或仓库。
 
-```bash
-.venv/bin/python -m uvicorn dashboard_api:app \
-  --host 127.0.0.1 --port 17655 --no-access-log
-```
-
-另开终端访问 `http://127.0.0.1:17655/`。服务不会监听局域网地址。若课程归档目录不是默认的 `~/Documents/SJTU Study`，启动前可设置普通配置 `SJTU_ARCHIVE_ROOT`；不要把数据库 URL、Canvas Token 或邮箱密码写入命令、plist 或仓库。
-
-Dashboard 的所有 POST 请求都要求同源 `Origin` 和进程级 CSRF token；服务同时限制 Host 为 `127.0.0.1` / `localhost`，并返回 CSP、`frame-deny`、`nosniff` 与 `no-referrer` 安全响应头。API DTO 不返回 `raw_data`、邮箱地址、Token、密码或数据库 URL。
-
-### Dashboard LaunchAgent
-
-独立服务标签为 `com.sjtu.learningassistant.dashboard`，默认端口 `17655`，日志仍位于 `~/Library/Application Support/sjtu-learning-assistant/logs/`。plist 只包含解释器、工作目录、回环监听参数和非敏感环境变量。
-
-```bash
-# 安装并常驻（RunAtLoad + KeepAlive）；端口被占用时会明确拒绝
-.venv/bin/python dashboard_control.py install
-
-# 查看状态 / 立即重启 / 打开本地页面
-.venv/bin/python dashboard_control.py status
-.venv/bin/python dashboard_control.py kickstart
-.venv/bin/python dashboard_control.py open
-
-# 停止并卸载，不删除日志
-.venv/bin/python dashboard_control.py uninstall
-```
-
-Dashboard 内“立即同步”会优先 `kickstart` 已安装的同步 LaunchAgent；未安装时会异步启动既有 `launchd_control.py run-once --canvas-only --no-download`，继续复用 `sync_runner` 的进程锁，HTTP 请求会立即返回 `202 accepted`，前端随后轮询同步状态。单文件下载复用 `ArchiveService.download_file_by_source_id`，不受当前学期限制。
+资料操作会重新按数据库 `source_id` 查询文件，并校验解析后的本地路径位于配置的归档根目录内；打开和 Reveal 均使用固定参数数组调用 macOS `/usr/bin/open`。外部链接只允许无内嵌账号密码的 HTTPS URL。
 
 ### Phase 5A 验证
 
@@ -421,3 +448,83 @@ git diff --check
 ```
 
 本轮不自动安装 LaunchAgent、不启动长期服务，也不自动打开浏览器。
+
+## 开源发布、隐私与桌面构建
+
+### 许可证与第三方组件
+
+本项目由周济睿按 [MIT License](LICENSE) 开源。第三方运行时、开发/构建及可选迁移依赖的许可证与上游来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。新增或升级依赖后必须运行：
+
+```bash
+.venv/bin/python scripts/check_licenses.py
+node scripts/check_licenses.mjs
+```
+
+许可证检查会拒绝 GPL/AGPL 强 copyleft 运行时依赖。唯一 GPL 构建例外是采用 `GPL-2.0-or-later WITH Bootloader-exception` 的 PyInstaller；`psycopg`/`psycopg-binary`（LGPL-3.0-only）严格隔离在 `requirements-postgres.txt`，只供明确执行的 PostgreSQL 迁移、检查或回滚使用，不进入默认 SQLite 桌面包。
+
+### 隐私与本地数据位置
+
+应用不会把学习数据发送到项目维护者。它只在用户主动配置后访问 Canvas/交大邮箱等服务，并把数据保存在本机：
+
+- SQLite：`~/Library/Application Support/SJTU Learning Assistant/data/app.db`（旁侧可能存在 WAL/SHM 文件）；
+- 同步运行状态与日志：`~/Library/Application Support/sjtu-learning-assistant/run/` 和 `.../logs/`；
+- 下载资料：默认 `~/Documents/SJTU Study/`，可用 `SJTU_ARCHIVE_ROOT` 修改；
+- Canvas Token、邮箱密码及可选 PostgreSQL URL：macOS Keychain；仓库中没有 Keychain 凭据文件；
+- 普通设置：`SJTU_EMAIL`、`SJTU_ARCHIVE_ROOT` 等进程环境变量。
+
+删除应用本身不会自动删除上述用户数据。备份、迁移、清理前应先退出应用；不要把数据库、WAL/SHM、日志、下载资料、`.env`、plist 或 Keychain 导出提交到 Git。
+
+### GitHub 公开前检查
+
+公开仓库前，维护者应：
+
+1. 运行完整测试、前端构建、两项许可证检查、`scripts/scan_secrets.py` 和 `git diff --check`；
+2. 检查所有已跟踪及待提交文件，确认没有真实邮箱、Token、密码、数据库 URL、个人绝对路径、数据库、日志和课程下载资料；
+3. 确认 `src/assets/icons` 不含来源不明 SVG，界面图标只来自已声明的 `lucide-react`；
+4. 在 GitHub **Settings → Code security and analysis** 启用 Secret scanning、Push protection 与 Private vulnerability reporting；
+5. 检查仓库历史。如历史曾包含秘密，先轮换凭据，再按团队流程清理历史；仅从当前文件删除并不足够；
+6. 确认默认分支保护和 CI 已启用，并按 [SECURITY.md](SECURITY.md) 处理漏洞报告。
+
+### 开发与验证
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+npm --prefix dashboard-web ci
+npm --prefix dashboard-web run test
+npm --prefix dashboard-web run lint
+npm --prefix dashboard-web run build
+python -m unittest discover -s tests -v
+python scripts/check_licenses.py
+node scripts/check_licenses.mjs
+python scripts/scan_secrets.py
+git diff --check
+```
+
+默认运行时依赖在 `requirements.txt`；测试和打包工具在 `requirements-dev.txt`；PostgreSQL 迁移工具在 `requirements-postgres.txt`。开发和默认桌面构建均不要安装可选 PostgreSQL 驱动。
+
+### 构建未签名 macOS 应用
+
+```bash
+scripts/build_macos_app.sh
+```
+
+脚本会创建/复用 `.venv`、安装开发依赖、执行前端 test/lint/build、Python 单测、许可证和秘密扫描，生成原创中性图标，随后用 `packaging/desktop.spec` 输出：
+
+```text
+dist/SJTU Learning Assistant.app
+```
+
+Bundle identifier 为 `io.github.sjtu-learning-assistant`，版本来自 `sjtu_learning_assistant.__version__`。打包只包含本地前端、许可证和默认运行依赖，不包含 `psycopg`，也不包含 FastAPI/Uvicorn 或监听端口的服务。`MACOS_CODESIGN_IDENTITY` 与 `MACOS_NOTARY_PROFILE` 仅预留给未来经审核的发布流程；当前脚本即使检测到变量也不会执行 `codesign` 或 `notarytool`。
+
+当前产物**未签名、未公证**。首次打开时 Gatekeeper 可能阻止运行。请仅对自己从可信源码构建、并已核对校验和的产物，在 Finder 中按住 Control 点击应用并选择“打开”，再确认；不要建议用户全局关闭 Gatekeeper。正式公开分发前应增加 Developer ID 签名、公证和 stapling 流程。
+
+### 数据迁移与回滚
+
+- 升级/初始化默认 SQLite：`python db_manage.py upgrade`；只建库并跳过旧 PostgreSQL 自动导入：`python db_manage.py upgrade --skip-import`。
+- 一次性导入旧库：先单独安装 `requirements-postgres.txt`，再执行 `python db_manage.py import-postgres`；仅允许导入全新空 SQLite，失败时整笔事务回滚。
+- 回滚到旧 PostgreSQL：临时注入 `SJTU_DATABASE_URL` 后运行现有命令；不要把 URL 写入仓库、plist 或日志。移除环境变量即可恢复默认 SQLite，SQLite 文件不会被删除。
+- 应用代码回滚前先退出应用并备份整个 SQLite 数据库及同目录 WAL/SHM 文件。若新版本写入了旧版本不认识的 schema，不要直接用旧二进制打开；应恢复升级前备份，或使用与目标版本匹配的迁移工具。
+
+本节只描述软件工程流程，不会自动迁移真实数据、安装 LaunchAgent、启动窗口、签名或公证。

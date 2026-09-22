@@ -1,4 +1,9 @@
-export type ViewName = "overview" | "deadlines" | "messages" | "materials";
+export type ViewName =
+  | "overview"
+  | "deadlines"
+  | "messages"
+  | "materials"
+  | "settings";
 
 export interface Deadline {
   source_id: string;
@@ -18,16 +23,24 @@ export interface MessageItem {
   url: string | null;
 }
 
-export interface Material {
-  source_id: string;
+export interface MaterialNode {
+  id: string;
+  kind: "root" | "term" | "course" | "category" | "folder" | "file";
   name: string;
-  course: string;
-  course_id: string;
-  term: string;
-  size: number | null;
-  updated_at: string | null;
-  download_status: "pending" | "downloaded" | "failed";
-  can_open: boolean;
+  children?: MaterialNode[];
+  source_id?: string;
+  course_id?: string;
+  category?: string;
+  size?: number | null;
+  updated_at?: string | null;
+  download_status?: "pending" | "downloaded" | "failed";
+  can_open?: boolean;
+}
+
+export interface MaterialTree {
+  root: MaterialNode;
+  categories: Array<{ id: string; label: string }>;
+  download_statuses: string[];
 }
 
 export interface OverviewData {
@@ -38,15 +51,18 @@ export interface OverviewData {
   messages: MessageItem[];
 }
 
-export interface MaterialFilters {
-  terms: string[];
-  courses: Array<{ id: string; name: string; term: string | null }>;
-  download_statuses: string[];
-}
-
 export interface SyncStatus {
   status: "idle" | "syncing";
   last_success_at: string | null;
   last_run_status: string | null;
   last_run_at: string | null;
+}
+
+export interface SettingsStatus {
+  keychain_available: boolean;
+  canvas_configured: boolean;
+  mail_account_configured: boolean;
+  mail_password_configured: boolean;
+  archive_root_ready: boolean;
+  missing: Array<"canvas_token" | "mail_account" | "mail_password">;
 }

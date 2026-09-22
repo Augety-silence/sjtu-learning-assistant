@@ -15,14 +15,33 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
+
+
+class CrossDialectJSON(TypeDecorator):
+    """Use JSONB on PostgreSQL without importing its dialect in SQLite builds."""
+
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import JSONB
+
+            return dialect.type_descriptor(JSONB())
+        return dialect.type_descriptor(JSON())
+
+
+JSON_TYPE = CrossDialectJSON()
+PRIMARY_KEY_TYPE = BigInteger().with_variant(Integer, "sqlite")
 
 
 class Base(DeclarativeBase):
@@ -44,13 +63,13 @@ class TimestampMixin:
 class Course(TimestampMixin, Base):
     __tablename__ = "courses"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     course_code: Mapped[str | None] = mapped_column(Text)
     term_name: Mapped[str | None] = mapped_column(Text)
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     announcements: Mapped[list["Announcement"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
@@ -75,7 +94,7 @@ class Course(TimestampMixin, Base):
 class Announcement(TimestampMixin, Base):
     __tablename__ = "announcements"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -88,7 +107,7 @@ class Announcement(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="announcements")
 
@@ -98,7 +117,7 @@ class Announcement(TimestampMixin, Base):
 class Assignment(TimestampMixin, Base):
     __tablename__ = "assignments"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -112,7 +131,7 @@ class Assignment(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="assignments")
 
@@ -122,7 +141,7 @@ class Assignment(TimestampMixin, Base):
 class Email(TimestampMixin, Base):
     __tablename__ = "emails"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     subject: Mapped[str] = mapped_column(Text, nullable=False)
     sender_name: Mapped[str | None] = mapped_column(Text)
@@ -132,7 +151,7 @@ class Email(TimestampMixin, Base):
     body_preview: Mapped[str | None] = mapped_column(Text)
     is_unread: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     __table_args__ = (Index("ix_emails_sent_at", "sent_at"),)
 
@@ -140,7 +159,7 @@ class Email(TimestampMixin, Base):
 class CourseFolder(TimestampMixin, Base):
     __tablename__ = "course_folders"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -157,7 +176,7 @@ class CourseFolder(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="folders")
 
@@ -167,7 +186,7 @@ class CourseFolder(TimestampMixin, Base):
 class CourseModule(TimestampMixin, Base):
     __tablename__ = "course_modules"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -180,7 +199,7 @@ class CourseModule(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="modules")
     items: Mapped[list["CourseModuleItem"]] = relationship(
@@ -193,7 +212,7 @@ class CourseModule(TimestampMixin, Base):
 class CourseFile(TimestampMixin, Base):
     __tablename__ = "course_files"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -226,7 +245,7 @@ class CourseFile(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="files")
 
@@ -247,7 +266,7 @@ class CourseFile(TimestampMixin, Base):
 class CourseModuleItem(TimestampMixin, Base):
     __tablename__ = "course_module_items"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     course_id: Mapped[int] = mapped_column(
         ForeignKey("courses.id", ondelete="CASCADE"), nullable=False
@@ -269,7 +288,7 @@ class CourseModuleItem(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="module_items")
     module: Mapped[CourseModule] = relationship(back_populates="items")
@@ -283,7 +302,7 @@ class CourseModuleItem(TimestampMixin, Base):
 class UnifiedItem(TimestampMixin, Base):
     __tablename__ = "items"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     item_type: Mapped[str] = mapped_column(String(32), nullable=False)
     source_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -310,7 +329,7 @@ class UnifiedItem(TimestampMixin, Base):
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("source", "item_type", "source_id", name="uq_items_source"),
@@ -319,7 +338,7 @@ class UnifiedItem(TimestampMixin, Base):
         UniqueConstraint("email_id", name="uq_items_email_id"),
         UniqueConstraint("course_file_id", name="uq_items_course_file_id"),
         CheckConstraint(
-            "num_nonnulls(announcement_id, assignment_id, email_id, course_file_id) <= 1",
+            "(CASE WHEN announcement_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN assignment_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN email_id IS NOT NULL THEN 1 ELSE 0 END + CASE WHEN course_file_id IS NOT NULL THEN 1 ELSE 0 END) <= 1",
             name="ck_items_single_source_record",
         ),
         Index("ix_items_due_at", "due_at"),
@@ -330,7 +349,7 @@ class UnifiedItem(TimestampMixin, Base):
 class NotificationEvent(TimestampMixin, Base):
     __tablename__ = "notification_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     event_key: Mapped[str] = mapped_column(String(512), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     item_id: Mapped[int | None] = mapped_column(
@@ -357,7 +376,7 @@ class NotificationEvent(TimestampMixin, Base):
 class SyncState(Base):
     __tablename__ = "sync_state"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     resource: Mapped[str] = mapped_column(String(64), nullable=False)
     cursor: Mapped[str | None] = mapped_column(Text)
@@ -380,7 +399,7 @@ class SyncState(Base):
 class SyncRun(Base):
     __tablename__ = "sync_runs"
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     resource: Mapped[str] = mapped_column(String(64), nullable=False)
     started_at: Mapped[datetime] = mapped_column(

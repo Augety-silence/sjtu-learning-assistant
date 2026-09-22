@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Incrementally sync Canvas and SJTU Mail into PostgreSQL."""
+"""Incrementally sync Canvas and SJTU Mail into the configured database."""
 
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ from sjtu_learning_assistant.database import (
     DatabaseConfigError,
     check_database,
     create_database_engine,
+)
+from sjtu_learning_assistant.desktop_database import (
+    DesktopDatabaseError,
+    initialize_desktop_database,
 )
 from sjtu_learning_assistant.mail_client import (
     DEFAULT_INITIAL_LIMIT,
@@ -50,7 +54,7 @@ from test_mail import MailCheckError, get_password, normalize_email, prompt_emai
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="增量同步 Canvas 与交大邮箱到 PostgreSQL。"
+        description="增量同步 Canvas 与交大邮箱到本地数据库。"
     )
     parser.add_argument("--email", help="交大邮箱地址；省略时交互输入。")
     parser.add_argument(
@@ -58,6 +62,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mail-only", action="store_true", help="只同步邮箱，不同步 Canvas。"
+    )
+    parser.add_argument(
+        "--skip-import",
+        action="store_true",
+        help="初始化全新 SQLite 时不导入旧 PostgreSQL 数据。",
     )
     parser.add_argument(
         "--no-notify",
@@ -276,9 +285,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine = None
     try:
         engine = create_database_engine()
+        if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
+            initialize_desktop_database(engine, skip_import=args.skip_import)
         health = check_database(engine)
         print(
-            f"已连接 PostgreSQL：{health.database} "
+            f"已连接数据库：{health.database} "
             f"（server {health.server_version}）"
         )
 
@@ -296,11 +307,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             sync_mail(engine, email_address, args.initial_mail_limit)
         return 0
-    except (ArchiveError, CanvasCheckError, MailCheckError, DatabaseConfigError) as exc:
+    except (
+        ArchiveError,
+        CanvasCheckError,
+        MailCheckError,
+        DatabaseConfigError,
+        DesktopDatabaseError,
+    ) as exc:
         print(f"同步失败：{exc}", file=sys.stderr)
         return 1
-    except SQLAlchemyError as exc:
-        print(f"数据库事务失败，未推进对应同步游标：{exc}", file=sys.stderr)
+    except SQLAlchemyError:
+        print("数据库事务失败，未推进对应同步游标。", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n已取消。", file=sys.stderr)

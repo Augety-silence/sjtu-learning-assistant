@@ -109,24 +109,6 @@ class DashboardActionTests(unittest.TestCase):
         self.assertIn("--canvas-only", launches[0][0])
         self.assertTrue(launches[0][1]["start_new_session"])
 
-    @patch("sjtu_learning_assistant.dashboard_service.sys.platform", "darwin")
-    def test_sync_prefers_loaded_launch_agent(self) -> None:
-        calls: list[list[str]] = []
-
-        def runner(command, **_kwargs):
-            return SimpleNamespace(returncode=0)
-
-        def launcher(command, **_kwargs):
-            calls.append(list(command))
-            return SimpleNamespace()
-
-        service = DashboardService(
-            SimpleNamespace(), command_runner=runner, process_launcher=launcher
-        )
-        result = service.trigger_sync()
-        self.assertEqual("launchd", result["mode"])
-        self.assertEqual("launchctl", calls[0][0])
-        self.assertEqual("kickstart", calls[0][1])
 
 
 if __name__ == "__main__":
