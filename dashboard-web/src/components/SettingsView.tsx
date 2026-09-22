@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/States";
-import { invoke } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import {
+  getSettings,
+  organizeArchive,
+  pickArchiveRoot,
+  updateSettings,
+} from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
 
 const labels: Record<string, string> = {
@@ -9,28 +15,95 @@ const labels: Record<string, string> = {
   mail_password: "邮箱密码（macOS Keychain）",
 };
 
-export function SettingsView() {
+export function SettingsView({
+  onArchiveChanged,
+}: {
+  onArchiveChanged?: () => void;
+}) {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState("");
+
   const load = useCallback(async () => {
     setError("");
     try {
-      setStatus(await invoke<SettingsStatus>("settings_status"));
+      setStatus(await getSettings());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置状态读取失败");
     }
   }, []);
+
   useEffect(() => {
     void load();
   }, [load]);
-  if (error) return <ErrorState message={error} retry={() => void load()} />;
+
+  const update = async (
+    changes: Partial<
+      Pick<
+        SettingsStatus,
+        "auto_download_current_term" | "organize_by_category"
+      >
+    >,
+  ) => {
+    setBusy("update");
+    setError("");
+    setNotice("");
+    try {
+      const next = await updateSettings(changes);
+      setStatus(next);
+      setNotice("设置已保存。");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "设置保存失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const chooseFolder = async () => {
+    setBusy("pick");
+    setError("");
+    setNotice("");
+    try {
+      const result = await pickArchiveRoot();
+      setStatus(result.settings);
+      setNotice(
+        result.cancelled ? "已取消选择，归档目录未更改。" : "归档目录已更新。",
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "目录选择失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const organize = async () => {
+    setBusy("organize");
+    setError("");
+    setNotice("");
+    try {
+      const result = await organizeArchive();
+      setNotice(
+        `整理完成：移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
+      );
+      onArchiveChanged?.();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "整理失败");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  if (!status && error)
+    return <ErrorState message={error} retry={() => void load()} />;
   if (!status) return <LoadingState label="正在检查本机设置…" />;
+
   return (
     <div className="section-stack settings-page">
       <div className="view-intro">
         <div>
           <h2>本机设置</h2>
-          <p>凭据仅从 macOS Keychain 读取，不会传给前端。</p>
+          <p>凭据仅从 macOS Keychain 读取；这里仅保存非敏感归档偏好。</p>
         </div>
       </div>
       {status.missing.length > 0 && (
@@ -40,12 +113,59 @@ export function SettingsView() {
           <p>请在终端运行现有 Canvas / 邮箱配置流程，随后重新检查。</p>
         </div>
       )}
+      {error && (
+        <div className="settings-error" role="alert">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="notice" role="status">
+          {notice}
+        </div>
+      )}
       <div className="settings-list">
         <StatusRow label="macOS Keychain" ready={status.keychain_available} />
         <StatusRow label="Canvas Token" ready={status.canvas_configured} />
         <StatusRow label="邮箱账号" ready={status.mail_account_configured} />
         <StatusRow label="邮箱密码" ready={status.mail_password_configured} />
-        <StatusRow label="资料归档目录" ready={status.archive_root_ready} />
+        <div className="settings-row settings-path-row">
+          <div>
+            <strong>资料归档目录</strong>
+            <span title={status.archive_root}>{status.archive_root}</span>
+          </div>
+          <Button
+            variant="outline"
+            disabled={Boolean(busy)}
+            onClick={() => void chooseFolder()}
+          >
+            {busy === "pick" ? "选择中…" : "选择目录"}
+          </Button>
+        </div>
+        <ToggleRow
+          label="自动下载本学期资料"
+          description="每次 Canvas 同步后自动下载最近 active 课程；历史学期仍需单文件下载。"
+          checked={status.auto_download_current_term}
+          disabled={Boolean(busy)}
+          onChange={(checked) =>
+            void update({ auto_download_current_term: checked })
+          }
+        />
+        <ToggleRow
+          label="按类别整理"
+          description="路径中增加课程作业、课件、补充资料或其他分类层级。关闭后保持旧路径。"
+          checked={status.organize_by_category}
+          disabled={Boolean(busy)}
+          onChange={(checked) => void update({ organize_by_category: checked })}
+        />
+      </div>
+      <div className="settings-actions">
+        <Button
+          disabled={Boolean(busy) || !status.organize_by_category}
+          onClick={() => void organize()}
+        >
+          {busy === "organize" ? "正在整理…" : "立即整理现有文件"}
+        </Button>
+        <span>仅处理最近同步的 Canvas active 课程，不触碰历史课程。</span>
       </div>
     </div>
   );
@@ -61,5 +181,35 @@ function StatusRow({ label, ready }: { label: string; ready: boolean }) {
         {ready ? "已就绪" : "缺失"}
       </span>
     </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="settings-row settings-toggle-row">
+      <span>
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+      <input
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    </label>
   );
 }

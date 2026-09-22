@@ -98,12 +98,18 @@ export default function App() {
           {message}
         </div>
       )}
-      <div key={dataVersion}>
-        {view === "overview" && <OverviewView navigate={setView} />}
-        {view === "deadlines" && <DeadlinesView />}
-        {view === "messages" && <MessagesView />}
-        {view === "materials" && <MaterialsView />}
-        {view === "settings" && <SettingsView />}
+      <div>
+        {view === "overview" && (
+          <OverviewView key={dataVersion} navigate={setView} />
+        )}
+        {view === "deadlines" && <DeadlinesView key={dataVersion} />}
+        {view === "messages" && <MessagesView key={dataVersion} />}
+        {view === "materials" && <MaterialsView key={dataVersion} />}
+        {view === "settings" && (
+          <SettingsView
+            onArchiveChanged={() => setDataVersion((value) => value + 1)}
+          />
+        )}
       </div>
     </AppShell>
   );

@@ -11,7 +11,8 @@ from typing import Any, Callable, Mapping
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sjtu_learning_assistant.archive_service import ArchiveError, DEFAULT_ARCHIVE_ROOT
+from sjtu_learning_assistant.archive_service import ArchiveError
+from sjtu_learning_assistant.local_settings import SettingsError
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import create_database_engine
 from sjtu_learning_assistant.desktop_database import initialize_desktop_database
@@ -45,7 +46,18 @@ def _require_payload(payload: object) -> Mapping[str, Any]:
     return payload
 
 
+def _empty_payload(payload: Mapping[str, Any]) -> None:
+    if payload:
+        raise DashboardError("该操作不接受参数。")
+
+
+def _only_keys(payload: Mapping[str, Any], allowed: set[str]) -> None:
+    if set(payload) - allowed:
+        raise DashboardError("请求包含不支持的参数。")
+
+
 def _source_id(payload: Mapping[str, Any]) -> str:
+    _only_keys(payload, {"source_id"})
     value = payload.get("source_id")
     if (
         not isinstance(value, str)
@@ -63,21 +75,63 @@ class DesktopBridge:
     def __init__(self, service: DashboardService) -> None:
         self._service = service
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
-            "health": lambda _: service.health(),
-            "overview": lambda _: service.overview(),
+            "health": lambda payload: self._without_payload(
+                payload, service.health
+            ),
+            "overview": lambda payload: self._without_payload(
+                payload, service.overview
+            ),
             "deadlines": self._deadlines,
             "messages": self._messages,
-            "material_tree": lambda _: service.material_tree(),
-            "sync_status": lambda _: service.sync_status(),
-            "sync_trigger": lambda _: service.trigger_sync(),
+            "material_tree": lambda payload: self._without_payload(
+                payload, service.material_tree
+            ),
+            "sync_status": lambda payload: self._without_payload(
+                payload, service.sync_status
+            ),
+            "sync_trigger": lambda payload: self._without_payload(
+                payload, service.trigger_sync
+            ),
             "material_download": lambda payload: service.download_material(_source_id(payload)),
             "material_open": lambda payload: service.open_material(_source_id(payload)),
             "material_reveal": lambda payload: service.reveal_material(_source_id(payload)),
-            "settings_status": lambda _: service.settings_status(),
+            "settings_status": self._settings_status,
+            "settings_update": lambda payload: service.update_settings(payload),
+            "settings_pick_archive_root": self._settings_pick_archive_root,
+            "archive_organize": self._archive_organize,
+            "archive_download_current_term": self._archive_download_current_term,
             "open_external": self._open_external,
         }
 
+    @staticmethod
+    def _without_payload(
+        payload: Mapping[str, Any], callback: Callable[[], Any]
+    ) -> Any:
+        _empty_payload(payload)
+        return callback()
+
+    def _settings_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.settings_status()
+
+    def _settings_pick_archive_root(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.pick_archive_root()
+
+    def _archive_organize(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.organize_archive()
+
+    def _archive_download_current_term(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.download_current_term()
+
     def _deadlines(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"window"})
         window = payload.get("window", "7d")
         hours = {"24h": 24, "7d": 168, "14d": 336}.get(window)
         if hours is None:
@@ -85,12 +139,14 @@ class DesktopBridge:
         return {"items": self._service.deadlines(hours)}
 
     def _messages(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"kind"})
         kind = payload.get("kind", "all")
         if kind not in {"all", "email", "announcement"}:
             raise DashboardError("消息筛选条件无效。")
         return {"items": self._service.messages(kind)}
 
     def _open_external(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        _only_keys(payload, {"url"})
         value = payload.get("url")
         if not isinstance(value, str):
             raise DashboardError("链接不正确。")
@@ -99,6 +155,11 @@ class DesktopBridge:
     def invoke(self, action: str, payload: object = None) -> dict[str, Any]:
         """The only public Bridge method exposed to JavaScript."""
         try:
+            if not isinstance(action, str) or len(action) > 80:
+                return {
+                    "ok": False,
+                    "error": {"code": "not_allowed", "message": "不支持的操作。"},
+                }
             handler = self._handlers.get(action)
             if handler is None:
                 return {
@@ -107,7 +168,7 @@ class DesktopBridge:
                 }
             result = handler(_require_payload(payload))
             return {"ok": True, "data": result}
-        except (DashboardError, ArchiveError) as exc:
+        except (DashboardError, ArchiveError, SettingsError) as exc:
             return {
                 "ok": False,
                 "error": {"code": "operation_failed", "message": safe_message(exc)},
@@ -184,7 +245,13 @@ def run_desktop_app() -> int:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
             initialize_desktop_database(engine, skip_import=True)
-        service = DashboardService(engine, archive_root=DEFAULT_ARCHIVE_ROOT)
+        def pick_folder() -> str | None:
+            result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+            if not result:
+                return None
+            return str(result[0] if isinstance(result, (list, tuple)) else result)
+
+        service = DashboardService(engine, folder_picker=pick_folder)
         bridge = DesktopBridge(service)
         scheduler = DesktopScheduler(service.trigger_sync)
         webview.create_window(
@@ -209,7 +276,7 @@ def main() -> int:
     if getattr(sys, "frozen", False) and sys.argv[1:] == ["--background-sync"]:
         from sync_data_to_db import main as sync_main
 
-        return sync_main(["--canvas-only", "--no-download"])
+        return sync_main(["--canvas-only"])
     return run_desktop_app()
 
 

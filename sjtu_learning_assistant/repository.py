@@ -231,7 +231,13 @@ def _upsert_courses(session: Session, rows: list[dict[str, Any]], now: datetime)
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Course, source_ids)
     if rows:
-        statement = _dialect_insert(session, Course).values(rows)
+        # All records returned by fetch_active_courses share this exact marker.
+        # It lets later desktop archive actions recover the latest active set
+        # without adding a schema field or trusting a localised term name.
+        timestamped_rows = [
+            {**row, "created_at": now, "updated_at": now} for row in rows
+        ]
+        statement = _dialect_insert(session, Course).values(timestamped_rows)
         statement = statement.on_conflict_do_update(
             index_elements=[Course.source_id],
             set_={

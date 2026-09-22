@@ -22,6 +22,15 @@ class MaterialClassificationTests(unittest.TestCase):
         self.assertEqual("courseware", classify_material(module_names=[], folder_names=["Lecture 01"], filename="homework.pdf"))
         self.assertEqual("supplementary", classify_material(module_names=[], folder_names=[], filename="reference.pdf"))
         self.assertEqual("other", classify_material(module_names=[], folder_names=[], filename="syllabus.pdf"))
+        self.assertEqual(
+            "assignments",
+            classify_material(
+                module_names=[],
+                module_item_names=["Lab 1"],
+                folder_names=["Lecture"],
+                filename="reference.pdf",
+            ),
+        )
 
     def test_folder_cycle_is_safe(self):
         first = SimpleNamespace(id=1, parent_folder_id=2)

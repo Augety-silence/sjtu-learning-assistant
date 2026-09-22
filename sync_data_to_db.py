@@ -25,6 +25,7 @@ from sjtu_learning_assistant.desktop_database import (
     DesktopDatabaseError,
     initialize_desktop_database,
 )
+from sjtu_learning_assistant.local_settings import SettingsError, SettingsStore
 from sjtu_learning_assistant.mail_client import (
     DEFAULT_INITIAL_LIMIT,
     fetch_incremental_mail,
@@ -80,8 +81,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--archive-root",
-        default=str(DEFAULT_ARCHIVE_ROOT),
-        help=f"课程文件归档根目录，默认 {DEFAULT_ARCHIVE_ROOT}。",
+        default=None,
+        help="显式覆盖设置中的课程文件归档根目录。",
+    )
+    parser.add_argument(
+        "--no-organize-by-category",
+        action="store_true",
+        help="显式关闭按类别整理，维持旧目录结构。",
     )
     parser.add_argument(
         "--current-term",
@@ -98,9 +104,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
     if args.initial_mail_limit < 1 or args.initial_mail_limit > 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
-    if not args.archive_root.strip():
-        parser.error("--archive-root 不能是空白路径。")
-    args.archive_root = Path(args.archive_root).expanduser()
+    if args.archive_root is not None:
+        if not args.archive_root.strip():
+            parser.error("--archive-root 不能为空白路径。")
+        args.archive_root = Path(args.archive_root).expanduser()
     if args.current_term is not None:
         try:
             args.current_term = normalize_term(args.current_term)
@@ -116,6 +123,7 @@ def sync_canvas(
     download: bool = True,
     archive_root: Path = DEFAULT_ARCHIVE_ROOT,
     current_term: str | None = None,
+    organize_by_category: bool = True,
 ) -> None:
     token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
@@ -228,6 +236,8 @@ def sync_canvas(
                 archive_client,
                 archive_root=archive_root,
                 current_term=current_term,
+                organize_by_category=organize_by_category,
+                active_course_source_ids={str(course["id"]) for course in raw_courses},
             ).archive_current_term()
         if archive_result.skipped:
             print("文件归档跳过：%s" % archive_result.message)
@@ -293,13 +303,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"（server {health.server_version}）"
         )
 
+        settings = SettingsStore().resolve(
+            archive_root=args.archive_root,
+            auto_download_current_term=False if args.no_download else None,
+            organize_by_category=False if args.no_organize_by_category else None,
+        )
+
         if not args.mail_only:
+            sync_options = {}
+            if not settings.organize_by_category:
+                sync_options["organize_by_category"] = False
             sync_canvas(
                 engine,
                 notify=not args.no_notify,
-                download=not args.no_download,
-                archive_root=args.archive_root,
+                download=settings.auto_download_current_term,
+                archive_root=Path(settings.archive_root),
                 current_term=args.current_term,
+                **sync_options,
             )
         if not args.canvas_only:
             email_address = (
@@ -313,6 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         MailCheckError,
         DatabaseConfigError,
         DesktopDatabaseError,
+        SettingsError,
     ) as exc:
         print(f"同步失败：{exc}", file=sys.stderr)
         return 1

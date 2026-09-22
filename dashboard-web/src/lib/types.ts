@@ -35,6 +35,7 @@ export interface MaterialNode {
   updated_at?: string | null;
   download_status?: "pending" | "downloaded" | "failed";
   can_open?: boolean;
+  local_path?: string | null;
 }
 
 export interface MaterialTree {
@@ -64,5 +65,8 @@ export interface SettingsStatus {
   mail_account_configured: boolean;
   mail_password_configured: boolean;
   archive_root_ready: boolean;
+  archive_root: string;
+  auto_download_current_term: boolean;
+  organize_by_category: boolean;
   missing: Array<"canvas_token" | "mail_account" | "mail_password">;
 }

@@ -11,7 +11,7 @@ import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, func, or_, select
@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
+)
+from sjtu_learning_assistant.local_settings import (
+    LocalSettings,
+    SettingsStore,
 )
 from sjtu_learning_assistant.material_tree import build_material_tree
 from sjtu_learning_assistant.models import (
@@ -73,14 +77,20 @@ class DashboardService:
         self,
         engine: Engine,
         *,
-        archive_root: Path = DEFAULT_ARCHIVE_ROOT,
+        archive_root: Path | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        settings_store: SettingsStore | None = None,
+        folder_picker: Callable[[], str | None] | None = None,
         archive_service_factory: Callable[[], ArchiveService] | None = None,
         command_runner: Callable[..., Any] | None = None,
         process_launcher: Callable[..., Any] | None = None,
     ) -> None:
         self.engine = engine
-        self.archive_root = Path(archive_root).expanduser()
+        self.settings_store = settings_store or SettingsStore()
+        self._archive_root_override = archive_root
+        settings = self.settings_store.resolve(archive_root=archive_root)
+        self.archive_root = Path(settings.archive_root)
+        self.folder_picker = folder_picker
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self.archive_service_factory = archive_service_factory
         self.command_runner = command_runner or subprocess.run
@@ -201,9 +211,14 @@ class DashboardService:
         with Session(self.engine) as session:
             return build_material_tree(session)
 
+    def _effective_settings(self) -> LocalSettings:
+        return self.settings_store.resolve(archive_root=self._archive_root_override)
+
     def _new_archive_service(self) -> ArchiveService:
         if self.archive_service_factory is not None:
             return self.archive_service_factory()
+        settings = self._effective_settings()
+        self.archive_root = Path(settings.archive_root)
         from test_canvas import (
             DEFAULT_BASE_URL,
             DEFAULT_TIMEOUT_SECONDS,
@@ -217,6 +232,8 @@ class DashboardService:
             self.engine,
             client,
             archive_root=self.archive_root,
+            organize_by_category=settings.organize_by_category,
+            use_recent_active_courses=True,
         )
 
     def download_material(self, source_id: str) -> dict[str, Any]:
@@ -295,12 +312,64 @@ class DashboardService:
             raise DashboardError("无法打开外部链接。")
         return {"status": "opened"}
 
+    def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        settings = self.settings_store.update(dict(payload))
+        if self._archive_root_override is None:
+            self.archive_root = Path(settings.archive_root)
+        return self.settings_status()
+
+    def pick_archive_root(self) -> dict[str, Any]:
+        if self.folder_picker is None:
+            raise DashboardError("当前环境不支持选择文件夹。")
+        selected = self.folder_picker()
+        if selected is None:
+            return {"cancelled": True, "settings": self.settings_status()}
+        updated = self.settings_store.update({"archive_root": selected})
+        if self._archive_root_override is None:
+            self.archive_root = Path(updated.archive_root)
+        return {"cancelled": False, "settings": self.settings_status()}
+
+    def organize_archive(self) -> dict[str, Any]:
+        settings = self._effective_settings()
+        if not settings.organize_by_category:
+            raise DashboardError("请先开启“按类别整理”。")
+        service = self._new_archive_service()
+        try:
+            summary = service.organize_current_term()
+        finally:
+            client = getattr(service, "canvas_client", None)
+            if client is not None and hasattr(client, "close"):
+                client.close()
+        return {
+            "moved": summary.moved,
+            "unchanged": summary.unchanged,
+            "failed": summary.failed,
+        }
+
+    def download_current_term(self) -> dict[str, Any]:
+        service = self._new_archive_service()
+        try:
+            summary = service.archive_current_term()
+        finally:
+            client = getattr(service, "canvas_client", None)
+            if client is not None and hasattr(client, "close"):
+                client.close()
+        return {
+            "downloaded": summary.downloaded,
+            "unchanged": summary.unchanged,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "message": summary.message,
+        }
+
     def settings_status(self) -> dict[str, Any]:
         from test_canvas import KEYCHAIN_ACCOUNT as CANVAS_ACCOUNT
         from test_canvas import KEYCHAIN_SERVICE as CANVAS_SERVICE
         from test_canvas import load_keyring_module as load_canvas_keyring
         from test_mail import KEYCHAIN_SERVICE as MAIL_SERVICE
 
+        settings = self._effective_settings()
+        self.archive_root = Path(settings.archive_root)
         email = os.environ.get("SJTU_EMAIL", "").strip()
         canvas_configured = False
         mail_configured = False
@@ -325,6 +394,9 @@ class DashboardService:
             "mail_account_configured": bool(email),
             "mail_password_configured": mail_configured,
             "archive_root_ready": self.archive_root.is_dir(),
+            "archive_root": str(self.archive_root),
+            "auto_download_current_term": settings.auto_download_current_term,
+            "organize_by_category": settings.organize_by_category,
             "missing": missing,
         }
 
@@ -360,20 +432,26 @@ class DashboardService:
                 self._sync_lock.release()
             raise DashboardError("无法启动同步，请稍后重试。")
 
-    @staticmethod
-    def _fallback_sync_command() -> list[str]:
+    def _fallback_sync_command(self) -> list[str]:
         if getattr(sys, "frozen", False):
             return [sys.executable, "--background-sync"]
         python = PROJECT_ROOT / ".venv" / "bin" / "python"
         if not python.is_file():
             python = Path(sys.executable)
-        return [
+        settings = self._effective_settings()
+        command = [
             str(python),
             str(PROJECT_ROOT / "launchd_control.py"),
             "run-once",
             "--canvas-only",
-            "--no-download",
+            "--archive-root",
+            settings.archive_root,
         ]
+        if not settings.auto_download_current_term:
+            command.append("--no-download")
+        if not settings.organize_by_category:
+            command.append("--no-organize-by-category")
+        return command
 
     def sync_status(self) -> dict[str, Any]:
         running = self._sync_lock.locked()

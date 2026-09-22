@@ -2,66 +2,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-import re
 from typing import Any
 
-CATEGORY_LABELS = {
-    "assignments": "课程作业",
-    "courseware": "课件",
-    "supplementary": "补充资料",
-    "other": "其他",
-}
-CATEGORY_ORDER = tuple(CATEGORY_LABELS)
-KEYWORDS = (
-    ("assignments", ("作业", "homework", "assignment", "exercise", "实验", "lab")),
-    ("courseware", ("课件", "讲义", "lecture", "slide", "ppt", "slides", "教案")),
-    (
-        "supplementary",
-        ("补充", "课程资料", "additional", "reading", "reference", "supplementary", "拓展", "参考"),
-    ),
+from sjtu_learning_assistant.material_classifier import (
+    CATEGORY_LABELS,
+    CATEGORY_ORDER,
+    classify_material,
+    load_module_signals,
+    safe_folder_chain,
 )
-
-
-def classify_material(
-    *,
-    module_names: list[str],
-    folder_names: list[str],
-    filename: str,
-) -> str:
-    """Classify dynamically: module first, folder second, filename last."""
-    for values in (module_names, folder_names, [filename]):
-        for name in values:
-            text = (name or "").strip().casefold()
-            for category, keywords in KEYWORDS:
-                for keyword in keywords:
-                    normalized = keyword.casefold()
-                    if normalized.isascii():
-                        matched = normalized in re.split(r"[^a-z]+", text)
-                    else:
-                        matched = normalized in text
-                    if matched:
-                        return category
-    return "other"
-
-
-def safe_folder_chain(folder_id: int | None, folder_by_id: dict[int, Any]) -> list[Any]:
-    """Return a finite root-to-leaf chain even if database links contain a cycle."""
-    chain: list[Any] = []
-    seen: set[int] = set()
-    current = folder_id
-    while current is not None and current not in seen:
-        seen.add(current)
-        folder = folder_by_id.get(current)
-        if folder is None:
-            break
-        chain.append(folder)
-        current = folder.parent_folder_id
-    chain.reverse()
-    # Canvas' top-level “course files” row is an API root, not a user folder.
-    if chain and chain[0].parent_folder_id is None:
-        chain = chain[1:]
-    return chain
 
 
 def _new_node(node_id: str, kind: str, name: str) -> dict[str, Any]:
@@ -72,13 +21,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
     """Build semester → course → category → Canvas folders → files."""
     from sqlalchemy import select
 
-    from sjtu_learning_assistant.models import (
-        Course,
-        CourseFile,
-        CourseFolder,
-        CourseModule,
-        CourseModuleItem,
-    )
+    from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder
 
     courses = list(
         session.scalars(
@@ -86,38 +29,17 @@ def build_material_tree(session: Any) -> dict[str, Any]:
         ).all()
     )
     files = list(
-        session.scalars(
-            select(CourseFile).where(CourseFile.is_active.is_(True))
-        ).all()
+        session.scalars(select(CourseFile).where(CourseFile.is_active.is_(True))).all()
     )
     folders = list(
         session.scalars(
             select(CourseFolder).where(CourseFolder.is_active.is_(True))
         ).all()
     )
-    module_rows = list(
-        session.execute(
-            select(CourseModuleItem, CourseModule)
-            .join(CourseModule, CourseModule.id == CourseModuleItem.module_id)
-            .where(
-                CourseModuleItem.is_active.is_(True),
-                CourseModule.is_active.is_(True),
-                CourseModuleItem.content_file_id.is_not(None),
-            )
-            .order_by(
-                CourseModule.position.asc().nulls_last(),
-                CourseModuleItem.position.asc().nulls_last(),
-                CourseModule.id.asc(),
-            )
-        ).all()
-    )
 
     course_by_id = {course.id: course for course in courses}
     folder_by_id = {folder.id: folder for folder in folders}
-    modules_by_file: dict[int, list[str]] = defaultdict(list)
-    for item, module in module_rows:
-        if module.name not in modules_by_file[item.content_file_id]:
-            modules_by_file[item.content_file_id].append(module.name)
+    module_signals = load_module_signals(session)
 
     roots: list[dict[str, Any]] = []
     term_nodes: dict[str, dict[str, Any]] = {}
@@ -159,9 +81,10 @@ def build_material_tree(session: Any) -> dict[str, Any]:
             continue
         seen_source_ids.add(file.source_id)
         chain = safe_folder_chain(file.folder_id, folder_by_id)
+        module_names, module_item_names = module_signals.get(file.id, ((), ()))
         category = classify_material(
-            module_names=modules_by_file.get(file.id, []),
-            # Nearest Canvas folder gets first chance within the folder signal.
+            module_names=module_names,
+            module_item_names=module_item_names,
             folder_names=[folder.name for folder in reversed(chain)],
             filename=file.display_name or file.filename or "无名文件",
         )
@@ -169,8 +92,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
         for folder in chain:
             node_id = f"folder:{file.course_id}:{category}:{folder.id}"
             existing = next(
-                (node for node in parent["children"] if node["id"] == node_id),
-                None,
+                (node for node in parent["children"] if node["id"] == node_id), None
             )
             if existing is None:
                 existing = _new_node(node_id, "folder", folder.name)
@@ -190,7 +112,9 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 if file.source_updated_at
                 else None,
                 "download_status": file.download_status,
-                "can_open": file.download_status == "downloaded" and bool(file.local_path),
+                "local_path": file.local_path,
+                "can_open": file.download_status == "downloaded"
+                and bool(file.local_path),
             }
         )
 

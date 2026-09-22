@@ -51,6 +51,37 @@ export async function invoke<T>(
   return response.data as T;
 }
 
+export function getSettings() {
+  return invoke<import("@/lib/types").SettingsStatus>("settings_status");
+}
+
+export function updateSettings(
+  payload: Partial<
+    Pick<
+      import("@/lib/types").SettingsStatus,
+      "auto_download_current_term" | "organize_by_category"
+    >
+  >,
+) {
+  return invoke<import("@/lib/types").SettingsStatus>(
+    "settings_update",
+    payload,
+  );
+}
+
+export function pickArchiveRoot() {
+  return invoke<{
+    cancelled: boolean;
+    settings: import("@/lib/types").SettingsStatus;
+  }>("settings_pick_archive_root");
+}
+
+export function organizeArchive() {
+  return invoke<{ moved: number; unchanged: number; failed: number }>(
+    "archive_organize",
+  );
+}
+
 export function openExternal(url: string): Promise<{ status: string }> {
   return invoke("open_external", { url });
 }

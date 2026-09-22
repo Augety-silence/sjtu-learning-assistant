@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -18,7 +19,14 @@ import httpx
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder
+from sjtu_learning_assistant.material_classifier import (
+    CATEGORY_LABELS,
+    category_label,
+    classify_material,
+    load_module_signals,
+    safe_folder_chain,
+)
+from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder, SyncState
 from test_canvas import ensure_same_origin
 
 DEFAULT_ARCHIVE_ROOT = Path.home() / "Documents" / "SJTU Study"
@@ -51,6 +59,9 @@ class ArchiveFileContext:
     downloaded_sha256: str | None
     downloaded_source_updated_at: datetime | None
     folder_names: tuple[str, ...]
+    file_id: int = 0
+    course_id: int = 0
+    category: str = "other"
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,14 @@ class ArchiveSummary:
     results: tuple[DownloadResult, ...]
     skipped: bool = False
     message: str | None = None
+
+
+@dataclass(frozen=True)
+class OrganizeSummary:
+    moved: int
+    unchanged: int
+    failed: int
+    results: tuple[DownloadResult, ...]
 
 
 def derive_current_term(on_date: date | None = None) -> str:
@@ -253,6 +272,9 @@ class ArchiveService:
         *,
         archive_root: Path = DEFAULT_ARCHIVE_ROOT,
         current_term: str | None = None,
+        organize_by_category: bool = True,
+        active_course_source_ids: Iterable[str] | None = None,
+        use_recent_active_courses: bool = False,
         download_client_factory: Callable[[], httpx.Client] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -261,6 +283,13 @@ class ArchiveService:
         self.archive_root = archive_root.expanduser()
         self.current_term = normalize_term(current_term) if current_term is not None else None
         self.requested_term = current_term is not None
+        self.organize_by_category = organize_by_category
+        self.active_course_source_ids = (
+            {str(value) for value in active_course_source_ids}
+            if active_course_source_ids is not None
+            else None
+        )
+        self.use_recent_active_courses = use_recent_active_courses
         self.download_client_factory = download_client_factory or self._default_download_client
         self.sleeper = sleeper
 
@@ -274,16 +303,40 @@ class ArchiveService:
         )
 
     def archive_current_term(self) -> ArchiveSummary:
-        """仅自动下载当前学期；无法唯一识别时安全跳过。"""
+        """下载本轮 Canvas active 课程；无显式 active 集合时兼容学期匹配。"""
+        if self.active_course_source_ids is not None or self.use_recent_active_courses:
+            course_ids = self._active_course_ids()
+            if not course_ids:
+                return ArchiveSummary(
+                    term_name=self.current_term or derive_current_term(),
+                    downloaded=0,
+                    unchanged=0,
+                    failed=0,
+                    results=(),
+                    skipped=True,
+                    message="本轮 Canvas 同步没有 active 课程，已安全跳过文件归档。",
+                )
+            contexts = self._load_contexts(course_ids=course_ids)
+            # IDs come directly from Canvas fetch_active_courses and deliberately
+            # take precedence over localised or imprecise term names.
+            results = self._download_contexts(contexts)
+            terms = sorted({item.term_name for item in contexts})
+            label = terms[0] if len(terms) == 1 else "Canvas active courses"
+            return ArchiveSummary(
+                term_name=label,
+                downloaded=sum(item.status == "downloaded" for item in results),
+                unchanged=sum(item.status == "unchanged" for item in results),
+                failed=sum(item.status == "failed" for item in results),
+                results=tuple(results),
+            )
+
         expected_term = self.current_term or derive_current_term()
         matches = self._matching_term_names(expected_term)
         if len(matches) != 1:
             if self.requested_term:
                 if not matches:
                     raise ArchiveError("指定学期不存在：%s。未下载任何文件。" % expected_term)
-                raise ArchiveError(
-                    "指定学期无法唯一匹配：%s。未下载任何文件。" % expected_term
-                )
+                raise ArchiveError("指定学期无法唯一匹配：%s。未下载任何文件。" % expected_term)
             reason = (
                 "未找到推导出的当前学期 %s" % expected_term
                 if not matches
@@ -298,8 +351,7 @@ class ArchiveService:
                 skipped=True,
                 message="%s，已安全跳过文件归档。" % reason,
             )
-
-        contexts = self._load_contexts(term_name=matches.__getitem__(0))
+        contexts = self._load_contexts(term_name=matches[0])
         results = self._download_contexts(contexts)
         return ArchiveSummary(
             term_name=expected_term,
@@ -308,6 +360,31 @@ class ArchiveService:
             failed=sum(item.status == "failed" for item in results),
             results=tuple(results),
         )
+
+    def _active_course_ids(self) -> set[int]:
+        with Session(self.engine) as session:
+            if self.active_course_source_ids is not None:
+                return set(
+                    session.scalars(
+                        select(Course.id).where(
+                            Course.source_id.in_(self.active_course_source_ids)
+                        )
+                    ).all()
+                )
+            latest = session.scalar(
+                select(SyncState.last_success_at).where(
+                    SyncState.source == "canvas",
+                    SyncState.resource == "courses",
+                    SyncState.status == "success",
+                )
+            )
+            if latest is None:
+                return set()
+            return set(
+                session.scalars(
+                    select(Course.id).where(Course.updated_at == latest)
+                ).all()
+            )
 
     def _matching_term_names(self, expected_term: str) -> list[str]:
         with Session(self.engine) as session:
@@ -336,10 +413,7 @@ class ArchiveService:
             raise ArchiveError(f"未找到 Canvas 文件 source_id={clean_source_id}。")
         # 对同课程同文件夹的文件整体规划名称，确保单文件下载也稳定处理重名。
         target_context = contexts[0]
-        peers = self._load_contexts(
-            course_name=target_context.course_name,
-            term_name=target_context.term_name,
-        )
+        peers = self._load_contexts(course_ids={target_context.course_id})
         planned = self._planned_paths(peers)
         return self._download_one(target_context, planned[target_context.source_id])
 
@@ -349,6 +423,7 @@ class ArchiveService:
         term_name: str | None = None,
         source_id: str | None = None,
         course_name: str | None = None,
+        course_ids: set[int] | None = None,
     ) -> list[ArchiveFileContext]:
         with Session(self.engine) as session:
             statement = (
@@ -363,55 +438,62 @@ class ArchiveService:
                 statement = statement.where(CourseFile.source_id == source_id)
             if course_name is not None:
                 statement = statement.where(Course.name == course_name)
+            if course_ids is not None:
+                if not course_ids:
+                    return []
+                statement = statement.where(Course.id.in_(course_ids))
             rows = session.execute(statement).all()
             course_ids = {file.course_id for file, _course in rows}
             folders = (
                 session.scalars(
-                    select(CourseFolder).where(CourseFolder.course_id.in_(course_ids))
+                    select(CourseFolder).where(
+                        CourseFolder.course_id.in_(course_ids),
+                        CourseFolder.is_active.is_(True),
+                    )
                 ).all()
                 if course_ids
                 else []
             )
             folder_by_id = {folder.id: folder for folder in folders}
-            return [
-                ArchiveFileContext(
-                    source_id=file.source_id,
-                    course_name=course.name,
-                    term_name=course.term_name or "Unknown Term",
-                    display_name=file.display_name or file.filename or "unnamed-file",
-                    expected_size=file.size,
-                    source_updated_at=file.source_updated_at,
-                    local_path=file.local_path,
-                    download_status=file.download_status,
-                    download_attempts=file.download_attempts,
-                    downloaded_size=file.downloaded_size,
-                    downloaded_sha256=file.download_sha256,
-                    downloaded_source_updated_at=file.downloaded_source_updated_at,
-                    folder_names=self._folder_chain(file.folder_id, folder_by_id),
+            module_signals = load_module_signals(session, course_ids=course_ids)
+            contexts: list[ArchiveFileContext] = []
+            for file, course in rows:
+                folder_names = self._folder_chain(file.folder_id, folder_by_id)
+                module_names, module_item_names = module_signals.get(file.id, ((), ()))
+                contexts.append(
+                    ArchiveFileContext(
+                        file_id=file.id,
+                        course_id=file.course_id,
+                        source_id=file.source_id,
+                        course_name=course.name,
+                        term_name=course.term_name or "Unknown Term",
+                        display_name=file.display_name or file.filename or "unnamed-file",
+                        expected_size=file.size,
+                        source_updated_at=file.source_updated_at,
+                        local_path=file.local_path,
+                        download_status=file.download_status,
+                        download_attempts=file.download_attempts,
+                        downloaded_size=file.downloaded_size,
+                        downloaded_sha256=file.download_sha256,
+                        downloaded_source_updated_at=file.downloaded_source_updated_at,
+                        folder_names=folder_names,
+                        category=classify_material(
+                            module_names=module_names,
+                            module_item_names=module_item_names,
+                            folder_names=reversed(folder_names),
+                            filename=file.display_name or file.filename or "unnamed-file",
+                        ),
+                    )
                 )
-                for file, course in rows
-            ]
+            return contexts
 
     @staticmethod
     def _folder_chain(
         folder_id: int | None, folder_by_id: dict[int, CourseFolder]
     ) -> tuple[str, ...]:
-        chain: list[str] = []
-        seen: set[int] = set()
-        current_id = folder_id
-        while current_id is not None:
-            if current_id in seen:
-                raise ArchiveError("Canvas 文件夹关系存在循环，已拒绝构建路径。")
-            seen.add(current_id)
-            folder = folder_by_id.get(current_id)
-            if folder is None:
-                break
-            # Canvas 顶层“course files”只是 API 根节点，不重复落盘。
-            if folder.parent_folder_id is not None:
-                chain.append(folder.name)
-            current_id = folder.parent_folder_id
-        chain.reverse()
-        return tuple(chain)
+        return tuple(
+            folder.name for folder in safe_folder_chain(folder_id, folder_by_id)
+        )
 
     def _planned_paths(
         self, contexts: Iterable[ArchiveFileContext]
@@ -424,6 +506,11 @@ class ArchiveService:
             components = [
                 sanitize_component(context.term_name, fallback="Unknown Term"),
                 sanitize_component(context.course_name, fallback="Unnamed Course"),
+                *(
+                    [sanitize_component(category_label(context.category), fallback="其他")]
+                    if self.organize_by_category
+                    else []
+                ),
                 *(
                     sanitize_component(name, fallback="Unnamed Folder")
                     for name in context.folder_names
@@ -450,6 +537,301 @@ class ArchiveService:
                     original.with_name(add_source_id_suffix(original.name, source_id)),
                 )
         return planned
+
+    def organize_current_term(self) -> OrganizeSummary:
+        """将最近 active 课程的已下载文件安全、幂等地整理到当前规划路径。"""
+        if not self.organize_by_category:
+            raise ArchiveError("按类别整理已关闭，未移动任何文件。")
+        all_contexts = self._load_contexts(course_ids=self._active_course_ids())
+        contexts = [
+            item
+            for item in all_contexts
+            if item.download_status == "downloaded" and item.local_path
+        ]
+        planned = self._planned_paths(all_contexts)
+        results: list[DownloadResult] = []
+        for context in contexts:
+            try:
+                results.append(self._organize_one(context, planned[context.source_id]))
+            except Exception as exc:
+                results.append(
+                    DownloadResult(
+                        source_id=context.source_id,
+                        status="failed",
+                        error=_safe_error(exc),
+                    )
+                )
+        return OrganizeSummary(
+            moved=sum(item.status == "moved" for item in results),
+            unchanged=sum(item.status == "unchanged" for item in results),
+            failed=sum(item.status == "failed" for item in results),
+            results=tuple(results),
+        )
+
+    @staticmethod
+    def _file_digest(path: Path) -> tuple[int, str]:
+        digest = hashlib.sha256()
+        size = 0
+        with _open_regular_readonly(path) as stream:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                size += len(chunk)
+                digest.update(chunk)
+        return size, digest.hexdigest()
+
+    @staticmethod
+    def _is_allowed_system_alias(path: Path) -> bool:
+        aliases = {
+            Path("/var"): Path("/private/var"),
+            Path("/tmp"): Path("/private/tmp"),
+        }
+        return path in aliases and path.resolve() == aliases[path]
+
+    def _safe_source(self, path: Path) -> Path:
+        source = path.expanduser().absolute()
+        current = Path(source.anchor)
+        for index, part in enumerate(source.parts[1:]):
+            current /= part
+            mode = _path_mode(current)
+            if mode is None:
+                raise ArchiveError("已下载文件不存在。")
+            if stat.S_ISLNK(mode) and not self._is_allowed_system_alias(current):
+                raise ArchiveError("已下载文件路径包含 symlink，已拒绝迁移。")
+            if index < len(source.parts) - 2 and not (
+                stat.S_ISDIR(mode) or self._is_allowed_system_alias(current)
+            ):
+                raise ArchiveError("已下载文件父路径包含非目录对象。")
+        if not _is_regular_file(source):
+            raise ArchiveError("已下载对象不是普通文件，已拒绝迁移。")
+        return source
+
+    def _source_archive_root(
+        self, context: ArchiveFileContext, source: Path
+    ) -> Path:
+        """Infer the app-created old root from the deterministic stored path."""
+        configured_root = self.archive_root.expanduser().absolute()
+        try:
+            source.relative_to(configured_root)
+        except ValueError:
+            pass
+        else:
+            return configured_root
+
+        term = sanitize_component(context.term_name, fallback="Unknown Term")
+        course = sanitize_component(context.course_name, fallback="Unnamed Course")
+        folders = tuple(
+            sanitize_component(name, fallback="Unnamed Folder")
+            for name in context.folder_names
+        )
+        layouts = [(term, course, *folders)]
+        layouts.extend(
+            (term, course, label, *folders)
+            for label in CATEGORY_LABELS.values()
+        )
+        parent_parts = source.parent.parts
+        for layout in layouts:
+            if tuple(parent_parts[-len(layout) :]) != layout:
+                continue
+            root_parts = parent_parts[: -len(layout)]
+            root = Path(*root_parts)
+            if root != Path(root.anchor):
+                return root
+        raise ArchiveError("已下载文件不符合归档目录结构，已拒绝迁移。")
+
+    def _verified_content(
+        self, context: ArchiveFileContext, path: Path
+    ) -> tuple[int, str]:
+        size, digest = self._file_digest(path)
+        expected_size = (
+            context.downloaded_size
+            if context.downloaded_size is not None
+            else context.expected_size
+        )
+        if expected_size is not None and size != expected_size:
+            raise ArchiveError("已下载文件大小与数据库记录不一致。")
+        if context.downloaded_sha256 is not None and digest != context.downloaded_sha256:
+            raise ArchiveError("已下载文件 SHA-256 与数据库记录不一致。")
+        return size, digest
+
+    def _conflict_target(self, target: Path, context: ArchiveFileContext) -> Path:
+        candidate = ensure_within_root(
+            self.archive_root,
+            target.with_name(add_source_id_suffix(target.name, context.source_id)),
+        )
+        if _path_mode(candidate) is None:
+            return candidate
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        return ensure_within_root(
+            self.archive_root,
+            candidate.with_name(
+                f"{candidate.stem} (version {timestamp}){candidate.suffix}"
+            ),
+        )
+
+    def _recovery_target(
+        self, context: ArchiveFileContext, target: Path
+    ) -> tuple[Path, int, str] | None:
+        """Recover when a previous move completed before its DB transaction."""
+        suffixed = target.with_name(add_source_id_suffix(target.name, context.source_id))
+        candidates = [target, suffixed]
+        if target.parent.is_dir():
+            prefix = f"{suffixed.stem} (version "
+            candidates.extend(
+                child
+                for child in target.parent.iterdir()
+                if child.name.startswith(prefix) and child.suffix == suffixed.suffix
+            )
+        seen: set[Path] = set()
+        for candidate in candidates:
+            candidate = ensure_within_root(self.archive_root, candidate)
+            if candidate in seen or not _is_regular_file(candidate):
+                continue
+            seen.add(candidate)
+            try:
+                size, digest = self._verified_content(context, candidate)
+            except ArchiveError:
+                continue
+            return candidate, size, digest
+        return None
+
+    def _copy_across_volume(self, source: Path, target: Path) -> None:
+        fd, name = tempfile.mkstemp(prefix=".sjtu-move-", dir=target.parent)
+        os.close(fd)
+        temporary = Path(name)
+        temporary.unlink()
+        try:
+            _copy_regular_file(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _update_local_path(self, source_id: str, target: Path) -> None:
+        with Session(self.engine) as session, session.begin():
+            record = session.scalar(
+                select(CourseFile)
+                .where(CourseFile.source_id == source_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise ArchiveError("文件元数据已不存在。")
+            record.local_path = str(target)
+
+    @staticmethod
+    def _cleanup_empty_legacy_dirs(directory: Path, root: Path) -> None:
+        root = root.expanduser().absolute()
+        try:
+            directory.absolute().relative_to(root)
+        except ValueError:
+            return
+        current = directory.absolute()
+        while current != root:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+
+    def _organize_one(self, context: ArchiveFileContext, target: Path) -> DownloadResult:
+        source_path = Path(context.local_path or "")
+        _ensure_safe_directory(self.archive_root, target.parent)
+        target = ensure_within_root(self.archive_root, target)
+
+        if _path_mode(source_path.expanduser().absolute()) is None:
+            recovered = self._recovery_target(context, target)
+            if recovered is None:
+                raise ArchiveError("已下载文件不存在，且未找到可恢复的目标文件。")
+            recovered_path, size, digest = recovered
+            self._update_local_path(context.source_id, recovered_path)
+            return DownloadResult(
+                context.source_id, "unchanged", str(recovered_path), size, digest
+            )
+
+        source = self._safe_source(source_path)
+        source_root = self._source_archive_root(context, source)
+        size, digest = self._verified_content(context, source)
+        if source == target:
+            self._update_local_path(context.source_id, target)
+            return DownloadResult(
+                context.source_id, "unchanged", str(target), size, digest
+            )
+
+        final_target = target
+        while _path_mode(final_target) is not None:
+            if not _is_regular_file(final_target):
+                raise ArchiveError("目标路径已存在且不是普通文件。")
+            target_size, target_digest = self._file_digest(final_target)
+            if target_size == size and target_digest == digest:
+                self._update_local_path(context.source_id, final_target)
+                try:
+                    source.unlink()
+                except OSError:
+                    # The DB must not claim the duplicate target while the source
+                    # could not be removed. Restore the old path when possible.
+                    try:
+                        self._update_local_path(context.source_id, source)
+                    except Exception:
+                        pass
+                    raise
+                self._cleanup_empty_legacy_dirs(source.parent, source_root)
+                return DownloadResult(
+                    context.source_id, "moved", str(final_target), size, digest
+                )
+            next_target = self._conflict_target(target, context)
+            if next_target == final_target:
+                raise ArchiveError("无法生成安全的冲突文件名。")
+            final_target = next_target
+            _ensure_safe_directory(self.archive_root, final_target.parent)
+
+        renamed = False
+        database_updated = False
+        try:
+            try:
+                os.replace(source, final_target)
+                renamed = True
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                self._copy_across_volume(source, final_target)
+            try:
+                self._update_local_path(context.source_id, final_target)
+                database_updated = True
+            except Exception:
+                if renamed:
+                    try:
+                        os.replace(final_target, source)
+                    except OSError:
+                        pass
+                raise
+            if not renamed:
+                try:
+                    source.unlink()
+                except OSError:
+                    restored = False
+                    try:
+                        self._update_local_path(context.source_id, source)
+                        restored = True
+                    except Exception:
+                        pass
+                    if restored:
+                        final_target.unlink(missing_ok=True)
+                    raise
+            self._cleanup_empty_legacy_dirs(source.parent, source_root)
+            return DownloadResult(
+                context.source_id, "moved", str(final_target), size, digest
+            )
+        except Exception:
+            if (
+                not renamed
+                and not database_updated
+                and _is_regular_file(source)
+                and _is_regular_file(final_target)
+            ):
+                try:
+                    target_size, target_digest = self._file_digest(final_target)
+                    if target_size == size and target_digest == digest:
+                        final_target.unlink()
+                except Exception:
+                    pass
+            raise
 
     def _download_contexts(
         self, contexts: Iterable[ArchiveFileContext]
@@ -483,6 +865,15 @@ class ArchiveService:
     ) -> DownloadResult:
         _ensure_safe_directory(self.archive_root, target.parent)
         if self._is_unchanged(context, target):
+            if context.local_path != str(target):
+                self._write_status(
+                    context.source_id,
+                    status="downloaded",
+                    local_path=str(target),
+                    size=context.downloaded_size,
+                    sha256=context.downloaded_sha256,
+                    source_updated_at=context.source_updated_at,
+                )
             return DownloadResult(
                 source_id=context.source_id,
                 status="unchanged",

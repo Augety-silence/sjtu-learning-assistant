@@ -281,16 +281,26 @@ export function MaterialsView() {
                 return (
                   <div className="finder-row" role="listitem" key={file.id}>
                     <File aria-hidden="true" />
-                    <button
-                      className="finder-name file-name"
-                      type="button"
-                      title={filePath.map((node) => node.name).join(" / ")}
-                      onDoubleClick={() =>
-                        file.can_open && void act(file, "open")
-                      }
-                    >
-                      {file.name}
-                    </button>
+                    <div className="finder-file-details">
+                      <button
+                        className="finder-name file-name"
+                        type="button"
+                        title={filePath.map((node) => node.name).join(" / ")}
+                        onDoubleClick={() =>
+                          file.can_open && void act(file, "open")
+                        }
+                      >
+                        {file.name}
+                      </button>
+                      {file.local_path && (
+                        <span
+                          className="finder-local-path"
+                          title={file.local_path}
+                        >
+                          {file.local_path}
+                        </span>
+                      )}
+                    </div>
                     <span
                       className={`status-tag status-${file.download_status}`}
                     >

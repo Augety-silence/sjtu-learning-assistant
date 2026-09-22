@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
+from sjtu_learning_assistant.local_settings import validate_archive_root
 from sjtu_learning_assistant.notifications import (
     NotificationError,
     send_test_notification,
@@ -41,8 +42,13 @@ def add_sync_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--archive-root",
-        default=str(Path.home() / "Documents" / "SJTU Study"),
-        help="课程文件归档根目录。",
+        default=None,
+        help="显式覆盖本机设置中的课程文件归档根目录。",
+    )
+    parser.add_argument(
+        "--no-organize-by-category",
+        action="store_true",
+        help="显式关闭按类别整理。",
     )
     parser.add_argument(
         "--current-term",
@@ -68,8 +74,11 @@ def validate_sync_options(
         parser.error("--email 不能是空白字符串。")
     if not 1 <= args.initial_mail_limit <= 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
-    if not args.archive_root.strip():
-        parser.error("--archive-root 不能是空白路径。")
+    if args.archive_root is not None:
+        try:
+            args.archive_root = validate_archive_root(args.archive_root)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.current_term is not None:
         from sjtu_learning_assistant.archive_service import ArchiveError, normalize_term
 
@@ -98,10 +107,11 @@ def sync_arguments(args: argparse.Namespace) -> list[str]:
         result.append("--skip-import")
     if getattr(args, "no_download", False):
         result.append("--no-download")
-    archive_root = getattr(
-        args, "archive_root", str(Path.home() / "Documents" / "SJTU Study")
-    )
-    result.extend(("--archive-root", archive_root))
+    archive_root = getattr(args, "archive_root", None)
+    if archive_root:
+        result.extend(("--archive-root", str(archive_root)))
+    if getattr(args, "no_organize_by_category", False):
+        result.append("--no-organize-by-category")
     current_term = getattr(args, "current_term", None)
     if current_term:
         result.extend(("--current-term", current_term))

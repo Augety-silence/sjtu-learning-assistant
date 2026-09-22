@@ -80,9 +80,9 @@ python3 -m pip install -r requirements-postgres.txt
 - **Phase 2C**：同步 Canvas 课程文件、文件夹、模块与模块项元数据。
 - **Phase 3A**：增加单实例后台运行器、JSONL 审计日志、有限重试与 macOS LaunchAgent 管理。
 - **Phase 3B**：增加安全的 macOS 系统通知、首次同步基线、通知幂等账本与聚合限流。
-- **Phase 4A**：按当前学期自动下载 Canvas 课程文件，保留旧版本并记录校验与下载状态。
+- **Phase 4A**：按最近一次 Canvas active 课程自动下载和分类归档文件，保留旧版本并记录校验与下载状态。
 
-系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。Phase 4A 已实现本地文件归档；UI 尚未实现。
+系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。Phase 4A/5A 已实现本地文件归档及桌面设置界面。
 
 ## 数据表如何关联
 
@@ -210,30 +210,60 @@ python3 sync_data_to_db.py --no-notify
 python3 sync_data_to_db.py --mail-only --initial-mail-limit 500
 ```
 
-## Phase 4A：Canvas 文件归档
+## Canvas 文件归档与本机设置
 
-默认归档根目录是 `~/Documents/SJTU Study`。程序仍同步所有 active courses 的公告、作业、文件夹、文件、模块和模块项元数据，但自动下载只选择“当前学期”。当前学期由运行日期推导：8–12 月为当学年 `Fall`，1–7 月为上一学年 `Spring`；Canvas 学期名按 `2026-2027 Fall` 这类格式匹配，不硬编码具体年份。
+非敏感设置保存在：
 
-```bash
-# 默认：同步元数据并自动下载当前学期文件
-python3 sync_data_to_db.py --canvas-only
-
-# 只同步全部元数据，不写归档目录
-python3 sync_data_to_db.py --canvas-only --no-download
-
-# 指定安全的测试/归档目录和当前学期
-python3 sync_data_to_db.py --canvas-only \
-  --archive-root "/path/to/SJTU Study" \
-  --current-term "2026-2027 Fall"
+```text
+~/Library/Application Support/SJTU Learning Assistant/settings.json
 ```
 
-`launchd_control.py install` 和 `run-once` 同样接受 `--no-download`、`--archive-root`、`--current-term`，参数会完整透传到同步子进程。`--no-download` 不影响任何元数据同步。
+文件采用 `0600` 权限的原子 JSON 写入，只允许 `archive_root`、
+`auto_download_current_term`、`organize_by_category` 三个字段；Token、密码、邮箱和
+数据库 URL 不会写入该文件。默认值分别为 `~/Documents/SJTU Study`、`true`、`true`。
+设置优先级为 CLI 显式参数 > 环境变量 > 设置文件 > 内置默认值。可用环境变量为
+`SJTU_ARCHIVE_ROOT`、`SJTU_AUTO_DOWNLOAD_CURRENT_TERM`、
+`SJTU_ORGANIZE_BY_CATEGORY`。
 
-归档路径为 `<root>/<term>/<course>/<Canvas folder tree>/<filename>`。课程名、文件夹名和文件名都会清洗，最终路径必须位于 root 内；同目录同名文件追加 `[source_id]`。Canvas `folder_id`/`parent_folder_id` 用于还原目录树。
+设置页可选择归档目录、切换本学期自动下载和按类别整理，并可立即整理已有文件。
+所有操作只通过 pywebview Bridge 完成，不启动 HTTP server。目录选择取消时不会修改设置。
 
-下载流程先使用带 Bearer Token 的 Canvas 同源 client 请求 `/api/v1/files/{id}`，再用完全独立且不含 `Authorization` 的 client 流式下载其 HTTPS URL，并允许对象存储跨域跳转。每个文件限制 500 MiB，最多尝试 3 次；每次尝试均累计 `download_attempts`，成功后保留历史累计值；写入时计算 SHA256 和实际大小，先落同目录临时文件，成功后 `os.replace`。远端版本变化时，旧文件移入同目录 `.versions/` 后再替换。单文件失败会写回 `failed` 与错误信息，但不会阻断其他文件。
+开启分类整理时，真实目录结构为：
 
-`course_files` 的下载字段包括 `download_status`、`download_attempts`、`downloaded_at`、`downloaded_size`、`download_sha256`、`download_error`、`downloaded_source_updated_at` 和已有的 `local_path`。未来 UI 可构造 `ArchiveService` 并调用 `download_file_by_source_id(source_id)`，显式跨学期下载单个文件；自动任务仍只下载当前学期。
+```text
+~/Documents/SJTU Study/{学期}/{课程}/{分类}/{Canvas 原始文件夹链}/{文件}
+```
+
+分类固定为“课程作业 / 课件 / 补充资料 / 其他”。分类规则只有一份，资料树和物理归档
+共同使用，优先级为 Canvas 模块名及模块项标题 > Canvas folder 路径 > 文件名；分类结果
+不写入数据库。关闭 `organize_by_category` 后，新下载仍使用旧结构
+`{学期}/{课程}/{Canvas 原始文件夹链}/{文件}`。
+
+默认同步会下载**本轮 Canvas API 返回的 active 课程**，不依赖学期名称精确匹配，因此
+本地化或不规范 term_name 不会造成漏下；历史课程仍只能在资料页逐个按需下载。
+`--no-download` 会显式关闭本次下载，`--archive-root` 与
+`--no-organize-by-category` 会覆盖 UI 设置。desktop app、同步 CLI 和 launchd 均读取
+同一设置文件；后台同步默认同样会下载 active 课程。
+
+```bash
+# 默认：同步元数据并自动下载本轮 active 课程
+python3 sync_data_to_db.py --canvas-only
+
+# 只同步元数据
+python3 sync_data_to_db.py --canvas-only --no-download
+
+# 显式覆盖归档目录并维持旧目录结构
+python3 sync_data_to_db.py --canvas-only \
+  --archive-root "/path/to/SJTU Study" \
+  --no-organize-by-category
+```
+
+已有已下载文件的整理是幂等操作，仅处理最近一次成功 Canvas 同步所标记的 active 课程。
+执行前会核对数据库已有的 size/SHA-256，拒绝父目录 symlink 和越界目标；同卷原子移动，
+跨卷先在目标目录复制到临时文件、`fsync` 后 `os.replace`，数据库更新成功后才删除源文件。
+目标同内容时只更新数据库并移除重复源文件，冲突内容使用 source_id/版本名保留；中断后
+再次执行会从已落盘目标恢复数据库路径。建议先备份，再启动桌面端，在“设置”中点击
+“立即整理现有文件”；此操作不会下载历史课程。
 
 ## Phase 3A：后台运行与 macOS LaunchAgent
 
@@ -427,7 +457,7 @@ cd ..
 
 `desktop_app.py` 要求前端已构建。Vite 使用相对资源基址 `./`，运行时不加载 CDN 或远程字体。桌面 App 启动后在进程内每 15 分钟请求同步；手动和定时同步共享防重入锁，已有同步运行时不会重复启动。退出窗口会停止调度线程。
 
-设置页只显示配置是否齐全，不显示凭据值。Canvas Token 和邮箱密码继续从 macOS Keychain 读取；邮箱账号来自 `SJTU_EMAIL`。课程归档目录默认是 `~/Documents/SJTU Study`，可通过普通配置 `SJTU_ARCHIVE_ROOT` 调整。不要把数据库 URL、Canvas Token 或邮箱密码写入命令、plist 或仓库。
+设置页显示凭据是否齐全以及非敏感归档偏好，不显示凭据值。Canvas Token 和邮箱密码继续从 macOS Keychain 读取；邮箱账号来自 `SJTU_EMAIL`。课程归档目录默认是 `~/Documents/SJTU Study`，可在设置页选择，也可通过 `SJTU_ARCHIVE_ROOT` 显式覆盖。不要把数据库 URL、Canvas Token、邮箱或密码写入 settings.json、命令、plist 或仓库。
 
 资料操作会重新按数据库 `source_id` 查询文件，并校验解析后的本地路径位于配置的归档根目录内；打开和 Reveal 均使用固定参数数组调用 macOS `/usr/bin/open`。外部链接只允许无内嵌账号密码的 HTTPS URL。
 
@@ -470,7 +500,8 @@ node scripts/check_licenses.mjs
 - 同步运行状态与日志：`~/Library/Application Support/sjtu-learning-assistant/run/` 和 `.../logs/`；
 - 下载资料：默认 `~/Documents/SJTU Study/`，可用 `SJTU_ARCHIVE_ROOT` 修改；
 - Canvas Token、邮箱密码及可选 PostgreSQL URL：macOS Keychain；仓库中没有 Keychain 凭据文件；
-- 普通设置：`SJTU_EMAIL`、`SJTU_ARCHIVE_ROOT` 等进程环境变量。
+- 非敏感本机设置：`~/Library/Application Support/SJTU Learning Assistant/settings.json`；
+- 可选进程覆盖：`SJTU_ARCHIVE_ROOT`、`SJTU_AUTO_DOWNLOAD_CURRENT_TERM`、`SJTU_ORGANIZE_BY_CATEGORY`；邮箱账号仍仅来自 `SJTU_EMAIL` 环境变量。
 
 删除应用本身不会自动删除上述用户数据。备份、迁移、清理前应先退出应用；不要把数据库、WAL/SHM、日志、下载资料、`.env`、plist 或 Keychain 导出提交到 Git。
 

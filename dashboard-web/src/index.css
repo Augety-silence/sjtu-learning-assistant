@@ -161,6 +161,8 @@ a { color: inherit; text-decoration: none; }
 .folder-row { cursor: pointer; grid-template-columns: 20px minmax(160px, 1fr) auto; }
 .finder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name { padding: 0; border: 0; background: transparent; color: #1f2329; text-align: left; cursor: default; font: inherit; }
+.finder-file-details { min-width: 0; display: grid; gap: 2px; }
+.finder-local-path { overflow: hidden; color: #8f959e; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .finder-meta { color: #646a73; font-size: 12px; white-space: nowrap; }
 .finder-actions { display: flex; align-items: center; gap: 4px; }
 .finder-empty { padding: 48px 24px; color: #646a73; text-align: center; }
@@ -171,6 +173,14 @@ a { color: inherit; text-decoration: none; }
 .settings-list { overflow: hidden; border: 0.5px solid #dee0e3; border-radius: 8px; }
 .settings-row { min-height: 52px; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 0.5px solid #1f232914; }
 .settings-row:last-child { border-bottom: 0; }
+.settings-path-row > div, .settings-toggle-row > span { min-width: 0; display: grid; gap: 2px; }
+.settings-path-row strong, .settings-toggle-row strong { font-weight: 500; }
+.settings-path-row span, .settings-toggle-row small, .settings-actions span { color: #646a73; font-size: 12px; }
+.settings-path-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-toggle-row { cursor: pointer; }
+.settings-toggle-row input { width: 36px; height: 20px; accent-color: #1456f0; }
+.settings-actions { display: flex; align-items: center; gap: 16px; }
+.settings-error { padding: 10px 12px; border: 0.5px solid #f2b8b5; border-radius: 8px; background: #fff8f7; color: #c23934; }
 .list-row-button { width: 100%; border-left: 0; border-right: 0; border-top: 0; background: #fff; color: inherit; text-align: left; }
 .table-link { padding: 0; border: 0; background: transparent; font: inherit; cursor: pointer; }
 .table-link:disabled, .list-row-button:disabled { color: inherit; cursor: default; }
