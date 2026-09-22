@@ -80,14 +80,19 @@ class DashboardSettingsTests(unittest.TestCase):
             root = Path(directory) / "archive"
             root.mkdir()
             service = DashboardService(SimpleNamespace(), archive_root=root)
-            with patch("test_canvas.load_keyring_module") as load_keyring:
+            with (
+                patch("test_canvas.load_keyring_module") as canvas_keyring,
+                patch("test_mail.load_keyring_module") as mail_keyring,
+            ):
                 status = service.settings_status()
-        load_keyring.assert_not_called()
+        canvas_keyring.assert_not_called()
+        mail_keyring.assert_not_called()
         self.assertEqual(str(root), status["archive_root"])
         self.assertEqual(
             {
                 "archive_root_ready",
                 "archive_root",
+                "mail_account",
                 "auto_download_current_term",
                 "organize_by_category",
             },
@@ -122,7 +127,17 @@ class DashboardActionTests(unittest.TestCase):
             launches.append((list(command), kwargs))
             return SimpleNamespace()
 
-        service = DashboardService(SimpleNamespace(), process_launcher=launcher)
+        settings = SimpleNamespace(
+            resolve=lambda **_overrides: SimpleNamespace(
+                archive_root="/tmp/archive",
+                auto_download_current_term=True,
+                organize_by_category=True,
+                mail_account="",
+            )
+        )
+        service = DashboardService(
+            SimpleNamespace(), settings_store=settings, process_launcher=launcher
+        )
         result = service.trigger_sync()
         self.assertEqual({"status": "accepted", "mode": "sync_runner"}, result)
         self.assertEqual(1, len(launches))

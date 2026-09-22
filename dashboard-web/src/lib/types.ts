@@ -64,4 +64,5 @@ export interface SettingsStatus {
   archive_root: string;
   auto_download_current_term: boolean;
   organize_by_category: boolean;
+  mail_account: string;
 }

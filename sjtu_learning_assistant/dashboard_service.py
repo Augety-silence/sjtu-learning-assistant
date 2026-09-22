@@ -371,6 +371,7 @@ class DashboardService:
             "archive_root": str(self.archive_root),
             "auto_download_current_term": settings.auto_download_current_term,
             "organize_by_category": settings.organize_by_category,
+            "mail_account": settings.mail_account,
         }
 
     def _release_sync_when_done(self, process: Any) -> None:
@@ -406,20 +407,23 @@ class DashboardService:
             raise DashboardError("无法启动同步，请稍后重试。")
 
     def _fallback_sync_command(self) -> list[str]:
-        if getattr(sys, "frozen", False):
-            return [sys.executable, "--background-sync"]
-        python = PROJECT_ROOT / ".venv" / "bin" / "python"
-        if not python.is_file():
-            python = Path(sys.executable)
         settings = self._effective_settings()
-        command = [
-            str(python),
-            str(PROJECT_ROOT / "launchd_control.py"),
-            "run-once",
-            "--canvas-only",
-            "--archive-root",
-            settings.archive_root,
-        ]
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--background-sync"]
+        else:
+            python = PROJECT_ROOT / ".venv" / "bin" / "python"
+            if not python.is_file():
+                python = Path(sys.executable)
+            command = [
+                str(python),
+                str(PROJECT_ROOT / "launchd_control.py"),
+                "run-once",
+            ]
+        if settings.mail_account:
+            command.extend(("--email", settings.mail_account))
+        else:
+            command.append("--canvas-only")
+        command.extend(("--archive-root", settings.archive_root))
         if not settings.auto_download_current_term:
             command.append("--no-download")
         if not settings.organize_by_category:

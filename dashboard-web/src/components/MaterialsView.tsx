@@ -4,37 +4,13 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { invoke } from "@/lib/api";
 import { formatDateTime, formatSize } from "@/lib/format";
+import {
+  containerChildren,
+  directFiles,
+  filesBelow,
+  findNodePath,
+} from "@/lib/materialTree";
 import type { MaterialNode, MaterialTree } from "@/lib/types";
-
-function containers(node: MaterialNode): MaterialNode[] {
-  return (node.children ?? []).filter((child) => child.kind !== "file");
-}
-
-function filesBelow(
-  node: MaterialNode,
-  path: MaterialNode[] = [],
-): Array<{ file: MaterialNode; path: MaterialNode[] }> {
-  const nextPath = node.kind === "root" ? path : [...path, node];
-  return (node.children ?? []).flatMap((child) =>
-    child.kind === "file"
-      ? [{ file: child, path: nextPath }]
-      : filesBelow(child, nextPath),
-  );
-}
-
-function findPath(
-  root: MaterialNode,
-  id: string,
-  trail: MaterialNode[] = [],
-): MaterialNode[] | null {
-  const next = [...trail, root];
-  if (root.id === id) return next;
-  for (const child of root.children ?? []) {
-    const result = findPath(child, id, next);
-    if (result) return result;
-  }
-  return null;
-}
 
 function TreeBranch({
   node,
@@ -48,7 +24,7 @@ function TreeBranch({
   const [expanded, setExpanded] = useState(
     node.kind === "root" || node.kind === "term",
   );
-  const children = containers(node);
+  const children = containerChildren(node);
   if (node.kind === "root") {
     return (
       <>
@@ -121,14 +97,14 @@ export function MaterialsView() {
     void load();
   }, [load]);
 
-  const path = tree ? (findPath(tree.root, selectedId) ?? [tree.root]) : [];
+  const path = tree ? (findNodePath(tree.root, selectedId) ?? [tree.root]) : [];
   const current = path[path.length - 1];
   const allMatches = tree ? filesBelow(tree.root) : [];
   const visibleFiles = (
     query.trim()
       ? allMatches
       : current
-        ? filesBelow(current, path.slice(1, -1))
+        ? directFiles(current, path.slice(1, -1))
         : []
   ).filter(({ file }) => {
     const searchMatched =
@@ -142,7 +118,8 @@ export function MaterialsView() {
         !["downloaded", "failed"].includes(file.download_status ?? "pending"));
     return searchMatched && categoryMatched && statusMatched;
   });
-  const childFolders = query.trim() || !current ? [] : containers(current);
+  const childFolders =
+    query.trim() || !current ? [] : containerChildren(current);
 
   const act = async (
     file: MaterialNode,

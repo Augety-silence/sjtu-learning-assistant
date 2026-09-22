@@ -59,7 +59,7 @@ export function updateSettings(
   payload: Partial<
     Pick<
       import("@/lib/types").SettingsStatus,
-      "auto_download_current_term" | "organize_by_category"
+      "auto_download_current_term" | "organize_by_category" | "mail_account"
     >
   >,
 ) {

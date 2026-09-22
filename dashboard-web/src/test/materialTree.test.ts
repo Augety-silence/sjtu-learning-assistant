@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   containerChildren,
+  directFiles,
   filesBelow,
   findNodePath,
 } from "@/lib/materialTree";
@@ -30,6 +31,17 @@ const tree: MaterialNode = {
 };
 
 describe("material tree helpers", () => {
+  it("does not flatten nested files into a parent while browsing", () => {
+    expect(directFiles(tree)).toEqual([]);
+    expect(directFiles(tree.children?.[0] as MaterialNode)).toEqual([]);
+  });
+
+  it("recursively finds nested files for search", () => {
+    expect(filesBelow(tree).map(({ file }) => file.name)).toEqual([
+      "lecture.pdf",
+    ]);
+  });
+
   it("finds paths and descendants", () => {
     expect(findNodePath(tree, "course")?.map((node) => node.id)).toEqual([
       "root",

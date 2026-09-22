@@ -32,7 +32,8 @@ class LocalSettingsTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_defaults_atomic_round_trip_and_no_temporary_file(self) -> None:
-        defaults = self.store.load()
+        defaults = self.store.load(environ={})
+        self.assertEqual("", defaults.mail_account)
         self.assertTrue(defaults.auto_download_current_term)
         self.assertTrue(defaults.organize_by_category)
         archive = self.root / "archive"
@@ -43,7 +44,12 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertEqual([], list(self.store.path.parent.glob(".settings-*")))
         payload = json.loads(self.store.path.read_text(encoding="utf-8"))
         self.assertEqual(
-            {"archive_root", "auto_download_current_term", "organize_by_category"},
+            {
+                "archive_root",
+                "auto_download_current_term",
+                "organize_by_category",
+                "mail_account",
+            },
             set(payload),
         )
 
@@ -58,6 +64,37 @@ class LocalSettingsTests(unittest.TestCase):
         ):
             with self.subTest(payload=payload), self.assertRaises(SettingsError):
                 self.store.update(payload)
+
+    def test_mail_account_uses_environment_only_as_initial_default(self) -> None:
+        self.assertEqual(
+            "student-id",
+            self.store.load(environ={"SJTU_EMAIL": "student-id"}).mail_account,
+        )
+        self.store.save(LocalSettings(mail_account="saved-id"))
+        self.assertEqual(
+            "saved-id",
+            self.store.load(environ={"SJTU_EMAIL": "other-id"}).mail_account,
+        )
+
+    def test_legacy_settings_gain_mail_account_without_storing_credentials(self) -> None:
+        self.store.path.parent.mkdir(parents=True)
+        self.store.path.write_text(
+            json.dumps(
+                {
+                    "archive_root": str(self.root / "archive"),
+                    "auto_download_current_term": True,
+                    "organize_by_category": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = self.store.load(environ={"SJTU_EMAIL": "student-id"})
+        self.assertEqual("student-id", loaded.mail_account)
+        saved = self.store.update({"mail_account": "saved-id"})
+        self.assertEqual("saved-id", saved.mail_account)
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        self.assertNotIn("password", payload)
+        self.assertNotIn("token", payload)
 
     def test_environment_then_explicit_override_precedence(self) -> None:
         archive = self.root / "archive"
@@ -385,24 +422,35 @@ class BridgeSettingsActionTests(unittest.TestCase):
 
 
 class DashboardSyncSettingsTests(unittest.TestCase):
-    def test_sync_command_uses_settings_and_only_disables_when_false(self) -> None:
+    def test_sync_command_uses_mail_and_archive_settings(self) -> None:
         from sjtu_learning_assistant.dashboard_service import DashboardService
 
         class Store:
-            def __init__(self, auto_download: bool) -> None:
+            def __init__(self, auto_download: bool, mail_account: str = "") -> None:
                 self.auto_download = auto_download
+                self.mail_account = mail_account
 
             def resolve(self, **_overrides):
                 return LocalSettings(
                     archive_root="/tmp/archive",
                     auto_download_current_term=self.auto_download,
                     organize_by_category=True,
+                    mail_account=self.mail_account,
                 )
 
         enabled = DashboardService(SimpleNamespace(), settings_store=Store(True))
         disabled = DashboardService(SimpleNamespace(), settings_store=Store(False))
+        with_mail = DashboardService(
+            SimpleNamespace(), settings_store=Store(True, "student-id")
+        )
         self.assertNotIn("--no-download", enabled._fallback_sync_command())
         self.assertIn("--no-download", disabled._fallback_sync_command())
+        self.assertIn("--canvas-only", enabled._fallback_sync_command())
+        with_mail_command = with_mail._fallback_sync_command()
+        self.assertNotIn("--canvas-only", with_mail_command)
+        self.assertEqual(
+            "student-id", with_mail_command[with_mail_command.index("--email") + 1]
+        )
         self.assertEqual(
             ["--archive-root", "/tmp/archive"],
             enabled._fallback_sync_command()[-2:],

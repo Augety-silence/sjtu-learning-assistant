@@ -15,8 +15,8 @@
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
 body { min-width: 320px; font-size: 14px; line-height: 22px; background: #ffffff; }
-button, select { font: inherit; }
-button, a, select { -webkit-tap-highlight-color: transparent; }
+button, input, select { font: inherit; }
+button, a, input, select { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
 
 .app-shell { min-height: 100vh; background: #ffffff; }
@@ -173,10 +173,14 @@ a { color: inherit; text-decoration: none; }
 .settings-list { overflow: hidden; border: 0.5px solid #dee0e3; border-radius: 8px; }
 .settings-row { min-height: 52px; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 0.5px solid #1f232914; }
 .settings-row:last-child { border-bottom: 0; }
-.settings-path-row > div, .settings-toggle-row > span { min-width: 0; display: grid; gap: 2px; }
-.settings-path-row strong, .settings-toggle-row strong { font-weight: 500; }
-.settings-path-row span, .settings-toggle-row small, .settings-actions span { color: #646a73; font-size: 12px; }
+.settings-path-row > div, .settings-account-row > div:first-child, .settings-toggle-row > span { min-width: 0; display: grid; gap: 2px; }
+.settings-path-row strong, .settings-account-row strong, .settings-toggle-row strong { font-weight: 500; }
+.settings-path-row span, .settings-account-row small, .settings-toggle-row small, .settings-actions span { color: #646a73; font-size: 12px; }
 .settings-path-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-account-row { gap: 16px; }
+.settings-account-controls { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.settings-account-controls input { width: 220px; height: 36px; padding: 0 10px; border: 1px solid #d0d3d6; border-radius: 6px; color: #1f2329; background: #fff; }
+.settings-account-controls input:focus { outline: 2px solid #1456f0; outline-offset: 1px; }
 .settings-toggle-row { cursor: pointer; }
 .settings-toggle-row input { width: 36px; height: 20px; accent-color: #1456f0; }
 .settings-actions { display: flex; align-items: center; gap: 16px; }
@@ -198,4 +202,6 @@ a { color: inherit; text-decoration: none; }
   .finder-tree { max-height: 220px; border-right: 0; border-bottom: 0.5px solid #1f232926; }
   .finder-row { grid-template-columns: 20px minmax(100px, 1fr) auto; }
   .finder-row .status-tag { display: none; }
+  .settings-account-row, .settings-account-controls { align-items: stretch; flex-direction: column; }
+  .settings-account-controls input { width: 100%; }
 }

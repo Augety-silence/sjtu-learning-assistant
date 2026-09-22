@@ -273,10 +273,10 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch a frozen background sync without opening a second window."""
-    if getattr(sys, "frozen", False) and sys.argv[1:] == ["--background-sync"]:
+    if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--background-sync"]:
         from sync_data_to_db import main as sync_main
 
-        return sync_main(["--canvas-only"])
+        return sync_main(sys.argv[2:])
     return run_desktop_app()
 
 

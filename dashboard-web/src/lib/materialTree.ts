@@ -4,6 +4,16 @@ export function containerChildren(node: MaterialNode): MaterialNode[] {
   return (node.children ?? []).filter((child) => child.kind !== "file");
 }
 
+export function directFiles(
+  node: MaterialNode,
+  path: MaterialNode[] = [],
+): Array<{ file: MaterialNode; path: MaterialNode[] }> {
+  const filePath = node.kind === "root" ? path : [...path, node];
+  return (node.children ?? [])
+    .filter((child) => child.kind === "file")
+    .map((file) => ({ file, path: filePath }));
+}
+
 export function filesBelow(
   node: MaterialNode,
   path: MaterialNode[] = [],

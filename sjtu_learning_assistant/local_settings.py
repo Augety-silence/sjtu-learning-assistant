@@ -15,8 +15,14 @@ from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 
 SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
 ALLOWED_KEYS = frozenset(
-    {"archive_root", "auto_download_current_term", "organize_by_category"}
+    {
+        "archive_root",
+        "auto_download_current_term",
+        "organize_by_category",
+        "mail_account",
+    }
 )
+LEGACY_KEYS = ALLOWED_KEYS - {"mail_account"}
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "email", "credential")
 
 
@@ -29,6 +35,7 @@ class LocalSettings:
     archive_root: str = str(DEFAULT_ARCHIVE_ROOT)
     auto_download_current_term: bool = True
     organize_by_category: bool = True
+    mail_account: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +73,15 @@ def validate_archive_root(value: object) -> str:
     return str(path)
 
 
+def validate_mail_account(value: object) -> str:
+    if not isinstance(value, str):
+        raise SettingsError("邮箱账号必须是字符串。")
+    account = value.strip()
+    if len(account) > 320 or any(ord(character) < 32 for character in account):
+        raise SettingsError("邮箱账号不能超过 320 个字符或包含控制字符。")
+    return account
+
+
 def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SettingsError("设置参数必须是对象。")
@@ -77,7 +93,7 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         and any(part in key.casefold() for part in SENSITIVE_KEY_PARTS)
     ]
     if sensitive:
-        raise SettingsError("本地设置禁止保存凭据、邮箱或其他敏感信息。")
+        raise SettingsError("本地设置禁止保存密码、令牌或其他凭据。")
     unknown = keys - ALLOWED_KEYS
     if unknown:
         raise SettingsError("设置包含不支持的字段。")
@@ -89,6 +105,8 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if "archive_root" in payload:
         result["archive_root"] = validate_archive_root(payload["archive_root"])
+    if "mail_account" in payload:
+        result["mail_account"] = validate_mail_account(payload["mail_account"])
     for key in ("auto_download_current_term", "organize_by_category"):
         if key in payload:
             value = payload[key]
@@ -111,14 +129,18 @@ class SettingsStore:
     def __init__(self, path: Path = SETTINGS_PATH) -> None:
         self.path = Path(path).expanduser()
 
-    def load(self) -> LocalSettings:
+    def load(self, *, environ: Mapping[str, str] | None = None) -> LocalSettings:
+        environment = os.environ if environ is None else environ
+        initial_mail_account = validate_mail_account(environment.get("SJTU_EMAIL", ""))
         if not self.path.exists():
-            return LocalSettings()
+            return LocalSettings(mail_account=initial_mail_account)
         try:
             with self.path.open("r", encoding="utf-8") as stream:
                 payload = json.load(stream)
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise SettingsError("本地设置文件无法读取。") from exc
+        if isinstance(payload, dict) and set(payload) == LEGACY_KEYS:
+            payload = {**payload, "mail_account": initial_mail_account}
         values = _validate_mapping(payload, partial=False)
         return LocalSettings(**values)
 
@@ -165,8 +187,8 @@ class SettingsStore:
         organize_by_category: bool | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> LocalSettings:
-        values = self.load().to_dict()
         environment = os.environ if environ is None else environ
+        values = self.load(environ=environment).to_dict()
         if "SJTU_ARCHIVE_ROOT" in environment:
             values["archive_root"] = validate_archive_root(environment["SJTU_ARCHIVE_ROOT"])
         if "SJTU_AUTO_DOWNLOAD_CURRENT_TERM" in environment:

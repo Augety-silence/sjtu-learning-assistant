@@ -4,8 +4,9 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from desktop_app import DesktopBridge, DesktopScheduler, safe_message
+from desktop_app import DesktopBridge, DesktopScheduler, main, safe_message
 
 
 class FakeService:
@@ -106,6 +107,18 @@ class DesktopBridgeTests(unittest.TestCase):
                 for fragment in sensitive_fragments:
                     self.assertNotIn(fragment, text)
                 self.assertIn("[已隐藏]", text)
+
+
+class DesktopBackgroundSyncTests(unittest.TestCase):
+    @patch("desktop_app.sys.frozen", True, create=True)
+    @patch(
+        "desktop_app.sys.argv",
+        ["app", "--background-sync", "--email", "student-id"],
+    )
+    def test_forwards_selected_background_sync_options(self):
+        with patch("sync_data_to_db.main", return_value=0) as sync_main:
+            self.assertEqual(0, main())
+        sync_main.assert_called_once_with(["--email", "student-id"])
 
 
 class DesktopSchedulerTests(unittest.TestCase):

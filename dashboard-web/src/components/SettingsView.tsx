@@ -18,11 +18,14 @@ export function SettingsView({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
+  const [mailAccount, setMailAccount] = useState("");
 
   const load = useCallback(async () => {
     setError("");
     try {
-      setStatus(await getSettings());
+      const next = await getSettings();
+      setStatus(next);
+      setMailAccount(next.mail_account);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置状态读取失败");
     }
@@ -36,7 +39,7 @@ export function SettingsView({
     changes: Partial<
       Pick<
         SettingsStatus,
-        "auto_download_current_term" | "organize_by_category"
+        "auto_download_current_term" | "organize_by_category" | "mail_account"
       >
     >,
   ) => {
@@ -46,6 +49,7 @@ export function SettingsView({
     try {
       const next = await updateSettings(changes);
       setStatus(next);
+      setMailAccount(next.mail_account);
       setNotice("设置已保存。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置保存失败");
@@ -123,6 +127,37 @@ export function SettingsView({
           >
             {busy === "pick" ? "选择中…" : "选择目录"}
           </Button>
+        </div>
+        <div className="settings-row settings-account-row">
+          <div>
+            <label htmlFor="mail-account">
+              <strong>邮箱账号</strong>
+            </label>
+            <small>
+              {status.mail_account
+                ? "同步将同时运行 Canvas 与邮箱。"
+                : "未设置邮箱账号；当前同步仅运行 Canvas。"}
+              密码不会保存在设置中，仅在同步时按需从 macOS Keychain 读取。
+            </small>
+          </div>
+          <div className="settings-account-controls">
+            <input
+              id="mail-account"
+              type="text"
+              autoComplete="username"
+              value={mailAccount}
+              disabled={Boolean(busy)}
+              onChange={(event) => setMailAccount(event.target.value)}
+              placeholder="邮箱地址或账号标识"
+            />
+            <Button
+              variant="outline"
+              disabled={Boolean(busy)}
+              onClick={() => void update({ mail_account: mailAccount.trim() })}
+            >
+              {busy === "update" ? "保存中…" : "保存邮箱账号"}
+            </Button>
+          </div>
         </div>
         <ToggleRow
           label="自动下载本学期资料"

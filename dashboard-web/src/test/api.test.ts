@@ -50,12 +50,12 @@ describe("pywebview bridge client", () => {
   it("sends only the settings update payload through the bridge", async () => {
     const bridge = vi.fn().mockResolvedValue({
       ok: true,
-      data: { auto_download_current_term: false },
+      data: { mail_account: "student-id" },
     });
     vi.stubGlobal("pywebview", { api: { invoke: bridge } });
-    await updateSettings({ auto_download_current_term: false });
+    await updateSettings({ mail_account: "student-id" });
     expect(bridge).toHaveBeenCalledWith("settings_update", {
-      auto_download_current_term: false,
+      mail_account: "student-id",
     });
   });
 

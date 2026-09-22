@@ -29,6 +29,7 @@ const status: SettingsStatus = {
   archive_root: "/tmp/SJTU Study",
   auto_download_current_term: true,
   organize_by_category: true,
+  mail_account: "",
 };
 
 describe("SettingsView", () => {
@@ -51,14 +52,32 @@ describe("SettingsView", () => {
     render(<SettingsView />);
     expect(await screen.findByText(status.archive_root)).toBeTruthy();
     expect(screen.queryByText("Canvas Token")).toBeNull();
-    expect(screen.queryByText("邮箱密码")).toBeNull();
-    expect(screen.queryByText("macOS Keychain")).toBeNull();
+    expect(screen.queryByLabelText("邮箱密码")).toBeNull();
+    expect(
+      screen.getByText(/未设置邮箱账号；当前同步仅运行 Canvas/),
+    ).toBeTruthy();
     expect(getSettings).toHaveBeenCalledTimes(1);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[0]);
     await waitFor(() =>
       expect(updateSettings).toHaveBeenCalledWith({
         auto_download_current_term: false,
+      }),
+    );
+  });
+
+  it("saves a non-secret mail account explicitly", async () => {
+    vi.mocked(updateSettings).mockResolvedValue({
+      ...status,
+      mail_account: "student-id",
+    });
+    render(<SettingsView />);
+    const input = await screen.findByLabelText("邮箱账号");
+    fireEvent.change(input, { target: { value: " student-id " } });
+    fireEvent.click(screen.getByRole("button", { name: "保存邮箱账号" }));
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith({
+        mail_account: "student-id",
       }),
     );
   });
