@@ -8,12 +8,14 @@ import {
 import { Button } from "@/components/ui/Button";
 import { invoke, openExternal } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
-import type { OverviewData, ViewName } from "@/lib/types";
+import type { MessageItem, OverviewData, ViewName } from "@/lib/types";
 
 export function OverviewView({
   navigate,
+  openMessage,
 }: {
   navigate: (view: ViewName) => void;
+  openMessage: (item: MessageItem) => void;
 }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState("");
@@ -113,9 +115,9 @@ export function OverviewView({
               <button
                 type="button"
                 className="list-row list-row-button"
-                key={`${item.kind}-${item.title}-${item.occurred_at}`}
-                disabled={!item.url}
-                onClick={() => open(item.url)}
+                key={`${item.kind}:${item.source_id}`}
+                aria-label={`打开消息详情：${item.title}`}
+                onClick={() => openMessage(item)}
               >
                 <div className="min-w-0">
                   <div className="message-title">

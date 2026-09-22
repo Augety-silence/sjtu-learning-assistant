@@ -47,7 +47,15 @@ function isEditableTarget(target: EventTarget | null) {
   );
 }
 
-export function MessagesView() {
+interface MessagesViewProps {
+  pendingMessage?: MessageItem | null;
+  onPendingMessageConsumed?: () => void;
+}
+
+export function MessagesView({
+  pendingMessage = null,
+  onPendingMessageConsumed,
+}: MessagesViewProps = {}) {
   const [kind, setKind] = useState<MessageFilter>("all");
   const [items, setItems] = useState<MessageItem[] | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -61,6 +69,7 @@ export function MessagesView() {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const detailRequest = useRef(0);
+  const consumedPendingKey = useRef<string | null>(null);
 
   const closeDetail = useCallback(() => {
     detailRequest.current += 1;
@@ -123,6 +132,15 @@ export function MessagesView() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (!pendingMessage) return;
+    const key = messageKey(pendingMessage);
+    if (consumedPendingKey.current === key) return;
+    consumedPendingKey.current = key;
+    onPendingMessageConsumed?.();
+    void openDetail(pendingMessage);
+  }, [onPendingMessageConsumed, openDetail, pendingMessage]);
 
   const markOneRead = useCallback(
     async (item: MessageItem) => {

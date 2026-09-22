@@ -6,7 +6,7 @@ import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { invoke } from "@/lib/api";
-import type { SyncStatus, ViewName } from "@/lib/types";
+import type { MessageItem, SyncStatus, ViewName } from "@/lib/types";
 
 const views: ViewName[] = [
   "overview",
@@ -28,6 +28,9 @@ export default function App() {
   const [syncRequested, setSyncRequested] = useState(false);
   const [message, setMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
+  const [pendingMessage, setPendingMessage] = useState<MessageItem | null>(
+    null,
+  );
 
   const setView = (next: ViewName) => {
     window.location.hash = `/${next}`;
@@ -82,6 +85,11 @@ export default function App() {
     }
   };
 
+  const openMessage = (item: MessageItem) => {
+    setPendingMessage(item);
+    setView("messages");
+  };
+
   const syncing = syncRequested || syncStatus?.status === "syncing";
   return (
     <AppShell
@@ -100,10 +108,20 @@ export default function App() {
       )}
       <div>
         {view === "overview" && (
-          <OverviewView key={dataVersion} navigate={setView} />
+          <OverviewView
+            key={dataVersion}
+            navigate={setView}
+            openMessage={openMessage}
+          />
         )}
         {view === "deadlines" && <DeadlinesView key={dataVersion} />}
-        {view === "messages" && <MessagesView key={dataVersion} />}
+        {view === "messages" && (
+          <MessagesView
+            key={dataVersion}
+            pendingMessage={pendingMessage}
+            onPendingMessageConsumed={() => setPendingMessage(null)}
+          />
+        )}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "settings" && (
           <SettingsView
