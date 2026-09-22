@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getSettings, invoke, openExternal, updateSettings } from "@/lib/api";
+import {
+  getMessageResource,
+  getSettings,
+  invoke,
+  openExternal,
+  openMailAttachment,
+  revealMailAttachment,
+  updateSettings,
+} from "@/lib/api";
 
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
@@ -56,6 +64,33 @@ describe("pywebview bridge client", () => {
     await updateSettings({ mail_account: "student-id" });
     expect(bridge).toHaveBeenCalledWith("settings_update", {
       mail_account: "student-id",
+    });
+  });
+
+  it("uses the rich message resource and mail attachment bridge DTOs", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { data_url: "data:image/png;base64,a" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getMessageResource("announcement", "message-1", "resource-1");
+    expect(bridge).toHaveBeenLastCalledWith("message_resource", {
+      kind: "announcement",
+      source_id: "message-1",
+      resource_id: "resource-1",
+    });
+    await openMailAttachment("mail-1", "attachment-1");
+    expect(bridge).toHaveBeenLastCalledWith("mail_attachment_open", {
+      kind: "email",
+      source_id: "mail-1",
+      attachment_id: "attachment-1",
+    });
+    await revealMailAttachment("mail-1", "attachment-1");
+    expect(bridge).toHaveBeenLastCalledWith("mail_attachment_reveal", {
+      kind: "email",
+      source_id: "mail-1",
+      attachment_id: "attachment-1",
     });
   });
 

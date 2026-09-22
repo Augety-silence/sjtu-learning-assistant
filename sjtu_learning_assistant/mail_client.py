@@ -7,7 +7,7 @@ import json
 import re
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email import policy
 from email.message import Message
@@ -15,7 +15,11 @@ from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any, Iterable, Protocol
 
-from sjtu_learning_assistant.text_content import html_to_plain_text, normalize_plain_text
+from sjtu_learning_assistant.text_content import (
+    html_to_plain_text,
+    normalize_plain_text,
+    sanitize_html,
+)
 
 from test_mail import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -26,6 +30,20 @@ from test_mail import (
 )
 
 DEFAULT_INITIAL_LIMIT = 100
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_MESSAGE_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class EmailAttachment:
+    resource_id: str
+    filename: str
+    content_type: str
+    content_id: str | None
+    disposition: str | None
+    size: int
+    payload: bytes | None
+    is_inline: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +58,8 @@ class EmailRecord:
     is_unread: bool
     raw_data: dict[str, Any]
     body_text: str | None = None
+    body_html: str | None = None
+    attachments: tuple[EmailAttachment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,8 +80,10 @@ class EmailBodyBackfillTarget(Protocol):
 @dataclass(frozen=True)
 class EmailBodyUpdate:
     source_id: str
-    body_text: str
-    body_preview: str
+    body_text: str | None
+    body_preview: str | None
+    body_html: str | None = None
+    attachments: tuple[EmailAttachment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,16 +125,16 @@ def _uid_validity(client: imaplib.IMAP4_SSL) -> str:
 
 def _extract_fetch_parts(fetch_data: list[object]) -> tuple[bytes, bytes]:
     metadata = b""
-    headers = b""
+    message_bytes = b""
     for item in fetch_data:
         if isinstance(item, tuple) and len(item) >= 2:
             if isinstance(item[0], bytes):
                 metadata += item[0]
             if isinstance(item[1], bytes):
-                headers += item[1]
-    if not headers:
+                message_bytes += item[1]
+    if not message_bytes:
         raise MailCheckError("服务器返回了无法识别的邮件数据。")
-    return metadata, headers
+    return metadata, message_bytes
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -134,53 +156,137 @@ def _parse_internal_date(metadata: bytes) -> datetime | None:
     return _parse_datetime(match.group(1).decode("ascii", errors="replace"))
 
 
-def _decode_text_part(part: Message) -> str | None:
+def _decode_part_payload(part: Message) -> bytes:
     payload = part.get_payload(decode=True)
-    if payload is None:
-        raw_payload = part.get_payload()
-        return raw_payload if isinstance(raw_payload, str) else None
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, str):
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            return payload.encode(charset, errors="replace")
+        except LookupError:
+            return payload.encode("utf-8", errors="replace")
+    # message/rfc822 attachments do not always expose a decoded byte payload.
+    return part.as_bytes(policy=policy.default)
+
+
+def _decode_text_part(part: Message) -> str | None:
+    payload = _decode_part_payload(part)
     charset = part.get_content_charset()
     if charset:
         try:
             return payload.decode(charset, errors="replace")
         except LookupError:
             pass
-    return payload.decode("utf-8", errors="replace")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload.decode("latin-1", errors="replace")
+
+
+def _normalized_content_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = decode_mime_text(value, "").strip().strip("<>").strip()
+    return normalized or None
+
+
+def _message_content(
+    message: Message,
+) -> tuple[str | None, str | None, tuple[EmailAttachment, ...]]:
+    attachments: list[EmailAttachment] = []
+    attachment_index = 0
+
+    def add_attachment(part: Message) -> None:
+        nonlocal attachment_index
+        attachment_index += 1
+        content_id = _normalized_content_id(part.get("Content-ID"))
+        resource_id = content_id or f"part-{attachment_index}"
+        filename = decode_mime_text(part.get_filename(), "").strip()
+        if not filename:
+            filename = content_id or f"attachment-{attachment_index}"
+        payload = _decode_part_payload(part)
+        size = len(payload)
+        disposition = (part.get_content_disposition() or "").casefold() or None
+        attachments.append(
+            EmailAttachment(
+                resource_id=resource_id,
+                filename=filename,
+                content_type=part.get_content_type().casefold(),
+                content_id=content_id,
+                disposition=disposition,
+                size=size,
+                payload=payload if size <= MAX_ATTACHMENT_BYTES else None,
+                is_inline=disposition == "inline" or bool(content_id),
+            )
+        )
+
+    def extract(part: Message, *, force_attachment: bool = False) -> tuple[list[str], list[str]]:
+        disposition = (part.get_content_disposition() or "").casefold()
+        explicit_attachment = disposition == "attachment" or bool(part.get_filename())
+        if force_attachment or explicit_attachment or part.get_content_maintype() == "message":
+            add_attachment(part)
+            return [], []
+
+        if part.is_multipart():
+            payload = part.get_payload()
+            children = payload if isinstance(payload, list) else []
+            subtype = part.get_content_subtype().casefold()
+            if subtype == "alternative":
+                selected_plain: list[str] = []
+                selected_html: list[str] = []
+                for child in children:
+                    child_plain, child_html = extract(child)
+                    if child_plain:
+                        selected_plain = child_plain
+                    if child_html:
+                        selected_html = child_html
+                return selected_plain, selected_html
+            if subtype == "related" and children:
+                start = _normalized_content_id(part.get_param("start"))
+                root_index = 0
+                if start:
+                    for index, child in enumerate(children):
+                        if _normalized_content_id(child.get("Content-ID")) == start:
+                            root_index = index
+                            break
+                plain, html = extract(children[root_index])
+                for index, child in enumerate(children):
+                    if index != root_index:
+                        extract(child, force_attachment=True)
+                return plain, html
+            plain: list[str] = []
+            html: list[str] = []
+            for child in children:
+                child_plain, child_html = extract(child)
+                plain.extend(child_plain)
+                html.extend(child_html)
+            return plain, html
+
+        content_type = part.get_content_type().casefold()
+        decoded = _decode_text_part(part)
+        if content_type == "text/plain" and decoded is not None:
+            text = normalize_plain_text(decoded)
+            return ([text] if text else []), []
+        if content_type == "text/html" and decoded is not None:
+            return [], [decoded]
+        add_attachment(part)
+        return [], []
+
+    plain_parts, html_parts = extract(message)
+    body_html = sanitize_html("\n".join(html_parts)) if html_parts else None
+    body_text = normalize_plain_text("\n\n".join(plain_parts)) if plain_parts else None
+    if body_text is None and body_html:
+        body_text = html_to_plain_text(body_html)
+
+    if sum(item.size for item in attachments) > MAX_MESSAGE_ATTACHMENT_BYTES:
+        attachments = [replace(item, payload=None) for item in attachments]
+    return body_text, body_html, tuple(attachments)
 
 
 def _message_body_text(message: Message) -> str | None:
-    plain_parts: list[str] = []
-    html_parts: list[str] = []
-
-    def collect(part: Message) -> None:
-        disposition = (part.get_content_disposition() or "").casefold()
-        if disposition == "attachment" or part.get_filename():
-            # Do not descend into attached messages and accidentally expose their body.
-            return
-        if part.is_multipart():
-            payload = part.get_payload()
-            if isinstance(payload, list):
-                for child in payload:
-                    collect(child)
-            return
-        content_type = part.get_content_type().casefold()
-        if content_type not in {"text/plain", "text/html"}:
-            return
-        decoded = _decode_text_part(part)
-        if decoded is None:
-            return
-        if content_type == "text/plain":
-            text = normalize_plain_text(decoded)
-            if text:
-                plain_parts.append(text)
-        else:
-            text = html_to_plain_text(decoded)
-            if text:
-                html_parts.append(text)
-
-    collect(message)
-    selected = plain_parts or html_parts
-    return normalize_plain_text("\n\n".join(selected)) if selected else None
+    """Compatibility shim returning only the preferred plain-text body."""
+    return _message_content(message)[0]
 
 
 def _parse_message(
@@ -193,7 +299,7 @@ def _parse_message(
 ) -> EmailRecord:
     # ``headers`` retains its historical name so header-only callers remain compatible.
     message = BytesParser(policy=policy.default).parsebytes(headers)
-    body_text = _message_body_text(message)
+    body_text, body_html, attachments = _message_content(message)
     sender_raw = decode_mime_text(message.get("From"), "")
     sender_name, sender_address = parseaddr(sender_raw)
     sender_name = decode_mime_text(sender_name, "") or None
@@ -219,8 +325,11 @@ def _parse_message(
             "uid": uid,
             "uid_validity": uid_validity,
             "message_id": message_id,
+            "rich_content_fetched": True,
         },
         body_text=body_text,
+        body_html=body_html,
+        attachments=attachments,
     )
 
 
@@ -229,7 +338,7 @@ def fetch_email_body_backfill(
     password: str,
     targets: Iterable[EmailBodyBackfillTarget],
 ) -> MailBodyBackfillResult:
-    """Fetch missing bodies without changing any remote message flags."""
+    """Fetch missing rich bodies without changing any remote message flags."""
     selected_targets = list(targets)
     if not selected_targets:
         return MailBodyBackfillResult((), 0, 0, 0, 0)
@@ -265,14 +374,16 @@ def fetch_email_body_backfill(
                         raise MailCheckError("旧邮件正文读取失败。")
                     _, raw_message = _extract_fetch_parts(fetch_data)
                     message = BytesParser(policy=policy.default).parsebytes(raw_message)
-                    body_text = _message_body_text(message)
-                    if not body_text:
-                        raise MailCheckError("旧邮件没有可回填的文本正文。")
+                    body_text, body_html, attachments = _message_content(message)
+                    if not body_text and not body_html and not attachments:
+                        raise MailCheckError("旧邮件没有可回填的正文或附件。")
                     updates.append(
                         EmailBodyUpdate(
                             source_id=target.source_id,
                             body_text=body_text,
-                            body_preview=body_text[:300],
+                            body_preview=body_text[:300] if body_text else None,
+                            body_html=body_html,
+                            attachments=attachments,
                         )
                     )
                 except Exception:
@@ -348,14 +459,14 @@ def fetch_incremental_mail(
                 )
                 if status != "OK" or not fetch_data:
                     raise MailCheckError(f"UID {uid} 邮件读取失败。")
-                metadata, headers = _extract_fetch_parts(fetch_data)
+                metadata, message_bytes = _extract_fetch_parts(fetch_data)
                 messages.append(
                     _parse_message(
                         email_address=email_address,
                         uid_validity=uid_validity,
                         uid=uid,
                         metadata=metadata,
-                        headers=headers,
+                        headers=message_bytes,
                     )
                 )
 

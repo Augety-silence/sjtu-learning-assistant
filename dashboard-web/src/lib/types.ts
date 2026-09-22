@@ -27,13 +27,46 @@ export interface MessageItem {
   url: string | null;
 }
 
+export interface MessageResource {
+  id: string;
+  type: "image";
+}
+
+export interface MailMessageAttachment {
+  id: string;
+  name: string;
+  type: string | null;
+  size: number;
+  is_inline: boolean;
+  available: boolean;
+  inline_data_url: string | null;
+}
+
+export interface CanvasMessageAttachment {
+  name: string;
+  type?: string | null;
+  size: number | null;
+  url: string;
+}
+
 export interface MessageDetail {
   title: string;
   source_label: string;
   occurred_at: string | null;
   body: string;
+  body_html: string | null;
+  format: "html" | "text";
+  pending_body_sync: boolean;
+  attachments: Array<MailMessageAttachment | CanvasMessageAttachment>;
+  resources: MessageResource[];
   url: string | null;
   is_unread: boolean;
+}
+
+export interface MailAttachmentActionResult {
+  source_id: string;
+  attachment_id: string;
+  status: "opened" | "revealed";
 }
 
 export interface MessageMarkReadPayload extends Record<string, unknown> {

@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Iterable, Protocol, TypeVar
 
 from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
@@ -20,6 +26,7 @@ from sjtu_learning_assistant.models import (
     CourseModule,
     CourseModuleItem,
     Email,
+    EmailAttachment,
     SyncRun,
     SyncState,
     UnifiedItem,
@@ -44,12 +51,16 @@ class EmailLike(Protocol):
     is_unread: bool
     raw_data: dict[str, Any]
     body_text: str | None
+    body_html: str | None
+    attachments: Iterable[Any]
 
 
 class EmailBodyUpdateLike(Protocol):
     source_id: str
-    body_text: str
-    body_preview: str
+    body_text: str | None
+    body_preview: str | None
+    body_html: str | None
+    attachments: Iterable[Any]
 
 
 @dataclass(frozen=True)
@@ -100,6 +111,130 @@ def _dialect_insert(session: Session, model: Any):
     if dialect == "sqlite":
         return sqlite_insert(model)
     raise RuntimeError(f"不支持的数据库方言：{dialect}")
+
+
+MAIL_ATTACHMENTS_ROOT = APP_SUPPORT_DIR / "mail-attachments"
+_SAFE_ATTACHMENT_CHARACTER = re.compile(r"[^\w.() -]+", re.UNICODE)
+
+
+def _safe_attachment_filename(filename: str, resource_id: str) -> str:
+    leaf = Path(filename.replace("\x00", "")).name.strip()
+    leaf = _SAFE_ATTACHMENT_CHARACTER.sub("_", leaf).strip(" .")
+    if leaf in {"", ".", ".."}:
+        leaf = "attachment"
+    leaf = leaf[:180].rstrip(" .") or "attachment"
+    prefix = hashlib.sha256(resource_id.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"{prefix}-{leaf}"
+
+
+def _mail_attachment_directory(root: Path, source_id: str) -> Path:
+    controlled_root = root.expanduser().absolute()
+    if controlled_root.is_symlink():
+        raise RuntimeError("邮件附件根目录必须是非符号链接目录。")
+    controlled_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if controlled_root.is_symlink() or not controlled_root.is_dir():
+        raise RuntimeError("邮件附件根目录必须是非符号链接目录。")
+    message_directory = controlled_root / hashlib.sha256(
+        source_id.encode("utf-8", errors="replace")
+    ).hexdigest()
+    if message_directory.is_symlink():
+        raise RuntimeError("邮件附件目录包含符号链接或非目录路径。")
+    if message_directory.exists():
+        if not message_directory.is_dir():
+            raise RuntimeError("邮件附件目录包含符号链接或非目录路径。")
+    else:
+        message_directory.mkdir(mode=0o700)
+    return message_directory
+
+
+def _write_attachment_payload(
+    root: Path, source_id: str, resource_id: str, filename: str, payload: bytes
+) -> tuple[str, str]:
+    directory = _mail_attachment_directory(root, source_id)
+    target = directory / _safe_attachment_filename(filename, resource_id)
+    digest = hashlib.sha256(payload).hexdigest()
+    if target.is_symlink():
+        raise RuntimeError("邮件附件目标路径是符号链接。")
+    if target.exists():
+        if not target.is_file():
+            raise RuntimeError("邮件附件目标路径不是普通文件。")
+        existing = hashlib.sha256(target.read_bytes()).hexdigest()
+        if existing == digest:
+            return str(target), digest
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".mail-attachment-", dir=directory)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o600)
+        if target.is_symlink():
+            raise RuntimeError("邮件附件目标路径是符号链接。")
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return str(target), digest
+
+
+def _persist_email_attachments(
+    session: Session,
+    records: Iterable[EmailLike | EmailBodyUpdateLike],
+    email_ids: dict[str, int],
+    attachment_root: Path,
+    now: datetime,
+) -> None:
+    rows: dict[tuple[int, str], dict[str, Any]] = {}
+    for record in records:
+        email_id = email_ids.get(record.source_id)
+        if email_id is None:
+            continue
+        for attachment in getattr(record, "attachments", ()):
+            local_path = None
+            digest = None
+            payload = getattr(attachment, "payload", None)
+            if isinstance(payload, bytes):
+                local_path, digest = _write_attachment_payload(
+                    attachment_root,
+                    record.source_id,
+                    attachment.resource_id,
+                    attachment.filename,
+                    payload,
+                )
+            row = {
+                "email_id": email_id,
+                "resource_id": attachment.resource_id,
+                "filename": attachment.filename,
+                "content_type": attachment.content_type,
+                "content_id": attachment.content_id,
+                "disposition": attachment.disposition,
+                "size": attachment.size,
+                "is_inline": attachment.is_inline,
+                "local_path": local_path,
+                "sha256": digest,
+            }
+            rows[(email_id, attachment.resource_id)] = row
+    if not rows:
+        return
+    statement = _dialect_insert(session, EmailAttachment).values(list(rows.values()))
+    statement = statement.on_conflict_do_update(
+        index_elements=[EmailAttachment.email_id, EmailAttachment.resource_id],
+        set_={
+            "filename": statement.excluded.filename,
+            "content_type": statement.excluded.content_type,
+            "content_id": statement.excluded.content_id,
+            "disposition": statement.excluded.disposition,
+            "size": statement.excluded.size,
+            "is_inline": statement.excluded.is_inline,
+            "local_path": func.coalesce(
+                statement.excluded.local_path, EmailAttachment.local_path
+            ),
+            "sha256": func.coalesce(statement.excluded.sha256, EmailAttachment.sha256),
+            "updated_at": now,
+        },
+    )
+    session.execute(statement)
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:
@@ -1060,6 +1195,7 @@ def persist_emails(
     emails: Iterable[EmailLike],
     *,
     cursor: str,
+    attachment_root: Path | None = None,
 ) -> UpsertResult:
     """Persist email records, unified items, and UID cursor atomically."""
     records = list(emails)
@@ -1074,6 +1210,7 @@ def persist_emails(
             "received_at": item.received_at,
             "body_preview": item.body_preview,
             "body_text": getattr(item, "body_text", None),
+            "body_html": getattr(item, "body_html", None),
             "is_unread": item.is_unread,
             "priority": 0,
             "raw_data": item.raw_data,
@@ -1110,13 +1247,20 @@ def persist_emails(
                     "received_at": statement.excluded.received_at,
                     "body_preview": statement.excluded.body_preview,
                     "body_text": statement.excluded.body_text,
-                    "is_unread": statement.excluded.is_unread,
+                    "body_html": statement.excluded.body_html,
                     "raw_data": statement.excluded.raw_data,
                     "updated_at": now,
                 },
             )
             session.execute(statement)
             record_ids = _record_id_map(session, Email, source_ids)
+            _persist_email_attachments(
+                session,
+                records,
+                record_ids,
+                attachment_root or MAIL_ATTACHMENTS_ROOT,
+                now,
+            )
             for item_row in item_rows:
                 item_row["email_id"] = record_ids[item_row["source_id"]]
             _upsert_items(session, item_rows, now)
@@ -1146,19 +1290,18 @@ def get_email_body_backfill_targets(
     *,
     limit: int,
 ) -> tuple[EmailBodyBackfillTarget, ...]:
-    """Select a bounded batch of blank legacy bodies with consistent IMAP identity."""
+    """Select legacy messages not yet processed for rich content."""
     if limit < 1:
         return ()
 
     normalized_address = email_address.casefold()
     targets: list[EmailBodyBackfillTarget] = []
     with Session(engine) as session:
-        records = session.scalars(
-            select(Email)
-            .where(or_(Email.body_text.is_(None), func.trim(Email.body_text) == ""))
-            .order_by(Email.id)
-        ).yield_per(limit)
+        records = session.scalars(select(Email).order_by(Email.id)).yield_per(limit)
         for record in records:
+            raw_data = record.raw_data if isinstance(record.raw_data, dict) else {}
+            if raw_data.get("rich_content_fetched") is True:
+                continue
             parts = record.source_id.rsplit(":", 3)
             if len(parts) != 4:
                 continue
@@ -1173,7 +1316,6 @@ def get_email_body_backfill_targets(
                 parsed_source_uid = int(source_uid)
             except (TypeError, ValueError):
                 continue
-            raw_data = record.raw_data if isinstance(record.raw_data, dict) else {}
             raw_uid = raw_data.get("uid", parsed_source_uid)
             raw_validity = raw_data.get("uid_validity", source_validity)
             raw_folder = str(raw_data.get("folder", source_folder))
@@ -1202,21 +1344,43 @@ def get_email_body_backfill_targets(
 
 
 def persist_email_body_backfill(
-    engine: Engine, updates: Iterable[EmailBodyUpdateLike]
+    engine: Engine,
+    updates: Iterable[EmailBodyUpdateLike],
+    *,
+    attachment_root: Path | None = None,
 ) -> int:
-    """Atomically fill body columns only, preserving all local/remote read state."""
+    """Atomically fill rich content while preserving all local/remote read state."""
+    records = list(updates)
     updated = 0
+    now = datetime.now(timezone.utc)
     with Session(engine) as session, session.begin():
-        for item in updates:
-            result = session.execute(
-                update(Email)
-                .where(
-                    Email.source_id == item.source_id,
-                    or_(Email.body_text.is_(None), func.trim(Email.body_text) == ""),
-                )
-                .values(body_text=item.body_text, body_preview=item.body_preview)
+        attachment_records: list[EmailBodyUpdateLike] = []
+        email_ids: dict[str, int] = {}
+        for item in records:
+            email = session.scalar(
+                select(Email).where(Email.source_id == item.source_id)
             )
-            updated += max(result.rowcount or 0, 0)
+            if email is None:
+                continue
+            raw_data = email.raw_data if isinstance(email.raw_data, dict) else {}
+            if raw_data.get("rich_content_fetched") is True:
+                continue
+            if not (email.body_text or "").strip():
+                email.body_text = item.body_text
+                email.body_preview = item.body_preview
+            email.body_html = getattr(item, "body_html", None)
+            email.raw_data = {**raw_data, "rich_content_fetched": True}
+            email.updated_at = now
+            updated += 1
+            email_ids[item.source_id] = email.id
+            attachment_records.append(item)
+        _persist_email_attachments(
+            session,
+            attachment_records,
+            email_ids,
+            attachment_root or MAIL_ATTACHMENTS_ROOT,
+            now,
+        )
     return updated
 
 

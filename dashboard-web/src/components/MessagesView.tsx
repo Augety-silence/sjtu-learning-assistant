@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MessageDetailContent } from "@/components/MessageDetailContent";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
@@ -255,9 +256,7 @@ export function MessagesView() {
       <div className="view-intro">
         <div>
           <h2>消息收件箱</h2>
-          <p>
-            在应用内安全阅读纯文本详情；j/k 选择，Enter 打开，r/⇧R 标记已读。
-          </p>
+          <p>在应用内安全阅读消息详情；j/k 选择，Enter 打开，r/⇧R 标记已读。</p>
         </div>
         <div className="message-toolbar">
           <Tabs
@@ -416,13 +415,11 @@ export function MessagesView() {
                   <span>{detail.source_label}</span>
                   <span>{formatDateTime(detail.occurred_at)}</span>
                 </div>
-                <div
-                  className="message-detail-body"
-                  role="document"
-                  tabIndex={0}
-                >
-                  {detail.body || "（无正文）"}
-                </div>
+                <MessageDetailContent
+                  detail={detail}
+                  kind={detailItem.kind}
+                  sourceId={detailItem.source_id}
+                />
                 <footer className="message-dialog-actions">
                   {detail.is_unread && (
                     <Button

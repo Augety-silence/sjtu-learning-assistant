@@ -150,11 +150,41 @@ class Email(TimestampMixin, Base):
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     body_preview: Mapped[str | None] = mapped_column(Text)
     body_text: Mapped[str | None] = mapped_column(Text)
+    body_html: Mapped[str | None] = mapped_column(Text)
     is_unread: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
+    attachments: Mapped[list["EmailAttachment"]] = relationship(
+        back_populates="email", cascade="all, delete-orphan"
+    )
+
     __table_args__ = (Index("ix_emails_sent_at", "sent_at"),)
+
+
+class EmailAttachment(TimestampMixin, Base):
+    __tablename__ = "email_attachments"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    email_id: Mapped[int] = mapped_column(
+        ForeignKey("emails.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+    content_id: Mapped[str | None] = mapped_column(Text)
+    disposition: Mapped[str | None] = mapped_column(String(32))
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_inline: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    local_path: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+
+    email: Mapped[Email] = relationship(back_populates="attachments")
+
+    __table_args__ = (
+        UniqueConstraint("email_id", "resource_id", name="uq_email_attachment_resource"),
+        Index("ix_email_attachments_email_id", "email_id"),
+    )
 
 
 class CourseFolder(TimestampMixin, Base):

@@ -53,6 +53,11 @@ beforeEach(() => {
     source_label: kind === "email" ? "老师" : "程序设计",
     occurred_at: "2026-09-22T08:00:00+08:00",
     body: "纯文本 <script>alert('xss')</script>",
+    body_html: null,
+    format: "text" as const,
+    pending_body_sync: false,
+    attachments: [],
+    resources: [],
     url: kind === "assignment" ? "https://canvas.example/assignments/1" : null,
     is_unread: true,
   }));
@@ -63,7 +68,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessagesView", () => {
-  it("在应用内以纯文本显示详情，仅在有 URL 时提供 Canvas 操作", async () => {
+  it("显示纯文本 fallback，仅在有 URL 时提供 Canvas 操作", async () => {
     render(<MessagesView />);
 
     expect(await screen.findByText("作业一")).toBeTruthy();

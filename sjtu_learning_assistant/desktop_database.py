@@ -31,11 +31,12 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0009"
+SCHEMA_VERSION = "0010"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
     "emails",
+    "email_attachments",
     "sync_runs",
     "sync_state",
     "announcements",
@@ -108,6 +109,8 @@ def bootstrap_sqlite(engine: Engine) -> str:
         }
         if "body_text" not in email_columns:
             connection.exec_driver_sql("ALTER TABLE emails ADD COLUMN body_text TEXT")
+        if "body_html" not in email_columns:
+            connection.exec_driver_sql("ALTER TABLE emails ADD COLUMN body_html TEXT")
         file_columns = {
             str(column["name"])
             for column in inspect(connection).get_columns("course_files")

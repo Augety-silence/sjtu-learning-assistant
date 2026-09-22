@@ -228,6 +228,25 @@ a { color: inherit; text-decoration: none; }
 .message-detail-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #c23934; text-align: center; }
 .message-detail-state p { margin: 0; }
 .message-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.message-content-stack { min-height: 0; display: grid; flex: 1; gap: 16px; overflow: auto; }
+.message-detail-pending { min-height: 180px; padding: 24px; display: grid; place-items: center; border: 0.5px solid #b7d6ff; border-radius: 8px; background: #f5f9ff; color: #245b9e; text-align: center; }
+.message-detail-html { white-space: normal; }
+.message-detail-html :first-child { margin-top: 0; }
+.message-detail-html :last-child { margin-bottom: 0; }
+.message-detail-html a { color: #1456f0; text-decoration: underline; cursor: pointer; }
+.message-detail-html img { display: block; max-width: 100%; height: auto; margin: 12px 0; }
+.message-detail-html table { max-width: 100%; border-collapse: collapse; }
+.message-detail-html th, .message-detail-html td { padding: 6px 8px; border: 1px solid #dee0e3; }
+.message-resource-failed { min-width: 160px; min-height: 72px; padding: 20px; border: 1px dashed #d0d3d6; background: #f2f3f5; color: #646a73; }
+.message-attachments { padding-top: 4px; border-top: 0.5px solid #dee0e3; }
+.message-attachments h4 { margin: 0 0 8px; font-size: 14px; font-weight: 500; }
+.message-attachments ul { margin: 0; padding: 0; display: grid; gap: 8px; list-style: none; }
+.message-attachment { min-height: 52px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 0.5px solid #dee0e3; border-radius: 8px; }
+.message-attachment > div:first-child { min-width: 0; display: grid; gap: 2px; }
+.message-attachment strong { overflow-wrap: anywhere; font-weight: 500; }
+.message-attachment span { color: #646a73; font-size: 12px; }
+.message-attachment-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+
 
 @media (max-width: 599px) {
   .message-toolbar { width: 100%; align-items: stretch; justify-content: flex-start; flex-direction: column; }

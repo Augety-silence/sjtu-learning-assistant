@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
 import os
@@ -9,7 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -45,17 +46,30 @@ from sjtu_learning_assistant.models import (
     Course,
     CourseFile,
     Email,
+    EmailAttachment,
     SyncRun,
     SyncState,
     UnifiedItem,
 )
-from sjtu_learning_assistant.text_content import content_to_plain_text
+from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
+from sjtu_learning_assistant.text_content import (
+    extract_html_resource_ids,
+    html_to_plain_text,
+    sanitize_html,
+    sanitize_html_with_resources,
+)
 from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DONE_STATES = {"submitted", "graded", "pending_review"}
 MESSAGE_KINDS = frozenset({"email", "announcement", "assignment"})
+CANVAS_ORIGIN = ("https", "oc.sjtu.edu.cn", 443)
+CANVAS_REDIRECT_LIMIT = 5
+INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
+INLINE_IMAGE_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
 
 
 class DashboardError(RuntimeError):
@@ -103,6 +117,8 @@ class DashboardService:
         ai_key_loader: Callable[[], str | None] = get_ai_api_key,
         ai_key_saver: Callable[[object], None] = save_ai_api_key,
         ai_client_factory: Callable[..., OpenAIClassificationClient] = OpenAIClassificationClient,
+        mail_attachments_root: Path | None = None,
+        canvas_client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.engine = engine
         self.settings_store = settings_store or SettingsStore()
@@ -117,6 +133,10 @@ class DashboardService:
         self.ai_key_loader = ai_key_loader
         self.ai_key_saver = ai_key_saver
         self.ai_client_factory = ai_client_factory
+        self.mail_attachments_root = Path(
+            mail_attachments_root or MAIL_ATTACHMENTS_ROOT
+        )
+        self.canvas_client_factory = canvas_client_factory
         self._sync_lock = threading.Lock()
 
     def now(self) -> datetime:
@@ -282,14 +302,155 @@ class DashboardService:
         return rows[:limit]
 
     @staticmethod
-    def _assignment_body(raw_data: object) -> str | None:
+    def _assignment_html(raw_data: object) -> str | None:
         if not isinstance(raw_data, Mapping):
             return None
-        for key in ("description", "instructions", "details", "body", "message"):
-            value = raw_data.get(key)
-            if isinstance(value, str) and value.strip():
-                return content_to_plain_text(value)
-        return None
+        value = raw_data.get("description")
+        return value if isinstance(value, str) and value.strip() else None
+
+    @staticmethod
+    def _safe_canvas_attachments(raw_data: object) -> list[dict[str, Any]]:
+        if not isinstance(raw_data, Mapping):
+            return []
+        results: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for key in ("attachments", "files"):
+            values = raw_data.get(key)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if not isinstance(value, Mapping):
+                    continue
+                url = next(
+                    (
+                        candidate.strip()
+                        for field in ("url", "download_url", "html_url")
+                        if isinstance((candidate := value.get(field)), str)
+                        and DashboardService._safe_https_url(candidate)
+                    ),
+                    None,
+                )
+                if url is None or url in seen_urls:
+                    continue
+                raw_name = next(
+                    (
+                        candidate
+                        for field in ("display_name", "filename", "name")
+                        if isinstance((candidate := value.get(field)), str)
+                        and candidate.strip()
+                    ),
+                    "附件",
+                )
+                name = raw_name.replace("\\", "/").split("/")[-1]
+                name = " ".join(name.split()).strip(" .")[:255] or "附件"
+                raw_size = value.get("size")
+                size = raw_size if type(raw_size) is int and raw_size >= 0 else None
+                results.append({"name": name, "size": size, "url": url})
+                seen_urls.add(url)
+        return results
+
+    @staticmethod
+    def _safe_https_url(value: str) -> bool:
+        try:
+            parsed = urlsplit(value.strip())
+            _port = parsed.port
+        except ValueError:
+            return False
+        return bool(
+            parsed.scheme.casefold() == "https"
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+        )
+
+    @staticmethod
+    def _canvas_url_allowed(value: str) -> bool:
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port if parsed.port is not None else 443
+        except ValueError:
+            return False
+        return (
+            parsed.scheme.casefold(),
+            (parsed.hostname or "").casefold(),
+            port,
+        ) == CANVAS_ORIGIN and parsed.username is None and parsed.password is None
+
+    @staticmethod
+    def _mail_attachment_name(value: str) -> str:
+        leaf = value.replace("\\", "/").split("/")[-1]
+        return " ".join(leaf.split()).strip(" .")[:255] or "附件"
+
+    def _resolve_controlled_mail_file(self, local_path: str | None) -> Path:
+        if not local_path:
+            raise NotFoundError("邮件附件不可用。")
+        try:
+            lexical_root = Path(os.path.abspath(self.mail_attachments_root.expanduser()))
+            if stat.S_ISLNK(lexical_root.lstat().st_mode):
+                raise DashboardError("邮件附件路径不安全，已拒绝操作。")
+            resolved_root = lexical_root.resolve(strict=True)
+            candidate = Path(local_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = lexical_root / candidate
+            lexical = Path(os.path.abspath(candidate))
+            relative = lexical.relative_to(lexical_root)
+            current = lexical_root
+            for part in relative.parts:
+                current = current / part
+                mode = current.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    raise DashboardError("邮件附件路径不安全，已拒绝操作。")
+            resolved = lexical.resolve(strict=True)
+            resolved.relative_to(resolved_root)
+        except DashboardError:
+            raise
+        except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+            raise NotFoundError("邮件附件不可用。") from exc
+        if not stat.S_ISREG(resolved.lstat().st_mode):
+            raise DashboardError("邮件附件不是普通文件，已拒绝操作。")
+        return resolved
+
+    def _read_inline_attachment(self, attachment: EmailAttachment) -> str | None:
+        content_type = (attachment.content_type or "").split(";", 1)[0].casefold()
+        if (
+            not attachment.content_id
+            or not attachment.is_inline
+            or content_type not in INLINE_IMAGE_TYPES
+            or attachment.size > INLINE_IMAGE_LIMIT
+        ):
+            return None
+        try:
+            path = self._resolve_controlled_mail_file(attachment.local_path)
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > INLINE_IMAGE_LIMIT:
+                    return None
+                payload = os.read(descriptor, INLINE_IMAGE_LIMIT + 1)
+            finally:
+                os.close(descriptor)
+        except (DashboardError, OSError):
+            return None
+        if len(payload) > INLINE_IMAGE_LIMIT:
+            return None
+        encoded = base64.b64encode(payload).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+
+    def _email_attachment_dto(self, attachment: EmailAttachment) -> dict[str, Any]:
+        try:
+            self._resolve_controlled_mail_file(attachment.local_path)
+            available = True
+        except DashboardError:
+            available = False
+        return {
+            "id": attachment.resource_id,
+            "name": self._mail_attachment_name(attachment.filename),
+            "type": attachment.content_type,
+            "size": attachment.size,
+            "is_inline": bool(attachment.is_inline),
+            "available": available,
+            "inline_data_url": self._read_inline_attachment(attachment),
+        }
 
     def message_detail(self, kind: str, source_id: str) -> dict[str, Any]:
         kind = self._validate_message_kind(kind, allow_all=False)
@@ -312,6 +473,16 @@ class DashboardService:
                 title = item.subject
                 source_label = _sender_name(item.sender_name)
                 body = item.body_text
+                body_html = sanitize_html(item.body_html)
+                if not body:
+                    body = html_to_plain_text(body_html)
+                raw_data = item.raw_data if isinstance(item.raw_data, Mapping) else {}
+                pending_body_sync = raw_data.get("rich_content_fetched") is not True
+                attachments = [
+                    self._email_attachment_dto(attachment)
+                    for attachment in sorted(item.attachments, key=lambda value: value.id)
+                ]
+                resources: list[dict[str, str]] = []
                 url = unified.url
             elif kind == "announcement":
                 row = session.execute(
@@ -330,7 +501,13 @@ class DashboardService:
                 unified, item, course = row
                 title = item.title
                 source_label = _course_name(course.name)
-                body = content_to_plain_text(item.body)
+                body_html, resource_urls = sanitize_html_with_resources(item.body)
+                body = html_to_plain_text(body_html)
+                pending_body_sync = False
+                attachments = self._safe_canvas_attachments(item.raw_data)
+                resources = [
+                    {"id": resource_id, "type": "image"} for resource_id in resource_urls
+                ]
                 url = item.url
             else:
                 row = session.execute(
@@ -349,16 +526,193 @@ class DashboardService:
                 unified, item, course = row
                 title = item.name
                 source_label = _course_name(course.name)
-                body = self._assignment_body(item.raw_data)
+                raw_html = self._assignment_html(item.raw_data)
+                body_html, resource_urls = sanitize_html_with_resources(raw_html)
+                body = html_to_plain_text(body_html)
+                pending_body_sync = False
+                attachments = self._safe_canvas_attachments(item.raw_data)
+                resources = [
+                    {"id": resource_id, "type": "image"} for resource_id in resource_urls
+                ]
                 url = item.url
             return {
                 "title": title,
                 "source_label": source_label,
                 "occurred_at": to_shanghai(unified.occurred_at),
                 "body": body or "",
+                "body_html": body_html,
+                "format": "html" if body_html else "text",
+                "pending_body_sync": pending_body_sync,
+                "attachments": attachments,
+                "resources": resources,
                 "url": url,
                 "is_unread": not bool(unified.is_read),
             }
+
+    def _email_attachment(
+        self, source_id: str, attachment_id: str
+    ) -> EmailAttachment:
+        with Session(self.engine) as session:
+            attachment = session.scalar(
+                select(EmailAttachment)
+                .join(Email, Email.id == EmailAttachment.email_id)
+                .where(
+                    Email.source_id == source_id,
+                    EmailAttachment.resource_id == attachment_id,
+                )
+            )
+            if attachment is None:
+                raise NotFoundError("未找到邮件附件。")
+            session.expunge(attachment)
+            return attachment
+
+    def _mail_attachment_action(
+        self, source_id: str, attachment_id: str, *, reveal: bool
+    ) -> dict[str, str]:
+        attachment = self._email_attachment(source_id, attachment_id)
+        path = self._resolve_controlled_mail_file(attachment.local_path)
+        command = ["/usr/bin/open"]
+        if reveal:
+            command.append("-R")
+        command.append(str(path))
+        completed = self.command_runner(command, check=False)
+        if getattr(completed, "returncode", 0) != 0:
+            raise DashboardError("无法通过 macOS 操作邮件附件。")
+        return {
+            "source_id": source_id,
+            "attachment_id": attachment_id,
+            "status": "revealed" if reveal else "opened",
+        }
+
+    def open_mail_attachment(self, source_id: str, attachment_id: str) -> dict[str, str]:
+        return self._mail_attachment_action(source_id, attachment_id, reveal=False)
+
+    def reveal_mail_attachment(self, source_id: str, attachment_id: str) -> dict[str, str]:
+        return self._mail_attachment_action(source_id, attachment_id, reveal=True)
+
+    def _new_canvas_resource_client(self) -> Any:
+        if self.canvas_client_factory is not None:
+            return self.canvas_client_factory()
+        from test_canvas import (
+            DEFAULT_BASE_URL,
+            DEFAULT_TIMEOUT_SECONDS,
+            build_http_client,
+            get_token,
+        )
+
+        token, _ = get_token(use_keychain=True)
+        return build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS)
+
+    def _canvas_image_data_url(self, resource_url: str) -> str:
+        if not self._canvas_url_allowed(resource_url):
+            raise NotFoundError("消息资源不可用。")
+        client = self._new_canvas_resource_client()
+        current_url = resource_url
+        try:
+            for redirect_count in range(CANVAS_REDIRECT_LIMIT + 1):
+                if not self._canvas_url_allowed(current_url):
+                    raise DashboardError("Canvas 图片跳转地址不安全。")
+                try:
+                    request = client.build_request(
+                        "GET",
+                        current_url,
+                        headers={"Accept": ", ".join(sorted(INLINE_IMAGE_TYPES))},
+                    )
+                    response = client.send(
+                        request, stream=True, follow_redirects=False
+                    )
+                except Exception as exc:
+                    raise DashboardError("Canvas 图片读取失败。") from exc
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        if redirect_count >= CANVAS_REDIRECT_LIMIT:
+                            raise DashboardError("Canvas 图片跳转次数过多。")
+                        location = response.headers.get("location")
+                        if not location:
+                            raise DashboardError("Canvas 图片跳转响应无效。")
+                        current_url = urljoin(str(response.url), location)
+                        if not self._canvas_url_allowed(current_url):
+                            raise DashboardError("Canvas 图片跳转地址不安全。")
+                        continue
+                    if response.status_code != 200:
+                        raise DashboardError("Canvas 图片读取失败。")
+                    content_type = response.headers.get("content-type", "").split(";", 1)[0].casefold()
+                    if content_type not in INLINE_IMAGE_TYPES:
+                        raise DashboardError("Canvas 资源不是受支持的图片。")
+                    content_length = response.headers.get("content-length")
+                    try:
+                        if content_length is not None and int(content_length) > INLINE_IMAGE_LIMIT:
+                            raise DashboardError("Canvas 图片超过大小限制。")
+                    except ValueError:
+                        pass
+                    chunks: list[bytes] = []
+                    size = 0
+                    for chunk in response.iter_bytes():
+                        size += len(chunk)
+                        if size > INLINE_IMAGE_LIMIT:
+                            raise DashboardError("Canvas 图片超过大小限制。")
+                        chunks.append(chunk)
+                    encoded = base64.b64encode(b"".join(chunks)).decode("ascii")
+                    return f"data:{content_type};base64,{encoded}"
+                finally:
+                    response.close()
+            raise DashboardError("Canvas 图片跳转次数过多。")
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    def message_resource(
+        self, kind: str, source_id: str, resource_id: str
+    ) -> dict[str, str]:
+        kind = self._validate_message_kind(kind, allow_all=False)
+        if (
+            type(source_id) is not str
+            or not source_id
+            or len(source_id) > 255
+            or type(resource_id) is not str
+            or not resource_id
+            or len(resource_id) > 512
+        ):
+            raise DashboardError("消息资源标识不正确。")
+        if kind == "email":
+            with Session(self.engine) as session:
+                email = session.scalar(select(Email).where(Email.source_id == source_id))
+                if email is None:
+                    raise NotFoundError("未找到消息资源。")
+                allowed_ids = extract_html_resource_ids(email.body_html)
+            if resource_id not in allowed_ids:
+                raise NotFoundError("未找到消息资源。")
+            attachment = self._email_attachment(source_id, resource_id)
+            data_url = self._read_inline_attachment(attachment)
+            if data_url is None:
+                raise NotFoundError("消息资源不可用。")
+            return {"data_url": data_url}
+
+        with Session(self.engine) as session:
+            if kind == "announcement":
+                item = session.scalar(
+                    select(Announcement).where(
+                        Announcement.source_id == source_id,
+                        Announcement.is_active.is_(True),
+                    )
+                )
+                raw_html = item.body if item is not None else None
+            else:
+                item = session.scalar(
+                    select(Assignment).where(
+                        Assignment.source_id == source_id,
+                        Assignment.is_active.is_(True),
+                    )
+                )
+                raw_html = self._assignment_html(item.raw_data) if item is not None else None
+        if item is None:
+            raise NotFoundError("未找到消息资源。")
+        _html, resource_urls = sanitize_html_with_resources(raw_html)
+        resource_url = resource_urls.get(resource_id)
+        if resource_url is None:
+            raise NotFoundError("未找到消息资源。")
+        return {"data_url": self._canvas_image_data_url(resource_url)}
 
     def message_mark_read(
         self, kind: str, source_ids: Sequence[str] | None = None

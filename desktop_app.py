@@ -58,17 +58,20 @@ def _only_keys(payload: Mapping[str, Any], allowed: set[str]) -> None:
         raise DashboardError("请求包含不支持的参数。")
 
 
-def _source_id(payload: Mapping[str, Any]) -> str:
-    _only_keys(payload, {"source_id"})
-    value = payload.get("source_id")
+def _bounded_id(value: object, *, limit: int, label: str) -> str:
     if (
         type(value) is not str
         or not value.strip()
-        or len(value) > 255
+        or len(value) > limit
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
-        raise DashboardError("资源标识不正确。")
+        raise DashboardError(f"{label}不正确。")
     return value.strip()
+
+
+def _source_id(payload: Mapping[str, Any]) -> str:
+    _only_keys(payload, {"source_id"})
+    return _bounded_id(payload.get("source_id"), limit=255, label="资源标识")
 
 
 def _target_node_id(payload: Mapping[str, Any]) -> str:
@@ -126,6 +129,9 @@ class DesktopBridge:
             "deadlines": self._deadlines,
             "messages": self._messages,
             "message_detail": self._message_detail,
+            "message_resource": self._message_resource,
+            "mail_attachment_open": self._mail_attachment_open,
+            "mail_attachment_reveal": self._mail_attachment_reveal,
             "message_mark_read": self._message_mark_read,
             "material_tree": lambda payload: self._without_payload(
                 payload, service.material_tree
@@ -237,6 +243,37 @@ class DesktopBridge:
         return self._service.message_detail(
             _message_kind(payload, allow_all=False), _source_id({"source_id": payload["source_id"]})
         )
+
+    def _message_resource(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        _only_keys(payload, {"kind", "source_id", "resource_id"})
+        if not {"kind", "source_id", "resource_id"}.issubset(payload):
+            raise DashboardError("消息资源参数不完整。")
+        return self._service.message_resource(
+            _message_kind(payload, allow_all=False),
+            _bounded_id(payload["source_id"], limit=255, label="消息标识"),
+            _bounded_id(payload["resource_id"], limit=512, label="消息资源标识"),
+        )
+
+    def _mail_attachment_payload(
+        self, payload: Mapping[str, Any]
+    ) -> tuple[str, str]:
+        _only_keys(payload, {"kind", "source_id", "attachment_id"})
+        if not {"source_id", "attachment_id"}.issubset(payload):
+            raise DashboardError("邮件附件参数不完整。")
+        if "kind" in payload and _message_kind(payload, allow_all=False) != "email":
+            raise DashboardError("邮件附件类型不正确。")
+        return (
+            _bounded_id(payload["source_id"], limit=255, label="消息标识"),
+            _bounded_id(payload["attachment_id"], limit=512, label="附件标识"),
+        )
+
+    def _mail_attachment_open(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        source_id, attachment_id = self._mail_attachment_payload(payload)
+        return self._service.open_mail_attachment(source_id, attachment_id)
+
+    def _mail_attachment_reveal(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        source_id, attachment_id = self._mail_attachment_payload(payload)
+        return self._service.reveal_mail_attachment(source_id, attachment_id)
 
     def _message_mark_read(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "ids", "all"})

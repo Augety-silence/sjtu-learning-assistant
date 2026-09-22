@@ -1,4 +1,5 @@
 import type {
+  MailAttachmentActionResult,
   MaterialMoveResult,
   MessageDetail,
   MessageFilter,
@@ -68,6 +69,34 @@ export function getMessageDetail(kind: MessageKind, sourceId: string) {
   return invoke<MessageDetail>("message_detail", {
     kind,
     source_id: sourceId,
+  });
+}
+
+export function getMessageResource(
+  kind: MessageKind,
+  sourceId: string,
+  resourceId: string,
+) {
+  return invoke<{ data_url: string }>("message_resource", {
+    kind,
+    source_id: sourceId,
+    resource_id: resourceId,
+  });
+}
+
+export function openMailAttachment(sourceId: string, attachmentId: string) {
+  return invoke<MailAttachmentActionResult>("mail_attachment_open", {
+    kind: "email",
+    source_id: sourceId,
+    attachment_id: attachmentId,
+  });
+}
+
+export function revealMailAttachment(sourceId: string, attachmentId: string) {
+  return invoke<MailAttachmentActionResult>("mail_attachment_reveal", {
+    kind: "email",
+    source_id: sourceId,
+    attachment_id: attachmentId,
   });
 }
 
