@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useState } from "react";
+import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   Section,
 } from "@/components/States";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { invoke, openExternal } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { MessageItem, OverviewData, ViewName } from "@/lib/types";
 
+const messageKey = (item: MessageItem) => `${item.kind}:${item.source_id}`;
+
 export function OverviewView({
   navigate,
-  openMessage,
 }: {
   navigate: (view: ViewName) => void;
-  openMessage: (item: MessageItem) => void;
 }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState("");
+  const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
+  const { showToast } = useToast();
   const load = useCallback(async () => {
     setError("");
     try {
@@ -30,12 +34,45 @@ export function OverviewView({
   useEffect(() => {
     void load();
   }, [load]);
-  const open = (url: string | null) => {
-    if (url)
-      void openExternal(url).catch((reason) =>
-        setError(reason instanceof Error ? reason.message : "链接打开失败"),
-      );
+
+  const open = async (url: string | null) => {
+    if (!url) return;
+    try {
+      await openExternal(url);
+      showToast({ kind: "success", message: "已在浏览器打开截止事项。" });
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "链接打开失败",
+      });
+    }
   };
+
+  const markMessageRead = (item: MessageItem) => {
+    setData((current) => {
+      if (!current) return current;
+      const wasUnread = current.messages.some(
+        (candidate) =>
+          messageKey(candidate) === messageKey(item) && candidate.is_unread,
+      );
+      return {
+        ...current,
+        unread_emails:
+          item.kind === "email" && wasUnread
+            ? Math.max(0, current.unread_emails - 1)
+            : current.unread_emails,
+        messages: current.messages.map((candidate) =>
+          messageKey(candidate) === messageKey(item)
+            ? { ...candidate, is_unread: false }
+            : candidate,
+        ),
+      };
+    });
+    setDetailItem((current) =>
+      current ? { ...current, is_unread: false } : current,
+    );
+  };
+
   if (error) return <ErrorState message={error} retry={() => void load()} />;
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
 
@@ -79,7 +116,7 @@ export function OverviewView({
                 className="list-row list-row-button"
                 key={item.source_id}
                 disabled={!item.url}
-                onClick={() => open(item.url)}
+                onClick={() => void open(item.url)}
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium">{item.title}</p>
@@ -115,9 +152,9 @@ export function OverviewView({
               <button
                 type="button"
                 className="list-row list-row-button"
-                key={`${item.kind}:${item.source_id}`}
+                key={messageKey(item)}
                 aria-label={`打开消息详情：${item.title}`}
-                onClick={() => openMessage(item)}
+                onClick={() => setDetailItem(item)}
               >
                 <div className="min-w-0">
                   <div className="message-title">
@@ -137,6 +174,13 @@ export function OverviewView({
           )}
         </div>
       </Section>
+      {detailItem && (
+        <MessageDetailDialog
+          item={detailItem}
+          onClose={() => setDetailItem(null)}
+          onMarkedRead={markMessageRead}
+        />
+      )}
     </div>
   );
 }

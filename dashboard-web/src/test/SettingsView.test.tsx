@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
 
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
 import {
@@ -18,6 +11,7 @@ import {
   updateSettings,
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn(),
@@ -78,9 +72,7 @@ describe("SettingsView", () => {
       screen.getByText(/未设置邮箱账号；当前同步仅运行 Canvas/),
     ).toBeTruthy();
     expect(screen.getByText(/不会上传文件正文/)).toBeTruthy();
-    expect(
-      screen.getByText(/首次 macOS 授权请选择“始终允许”/),
-    ).toBeTruthy();
+    expect(screen.getByText(/首次 macOS 授权请选择“始终允许”/)).toBeTruthy();
     expect(getSettings).toHaveBeenCalledTimes(1);
     const switches = screen.getAllByRole("switch");
     fireEvent.click(switches[0]);

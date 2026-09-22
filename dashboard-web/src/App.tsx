@@ -5,8 +5,9 @@ import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
 import { SettingsView } from "@/components/SettingsView";
+import { useToast } from "@/components/Toast";
 import { invoke } from "@/lib/api";
-import type { MessageItem, SyncStatus, ViewName } from "@/lib/types";
+import type { SyncStatus, ViewName } from "@/lib/types";
 
 const views: ViewName[] = [
   "overview",
@@ -26,11 +27,8 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncRequested, setSyncRequested] = useState(false);
-  const [message, setMessage] = useState("");
   const [dataVersion, setDataVersion] = useState(0);
-  const [pendingMessage, setPendingMessage] = useState<MessageItem | null>(
-    null,
-  );
+  const { showToast } = useToast();
 
   const setView = (next: ViewName) => {
     window.location.hash = `/${next}`;
@@ -48,17 +46,20 @@ export default function App() {
       setSyncStatus(next);
       if (syncRequested && next.status === "idle") {
         setSyncRequested(false);
-        setMessage(
-          next.last_run_status === "success"
-            ? "同步完成，数据已更新。"
-            : "同步已结束，请查看最近运行状态。",
-        );
+        showToast({
+          id: "sync-operation",
+          kind: next.last_run_status === "success" ? "success" : "error",
+          message:
+            next.last_run_status === "success"
+              ? "同步完成，数据已更新。"
+              : "同步失败，请查看最近运行状态。",
+        });
         setDataVersion((value) => value + 1);
       }
     } catch {
       setSyncStatus(null);
     }
-  }, [syncRequested]);
+  }, [showToast, syncRequested]);
 
   useEffect(() => {
     void loadStatus();
@@ -70,24 +71,32 @@ export default function App() {
   }, [loadStatus, syncRequested, syncStatus?.status]);
 
   const triggerSync = async () => {
-    setMessage("");
     setSyncRequested(true);
+    showToast({
+      id: "sync-operation",
+      kind: "info",
+      message: "正在提交同步请求…",
+      duration: 0,
+    });
     try {
       const result = await invoke<{ status: string }>("sync_trigger");
-      setMessage(
-        result.status === "already_running"
-          ? "同步已在运行。"
-          : "同步请求已接受，正在后台执行。",
-      );
+      showToast({
+        id: "sync-operation",
+        kind: "info",
+        message:
+          result.status === "already_running"
+            ? "同步已在运行。"
+            : "同步请求已接受，正在后台执行。",
+        duration: 0,
+      });
     } catch (reason) {
       setSyncRequested(false);
-      setMessage(reason instanceof Error ? reason.message : "同步触发失败");
+      showToast({
+        id: "sync-operation",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "同步触发失败",
+      });
     }
-  };
-
-  const openMessage = (item: MessageItem) => {
-    setPendingMessage(item);
-    setView("messages");
   };
 
   const syncing = syncRequested || syncStatus?.status === "syncing";
@@ -101,27 +110,12 @@ export default function App() {
       syncing={syncing}
       onSync={() => void triggerSync()}
     >
-      {message && (
-        <div className="global-notice" role="status">
-          {message}
-        </div>
-      )}
       <div>
         {view === "overview" && (
-          <OverviewView
-            key={dataVersion}
-            navigate={setView}
-            openMessage={openMessage}
-          />
+          <OverviewView key={dataVersion} navigate={setView} />
         )}
         {view === "deadlines" && <DeadlinesView key={dataVersion} />}
-        {view === "messages" && (
-          <MessagesView
-            key={dataVersion}
-            pendingMessage={pendingMessage}
-            onPendingMessageConsumed={() => setPendingMessage(null)}
-          />
-        )}
+        {view === "messages" && <MessagesView key={dataVersion} />}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "settings" && (
           <SettingsView

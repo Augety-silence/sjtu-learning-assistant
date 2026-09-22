@@ -9,6 +9,7 @@ import {
   materialTargetAriaLabel,
 } from "@/components/MaterialTreeBranch";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { invoke, moveMaterial, restoreMaterialAuto } from "@/lib/api";
 import { formatDateTime, formatSize } from "@/lib/format";
@@ -27,10 +28,10 @@ export function MaterialsView() {
   const [category, setCategory] = useState("all");
   const [status, setStatus] = useState("all");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [dragSource, setDragSource] = useState<MaterialDragSource | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setError("");
@@ -73,20 +74,38 @@ export function MaterialsView() {
     action: "download" | "open" | "reveal",
   ) => {
     if (!file.source_id) return;
+    const toastId = `material:${file.source_id}:${action}`;
     setBusy((value) => ({ ...value, [file.source_id as string]: action }));
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message:
+        action === "download"
+          ? `正在下载“${file.name}”…`
+          : action === "reveal"
+            ? `正在定位“${file.name}”…`
+            : `正在打开“${file.name}”…`,
+      duration: 0,
+    });
     try {
       await invoke(`material_${action}`, { source_id: file.source_id });
-      setNotice(
-        action === "download"
-          ? `“${file.name}”下载完成`
-          : action === "reveal"
-            ? `已在 Finder 中显示“${file.name}”`
-            : `已打开“${file.name}”`,
-      );
+      showToast({
+        id: toastId,
+        kind: "success",
+        message:
+          action === "download"
+            ? `“${file.name}”下载完成`
+            : action === "reveal"
+              ? `已在 Finder 中显示“${file.name}”`
+              : `已打开“${file.name}”`,
+      });
       if (action === "download") await load();
     } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "操作失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "操作失败",
+      });
     } finally {
       setBusy((value) => {
         const next = { ...value };
@@ -100,22 +119,42 @@ export function MaterialsView() {
     async (file: MaterialNode, target: MaterialNode) => {
       if (!file.source_id || !file.course_id) return;
       if (!isMaterialDropTarget(target)) {
-        setNotice("文件只能归档到分类目录或 Canvas 子文件夹。");
+        showToast({
+          kind: "error",
+          message: "文件只能归档到分类目录或 Canvas 子文件夹。",
+        });
         return;
       }
       if (target.course_id !== file.course_id) {
-        setNotice(`不能将“${file.name}”移动到其他课程。`);
+        showToast({
+          kind: "error",
+          message: `不能将“${file.name}”移动到其他课程。`,
+        });
         return;
       }
+      const toastId = `material:${file.source_id}:move`;
       setBusy((value) => ({ ...value, [file.source_id as string]: "move" }));
-      setNotice("");
+      showToast({
+        id: toastId,
+        kind: "info",
+        message: `正在将“${file.name}”归档到“${target.name}”…`,
+        duration: 0,
+      });
       try {
         await moveMaterial(file.source_id, target.id);
         setSelectedId(target.id);
         await load();
-        setNotice(`已将“${file.name}”归档到“${target.name}”。`);
+        showToast({
+          id: toastId,
+          kind: "success",
+          message: `已将“${file.name}”归档到“${target.name}”。`,
+        });
       } catch (reason) {
-        setNotice(reason instanceof Error ? reason.message : "移动资料失败");
+        showToast({
+          id: toastId,
+          kind: "error",
+          message: reason instanceof Error ? reason.message : "移动资料失败",
+        });
       } finally {
         setBusy((value) => {
           const next = { ...value };
@@ -124,7 +163,7 @@ export function MaterialsView() {
         });
       }
     },
-    [load],
+    [load, showToast],
   );
 
   const drop: MaterialDropHandler = useCallback(
@@ -133,30 +172,44 @@ export function MaterialsView() {
       event.stopPropagation();
       setDropTargetId(null);
       if (!dragSource || !tree) {
-        setNotice("未识别要移动的资料，请重试。");
+        showToast({ kind: "error", message: "未识别要移动的资料，请重试。" });
         return;
       }
       const sourcePath = findNodePath(tree.root, `file:${dragSource.sourceId}`);
       const file = sourcePath?.[sourcePath.length - 1];
       if (!file || file.kind !== "file") {
-        setNotice("资料已变化，请刷新后重试。");
+        showToast({ kind: "error", message: "资料已变化，请刷新后重试。" });
         return;
       }
       void move(file, target);
     },
-    [dragSource, move, tree],
+    [dragSource, move, showToast, tree],
   );
 
   const restoreAuto = async (file: MaterialNode) => {
     if (!file.source_id) return;
+    const toastId = `material:${file.source_id}:restore`;
     setBusy((value) => ({ ...value, [file.source_id as string]: "restore" }));
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: `正在恢复“${file.name}”的自动分类…`,
+      duration: 0,
+    });
     try {
       await restoreMaterialAuto(file.source_id);
       await load();
-      setNotice(`“${file.name}”已恢复自动分类。`);
+      showToast({
+        id: toastId,
+        kind: "success",
+        message: `“${file.name}”已恢复自动分类。`,
+      });
     } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "恢复自动分类失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "恢复自动分类失败",
+      });
     } finally {
       setBusy((value) => {
         const next = { ...value };
@@ -214,11 +267,6 @@ export function MaterialsView() {
           </select>
         </label>
       </div>
-      {notice && (
-        <div className="notice" role="status" aria-live="polite">
-          {notice}
-        </div>
-      )}
       {error ? (
         <ErrorState message={error} retry={() => void load()} />
       ) : !tree ? (
@@ -345,9 +393,10 @@ export function MaterialsView() {
                       );
                       event.dataTransfer.setData("text/plain", file.source_id);
                       setDragSource(source);
-                      setNotice(
-                        `正在移动“${file.name}”，请选择同课程目标目录。`,
-                      );
+                      showToast({
+                        kind: "info",
+                        message: `正在移动“${file.name}”，请选择同课程目标目录。`,
+                      });
                     }}
                     onDragEnd={() => {
                       setDragSource(null);

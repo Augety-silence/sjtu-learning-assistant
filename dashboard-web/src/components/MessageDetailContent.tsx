@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
   getMessageResource,
@@ -133,8 +134,8 @@ export function MessageDetailContent({
   sourceId,
 }: MessageDetailContentProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const [actionError, setActionError] = useState("");
   const [busyAttachment, setBusyAttachment] = useState<string | null>(null);
+  const { showToast } = useToast();
   const safeHtml = useMemo(
     () =>
       detail.body_html?.trim() ? sanitizeMessageHtml(detail.body_html) : "",
@@ -247,14 +248,20 @@ export function MessageDetailContent({
     sourceId,
   ]);
 
-  const openLink = useCallback(async (url: string) => {
-    setActionError("");
-    try {
-      await openExternal(url);
-    } catch (reason) {
-      setActionError(messageError(reason, "链接打开失败"));
-    }
-  }, []);
+  const openLink = useCallback(
+    async (url: string) => {
+      try {
+        await openExternal(url);
+        showToast({ kind: "success", message: "已在浏览器打开链接。" });
+      } catch (reason) {
+        showToast({
+          kind: "error",
+          message: messageError(reason, "链接打开失败"),
+        });
+      }
+    },
+    [showToast],
+  );
 
   const handleBodyClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -273,15 +280,24 @@ export function MessageDetailContent({
   ) => {
     const key = `${attachment.id}:${action}`;
     setBusyAttachment(key);
-    setActionError("");
     try {
       if (action === "open") {
         await openMailAttachment(sourceId, attachment.id);
       } else {
         await revealMailAttachment(sourceId, attachment.id);
       }
+      showToast({
+        kind: "success",
+        message:
+          action === "open"
+            ? `已打开附件“${attachment.name}”。`
+            : `已在 Finder 中显示附件“${attachment.name}”。`,
+      });
     } catch (reason) {
-      setActionError(messageError(reason, "附件操作失败"));
+      showToast({
+        kind: "error",
+        message: messageError(reason, "附件操作失败"),
+      });
     } finally {
       setBusyAttachment(null);
     }
@@ -289,11 +305,6 @@ export function MessageDetailContent({
 
   return (
     <div className="message-content-stack">
-      {actionError && (
-        <div className="settings-error" role="alert">
-          {actionError}
-        </div>
-      )}
       {detail.pending_body_sync ? (
         <div className="message-detail-pending" role="status">
           正文尚未同步，请点击同步后再试

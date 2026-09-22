@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
 
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MessagesView } from "@/components/MessagesView";
 import {
@@ -16,6 +9,7 @@ import {
   openExternal,
 } from "@/lib/api";
 import type { MessageItem } from "@/lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getMessageDetail: vi.fn(),

@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
 
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MessageDetailContent,
@@ -19,6 +12,7 @@ import {
   revealMailAttachment,
 } from "@/lib/api";
 import type { MessageDetail } from "@/lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getMessageResource: vi.fn(),

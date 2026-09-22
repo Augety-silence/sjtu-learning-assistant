@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
+import { useToast } from "@/components/Toast";
 import {
   Table,
   TableBody,
@@ -23,6 +24,7 @@ export function DeadlinesView() {
   const [windowValue, setWindowValue] = useState("7d");
   const [items, setItems] = useState<Deadline[] | null>(null);
   const [error, setError] = useState("");
+  const { showToast } = useToast();
   const load = useCallback(async () => {
     setItems(null);
     setError("");
@@ -39,11 +41,17 @@ export function DeadlinesView() {
     void load();
   }, [load]);
 
-  const open = (url: string | null) => {
-    if (url)
-      void openExternal(url).catch((reason) =>
-        setError(reason instanceof Error ? reason.message : "链接打开失败"),
-      );
+  const open = async (url: string | null) => {
+    if (!url) return;
+    try {
+      await openExternal(url);
+      showToast({ kind: "success", message: "已在浏览器打开截止事项。" });
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "链接打开失败",
+      });
+    }
   };
 
   return (
@@ -91,7 +99,7 @@ export function DeadlinesView() {
                       type="button"
                       className="table-link"
                       disabled={!item.url}
-                      onClick={() => open(item.url)}
+                      onClick={() => void open(item.url)}
                     >
                       {item.title}
                     </button>

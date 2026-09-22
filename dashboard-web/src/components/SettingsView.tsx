@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/States";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
   getSettings,
@@ -27,12 +28,12 @@ export function SettingsView({
 }) {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
   const [mailAccount, setMailAccount] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModel, setAiModel] = useState("");
   const [connectionJson, setConnectionJson] = useState("");
+  const { showToast } = useToast();
 
   const applyStatus = (next: SettingsStatus) => {
     setStatus(next);
@@ -67,77 +68,130 @@ export function SettingsView({
       >
     >,
   ) => {
+    const toastId = "settings-update";
     setBusy("update");
-    setError("");
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: "正在保存设置…",
+      duration: 0,
+    });
     try {
       applyStatus(await updateSettings(changes));
-      setNotice("设置已保存。");
+      showToast({ id: toastId, kind: "success", message: "设置已保存。" });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "设置保存失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "设置保存失败",
+      });
     } finally {
       setBusy("");
     }
   };
 
   const importConnection = async () => {
+    const toastId = "settings-ai-import";
     setBusy("ai-import");
-    setError("");
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: "正在保存 AI 连接…",
+      duration: 0,
+    });
     try {
       applyStatus(await importAiConnection(connectionJson));
       setConnectionJson("");
-      setNotice("AI 连接已保存；API key 仅存入 macOS Keychain。");
+      showToast({
+        id: toastId,
+        kind: "success",
+        message: "AI 连接已保存；API key 仅存入 macOS Keychain。",
+      });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AI 连接保存失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "AI 连接保存失败",
+      });
     } finally {
       setBusy("");
     }
   };
 
   const testConnection = async () => {
+    const toastId = "settings-ai-test";
     setBusy("ai-test");
-    setError("");
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: "正在测试 AI 连接…",
+      duration: 0,
+    });
     try {
       const result = await testAiConnection();
-      setNotice(`AI 连接测试成功：${result.model} 返回 ${result.category}。`);
+      showToast({
+        id: toastId,
+        kind: "success",
+        message: `AI 连接测试成功：${result.model} 返回 ${result.category}。`,
+      });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AI 连接测试失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "AI 连接测试失败",
+      });
     } finally {
       setBusy("");
     }
   };
 
   const chooseFolder = async () => {
+    const toastId = "settings-pick-folder";
     setBusy("pick");
-    setError("");
-    setNotice("");
     try {
       const result = await pickArchiveRoot();
       applyStatus(result.settings);
-      setNotice(
-        result.cancelled ? "已取消选择，归档目录未更改。" : "归档目录已更新。",
-      );
+      showToast({
+        id: toastId,
+        kind: result.cancelled ? "info" : "success",
+        message: result.cancelled
+          ? "已取消选择，归档目录未更改。"
+          : "归档目录已更新。",
+      });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "目录选择失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "目录选择失败",
+      });
     } finally {
       setBusy("");
     }
   };
 
   const organize = async () => {
+    const toastId = "settings-organize";
     setBusy("organize");
-    setError("");
-    setNotice("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: "正在执行 AI 归档分类与整理…",
+      duration: 0,
+    });
     try {
       const result = await organizeArchive();
-      setNotice(
-        `AI 归档完成：新分类 ${result.classified}，复用 ${result.reused}，规则回退 ${result.fallback}；移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
-      );
+      showToast({
+        id: toastId,
+        kind: result.failed > 0 ? "info" : "success",
+        message: `AI 归档完成：新分类 ${result.classified}，复用 ${result.reused}，规则回退 ${result.fallback}；移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
+      });
       onArchiveChanged?.();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "整理失败");
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "整理失败",
+      });
     } finally {
       setBusy("");
     }
@@ -155,16 +209,6 @@ export function SettingsView({
           <p>配置当前学期资料的自动归档、AI 分类与目录整理方式。</p>
         </div>
       </div>
-      {error && (
-        <div className="settings-error" role="alert">
-          {error}
-        </div>
-      )}
-      {notice && (
-        <div className="notice" role="status">
-          {notice}
-        </div>
-      )}
       <div className="settings-list">
         <div className="settings-row settings-path-row">
           <div>

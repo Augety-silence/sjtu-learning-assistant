@@ -1,21 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageDetailContent } from "@/components/MessageDetailContent";
+import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
-import {
-  getMessageDetail,
-  getMessages,
-  markMessagesRead,
-  openExternal,
-} from "@/lib/api";
+import { getMessages, markMessagesRead } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type {
-  MessageDetail,
-  MessageFilter,
-  MessageItem,
-  MessageKind,
-} from "@/lib/types";
+import type { MessageFilter, MessageItem, MessageKind } from "@/lib/types";
 
 const kinds: Array<{ value: MessageFilter; label: string }> = [
   { value: "all", label: "全部" },
@@ -47,35 +38,18 @@ function isEditableTarget(target: EventTarget | null) {
   );
 }
 
-interface MessagesViewProps {
-  pendingMessage?: MessageItem | null;
-  onPendingMessageConsumed?: () => void;
-}
-
-export function MessagesView({
-  pendingMessage = null,
-  onPendingMessageConsumed,
-}: MessagesViewProps = {}) {
+export function MessagesView() {
   const [kind, setKind] = useState<MessageFilter>("all");
   const [items, setItems] = useState<MessageItem[] | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
-  const [feedback, setFeedback] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
-  const [detail, setDetail] = useState<MessageDetail | null>(null);
-  const [detailError, setDetailError] = useState("");
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const detailRequest = useRef(0);
-  const consumedPendingKey = useRef<string | null>(null);
+  const { showToast } = useToast();
 
   const closeDetail = useCallback(() => {
-    detailRequest.current += 1;
     setDetailItem(null);
-    setDetail(null);
-    setDetailError("");
     window.setTimeout(() => {
       if (selectedKey) rowRefs.current.get(selectedKey)?.focus();
     });
@@ -84,8 +58,6 @@ export function MessagesView({
   const load = useCallback(async () => {
     setItems(null);
     setError("");
-    setActionError("");
-    setFeedback("");
     try {
       const data = await getMessages(kind);
       setItems(data.items);
@@ -110,78 +82,71 @@ export function MessagesView({
     );
   }, [items]);
 
-  useEffect(() => {
-    if (!detailItem) return;
-    const timer = window.setTimeout(() => closeButtonRef.current?.focus());
-    return () => window.clearTimeout(timer);
-  }, [detailItem]);
-
-  const openDetail = useCallback(async (item: MessageItem) => {
-    const request = detailRequest.current + 1;
-    detailRequest.current = request;
+  const openDetail = useCallback((item: MessageItem) => {
     setSelectedKey(messageKey(item));
     setDetailItem(item);
-    setDetail(null);
-    setDetailError("");
-    try {
-      const data = await getMessageDetail(item.kind, item.source_id);
-      if (detailRequest.current === request) setDetail(data);
-    } catch (reason) {
-      if (detailRequest.current === request) {
-        setDetailError(messageError(reason, "消息详情加载失败"));
-      }
-    }
   }, []);
 
-  useEffect(() => {
-    if (!pendingMessage) return;
-    const key = messageKey(pendingMessage);
-    if (consumedPendingKey.current === key) return;
-    consumedPendingKey.current = key;
-    onPendingMessageConsumed?.();
-    void openDetail(pendingMessage);
-  }, [onPendingMessageConsumed, openDetail, pendingMessage]);
+  const applyRead = useCallback((item: MessageItem) => {
+    const key = messageKey(item);
+    setItems(
+      (current) =>
+        current?.map((candidate) =>
+          messageKey(candidate) === key
+            ? { ...candidate, is_unread: false }
+            : candidate,
+        ) ?? null,
+    );
+    setDetailItem((current) =>
+      current && messageKey(current) === key
+        ? { ...current, is_unread: false }
+        : current,
+    );
+  }, []);
 
   const markOneRead = useCallback(
     async (item: MessageItem) => {
       if (!item.is_unread || busyKey) return;
       const key = messageKey(item);
+      const toastId = `message-read:${key}`;
       setBusyKey(key);
-      setActionError("");
-      setFeedback("");
+      showToast({
+        id: toastId,
+        kind: "info",
+        message: `正在将“${item.title}”标记为已读…`,
+        duration: 0,
+      });
       try {
         await markMessagesRead({ kind: item.kind, ids: [item.source_id] });
-        setItems(
-          (current) =>
-            current?.map((candidate) =>
-              messageKey(candidate) === key
-                ? { ...candidate, is_unread: false }
-                : candidate,
-            ) ?? null,
-        );
-        if (detailItem && messageKey(detailItem) === key) {
-          setDetailItem((current) =>
-            current ? { ...current, is_unread: false } : null,
-          );
-          setDetail((current) =>
-            current ? { ...current, is_unread: false } : null,
-          );
-        }
-        setFeedback(`已将“${item.title}”标记为已读。`);
+        applyRead(item);
+        showToast({
+          id: toastId,
+          kind: "success",
+          message: `已将“${item.title}”标记为已读。`,
+        });
       } catch (reason) {
-        setActionError(messageError(reason, "标记已读失败"));
+        showToast({
+          id: toastId,
+          kind: "error",
+          message: messageError(reason, "标记已读失败"),
+        });
       } finally {
         setBusyKey(null);
       }
     },
-    [busyKey, detailItem],
+    [applyRead, busyKey, showToast],
   );
 
   const markCurrentFilterRead = useCallback(async () => {
     if (busyKey) return;
+    const toastId = `messages-read-all:${kind}`;
     setBusyKey("all");
-    setActionError("");
-    setFeedback("");
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: "正在将当前筛选标记为已读…",
+      duration: 0,
+    });
     try {
       const result = await markMessagesRead({ kind, all: true });
       setItems(
@@ -192,34 +157,25 @@ export function MessagesView({
         setDetailItem((current) =>
           current ? { ...current, is_unread: false } : null,
         );
-        setDetail((current) =>
-          current ? { ...current, is_unread: false } : null,
-        );
       }
-      setFeedback(`当前筛选已全部标为已读（更新 ${result.updated} 条）。`);
+      showToast({
+        id: toastId,
+        kind: "success",
+        message: `当前筛选已全部标为已读（更新 ${result.updated} 条）。`,
+      });
     } catch (reason) {
-      setActionError(messageError(reason, "全部标记已读失败"));
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: messageError(reason, "全部标记已读失败"),
+      });
     } finally {
       setBusyKey(null);
     }
-  }, [busyKey, detailItem, kind]);
-
-  const openCanvas = useCallback(async (url: string) => {
-    setActionError("");
-    try {
-      await openExternal(url);
-    } catch (reason) {
-      setActionError(messageError(reason, "链接打开失败"));
-    }
-  }, []);
+  }, [busyKey, detailItem, kind, showToast]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && detailItem) {
-        event.preventDefault();
-        closeDetail();
-        return;
-      }
       if (
         detailItem ||
         isEditableTarget(event.target) ||
@@ -246,7 +202,7 @@ export function MessagesView({
         window.setTimeout(() => rowRefs.current.get(nextKey)?.focus());
       } else if (event.key === "Enter") {
         event.preventDefault();
-        void openDetail(items[selectedIndex]);
+        openDetail(items[selectedIndex]);
       } else if (event.key.toLowerCase() === "r" && event.shiftKey) {
         event.preventDefault();
         void markCurrentFilterRead();
@@ -258,7 +214,6 @@ export function MessagesView({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    closeDetail,
     detailItem,
     items,
     markCurrentFilterRead,
@@ -302,17 +257,6 @@ export function MessagesView({
         </div>
       </div>
 
-      {actionError && (
-        <div className="settings-error" role="alert">
-          {actionError}
-        </div>
-      )}
-      {feedback && (
-        <div className="notice" role="status" aria-live="polite">
-          {feedback}
-        </div>
-      )}
-
       {error ? (
         <ErrorState message={error} retry={() => void load()} />
       ) : items === null ? (
@@ -342,7 +286,7 @@ export function MessagesView({
                     else rowRefs.current.delete(key);
                   }}
                   onFocus={() => setSelectedKey(key)}
-                  onClick={() => void openDetail(item)}
+                  onClick={() => openDetail(item)}
                 >
                   <div className="min-w-0">
                     <div className="message-title">
@@ -381,89 +325,12 @@ export function MessagesView({
       )}
 
       {detailItem && (
-        <div className="message-dialog-layer">
-          <button
-            type="button"
-            className="message-dialog-backdrop"
-            aria-label="点击遮罩关闭消息详情"
-            onClick={closeDetail}
-          />
-          <section
-            className="message-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="message-detail-title"
-          >
-            <header className="message-dialog-header">
-              <div className="min-w-0">
-                <span className="status-tag">
-                  {kindLabels[detailItem.kind]}
-                </span>
-                <h3 id="message-detail-title">{detailItem.title}</h3>
-              </div>
-              <Button
-                ref={closeButtonRef}
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label="关闭消息详情"
-                onClick={closeDetail}
-              >
-                关闭
-              </Button>
-            </header>
-            {detailError ? (
-              <div className="message-detail-state" role="alert">
-                <p>{detailError}</p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label="重试加载消息详情"
-                  onClick={() => void openDetail(detailItem)}
-                >
-                  重试
-                </Button>
-              </div>
-            ) : detail === null ? (
-              <LoadingState label="正在加载消息详情…" />
-            ) : (
-              <>
-                <div className="message-detail-meta">
-                  <span>{detail.source_label}</span>
-                  <span>{formatDateTime(detail.occurred_at)}</span>
-                </div>
-                <MessageDetailContent
-                  detail={detail}
-                  kind={detailItem.kind}
-                  sourceId={detailItem.source_id}
-                />
-                <footer className="message-dialog-actions">
-                  {detail.is_unread && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label={`将“${detail.title}”标记为已读`}
-                      disabled={busyKey !== null}
-                      onClick={() => void markOneRead(detailItem)}
-                    >
-                      标为已读
-                    </Button>
-                  )}
-                  {detail.url && (
-                    <Button
-                      type="button"
-                      aria-label={`在 Canvas 打开“${detail.title}”`}
-                      onClick={() => void openCanvas(detail.url as string)}
-                    >
-                      在 Canvas 打开
-                    </Button>
-                  )}
-                </footer>
-              </>
-            )}
-          </section>
-        </div>
+        <MessageDetailDialog
+          key={messageKey(detailItem)}
+          item={detailItem}
+          onClose={closeDetail}
+          onMarkedRead={applyRead}
+        />
       )}
     </div>
   );

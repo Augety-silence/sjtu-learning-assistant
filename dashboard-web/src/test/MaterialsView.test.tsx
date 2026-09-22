@@ -1,16 +1,10 @@
 // @vitest-environment jsdom
 
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialsView } from "@/components/MaterialsView";
 import { invoke, moveMaterial, restoreMaterialAuto } from "@/lib/api";
 import type { MaterialTree } from "@/lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   invoke: vi.fn(),

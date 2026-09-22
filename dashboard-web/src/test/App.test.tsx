@@ -1,16 +1,10 @@
 // @vitest-environment jsdom
 
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { getMessageDetail, getMessages, invoke } from "@/lib/api";
 import type { MessageDetail, MessageItem, OverviewData } from "@/lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -31,6 +25,8 @@ const targetMessage: MessageItem = {
   is_unread: true,
   url: null,
 };
+
+let syncTriggered = false;
 
 const overview: OverviewData = {
   courses: 1,
@@ -57,15 +53,20 @@ const detail: MessageDetail = {
 beforeEach(() => {
   window.location.hash = "#/overview";
   vi.clearAllMocks();
+  syncTriggered = false;
   vi.mocked(invoke).mockImplementation(async (action) => {
     if (action === "overview") return overview as never;
     if (action === "sync_status") {
       return {
-        status: "idle",
+        status: syncTriggered ? "syncing" : "idle",
         last_success_at: null,
         last_run_status: null,
         last_run_at: null,
       } as never;
+    }
+    if (action === "sync_trigger") {
+      syncTriggered = true;
+      return { status: "accepted" } as never;
     }
     throw new Error(`Unexpected action: ${action}`);
   });
@@ -75,8 +76,8 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe("overview message navigation", () => {
-  it("跳转到消息页、高亮导航并自动打开对应详情", async () => {
+describe("overview message detail", () => {
+  it("在概览页原地打开同款详情弹窗，不切换消息视图", async () => {
     render(<App />);
 
     fireEvent.click(
@@ -84,12 +85,13 @@ describe("overview message navigation", () => {
     );
 
     await waitFor(() => {
-      expect(window.location.hash).toBe("#/messages");
+      expect(window.location.hash).toBe("#/overview");
       expect(
         screen
-          .getByRole("button", { name: "消息" })
+          .getByRole("button", { name: "概览" })
           .getAttribute("aria-current"),
       ).toBe("page");
+      expect(screen.queryByText("消息收件箱")).toBeNull();
       expect(getMessageDetail).toHaveBeenCalledWith("email", "mail-target");
     });
     expect((await screen.findByRole("dialog")).textContent).toContain(
@@ -97,41 +99,32 @@ describe("overview message navigation", () => {
     );
   });
 
-  it("消费待打开消息后只自动打开一次", async () => {
+  it("概览 DTO 不依赖消息列表或 URL，关闭后仍停留在概览", async () => {
     render(<App />);
     fireEvent.click(
       await screen.findByRole("button", { name: "打开消息详情：无链接邮件" }),
     );
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "关闭消息详情" }));
-    fireEvent.click(screen.getByRole("button", { name: "概览" }));
-    await screen.findByRole("button", { name: "打开消息详情：无链接邮件" });
-    fireEvent.click(screen.getByRole("button", { name: "消息" }));
 
-    await screen.findByText("消息收件箱");
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(getMessageDetail).toHaveBeenCalledTimes(1);
-  });
-
-  it("目标不在消息首屏且邮件无 URL 时仍使用 DTO 标识加载详情", async () => {
-    vi.mocked(getMessages).mockResolvedValue({
-      items: [
-        {
-          ...targetMessage,
-          source_id: "other-mail",
-          title: targetMessage.title,
-          url: "https://example.test/other",
-        },
-      ],
-    });
-    render(<App />);
-
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开消息详情：无链接邮件" }),
-    );
-
-    expect(await screen.findByRole("dialog")).toBeTruthy();
-    expect(getMessageDetail).toHaveBeenCalledWith("email", "mail-target");
+    expect(window.location.hash).toBe("#/overview");
+    expect(getMessages).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /在 Canvas 打开/ })).toBeNull();
+  });
+});
+
+describe("global operation toast", () => {
+  it("同步操作显示在全局右上角 Toast，页面内静态通知不再出现", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "立即同步" }));
+
+    const viewport = document.querySelector(".toast-viewport");
+    expect(viewport?.getAttribute("aria-label")).toBe("操作通知");
+    expect(
+      await screen.findByText("同步请求已接受，正在后台执行。"),
+    ).toBeTruthy();
+    expect(document.querySelector(".global-notice")).toBeNull();
+    expect(document.querySelector(".content > .notice")).toBeNull();
   });
 });
