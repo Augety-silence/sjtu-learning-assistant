@@ -1,19 +1,13 @@
+import { Activity, ArrowUp, PanelLeftOpen, PanelRightOpen } from "lucide-react";
 import {
-  Activity,
-  ArrowUp,
-  Bot,
-  ChevronDown,
-  PanelLeftOpen,
-  PanelRightOpen,
-  Sparkles,
-} from "lucide-react";
-import {
-  type FormEvent,
+  type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import { AIChatComposer } from "@/components/AIChatComposer";
 import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { AIChatTracePanel } from "@/components/AIChatTracePanel";
@@ -24,34 +18,68 @@ import {
   getAiChatSession,
   getAiChatSessions,
   getAiPresets,
+  getSettings,
+  ingestAiAttachment,
+  pickAiAttachment,
+  revealAiAttachment,
   sendAiChatMessage,
+  updateSettings,
 } from "@/lib/api";
 import type {
   AIAgentPreset,
   AIChatMessage,
+  AIChatPreferences,
   AIChatSession,
   AIChatSessionSummary,
+  AIManagedAttachment,
   AIModel,
   AIThinkingDepth,
 } from "@/lib/types";
+import { useResizablePanes } from "@/lib/useResizablePanes";
 
 const starters = [
   "列出本周所有课程的截止事项，并按紧急程度排序",
   "搜索最近的课程消息，告诉我有哪些需要处理",
   "梳理每门课程的文件，并给出本周复习建议",
 ];
-const models: Array<{ value: AIModel; label: string }> = [
-  { value: "auto", label: "自动选择" },
-  { value: "deepseek-chat", label: "DeepSeek V4 Flash" },
-  { value: "deepseek-reasoner", label: "DeepSeek V4 Reasoner" },
-  { value: "minimax-m2.7", label: "MiniMax M2.7" },
-  { value: "qwen3.8-27b", label: "Qwen 3.8 27B" },
+const models: Array<{ value: AIModel; label: string; detail: string }> = [
+  { value: "auto", label: "自动", detail: "按任务自动匹配模型" },
+  { value: "deepseek-chat", label: "DeepSeek Flash", detail: "快速通用对话" },
+  {
+    value: "deepseek-reasoner",
+    label: "DeepSeek Reasoner",
+    detail: "复杂推理任务",
+  },
+  { value: "minimax-m2.7", label: "MiniMax M2.7", detail: "长文本理解" },
+  { value: "qwen3.8-27b", label: "Qwen 3.8", detail: "均衡通用能力" },
 ];
-const depths: Array<{ value: AIThinkingDepth; label: string }> = [
-  { value: "quick", label: "快速" },
-  { value: "standard", label: "标准" },
-  { value: "deep", label: "深度思考" },
+const depths: Array<{
+  value: AIThinkingDepth;
+  label: string;
+  detail: string;
+}> = [
+  { value: "quick", label: "快速", detail: "更快响应" },
+  { value: "standard", label: "标准", detail: "速度与质量平衡" },
+  { value: "deep", label: "深度", detail: "更多推理步骤" },
 ];
+
+const defaultPreferences: AIChatPreferences = {
+  ai_chat_send_shortcut: "enter",
+  ai_reply_language: "auto",
+  ai_attachment_context_budget: "balanced",
+  ai_auto_open_activity: true,
+  ai_code_line_numbers: false,
+};
+
+function chatPreferences(settings: AIChatPreferences): AIChatPreferences {
+  return {
+    ai_chat_send_shortcut: settings.ai_chat_send_shortcut,
+    ai_reply_language: settings.ai_reply_language,
+    ai_attachment_context_budget: settings.ai_attachment_context_budget,
+    ai_auto_open_activity: settings.ai_auto_open_activity,
+    ai_code_line_numbers: settings.ai_code_line_numbers,
+  };
+}
 
 export function AIChatView({ onBack }: { onBack: () => void }) {
   const [presets, setPresets] = useState<AIAgentPreset[]>([]);
@@ -62,12 +90,32 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
   const [busy, setBusy] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [preferences, setPreferences] =
+    useState<AIChatPreferences>(defaultPreferences);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(true);
+  const [activityOpen, setActivityOpen] = useState(() =>
+    typeof window === "undefined" ? true : window.innerWidth > 1180,
+  );
+  const wideActivityRef = useRef(
+    typeof window === "undefined" ? true : window.innerWidth > 1180,
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const dragDepthRef = useRef(0);
+  const {
+    leftWidth,
+    rightWidth,
+    style: paneStyle,
+    beginResize,
+    resizeWithKeyboard,
+  } = useResizablePanes();
 
   const refreshSessions = useCallback(async () => {
     const result = await getAiChatSessions();
@@ -80,6 +128,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setModel((session.model as AIModel) || "auto");
     setDepth(session.thinking_depth);
     setSelectedPresetId(session.preset_id);
+    setAttachments([]);
   }, []);
 
   const openSession = useCallback(
@@ -155,17 +204,196 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, [applySession, refreshSessions]);
 
   useEffect(() => {
+    let cancelled = false;
+    void getSettings()
+      .then((settings) => {
+        if (!cancelled) setPreferences(chatPreferences(settings));
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setSettingsStatus(
+            reason instanceof Error
+              ? `设置读取失败：${reason.message}`
+              : "设置读取失败，正在使用默认值。",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleWorkspaceResize = () => {
+      const isWide = window.innerWidth > 1180;
+      if (isWide !== wideActivityRef.current) {
+        wideActivityRef.current = isWide;
+        setActivityOpen(isWide);
+      }
+      if (window.innerWidth >= 800) setHistoryOpen(false);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHistoryOpen(false);
+        if (window.innerWidth <= 1180) setActivityOpen(false);
+      }
+    };
+    window.addEventListener("resize", handleWorkspaceResize);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("resize", handleWorkspaceResize);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [active?.messages, busy]);
 
+  const updatePreference = async (change: Partial<AIChatPreferences>) => {
+    if (settingsSaving) return;
+    const previous = preferences;
+    setPreferences((current) => ({ ...current, ...change }));
+    setSettingsSaving(true);
+    setSettingsStatus(null);
+    try {
+      const settings = await updateSettings(change);
+      setPreferences(chatPreferences(settings));
+      setSettingsStatus("已保存");
+    } catch (reason) {
+      setPreferences(previous);
+      setSettingsStatus(
+        reason instanceof Error
+          ? `保存失败：${reason.message}`
+          : "保存失败，请重试。",
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const isFileDrag = (event: ReactDragEvent) =>
+    Array.from(event.dataTransfer.types).includes("Files");
+
+  const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  };
+
+  const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  };
+
+  const ingestDroppedFiles = async (files: File[]) => {
+    if (busy || attachmentBusy || files.length === 0) return;
+    const availableSlots = 20 - attachments.length;
+    if (availableSlots <= 0) {
+      setError("一次最多添加 20 个附件，请先移除部分附件。");
+      return;
+    }
+    const selectedFiles = files.slice(0, availableSlots);
+    const paths = selectedFiles.map(
+      (file) => (file as File & { path?: string }).path,
+    );
+    if (paths.some((path) => !path)) {
+      setError(
+        "当前 WebView 无法取得拖入文件的位置，请使用回形针按钮选择文件。",
+      );
+      return;
+    }
+
+    setAttachmentBusy(true);
+    setError(null);
+    const ingested: AIManagedAttachment[] = [];
+    let failure: string | null = null;
+    for (const path of paths) {
+      try {
+        ingested.push(await ingestAiAttachment(path as string));
+      } catch (reason) {
+        failure = reason instanceof Error ? reason.message : "附件安全摄取失败";
+      }
+    }
+    if (ingested.length > 0) {
+      setAttachments((current) => {
+        const next = [...current];
+        for (const attachment of ingested) {
+          if (!next.some((item) => item.id === attachment.id))
+            next.push(attachment);
+        }
+        return next.slice(0, 20);
+      });
+    }
+    if (failure) setError(`部分附件未能添加：${failure}`);
+    setAttachmentBusy(false);
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  };
+
+  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    void ingestDroppedFiles(Array.from(event.dataTransfer.files));
+  };
+
+  const pickAttachment = async () => {
+    if (busy || attachmentBusy || attachments.length >= 20) return;
+    setAttachmentBusy(true);
+    setError(null);
+    try {
+      const result = await pickAiAttachment();
+      if (!result.cancelled && result.attachment) {
+        setAttachments((current) =>
+          current.some((item) => item.id === result.attachment?.id)
+            ? current
+            : [...current, result.attachment as AIManagedAttachment],
+        );
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "附件上传或解析失败");
+    } finally {
+      setAttachmentBusy(false);
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    }
+  };
+
+  const revealAttachment = async (attachmentId: number) => {
+    try {
+      await revealAiAttachment(attachmentId);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "无法在 Finder 中显示附件",
+      );
+    }
+  };
+
   const submit = async (content: string) => {
-    const text = content.trim();
-    if (!text || busy || !active || !selectedPresetId) return;
+    const text =
+      content.trim() ||
+      (attachments.length > 0 ? "请总结并分析这些附件。" : "");
+    if (!text || busy || attachmentBusy || !active || !selectedPresetId) return;
+    if (preferences.ai_auto_open_activity) setActivityOpen(true);
     const sessionId = active.id;
+    const selectedAttachments = attachments;
+    const attachmentIds = selectedAttachments.map(
+      (attachment) => attachment.id,
+    );
     const optimistic: AIChatMessage = {
       id: `pending-${Date.now()}`,
       role: "user",
       content: text,
+      attachments: selectedAttachments,
     };
     setActive((current) =>
       current?.id === sessionId
@@ -175,15 +403,24 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setDraft("");
     setError(null);
     setBusy(true);
-    setActivityOpen(true);
     try {
-      const result = await sendAiChatMessage(
-        sessionId,
-        text,
-        model,
-        depth,
-        selectedPresetId,
-      );
+      const result =
+        attachmentIds.length > 0
+          ? await sendAiChatMessage(
+              sessionId,
+              text,
+              model,
+              depth,
+              selectedPresetId,
+              attachmentIds,
+            )
+          : await sendAiChatMessage(
+              sessionId,
+              text,
+              model,
+              depth,
+              selectedPresetId,
+            );
       setActive((current) =>
         current?.id === sessionId
           ? {
@@ -198,6 +435,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             }
           : current,
       );
+      setAttachments([]);
       await refreshSessions();
     } catch (reason) {
       setActive((current) =>
@@ -238,14 +476,17 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const hasMessages = Boolean(active?.messages.length);
-  const onSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    void submit(draft);
-  };
 
   return (
-    <main className="ai-workspace">
+    <main
+      className="ai-workspace"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div
+        style={paneStyle}
         className={
           activityOpen
             ? "ai-workspace-body"
@@ -265,7 +506,33 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           onOpenSession={(id) => void openSession(id)}
           onDeleteSession={(id) => void removeSession(id)}
           busy={busy}
+          preferences={preferences}
+          settingsSaving={settingsSaving}
+          settingsStatus={settingsStatus}
+          onPreferenceChange={(change) => void updatePreference(change)}
         />
+        <div
+          className="ai-pane-resizer ai-pane-resizer-left"
+          role="separator"
+          aria-label="调整历史会话栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={208}
+          aria-valuemax={320}
+          aria-valuenow={leftWidth}
+          tabIndex={0}
+          onPointerDown={(event) => beginResize("left", event)}
+          onKeyDown={(event) => resizeWithKeyboard("left", event)}
+        >
+          <span aria-hidden="true" />
+        </div>
+        {historyOpen && (
+          <button
+            type="button"
+            className="ai-drawer-backdrop ai-sidebar-backdrop"
+            aria-label="关闭对话导航"
+            onClick={() => setHistoryOpen(false)}
+          />
+        )}
 
         <section
           className={
@@ -285,12 +552,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             >
               <PanelLeftOpen />
             </Button>
-            <div>
-              <span className="ai-header-agent">
-                <Bot aria-hidden="true" />
-                {selectedPreset?.name ?? "学习 Agent"}
+            <div className="ai-conversation-heading">
+              <img src={aiAgentLogo} alt="" aria-hidden="true" />
+              <span>
+                <span className="ai-header-agent">
+                  {selectedPreset?.name ?? "学习 Agent"}
+                </span>
+                <strong>{active?.title ?? "新对话"}</strong>
               </span>
-              <strong>{active?.title ?? "新对话"}</strong>
             </div>
             <Button
               variant={activityOpen ? "outline" : "ghost"}
@@ -308,6 +577,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             </Button>
           </header>
 
+          {dragActive && (
+            <div
+              className="ai-file-drop-overlay"
+              role="status"
+              aria-live="assertive"
+            >
+              <div>
+                <strong>将文件拖拽到这里</strong>
+                <span>
+                  支持 TXT、Markdown、CSV / JSON 与常见代码文件 · 单文件最大 2GB
+                </span>
+              </div>
+            </div>
+          )}
+
           <div className="ai-chat-thread" aria-live="polite">
             {loading ? (
               <div className="ai-thinking" role="status">
@@ -316,14 +600,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             ) : !hasMessages ? (
               <div className="ai-chat-empty">
                 <span className="ai-chat-mark">
-                  <Sparkles aria-hidden="true" />
+                  <img src={aiAgentLogo} alt="学习 Agent" />
                 </span>
-                <p className="ai-empty-kicker">
-                  {selectedPreset?.name ?? "学习 Agent"}
-                </p>
                 <h1>今天想从学习数据里查什么？</h1>
                 <p>
-                  我会按需调用只读工具，查询课程、课程文件、截止日期、消息和资料树，并在右侧展示完整检索轨迹。
+                  {selectedPreset?.name ?? "学习 Agent"}
+                  会按需调用只读工具，查询课程、课程文件、截止日期、消息和资料树；每一步都可在
+                  Activity 中核验。
                 </p>
                 <div className="ai-chat-starters">
                   {starters.map((starter) => (
@@ -345,6 +628,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                     key={message.id}
                     message={message}
                     onOpenActivity={() => setActivityOpen(true)}
+                    onRevealAttachment={(id) => void revealAttachment(id)}
+                    showCodeLineNumbers={preferences.ai_code_line_numbers}
                   />
                 ))}
                 {busy && (
@@ -358,89 +643,63 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             )}
           </div>
 
-          <form className="ai-composer" onSubmit={onSubmit}>
-            {error && (
-              <p className="ai-chat-error" role="alert">
-                {error}
-              </p>
-            )}
-            <div className="ai-composer-box">
-              <textarea
-                ref={textareaRef}
-                value={draft}
-                maxLength={4000}
-                rows={hasMessages ? 2 : 3}
-                aria-label="输入问题"
-                placeholder="让 Agent 检索课程、文件、截止日期或消息…"
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void submit(draft);
-                  }
-                }}
-              />
-              <div className="ai-composer-toolbar">
-                <div className="ai-chat-controls">
-                  <span className="ai-agent-control">
-                    <Bot aria-hidden="true" />
-                    {selectedPreset?.name ?? "Agent"}
-                  </span>
-                  <label>
-                    <span className="sr-only">模型</span>
-                    <select
-                      aria-label="模型"
-                      value={model}
-                      disabled={busy}
-                      onChange={(event) =>
-                        setModel(event.target.value as AIModel)
-                      }
-                    >
-                      {models.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown aria-hidden="true" />
-                  </label>
-                  <label>
-                    <span className="sr-only">思考深度</span>
-                    <select
-                      aria-label="思考深度"
-                      value={depth}
-                      disabled={busy}
-                      onChange={(event) =>
-                        setDepth(event.target.value as AIThinkingDepth)
-                      }
-                    >
-                      {depths.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown aria-hidden="true" />
-                  </label>
-                </div>
-                <Button
-                  type="submit"
-                  size="icon"
-                  aria-label="发送消息"
-                  disabled={
-                    busy || !draft.trim() || !active || !selectedPresetId
-                  }
-                >
-                  <ArrowUp aria-hidden="true" />
-                </Button>
-              </div>
-            </div>
-            <p className="ai-chat-notice">
-              只读访问本机同步数据 · AI 可能出错，请核对截止时间与提交要求
-            </p>
-          </form>
+          <AIChatComposer
+            draft={draft}
+            error={error}
+            busy={busy}
+            attachmentBusy={attachmentBusy}
+            attachments={attachments}
+            active={Boolean(active)}
+            presets={presets}
+            selectedPresetId={selectedPresetId}
+            model={model}
+            depth={depth}
+            models={models}
+            depths={depths}
+            hasMessages={hasMessages}
+            sendShortcut={preferences.ai_chat_send_shortcut}
+            textareaRef={textareaRef}
+            onDraftChange={setDraft}
+            onSelectPreset={setSelectedPresetId}
+            onModelChange={setModel}
+            onDepthChange={setDepth}
+            onPickAttachment={() => void pickAttachment()}
+            onRemoveAttachment={(id) =>
+              setAttachments((current) =>
+                current.filter((attachment) => attachment.id !== id),
+              )
+            }
+            onSubmit={(value) => void submit(value)}
+          />
         </section>
 
+        <div
+          className={
+            activityOpen
+              ? "ai-pane-resizer ai-pane-resizer-right"
+              : "ai-pane-resizer ai-pane-resizer-right is-hidden"
+          }
+          role="separator"
+          aria-label="调整 Activity 栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={260}
+          aria-valuemax={420}
+          aria-valuenow={rightWidth}
+          tabIndex={activityOpen ? 0 : -1}
+          onPointerDown={(event) => beginResize("right", event)}
+          onKeyDown={(event) => resizeWithKeyboard("right", event)}
+        >
+          <span aria-hidden="true" />
+        </div>
+
+        {activityOpen && (
+          <button
+            type="button"
+            className="ai-drawer-backdrop ai-activity-backdrop"
+            aria-label="关闭 Activity"
+            onClick={() => setActivityOpen(false)}
+          />
+        )}
         <AIChatTracePanel
           open={activityOpen}
           onClose={() => setActivityOpen(false)}

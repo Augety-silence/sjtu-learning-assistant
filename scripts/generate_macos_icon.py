@@ -16,6 +16,8 @@ LOGO_SOURCE = ROOT / "dashboard-web" / "src" / "assets" / "app-logo-source.jpg"
 LOGO_OUTPUT = ROOT / "dashboard-web" / "src" / "assets" / "app-logo.png"
 ICONSET = ROOT / "build" / "AppIcon.iconset"
 OUTPUT = ROOT / "packaging" / "app.icns"
+APP_ICON_CANVAS_SIZE = 1024
+APP_ICON_SUBJECT_SIZE = 824
 SIZES = {
     "icon_16x16.png": 16,
     "icon_16x16@2x.png": 32,
@@ -31,7 +33,7 @@ SIZES = {
 
 
 def render_app_icon() -> Image.Image:
-    """Center-crop without stretching and apply a supersampled rounded alpha mask."""
+    """Render the icon inside the macOS safe area with transparent breathing room."""
     with Image.open(APP_ICON_SOURCE) as opened:
         source = ImageOps.exif_transpose(opened).convert("RGB")
     side = min(source.size)
@@ -48,7 +50,15 @@ def render_app_icon() -> Image.Image:
         fill=255,
     )
     square.putalpha(mask)
-    return square.resize((1024, 1024), Image.Resampling.LANCZOS)
+    subject = square.resize(
+        (APP_ICON_SUBJECT_SIZE, APP_ICON_SUBJECT_SIZE), Image.Resampling.LANCZOS
+    )
+    canvas = Image.new(
+        "RGBA", (APP_ICON_CANVAS_SIZE, APP_ICON_CANVAS_SIZE), (0, 0, 0, 0)
+    )
+    inset = (APP_ICON_CANVAS_SIZE - APP_ICON_SUBJECT_SIZE) // 2
+    canvas.alpha_composite(subject, (inset, inset))
+    return canvas
 
 
 def _white_matte_alpha(red: int, green: int, blue: int) -> int:

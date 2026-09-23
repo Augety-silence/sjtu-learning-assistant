@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Callable, Iterator, Literal
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.ai_attachments import AIManagedFileService, MANAGED_DIRECTORY_NAME
 from sjtu_learning_assistant.cloud_storage import (
     CloudConflictError,
     CloudStorageProvider,
@@ -30,6 +31,7 @@ from sjtu_learning_assistant.material_classifier import (
 )
 from sjtu_learning_assistant.material_tree import material_placement
 from sjtu_learning_assistant.models import (
+    AIManagedFile,
     Course,
     CourseFile,
     CourseFolder,
@@ -54,7 +56,7 @@ class BackupError(RuntimeError):
 @dataclass(frozen=True)
 class BackupCandidate:
     key: str
-    source: Literal["canvas", "mail"]
+    source: Literal["canvas", "mail", "ai"]
     remote_path: tuple[str, ...]
     local_path: str | None = field(repr=False)
     local_root: Path = field(repr=False)
@@ -62,6 +64,7 @@ class BackupCandidate:
     record_id: int | None = None
     cloud_path: str | None = None
     cloud_size: int | None = None
+    sha256: str | None = field(default=None, repr=False)
 
     @property
     def cloud_only(self) -> bool:
@@ -269,7 +272,7 @@ def remove_controlled_file(
 
 def preview_counts(candidates: tuple[BackupCandidate, ...]) -> dict[str, int]:
     canvas = sum(candidate.source == "canvas" for candidate in candidates)
-    mail = len(candidates) - canvas
+    mail = sum(candidate.source == "mail" for candidate in candidates)
     ready = sum(candidate.ready for candidate in candidates)
     cloud_only = sum(candidate.cloud_only for candidate in candidates)
     return {
@@ -294,6 +297,7 @@ class BackupService:
         mail_attachments_root: Path,
         mail_account: str = "",
         multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
+        ai_file_service: AIManagedFileService | None = None,
     ) -> None:
         if multipart_threshold <= 0:
             raise ValueError("分片上传阈值必须为正数。")
@@ -303,6 +307,9 @@ class BackupService:
         self.mail_attachments_root = Path(mail_attachments_root)
         self.mail_account = safe_path_component(mail_account, fallback="default")
         self.multipart_threshold = multipart_threshold
+        self.ai_file_service = ai_file_service or AIManagedFileService(
+            engine, archive_root=self.archive_root
+        )
 
     def scan(self) -> tuple[BackupCandidate, ...]:
         """Read candidate values and material placement in one short-lived session."""
@@ -383,6 +390,32 @@ class BackupService:
                         cloud_size=attachment.cloud_size,
                     )
                 )
+
+            managed_root = self.ai_file_service.managed_root
+            ai_rows = session.scalars(
+                select(AIManagedFile).order_by(AIManagedFile.id)
+            ).all()
+            for attachment in ai_rows:
+                remote_path = (
+                    BACKUP_ROOT,
+                    "AI Attachments",
+                    attachment.sha256[:2],
+                    stable_filename(attachment.name, attachment.sha256),
+                )
+                candidates.append(
+                    BackupCandidate(
+                        key=_candidate_key("ai", str(attachment.id)),
+                        source="ai",
+                        remote_path=remote_path,
+                        local_path=attachment.controlled_relpath,
+                        local_root=managed_root,
+                        ready=_is_ready(managed_root, attachment.controlled_relpath),
+                        record_id=attachment.id,
+                        cloud_path=attachment.cloud_path,
+                        cloud_size=attachment.cloud_size,
+                        sha256=attachment.sha256,
+                    )
+                )
         return tuple(candidates)
 
     def preview(self) -> dict[str, int]:
@@ -405,6 +438,8 @@ class BackupService:
     def _persist_cloud_metadata(
         self, candidate: BackupCandidate, *, size: int, backed_up_at: datetime
     ) -> bool:
+        if candidate.source == "ai":
+            return False
         if candidate.record_id is None:
             return False
         model = CourseFile if candidate.source == "canvas" else EmailAttachment
@@ -420,6 +455,8 @@ class BackupService:
         return True
 
     def _clear_local_reference(self, candidate: BackupCandidate) -> None:
+        if candidate.source == "ai":
+            return
         if candidate.record_id is None:
             return
         model = CourseFile if candidate.source == "canvas" else EmailAttachment
@@ -526,9 +563,31 @@ class BackupService:
                 verified = self.provider.get_info(candidate.remote_path)
                 if verified.is_directory or verified.size != size:
                     raise BackupError("云端文件校验失败，已保留本地文件。")
-                persisted = self._persist_cloud_metadata(
-                    candidate, size=size, backed_up_at=datetime.now(timezone.utc)
-                )
+                if candidate.source == "ai":
+                    if candidate.record_id is None or candidate.sha256 is None:
+                        raise BackupError("AI 附件备份记录无效，已保留受控副本。")
+                    digest = hashlib.sha256()
+                    downloaded_size = 0
+                    with self.provider.download_temp(candidate.remote_path) as downloaded:
+                        with Path(downloaded).open("rb") as stream:
+                            while chunk := stream.read(1024 * 1024):
+                                downloaded_size += len(chunk)
+                                digest.update(chunk)
+                    if downloaded_size != size or digest.hexdigest() != candidate.sha256:
+                        raise BackupError("云端附件哈希校验失败，已保留受控副本。")
+                    self.ai_file_service.mark_cloud_only(
+                        candidate.record_id,
+                        cloud_path="/".join(candidate.remote_path),
+                        cloud_size=size,
+                        cloud_sha256=digest.hexdigest(),
+                        cloud_remote_id=getattr(verified, "etag", None),
+                    )
+                    persisted = False
+                    result["local_removed"] += 1
+                else:
+                    persisted = self._persist_cloud_metadata(
+                        candidate, size=size, backed_up_at=datetime.now(timezone.utc)
+                    )
                 if uploaded:
                     result["uploaded"] += 1
                 if persisted:
@@ -582,6 +641,7 @@ class BackupManager:
         provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
         token_loader: Callable[[], str | None] | None = None,
         multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
+        ai_file_service: AIManagedFileService | None = None,
     ) -> None:
         self._engine = engine
         self._archive_root = Path(archive_root)
@@ -590,6 +650,9 @@ class BackupManager:
         self._provider_factory = provider_factory
         self._token_loader = token_loader or load_user_token
         self._multipart_threshold = multipart_threshold
+        self._ai_file_service = ai_file_service or AIManagedFileService(
+            engine, archive_root=self._archive_root
+        )
         self._lock = threading.RLock()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -614,6 +677,7 @@ class BackupManager:
             mail_attachments_root=self._mail_attachments_root,
             mail_account=self._mail_account,
             multipart_threshold=self._multipart_threshold,
+            ai_file_service=self._ai_file_service,
         )
 
     def _availability(self) -> tuple[bool, str | None]:

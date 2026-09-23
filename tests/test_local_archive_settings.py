@@ -53,6 +53,11 @@ class LocalSettingsTests(unittest.TestCase):
                 "ai_base_url",
                 "ai_model",
                 "ai_key_saved",
+                "ai_chat_send_shortcut",
+                "ai_reply_language",
+                "ai_attachment_context_budget",
+                "ai_auto_open_activity",
+                "ai_code_line_numbers",
                 "mail_account",
             },
             set(payload),
@@ -117,6 +122,55 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertEqual(str(cli_archive), resolved.archive_root)
         self.assertFalse(resolved.auto_download_current_term)
         self.assertTrue(resolved.organize_by_category)
+
+    def test_ai_chat_preferences_validate_and_persist(self) -> None:
+        saved = self.store.update(
+            {
+                "ai_chat_send_shortcut": "cmd_enter",
+                "ai_reply_language": "en",
+                "ai_attachment_context_budget": "deep",
+                "ai_auto_open_activity": False,
+                "ai_code_line_numbers": True,
+            }
+        )
+        self.assertEqual("cmd_enter", saved.ai_chat_send_shortcut)
+        self.assertEqual("en", saved.ai_reply_language)
+        self.assertEqual("deep", saved.ai_attachment_context_budget)
+        self.assertFalse(saved.ai_auto_open_activity)
+        self.assertTrue(saved.ai_code_line_numbers)
+        self.assertEqual(saved, self.store.load())
+
+        invalid_changes = (
+            {"ai_chat_send_shortcut": "ctrl_enter"},
+            {"ai_reply_language": "fr"},
+            {"ai_attachment_context_budget": "unlimited"},
+            {"ai_auto_open_activity": 1},
+            {"ai_code_line_numbers": "yes"},
+        )
+        for change in invalid_changes:
+            with self.subTest(change=change), self.assertRaises(SettingsError):
+                self.store.update(change)
+
+    def test_pre_personalization_settings_are_migrated_with_safe_defaults(self) -> None:
+        legacy = LocalSettings().to_dict()
+        for key in (
+            "ai_chat_send_shortcut",
+            "ai_reply_language",
+            "ai_attachment_context_budget",
+            "ai_auto_open_activity",
+            "ai_code_line_numbers",
+        ):
+            legacy.pop(key)
+        self.store.path.parent.mkdir(parents=True)
+        self.store.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        loaded = self.store.load(environ={})
+
+        self.assertEqual("enter", loaded.ai_chat_send_shortcut)
+        self.assertEqual("auto", loaded.ai_reply_language)
+        self.assertEqual("balanced", loaded.ai_attachment_context_budget)
+        self.assertTrue(loaded.ai_auto_open_activity)
+        self.assertFalse(loaded.ai_code_line_numbers)
 
     def test_archive_root_rejects_relative_root_and_symlink(self) -> None:
         with self.assertRaises(SettingsError):
@@ -440,6 +494,28 @@ class BridgeSettingsActionTests(unittest.TestCase):
             bridge.invoke(
                 "settings_update", {"auto_download_current_term": False}
             )["data"],
+        )
+        self.assertEqual(
+            {
+                "ai_chat_send_shortcut": "cmd_enter",
+                "ai_reply_language": "zh",
+                "ai_attachment_context_budget": "economy",
+                "ai_auto_open_activity": False,
+                "ai_code_line_numbers": True,
+            },
+            bridge.invoke(
+                "settings_update",
+                {
+                    "ai_chat_send_shortcut": "cmd_enter",
+                    "ai_reply_language": "zh",
+                    "ai_attachment_context_budget": "economy",
+                    "ai_auto_open_activity": False,
+                    "ai_code_line_numbers": True,
+                },
+            )["data"],
+        )
+        self.assertFalse(
+            bridge.invoke("settings_update", {"ai_unknown_preference": True})["ok"]
         )
         self.assertTrue(bridge.invoke("settings_pick_archive_root")["data"]["cancelled"])
         self.assertEqual(1, bridge.invoke("archive_organize")["data"]["moved"])

@@ -20,6 +20,7 @@ from sjtu_learning_assistant.agent_runtime import (
     ReadOnlyToolRegistry,
 )
 from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
+from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
@@ -163,6 +164,49 @@ class AgentRuntimeTests(unittest.TestCase):
         with self.assertRaises(AgentToolError):
             self.registry.execute("get_deadlines", {"limit": 999}, ALL_TOOLS)
 
+    def test_attachment_tools_search_first_read_by_id_and_enforce_scope(self) -> None:
+        first_source = self.root / "first.txt"
+        first_source.write_text("量子计算课程重点 " + "细节" * 3000, encoding="utf-8")
+        second_source = self.root / "second.txt"
+        second_source.write_text("不应越权读取", encoding="utf-8")
+        files = AIManagedFileService(self.engine, archive_root=self.root / "archive")
+        first = files.ingest(first_source)
+        second = files.ingest(second_source)
+        registry = ReadOnlyToolRegistry(
+            self.engine,
+            ai_file_service=files,
+            attachment_ids=[first["id"]],
+        )
+        allowed = ("search_ai_attachments", "read_ai_attachment_text")
+
+        definitions = registry.definitions(allowed)
+        self.assertEqual(
+            {"search_ai_attachments", "read_ai_attachment_text"},
+            {item["function"]["name"] for item in definitions},
+        )
+        search = registry.execute(
+            "search_ai_attachments", {"query": "量子计算"}, allowed
+        ).result
+        self.assertEqual([first["id"]], [item["id"] for item in search["items"]])
+        self.assertNotIn("text", search["items"][0])
+        read = registry.execute(
+            "read_ai_attachment_text",
+            {"attachment_id": first["id"], "max_chars": 100},
+            allowed,
+        ).result
+        self.assertEqual(100, len(read["text"]))
+        self.assertTrue(read["truncated"])
+        with self.assertRaisesRegex(AgentToolError, "不属于本轮消息"):
+            registry.execute(
+                "read_ai_attachment_text", {"attachment_id": second["id"]}, allowed
+            )
+        with self.assertRaises(AgentToolError):
+            registry.execute(
+                "read_ai_attachment_text",
+                {"attachment_id": first["id"], "path": "/tmp/private"},
+                allowed,
+            )
+
     def test_deterministic_course_file_prefetch_without_model_tools(self) -> None:
         client = ScriptedClient([{"content": "找到课件。", "reasoning_content": None}])
         result = AgentLoop(client, self.registry, preset(*ALL_TOOLS)).run(
@@ -301,6 +345,30 @@ class TraceAndBridgeTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual("review-planner", response["data"]["preset_id"])
         self.assertFalse(bridge.invoke("ai_chat_send", {**payload, "preset_id": "../bad"})["ok"])
+
+    def test_bridge_accepts_attachment_ids_and_rejects_extra_or_invalid_fields(self) -> None:
+        class Service:
+            def ai_chat_send(self, session_id, content, model, depth, preset_id, attachment_ids):
+                return {
+                    "session_id": session_id,
+                    "content": content,
+                    "model": model,
+                    "depth": depth,
+                    "preset_id": preset_id,
+                    "attachment_ids": attachment_ids,
+                }
+
+        bridge = DesktopBridge(Service())
+        payload = {
+            "session_id": "12345678-1234-1234-1234-123456789012",
+            "content": "读取附件",
+            "attachment_ids": [3, 3, 5],
+        }
+        response = bridge.invoke("ai_chat_send", payload)
+        self.assertTrue(response["ok"])
+        self.assertEqual([3, 5], response["data"]["attachment_ids"])
+        self.assertFalse(bridge.invoke("ai_chat_send", {**payload, "attachment_ids": [True]})["ok"])
+        self.assertFalse(bridge.invoke("ai_chat_send", {**payload, "path": "/tmp/a"})["ok"])
 
 
 if __name__ == "__main__":

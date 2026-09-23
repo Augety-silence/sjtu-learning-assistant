@@ -6,6 +6,7 @@ import {
   getBackupStatus,
   getMessageResource,
   getSettings,
+  ingestAiAttachment,
   invoke,
   openExternal,
   openMailAttachment,
@@ -131,6 +132,20 @@ describe("pywebview bridge client", () => {
       model: "deepseek-chat",
       thinking_depth: "deep",
       preset_id: "review-planner",
+    });
+  });
+
+  it("sends a dropped path only to the attachment ingest bridge action", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { id: 7, name: "notes.md", status: "local" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await ingestAiAttachment("/tmp/notes.md");
+
+    expect(bridge).toHaveBeenCalledWith("ai_attachment_ingest", {
+      path: "/tmp/notes.md",
     });
   });
 

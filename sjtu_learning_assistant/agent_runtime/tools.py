@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from sqlalchemy import Engine, func, or_, select
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.ai_attachments import AIFileError, AIManagedFileService
 from sjtu_learning_assistant.material_tree import build_material_tree
 from sjtu_learning_assistant.models import (
     Announcement,
@@ -106,9 +107,20 @@ def _bounded_payload(value: dict[str, Any]) -> dict[str, Any]:
 class ReadOnlyToolRegistry:
     """只暴露固定查询；调用方无法提供列名、SQL、排序表达式或路径。"""
 
-    def __init__(self, engine: Engine, *, now_provider=None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        now_provider=None,
+        ai_file_service: AIManagedFileService | None = None,
+        attachment_ids: list[int] | tuple[int, ...] | None = None,
+    ) -> None:
         self.engine = engine
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self.ai_file_service = ai_file_service
+        self.attachment_ids = (
+            frozenset(attachment_ids) if attachment_ids is not None else None
+        )
         self._handlers = {
             "list_courses": self._list_courses,
             "search_course_files": self._search_course_files,
@@ -117,6 +129,8 @@ class ReadOnlyToolRegistry:
             "search_messages": self._search_messages,
             "get_message_detail": self._get_message_detail,
             "get_material_tree": self._get_material_tree,
+            "search_ai_attachments": self._search_ai_attachments,
+            "read_ai_attachment_text": self._read_ai_attachment_text,
         }
 
     @property
@@ -132,6 +146,8 @@ class ReadOnlyToolRegistry:
             "search_messages": ("搜索或列出最近的邮件、公告与作业消息", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "kind": {"type": "string", "enum": ["all", "email", "announcement", "assignment"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
             "get_message_detail": ("读取一条消息的截断详情", {"type": "object", "properties": {"kind": {"type": "string", "enum": sorted(MESSAGE_KINDS)}, "ref": {"type": "string", "maxLength": 80}}, "required": ["kind", "ref"], "additionalProperties": False}),
             "get_material_tree": ("读取截断后的资料树", {"type": "object", "properties": {"course_id": {"type": "string", "maxLength": 128}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "additionalProperties": False}),
+            "search_ai_attachments": ("只搜索 AI 附件的名称、摘要和标签，先用它定位附件 ID", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
+            "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
         return [
             {"type": "function", "function": {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
@@ -396,3 +412,51 @@ class ReadOnlyToolRegistry:
                 visit(child, next_parents)
         visit(tree["root"])
         return {"items": flat, "count": len(flat), "truncated": len(flat) >= limit}, {"course_filtered": bool(course_id), "limit": limit}
+
+
+    def _require_ai_files(self) -> AIManagedFileService:
+        if self.ai_file_service is None:
+            raise AgentToolError("AI 附件服务不可用。")
+        return self.ai_file_service
+
+    def _search_ai_attachments(self, raw: object):
+        args = _only(raw, {"query", "limit"})
+        query = _bounded_text(
+            args.get("query"), "query", limit=160, required=False
+        )
+        limit = _bounded_limit(args.get("limit"), maximum=50, default=20)
+        scoped_ids = (
+            sorted(self.attachment_ids) if self.attachment_ids is not None else None
+        )
+        try:
+            result = self._require_ai_files().search(
+                query, attachment_ids=scoped_ids, limit=limit
+            )
+        except AIFileError as exc:
+            raise AgentToolError(str(exc)) from None
+        return result, {
+            "has_query": bool(query),
+            "scope": "message" if scoped_ids is not None else "library",
+            "limit": limit,
+        }
+
+    def _read_ai_attachment_text(self, raw: object):
+        args = _only(raw, {"attachment_id", "max_chars"})
+        attachment_id = args.get("attachment_id")
+        max_chars = args.get("max_chars", 4000)
+        if type(attachment_id) is not int or attachment_id <= 0:
+            raise AgentToolError("attachment_id 必须为正整数。")
+        if type(max_chars) is not int or not 1 <= max_chars <= 12_000:
+            raise AgentToolError("max_chars 必须为 1 到 12000 的整数。")
+        if self.attachment_ids is not None and attachment_id not in self.attachment_ids:
+            raise AgentToolError("附件不属于本轮消息。")
+        try:
+            result = self._require_ai_files().read_text(
+                attachment_id, max_chars=max_chars
+            )
+        except AIFileError as exc:
+            raise AgentToolError(str(exc)) from None
+        return result, {
+            "attachment_id": attachment_id,
+            "max_chars": max_chars,
+        }

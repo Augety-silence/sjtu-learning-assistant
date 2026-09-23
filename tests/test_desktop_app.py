@@ -74,6 +74,9 @@ class FakeService:
     def ai_chat(self, messages):
         return {"reply": messages[-1]["content"], "model": "qwen"}
 
+    def ai_attachment_ingest(self, path):
+        return {"id": 7, "name": path.rsplit("/", 1)[-1], "status": "local"}
+
     def open_external(self, url):
         return {"url": url, "status": "opened"}
 
@@ -277,6 +280,26 @@ class DesktopBridgeTests(unittest.TestCase):
                 "operation_failed",
                 bridge.invoke("backup_token_delete", {"token": secret})["error"]["code"],
             )
+
+    def test_ai_attachment_ingest_is_strictly_allowlisted(self):
+        result = self.bridge.invoke(
+            "ai_attachment_ingest", {"path": "/tmp/lecture-notes.md"}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("lecture-notes.md", result["data"]["name"])
+        self.assertNotIn("path", result["data"])
+        for payload in (
+            {},
+            {"path": "relative.txt"},
+            {"path": "/tmp/file.txt", "extra": True},
+            {"path": 42},
+            {"path": "/tmp/bad\x00.txt"},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    "operation_failed",
+                    self.bridge.invoke("ai_attachment_ingest", payload)["error"]["code"],
+                )
 
     def test_local_file_must_come_from_native_picker(self):
         import tempfile

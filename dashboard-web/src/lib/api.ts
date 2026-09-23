@@ -140,6 +140,11 @@ export function updateSettings(
       | "ai_enabled"
       | "ai_base_url"
       | "ai_model"
+      | "ai_chat_send_shortcut"
+      | "ai_reply_language"
+      | "ai_attachment_context_budget"
+      | "ai_auto_open_activity"
+      | "ai_code_line_numbers"
     >
   >,
 ) {
@@ -216,6 +221,7 @@ export function sendAiChatMessage(
   model: import("@/lib/types").AIModel,
   thinkingDepth: import("@/lib/types").AIThinkingDepth,
   presetId: string,
+  attachmentIds?: number[],
 ) {
   return invoke<import("@/lib/types").AIChatSendResult>("ai_chat_send", {
     session_id: sessionId,
@@ -223,7 +229,44 @@ export function sendAiChatMessage(
     model,
     thinking_depth: thinkingDepth,
     preset_id: presetId,
+    ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
   });
+}
+
+export function listAiAttachments(limit = 100) {
+  return invoke<{
+    items: import("@/lib/types").AIManagedAttachment[];
+    count: number;
+  }>("ai_attachment_list", { limit });
+}
+
+export function pickAiAttachment() {
+  return invoke<{
+    cancelled: boolean;
+    attachment?: import("@/lib/types").AIManagedAttachment;
+  }>("ai_attachment_pick");
+}
+
+export function ingestAiAttachment(path: string) {
+  return invoke<import("@/lib/types").AIManagedAttachment>(
+    "ai_attachment_ingest",
+    { path },
+  );
+}
+
+export function restoreAiAttachment(attachmentId: number) {
+  return invoke<import("@/lib/types").AIManagedAttachment>(
+    "ai_attachment_restore",
+    { attachment_id: attachmentId },
+  );
+}
+
+export function revealAiAttachment(attachmentId: number) {
+  return invoke<{
+    id: number;
+    status: "revealed";
+    attachment: import("@/lib/types").AIManagedAttachment;
+  }>("ai_attachment_reveal", { attachment_id: attachmentId });
 }
 
 export function deleteAiChatSession(sessionId: string) {

@@ -241,6 +241,11 @@ class DesktopBridge:
             "ai_chat_new": self._ai_chat_new,
             "ai_chat_send": self._ai_chat_send,
             "ai_chat_delete": self._ai_chat_delete,
+            "ai_attachment_list": self._ai_attachment_list,
+            "ai_attachment_pick": self._ai_attachment_pick,
+            "ai_attachment_ingest": self._ai_attachment_ingest,
+            "ai_attachment_restore": self._ai_attachment_restore,
+            "ai_attachment_reveal": self._ai_attachment_reveal,
             "settings_pick_archive_root": self._settings_pick_archive_root,
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
@@ -296,6 +301,11 @@ class DesktopBridge:
                 "ai_enabled",
                 "ai_base_url",
                 "ai_model",
+                "ai_chat_send_shortcut",
+                "ai_reply_language",
+                "ai_attachment_context_budget",
+                "ai_auto_open_activity",
+                "ai_code_line_numbers",
             },
         )
         if not payload:
@@ -361,22 +371,87 @@ class DesktopBridge:
     def _ai_chat_send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(
             payload,
-            {"session_id", "content", "model", "thinking_depth", "preset_id"},
+            {
+                "session_id",
+                "content",
+                "model",
+                "thinking_depth",
+                "preset_id",
+                "attachment_ids",
+            },
         )
         preset_id = payload.get("preset_id")
         if preset_id is not None:
             preset_id = _preset_id(preset_id)
-        return self._service.ai_chat_send(
+        base_arguments = (
             self._chat_session_id(payload),
             payload.get("content"),
             payload.get("model", "auto"),
             payload.get("thinking_depth", "standard"),
             preset_id,
         )
+        if "attachment_ids" not in payload:
+            # Preserve the five-argument bridge contract for older service adapters.
+            return self._service.ai_chat_send(*base_arguments)
+        attachment_ids = payload["attachment_ids"]
+        if type(attachment_ids) is not list or len(attachment_ids) > 20:
+            raise DashboardError("附件标识列表无效。")
+        normalized: list[int] = []
+        for value in attachment_ids:
+            attachment_id = _positive_id(value, "附件标识")
+            if attachment_id not in normalized:
+                normalized.append(attachment_id)
+        return self._service.ai_chat_send(*base_arguments, normalized)
 
     def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"session_id"})
         return self._service.ai_chat_delete(self._chat_session_id(payload))
+
+    def _ai_attachment_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"limit"})
+        limit = payload.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("附件数量限制无效。")
+        return self._service.ai_attachment_list(limit)
+
+    def _ai_attachment_pick(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._file_picker is None:
+            raise DashboardError("当前环境不支持本地文件选择。")
+        selected = self._file_picker()
+        if not selected:
+            return {"cancelled": True}
+        if type(selected) is not str or not selected or len(selected) > 4096 or "\x00" in selected:
+            raise DashboardError("所选文件无效。")
+        return {
+            "cancelled": False,
+            "attachment": self._service.ai_attachment_ingest(selected),
+        }
+
+    def _ai_attachment_ingest(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Ingest one dropped file without returning its original absolute path."""
+        _only_keys(payload, {"path"})
+        raw_path = payload.get("path")
+        if (
+            type(raw_path) is not str
+            or not raw_path
+            or len(raw_path) > 4096
+            or "\x00" in raw_path
+            or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
+            or not Path(raw_path).is_absolute()
+        ):
+            raise DashboardError("拖入文件路径无效，请改用回形针按钮选择文件。")
+        return self._service.ai_attachment_ingest(raw_path)
+
+    def _ai_attachment_id(self, payload: Mapping[str, Any]) -> int:
+        _only_keys(payload, {"attachment_id"})
+        return _positive_id(payload.get("attachment_id"), "附件标识")
+
+    def _ai_attachment_restore(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._service.ai_attachment_restore(self._ai_attachment_id(payload))
+
+    def _ai_attachment_reveal(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._service.ai_attachment_reveal(self._ai_attachment_id(payload))
 
     def _settings_pick_archive_root(
         self, payload: Mapping[str, Any]

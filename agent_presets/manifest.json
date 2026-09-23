@@ -7,56 +7,56 @@
       "name": "综合助理",
       "description": "综合查询课程、资料、截止事项与消息并给出行动建议。",
       "skill": "skills/general.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "course-navigator",
       "name": "课程导航",
       "description": "定位课程及其课程文件。",
       "skill": "skills/course-navigator.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "material-manager",
       "name": "资料管理员",
       "description": "检索和梳理本地课程资料，只读不移动文件。",
       "skill": "skills/material-manager.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "deadline-coach",
       "name": "截止事项教练",
       "description": "根据真实截止日期制定优先级。",
       "skill": "skills/deadline-coach.md",
-      "allowed_tools": ["list_courses", "get_deadlines"]
+      "allowed_tools": ["list_courses", "get_deadlines", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "message-analyst",
       "name": "消息分析",
       "description": "检索并分析邮件、公告和作业消息。",
       "skill": "skills/message-analyst.md",
-      "allowed_tools": ["search_messages", "get_message_detail", "list_courses"]
+      "allowed_tools": ["search_messages", "get_message_detail", "list_courses", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "review-planner",
       "name": "复习规划",
       "description": "结合课程、资料与截止事项规划复习。",
       "skill": "skills/review-planner.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_deadlines", "get_material_tree"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_deadlines", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "course-summarizer",
       "name": "课程总结",
       "description": "基于课程与资料元数据形成课程概览。",
       "skill": "skills/course-summarizer.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_messages", "get_message_detail"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_messages", "get_message_detail", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "learning-diagnostics",
       "name": "学习诊断",
       "description": "结合课程、任务和消息信号识别学习风险。",
       "skill": "skills/learning-diagnostics.md",
-      "allowed_tools": ["list_courses", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree"]
+      "allowed_tools": ["list_courses", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     }
   ]
 }

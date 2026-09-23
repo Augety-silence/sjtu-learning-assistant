@@ -103,6 +103,11 @@ class DashboardSettingsTests(unittest.TestCase):
                 "ai_base_url",
                 "ai_model",
                 "ai_key_saved",
+                "ai_chat_send_shortcut",
+                "ai_reply_language",
+                "ai_attachment_context_budget",
+                "ai_auto_open_activity",
+                "ai_code_line_numbers",
             },
             set(status),
         )

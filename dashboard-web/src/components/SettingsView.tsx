@@ -1,7 +1,9 @@
 import {
+  BookOpen,
   Bot,
   Cloud,
   Database,
+  ExternalLink,
   Mail,
   Pencil,
   ShieldCheck,
@@ -14,6 +16,7 @@ import { Button } from "@/components/ui/Button";
 import {
   deleteCredential,
   getSettings,
+  openExternal,
   organizeArchive,
   pickArchiveRoot,
   saveCredential,
@@ -30,6 +33,8 @@ const AI_MODELS = [
   "qwen",
   "qwen3.8-27b",
 ] as const;
+const CONFIGURATION_GUIDE_URL =
+  "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f";
 type ConfigKind = "canvas" | "mail" | "cloud" | "ai";
 
 const configMeta = {
@@ -200,6 +205,18 @@ export function SettingsView({
     }
   };
 
+  const openConfigurationGuide = async () => {
+    try {
+      await openExternal(CONFIGURATION_GUIDE_URL);
+    } catch (reason) {
+      showToast({
+        id: "settings-guide",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "配置指南打开失败",
+      });
+    }
+  };
+
   const chooseFolder = async () => {
     setBusy("pick");
     try {
@@ -296,8 +313,18 @@ export function SettingsView({
         <div className="section-header">
           <div>
             <h3 id="configuration-title">连接配置</h3>
-            <p>点击“修改配置”打开对应窗口；后续配置指南可直接放在这里。</p>
+            <p>集中管理连接凭据；敏感信息只保存到 macOS 钥匙串。</p>
           </div>
+          <button
+            type="button"
+            className="configuration-guide-link"
+            aria-label="打开连接配置指南"
+            onClick={() => void openConfigurationGuide()}
+          >
+            <BookOpen aria-hidden="true" />
+            <span>配置指南</span>
+            <ExternalLink aria-hidden="true" />
+          </button>
         </div>
         <div className="configuration-grid">
           {(Object.keys(configMeta) as ConfigKind[]).map((kind) => {
@@ -323,6 +350,8 @@ export function SettingsView({
                 </div>
                 <Button
                   variant="outline"
+                  size="sm"
+                  className="configuration-edit-button"
                   onClick={() => {
                     setSecret("");
                     setEditing(kind);

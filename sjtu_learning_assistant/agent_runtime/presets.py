@@ -19,6 +19,8 @@ KNOWN_TOOLS = frozenset(
         "search_messages",
         "get_message_detail",
         "get_material_tree",
+        "search_ai_attachments",
+        "read_ai_attachment_text",
     }
 )
 

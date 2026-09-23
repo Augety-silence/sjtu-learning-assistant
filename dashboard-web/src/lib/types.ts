@@ -17,6 +17,17 @@ export type AIModel =
   | "qwen"
   | "qwen3.8-27b";
 export type AIThinkingDepth = "quick" | "standard" | "deep";
+export type AIChatSendShortcut = "enter" | "cmd_enter";
+export type AIReplyLanguage = "auto" | "zh" | "en";
+export type AIAttachmentContextBudget = "economy" | "balanced" | "deep";
+
+export interface AIChatPreferences {
+  ai_chat_send_shortcut: AIChatSendShortcut;
+  ai_reply_language: AIReplyLanguage;
+  ai_attachment_context_budget: AIAttachmentContextBudget;
+  ai_auto_open_activity: boolean;
+  ai_code_line_numbers: boolean;
+}
 
 export type AIToolRunPhase = "prefetch" | "model";
 export type AIToolRunStatus = "ok" | "rejected";
@@ -51,6 +62,20 @@ export interface AIAgentPresetsResult {
   items: AIAgentPreset[];
 }
 
+export interface AIManagedAttachment {
+  id: number;
+  name: string;
+  size: number;
+  sha256: string;
+  status: "local" | "cloud_only" | "failed";
+  cloud_ready: boolean;
+  summary: string | null;
+  tags: string[];
+  text_status: "pending" | "ready" | "unsupported" | "failed" | "unavailable";
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface AIChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -59,6 +84,7 @@ export interface AIChatMessage {
   model?: string | null;
   trace_id?: string | null;
   tool_runs?: AIToolRun[];
+  attachments?: AIManagedAttachment[];
   created_at?: string | null;
 }
 
@@ -219,6 +245,11 @@ export interface SettingsStatus {
   ai_base_url: string;
   ai_model: string;
   ai_key_saved: boolean;
+  ai_chat_send_shortcut: AIChatSendShortcut;
+  ai_reply_language: AIReplyLanguage;
+  ai_attachment_context_budget: AIAttachmentContextBudget;
+  ai_auto_open_activity: boolean;
+  ai_code_line_numbers: boolean;
 }
 
 export interface MaterialMoveResult {

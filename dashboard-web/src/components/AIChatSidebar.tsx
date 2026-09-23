@@ -1,8 +1,8 @@
 import {
   ArrowLeft,
-  Bot,
   CalendarClock,
   Check,
+  ChevronDown,
   FileSearch,
   FolderTree,
   GraduationCap,
@@ -11,9 +11,16 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useState } from "react";
+import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import appLogo from "@/assets/app-logo.png";
+import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
 import { Button } from "@/components/ui/Button";
-import type { AIAgentPreset, AIChatSessionSummary } from "@/lib/types";
+import type {
+  AIAgentPreset,
+  AIChatPreferences,
+  AIChatSessionSummary,
+} from "@/lib/types";
 
 const capabilities = [
   { label: "课程", tools: ["list_courses"], icon: GraduationCap },
@@ -53,12 +60,18 @@ function groupSessions(sessions: AIChatSessionSummary[]): SessionGroup[] {
     const timestamp = new Date(
       session.updated_at ?? session.created_at ?? 0,
     ).getTime();
-    const age = Number.isNaN(timestamp)
+    const sessionDate = new Date(timestamp);
+    const sessionDay = new Date(
+      sessionDate.getFullYear(),
+      sessionDate.getMonth(),
+      sessionDate.getDate(),
+    ).getTime();
+    const dayAge = Number.isNaN(sessionDay)
       ? Number.POSITIVE_INFINITY
-      : today - timestamp;
-    if (age < 24 * 60 * 60 * 1000) groups["今天"].push(session);
-    else if (age < 2 * 24 * 60 * 60 * 1000) groups["昨天"].push(session);
-    else if (age < 7 * 24 * 60 * 60 * 1000) groups["7 天内"].push(session);
+      : Math.floor((today - sessionDay) / (24 * 60 * 60 * 1000));
+    if (dayAge <= 0) groups["今天"].push(session);
+    else if (dayAge === 1) groups["昨天"].push(session);
+    else if (dayAge < 7) groups["7 天内"].push(session);
     else groups["更早"].push(session);
   }
   return Object.entries(groups)
@@ -79,6 +92,10 @@ export function AIChatSidebar({
   onOpenSession,
   onDeleteSession,
   busy,
+  preferences,
+  settingsSaving,
+  settingsStatus,
+  onPreferenceChange,
 }: {
   open: boolean;
   onClose: () => void;
@@ -92,10 +109,18 @@ export function AIChatSidebar({
   onOpenSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   busy: boolean;
+  preferences: AIChatPreferences;
+  settingsSaving: boolean;
+  settingsStatus: string | null;
+  onPreferenceChange: (change: Partial<AIChatPreferences>) => void;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const allowedTools = new Set(selectedPreset?.allowed_tools ?? []);
+  const enabledCapabilities = capabilities.filter(({ tools }) =>
+    tools.some((tool) => allowedTools.has(tool)),
+  );
   const groups = groupSessions(sessions);
 
   return (
@@ -110,10 +135,10 @@ export function AIChatSidebar({
           onClick={onBack}
           aria-label="返回学习助手"
         >
-          <img src={appLogo} alt="" />
+          <img src={appLogo} alt="" aria-hidden="true" />
           <span>
             <strong>SJTU</strong>
-            <small>Learning Agent</small>
+            <small>学习助手</small>
           </span>
         </button>
         <Button
@@ -123,7 +148,7 @@ export function AIChatSidebar({
           aria-label="关闭对话导航"
           onClick={onClose}
         >
-          <X />
+          <X aria-hidden="true" />
         </Button>
       </header>
 
@@ -138,65 +163,67 @@ export function AIChatSidebar({
         </Button>
       </div>
 
-      <section className="ai-agent-section">
-        <div className="ai-sidebar-label">
-          <span>选择 Agent</span>
-          <Bot aria-hidden="true" />
-        </div>
-        <div
-          className="ai-preset-list"
-          role="radiogroup"
-          aria-label="Agent 预设"
+      <section className="ai-current-agent">
+        <button
+          type="button"
+          className="ai-current-agent-trigger"
+          aria-label={`当前 Agent：${selectedPreset?.name ?? "未选择"}`}
+          aria-expanded={pickerOpen}
+          aria-controls="ai-sidebar-agent-list"
+          disabled={busy}
+          onClick={() => setPickerOpen((open) => !open)}
         >
-          {presets.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              role="radio"
-              aria-checked={preset.id === selectedPresetId}
-              className={
-                preset.id === selectedPresetId
-                  ? "ai-preset-card is-selected"
-                  : "ai-preset-card"
-              }
-              disabled={busy}
-              onClick={() => onSelectPreset(preset.id)}
-            >
-              <span className="ai-preset-avatar">
-                <Bot aria-hidden="true" />
-              </span>
-              <span className="ai-preset-copy">
-                <strong>{preset.name}</strong>
-                <small>{preset.description}</small>
-                <em>{preset.allowed_tools.length} 个只读工具</em>
-              </span>
-              {preset.id === selectedPresetId && <Check aria-hidden="true" />}
-            </button>
-          ))}
-        </div>
-
-        <div className="ai-capability-card">
-          <strong>当前可查询</strong>
-          <div>
-            {capabilities.map(({ label, tools, icon: Icon }) => {
-              const enabled = tools.some((tool) => allowedTools.has(tool));
-              return (
-                <span
-                  key={label}
-                  className={enabled ? "is-enabled" : "is-disabled"}
-                  title={
-                    enabled
-                      ? `${label}查询已启用`
-                      : `${label}查询未在此 Agent 中启用`
-                  }
-                >
-                  <Icon aria-hidden="true" />
-                  {label}
+          <span className="ai-current-agent-avatar">
+            <img src={aiAgentLogo} alt="" aria-hidden="true" />
+          </span>
+          <span>
+            <small>当前 Agent</small>
+            <strong>{selectedPreset?.name ?? "选择 Agent"}</strong>
+          </span>
+          <ChevronDown aria-hidden="true" />
+        </button>
+        {pickerOpen && (
+          <div
+            id="ai-sidebar-agent-list"
+            className="ai-sidebar-agent-menu"
+            role="listbox"
+            aria-label="切换 Agent"
+          >
+            {presets.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                role="option"
+                aria-selected={preset.id === selectedPresetId}
+                onClick={() => {
+                  onSelectPreset(preset.id);
+                  setPickerOpen(false);
+                }}
+              >
+                <img src={aiAgentLogo} alt="" aria-hidden="true" />
+                <span>
+                  <strong>{preset.name}</strong>
+                  <small>{preset.description}</small>
                 </span>
-              );
-            })}
+                {preset.id === selectedPresetId && <Check aria-hidden="true" />}
+              </button>
+            ))}
           </div>
-          <p>只读取本机已同步数据，不会执行提交、删除或修改。</p>
+        )}
+        <p className="ai-current-agent-description">
+          {selectedPreset?.description ?? "选择一个 Agent 开始处理学习任务。"}
+        </p>
+        <div className="ai-capability-strip" aria-label="当前 Agent 功能">
+          {enabledCapabilities.length > 0 ? (
+            enabledCapabilities.map(({ label, icon: Icon }) => (
+              <span key={label}>
+                <Icon aria-hidden="true" />
+                {label}
+              </span>
+            ))
+          ) : (
+            <small>暂未配置可用功能</small>
+          )}
         </div>
       </section>
 
@@ -221,13 +248,10 @@ export function AIChatSidebar({
                 >
                   <button
                     type="button"
+                    title={session.title}
                     onClick={() => onOpenSession(session.id)}
                   >
                     <strong>{session.title}</strong>
-                    <span>
-                      {presets.find((preset) => preset.id === session.preset_id)
-                        ?.name ?? session.preset_id}
-                    </span>
                   </button>
                   <button
                     type="button"
@@ -242,6 +266,13 @@ export function AIChatSidebar({
           ))}
         </div>
       </section>
+
+      <AIChatSettingsPanel
+        preferences={preferences}
+        saving={settingsSaving}
+        status={settingsStatus}
+        onChange={onPreferenceChange}
+      />
     </aside>
   );
 }

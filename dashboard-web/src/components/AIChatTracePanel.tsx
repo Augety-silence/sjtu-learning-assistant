@@ -1,6 +1,4 @@
 import {
-  Activity,
-  Bot,
   CheckCircle2,
   ChevronRight,
   CircleSlash2,
@@ -8,6 +6,7 @@ import {
   Search,
   X,
 } from "lucide-react";
+import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { Button } from "@/components/ui/Button";
 import type { AIAgentPreset, AIAgentTrace, AIToolRun } from "@/lib/types";
 
@@ -50,6 +49,17 @@ function resultLabel(run: AIToolRun) {
     if (typeof summary.status === "string") return summary.status;
   }
   return "已返回安全摘要";
+}
+
+function traceHits(trace: AIAgentTrace) {
+  return trace.tool_runs.reduce((total, run) => {
+    if (!run.result_summary || typeof run.result_summary !== "object") {
+      return total;
+    }
+    const summary = run.result_summary as Record<string, unknown>;
+    const count = summary.count ?? summary.items_count;
+    return total + (typeof count === "number" ? count : 0);
+  }, 0);
 }
 
 function TraceRun({ run }: { run: AIToolRun }) {
@@ -107,11 +117,16 @@ export function AIChatTracePanel({
     <aside
       className={open ? "ai-activity is-open" : "ai-activity"}
       aria-label="Activity 检索轨迹"
+      aria-hidden={!open}
+      inert={!open ? true : undefined}
     >
       <header className="ai-activity-header">
         <div>
-          <Activity aria-hidden="true" />
-          <strong>Activity</strong>
+          <img src={aiAgentLogo} alt="" aria-hidden="true" />
+          <span>
+            <strong>Activity</strong>
+            <small>{preset?.name ?? "本地学习 Agent"}</small>
+          </span>
         </div>
         <Button
           variant="ghost"
@@ -119,35 +134,26 @@ export function AIChatTracePanel({
           aria-label="关闭 Activity"
           onClick={onClose}
         >
-          <X />
+          <X aria-hidden="true" />
         </Button>
       </header>
 
       <div className="ai-activity-scroll">
-        <section className="ai-active-agent" aria-label="正在使用的 Agent">
-          <span className="ai-active-agent-icon">
-            <Bot aria-hidden="true" />
-          </span>
-          <div>
-            <span>正在使用</span>
-            <strong>{preset?.name ?? "本地学习 Agent"}</strong>
-            <p>{preset?.description ?? "仅访问已同步到本机的学习数据。"}</p>
-          </div>
-        </section>
-
         <div className="ai-activity-section-title">
           <span>检索轨迹</span>
-          {traces.length > 0 && <small>{traces.length} 轮</small>}
+          <small>
+            {traces.length > 0 ? `${traces.length} 轮` : "等待任务"}
+          </small>
         </div>
 
         {busy && (
           <article className="ai-trace-card is-running" role="status">
-            <header>
+            <span className="ai-trace-node is-running">
               <LoaderCircle className="animate-spin" aria-hidden="true" />
-              <div>
-                <strong>Agent 正在检索</strong>
-                <span>正在规划并调用本地只读工具</span>
-              </div>
+            </span>
+            <header>
+              <strong>Agent 正在检索</strong>
+              <span>正在规划并调用本地只读工具</span>
             </header>
           </article>
         )}
@@ -166,36 +172,64 @@ export function AIChatTracePanel({
         )}
 
         <div className="ai-trace-list">
-          {newestFirst.map((trace, index) => (
-            <article className="ai-trace-card" key={trace.id}>
-              <header>
+          {newestFirst.map((trace, index) => {
+            const round = newestFirst.length - index;
+            const hits = traceHits(trace);
+            return (
+              <article className="ai-trace-card" key={trace.id}>
                 <span
-                  className={`ai-trace-index ${trace.status === "failed" ? "is-failed" : ""}`}
+                  className={`ai-trace-node ${trace.status === "failed" ? "is-failed" : ""}`}
+                  aria-hidden="true"
                 >
-                  {newestFirst.length - index}
+                  {trace.status === "failed" ? (
+                    <CircleSlash2 />
+                  ) : (
+                    <CheckCircle2 />
+                  )}
                 </span>
-                <div>
-                  <strong>第 {newestFirst.length - index} 轮</strong>
-                  <span>
-                    {traceStatusLabels[trace.status] ?? trace.status} ·{" "}
-                    {trace.steps} 步 · {trace.tool_runs.length} 次调用
-                  </span>
-                </div>
-              </header>
-              {trace.tool_runs.length > 0 ? (
-                <div className="ai-tool-runs">
-                  {trace.tool_runs.map((run, runIndex) => (
-                    <TraceRun
-                      key={`${trace.id}-${run.tool_name}-${runIndex}`}
-                      run={run}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="ai-trace-no-tools">本轮未调用工具。</p>
-              )}
-            </article>
-          ))}
+                <header>
+                  <div>
+                    <strong>第 {round} 轮</strong>
+                    <span>
+                      {traceStatusLabels[trace.status] ?? trace.status}
+                    </span>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>步骤</dt>
+                      <dd>{trace.steps}</dd>
+                    </div>
+                    <div>
+                      <dt>调用</dt>
+                      <dd>{trace.tool_runs.length}</dd>
+                    </div>
+                    <div>
+                      <dt>命中</dt>
+                      <dd>{hits}</dd>
+                    </div>
+                  </dl>
+                </header>
+                {trace.tool_runs.length > 0 ? (
+                  <details className="ai-trace-details">
+                    <summary>
+                      查看执行详情
+                      <ChevronRight aria-hidden="true" />
+                    </summary>
+                    <div className="ai-tool-runs">
+                      {trace.tool_runs.map((run, runIndex) => (
+                        <TraceRun
+                          key={`${trace.id}-${run.tool_name}-${runIndex}`}
+                          run={run}
+                        />
+                      ))}
+                    </div>
+                  </details>
+                ) : (
+                  <p className="ai-trace-no-tools">本轮未调用工具。</p>
+                )}
+              </article>
+            );
+          })}
         </div>
       </div>
     </aside>

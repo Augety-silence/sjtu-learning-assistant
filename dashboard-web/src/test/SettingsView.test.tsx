@@ -5,6 +5,7 @@ import { SettingsView } from "@/components/SettingsView";
 import {
   deleteCredential,
   getSettings,
+  openExternal,
   organizeArchive,
   pickArchiveRoot,
   saveCredential,
@@ -16,6 +17,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn(),
+  openExternal: vi.fn(),
   organizeArchive: vi.fn(),
   pickArchiveRoot: vi.fn(),
   saveCredential: vi.fn(),
@@ -38,6 +40,11 @@ const status: SettingsStatus = {
   ai_base_url: "https://models.sjtu.edu.cn/api/v1",
   ai_model: "deepseek-chat",
   ai_key_saved: false,
+  ai_chat_send_shortcut: "enter",
+  ai_reply_language: "auto",
+  ai_attachment_context_budget: "balanced",
+  ai_auto_open_activity: true,
+  ai_code_line_numbers: false,
 };
 
 describe("SettingsView", () => {
@@ -45,6 +52,7 @@ describe("SettingsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getSettings).mockResolvedValue(status);
+    vi.mocked(openExternal).mockResolvedValue({ status: "opened" });
     vi.mocked(updateSettings).mockResolvedValue(status);
     vi.mocked(saveCredential).mockResolvedValue(status);
     vi.mocked(deleteCredential).mockResolvedValue(status);
@@ -74,6 +82,10 @@ describe("SettingsView", () => {
     expect(screen.getByText("交大邮箱")).toBeTruthy();
     expect(screen.getByText("交大云盘")).toBeTruthy();
     expect(screen.getByText("AI 模型")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "打开连接配置指南" }));
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f",
+    );
     const buttons = screen.getAllByRole("button", { name: "修改配置" });
     fireEvent.click(buttons[0]);
     expect(screen.getByRole("dialog", { name: "Canvas 配置" })).toBeTruthy();
