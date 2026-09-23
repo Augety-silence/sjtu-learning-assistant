@@ -266,3 +266,7 @@ export interface BackupStatus {
 export interface BackupStartResult {
   status: "started" | "already_running";
 }
+
+export interface BackupTokenResult {
+  configured: boolean;
+}

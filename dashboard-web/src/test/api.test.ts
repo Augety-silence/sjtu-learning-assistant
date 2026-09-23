@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  deleteBackupToken,
   getBackupStatus,
   getMessageResource,
   getSettings,
@@ -7,6 +8,7 @@ import {
   openExternal,
   openMailAttachment,
   revealMailAttachment,
+  saveBackupToken,
   startCloudBackup,
   updateSettings,
 } from "@/lib/api";
@@ -107,6 +109,23 @@ describe("pywebview bridge client", () => {
     expect(bridge).toHaveBeenLastCalledWith("backup_status", {});
     await startCloudBackup();
     expect(bridge).toHaveBeenLastCalledWith("backup_start", {});
+  });
+
+  it("sends the token only to Keychain save and uses an empty delete payload", async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, data: { configured: true } })
+      .mockResolvedValueOnce({ ok: true, data: { configured: false } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    const token = ["private", "pan", "token"].join("-");
+
+    const saved = await saveBackupToken(token);
+    expect(saved).toEqual({ configured: true });
+    expect(JSON.stringify(saved)).not.toContain(token);
+    expect(bridge).toHaveBeenLastCalledWith("backup_token_save", { token });
+
+    await expect(deleteBackupToken()).resolves.toEqual({ configured: false });
+    expect(bridge).toHaveBeenLastCalledWith("backup_token_delete", {});
   });
 
   it("routes external URLs through the bridge", async () => {

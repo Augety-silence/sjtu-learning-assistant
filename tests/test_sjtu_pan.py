@@ -18,6 +18,7 @@ from sjtu_learning_assistant.cloud_storage import (
 from sjtu_learning_assistant.cloud_storage.sjtu_pan import (
     KEYCHAIN_ACCOUNT,
     KEYCHAIN_SERVICE,
+    delete_user_token,
     load_user_token,
     save_user_token,
 )
@@ -50,6 +51,19 @@ class FakeKeyring:
         self.values.pop((service, account), None)
 
 
+class MissingPasswordError(Exception):
+    pass
+
+
+class MissingPasswordKeyring:
+    class errors:
+        PasswordDeleteError = MissingPasswordError
+
+    @staticmethod
+    def delete_password(_service: str, _account: str) -> None:
+        raise MissingPasswordError
+
+
 class SJTUCloudPanTests(unittest.TestCase):
     def provider(self, handler) -> tuple[SJTUCloudPanProvider, httpx.Client]:
         client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -80,6 +94,9 @@ class SJTUCloudPanTests(unittest.TestCase):
             client.close()
         self.assertEqual("POST", requests[0].method)
         self.assertEqual(TOKEN, requests[0].url.params["user_token"])
+
+    def test_delete_user_token_is_idempotent_when_keyring_entry_is_missing(self) -> None:
+        delete_user_token(keyring_module=MissingPasswordKeyring())
 
     def test_401_refreshes_once(self) -> None:
         calls = {"credentials": 0, "directory": 0}

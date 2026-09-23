@@ -16,7 +16,11 @@ from sjtu_learning_assistant.archive_service import ArchiveError
 from sjtu_learning_assistant.assignment_service import AssignmentServiceError
 from sjtu_learning_assistant.backup_service import BackupError, BackupManager
 from sjtu_learning_assistant.canvas_client import CanvasError
-from sjtu_learning_assistant.cloud_storage import CloudStorageError
+from sjtu_learning_assistant.cloud_storage import (
+    CloudStorageError,
+    delete_user_token,
+    save_user_token,
+)
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import create_database_engine
@@ -225,6 +229,8 @@ class DesktopBridge:
             "archive_download_current_term": self._archive_download_current_term,
             "backup_status": self._backup_status,
             "backup_start": self._backup_start,
+            "backup_token_save": self._backup_token_save,
+            "backup_token_delete": self._backup_token_delete,
             "open_external": self._open_external,
             "assignments_list": self._assignments_list,
             "detail": self._assignment_detail,
@@ -317,6 +323,20 @@ class DesktopBridge:
     def _backup_start(self, payload: Mapping[str, Any]) -> dict[str, str]:
         _empty_payload(payload)
         return self._backup().start()
+
+    @staticmethod
+    def _backup_token_save(payload: Mapping[str, Any]) -> dict[str, bool]:
+        _only_keys(payload, {"token"})
+        if "token" not in payload:
+            raise DashboardError("缺少交大云盘 UserToken。")
+        save_user_token(payload["token"])
+        return {"configured": True}
+
+    @staticmethod
+    def _backup_token_delete(payload: Mapping[str, Any]) -> dict[str, bool]:
+        _empty_payload(payload)
+        delete_user_token()
+        return {"configured": False}
 
     def _deadlines(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"window"})

@@ -7,6 +7,24 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from desktop_app import DesktopBridge, DesktopScheduler, main, run_desktop_app, safe_message
+from sjtu_learning_assistant.cloud_storage import (
+    delete_user_token as delete_cloud_user_token,
+    save_user_token as save_cloud_user_token,
+)
+
+
+class FakeKeyring:
+    def __init__(self):
+        self.values = {}
+
+    def set_password(self, service, account, value):
+        self.values[(service, account)] = value
+
+    def get_password(self, service, account):
+        return self.values.get((service, account))
+
+    def delete_password(self, service, account):
+        self.values.pop((service, account), None)
 
 
 class FakeService:
@@ -184,7 +202,15 @@ class DesktopBridgeTests(unittest.TestCase):
     def test_backup_actions_are_allowlisted_require_empty_payload_and_report_start_state(self):
         manager = FakeBackupManager()
         bridge = DesktopBridge(FakeService(), backup_manager=manager)
-        self.assertEqual({"backup_status", "backup_start"}, {name for name in bridge._handlers if name.startswith("backup_")})
+        self.assertEqual(
+            {
+                "backup_status",
+                "backup_start",
+                "backup_token_save",
+                "backup_token_delete",
+            },
+            {name for name in bridge._handlers if name.startswith("backup_")},
+        )
         status = bridge.invoke("backup_status", {})
         self.assertTrue(status["ok"])
         self.assertEqual(1, status["data"]["counts"]["missing_local"])
@@ -207,6 +233,44 @@ class DesktopBridgeTests(unittest.TestCase):
                 bridge.invoke(action, {"unexpected": True})["error"]["code"],
             )
         self.assertEqual("operation_failed", self.bridge.invoke("backup_status")["error"]["code"])
+
+    def test_backup_token_actions_use_keychain_without_echoing_secret(self):
+        keyring = FakeKeyring()
+        bridge = DesktopBridge(FakeService())
+
+        def save(value):
+            save_cloud_user_token(value, keyring_module=keyring)
+
+        def delete():
+            delete_cloud_user_token(keyring_module=keyring)
+
+        secret = "pan-user-token-private-value"
+        with (
+            patch("desktop_app.save_user_token", side_effect=save) as save_mock,
+            patch("desktop_app.delete_user_token", side_effect=delete) as delete_mock,
+        ):
+            saved = bridge.invoke("backup_token_save", {"token": f"  {secret}  "})
+            self.assertEqual({"ok": True, "data": {"configured": True}}, saved)
+            self.assertNotIn(secret, str(saved))
+            self.assertEqual([secret], list(keyring.values.values()))
+            save_mock.assert_called_once_with(f"  {secret}  ")
+
+            for payload in ({}, {"token": ""}, {"token": 42}, {"token": secret, "extra": True}):
+                with self.subTest(payload=payload):
+                    response = bridge.invoke("backup_token_save", payload)
+                    self.assertEqual("operation_failed", response["error"]["code"])
+                    self.assertNotIn(secret, str(response))
+
+            deleted = bridge.invoke("backup_token_delete", {})
+            deleted_again = bridge.invoke("backup_token_delete")
+            self.assertEqual({"ok": True, "data": {"configured": False}}, deleted)
+            self.assertEqual(deleted, deleted_again)
+            self.assertEqual({}, keyring.values)
+            self.assertEqual(2, delete_mock.call_count)
+            self.assertEqual(
+                "operation_failed",
+                bridge.invoke("backup_token_delete", {"token": secret})["error"]["code"],
+            )
 
     def test_local_file_must_come_from_native_picker(self):
         import tempfile

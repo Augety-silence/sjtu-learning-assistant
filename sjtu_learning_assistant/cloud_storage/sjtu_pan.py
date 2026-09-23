@@ -77,9 +77,15 @@ def save_user_token(value: object, *, keyring_module: Any | None = None) -> None
 
 
 def delete_user_token(*, keyring_module: Any | None = None) -> None:
+    backend = keyring_module or _load_keyring()
     try:
-        (keyring_module or _load_keyring()).delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-    except Exception:
+        backend.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+    except Exception as exc:
+        missing_error = getattr(
+            getattr(backend, "errors", None), "PasswordDeleteError", None
+        )
+        if isinstance(missing_error, type) and isinstance(exc, missing_error):
+            return
         raise CloudAuthError("无法从系统 Keychain 删除交大云盘 UserToken。") from None
 
 

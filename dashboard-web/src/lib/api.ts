@@ -1,6 +1,7 @@
 import type {
   BackupStartResult,
   BackupStatus,
+  BackupTokenResult,
   MailAttachmentActionResult,
   MaterialMoveResult,
   MessageDetail,
@@ -281,4 +282,12 @@ export function getBackupStatus() {
 
 export function startCloudBackup() {
   return invoke<BackupStartResult>("backup_start");
+}
+
+export function saveBackupToken(token: string) {
+  return invoke<BackupTokenResult>("backup_token_save", { token });
+}
+
+export function deleteBackupToken() {
+  return invoke<BackupTokenResult>("backup_token_delete");
 }

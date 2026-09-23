@@ -2,7 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BackupView } from "@/components/BackupView";
-import { getBackupStatus, startCloudBackup } from "@/lib/api";
+import {
+  deleteBackupToken,
+  getBackupStatus,
+  saveBackupToken,
+  startCloudBackup,
+} from "@/lib/api";
 import type { BackupStatus } from "@/lib/types";
 import {
   act,
@@ -14,7 +19,9 @@ import {
 } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  deleteBackupToken: vi.fn(),
   getBackupStatus: vi.fn(),
+  saveBackupToken: vi.fn(),
   startCloudBackup: vi.fn(),
 }));
 
@@ -27,9 +34,18 @@ const idleStatus: BackupStatus = {
   last_result: null,
 };
 
+const unavailableStatus: BackupStatus = {
+  ...idleStatus,
+  available: false,
+  availability_message: "尚未配置交大云盘 UserToken。",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
+  vi.mocked(deleteBackupToken).mockResolvedValue({ configured: false });
   vi.mocked(getBackupStatus).mockResolvedValue(idleStatus);
+  vi.mocked(saveBackupToken).mockResolvedValue({ configured: true });
   vi.mocked(startCloudBackup).mockResolvedValue({ status: "started" });
 });
 
@@ -157,6 +173,10 @@ describe("BackupView", () => {
 
     expect(await screen.findByText("请先登录 SJTU Pan。")).toBeTruthy();
     expect(
+      screen.getByLabelText("交大云盘 UserToken").getAttribute("type"),
+    ).toBe("password");
+    expect(screen.getByText(/仅存入 macOS Keychain/)).toBeTruthy();
+    expect(
       screen.getByRole("button", { name: "立即备份" }).hasAttribute("disabled"),
     ).toBe(true);
     const refresh = screen.getByRole("button", { name: "刷新备份状态" });
@@ -164,6 +184,91 @@ describe("BackupView", () => {
     fireEvent.click(refresh);
     await waitFor(() => expect(getBackupStatus).toHaveBeenCalledTimes(2));
     expect(startCloudBackup).not.toHaveBeenCalled();
+  });
+
+  it("保存 UserToken 后清空输入、刷新状态且不写入 localStorage", async () => {
+    let resolveRefreshedStatus: ((status: BackupStatus) => void) | undefined;
+    vi.mocked(getBackupStatus)
+      .mockResolvedValueOnce(unavailableStatus)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRefreshedStatus = resolve;
+          }),
+      );
+    render(<BackupView />);
+
+    const input = (await screen.findByLabelText(
+      "交大云盘 UserToken",
+    )) as HTMLInputElement;
+    const secret = "private-pan-token";
+    fireEvent.change(input, { target: { value: secret } });
+    fireEvent.click(screen.getByRole("button", { name: "保存到 Keychain" }));
+
+    await waitFor(() => expect(saveBackupToken).toHaveBeenCalledWith(secret));
+    expect(input.value).toBe("");
+    expect(window.localStorage.length).toBe(0);
+    expect(document.body.textContent).not.toContain(secret);
+
+    await act(async () => resolveRefreshedStatus?.(idleStatus));
+    expect(
+      await screen.findByRole("button", { name: "删除凭据" }),
+    ).toBeTruthy();
+    expect(getBackupStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("保存 UserToken 失败时显示安全错误且不刷新状态", async () => {
+    vi.mocked(getBackupStatus).mockResolvedValue(unavailableStatus);
+    vi.mocked(saveBackupToken).mockRejectedValue(
+      new Error("Keychain 写入失败"),
+    );
+    render(<BackupView />);
+
+    const input = await screen.findByLabelText("交大云盘 UserToken");
+    fireEvent.change(input, { target: { value: "temporary-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存到 Keychain" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Keychain 写入失败",
+    );
+    expect(getBackupStatus).toHaveBeenCalledOnce();
+    expect(window.localStorage.length).toBe(0);
+    expect(document.body.textContent).not.toContain("temporary-secret");
+  });
+
+  it("确认后删除 Keychain 凭据并刷新为未配置状态", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(getBackupStatus)
+      .mockResolvedValueOnce(idleStatus)
+      .mockResolvedValueOnce(unavailableStatus);
+    render(<BackupView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "删除凭据" }));
+
+    await waitFor(() => expect(deleteBackupToken).toHaveBeenCalledOnce());
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText("交大云盘 UserToken")).toBeTruthy();
+    expect(getBackupStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("取消删除不调用接口，删除错误则保留可用状态", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<BackupView />);
+    const remove = await screen.findByRole("button", { name: "删除凭据" });
+
+    fireEvent.click(remove);
+    expect(deleteBackupToken).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    vi.mocked(deleteBackupToken).mockRejectedValue(
+      new Error("Keychain 删除失败"),
+    );
+    fireEvent.click(remove);
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Keychain 删除失败",
+    );
+    expect(screen.getByRole("button", { name: "删除凭据" })).toBeTruthy();
+    expect(getBackupStatus).toHaveBeenCalledOnce();
   });
 
   it("失败项仅展示安全来源、名称、云端路径和原因", async () => {
