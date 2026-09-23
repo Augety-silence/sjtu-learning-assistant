@@ -20,7 +20,10 @@ from sjtu_learning_assistant.archive_service import DEFAULT_ARCHIVE_ROOT
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 
 SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
-ALLOWED_KEYS = frozenset(
+AI_CHAT_SEND_SHORTCUTS = frozenset({"enter", "cmd_enter"})
+AI_REPLY_LANGUAGES = frozenset({"auto", "zh", "en"})
+AI_ATTACHMENT_CONTEXT_BUDGETS = frozenset({"economy", "balanced", "deep"})
+PRE_PERSONALIZATION_KEYS = frozenset(
     {
         "archive_root",
         "auto_download_current_term",
@@ -32,7 +35,17 @@ ALLOWED_KEYS = frozenset(
         "ai_key_saved",
     }
 )
-PRE_AI_KEYS = ALLOWED_KEYS - {
+PERSONALIZATION_KEYS = frozenset(
+    {
+        "ai_chat_send_shortcut",
+        "ai_reply_language",
+        "ai_attachment_context_budget",
+        "ai_auto_open_activity",
+        "ai_code_line_numbers",
+    }
+)
+ALLOWED_KEYS = PRE_PERSONALIZATION_KEYS | PERSONALIZATION_KEYS
+PRE_AI_KEYS = PRE_PERSONALIZATION_KEYS - {
     "ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"
 }
 LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
@@ -53,6 +66,11 @@ class LocalSettings:
     ai_base_url: str = DEFAULT_AI_BASE_URL
     ai_model: str = DEFAULT_AI_MODEL
     ai_key_saved: bool = False
+    ai_chat_send_shortcut: str = "enter"
+    ai_reply_language: str = "auto"
+    ai_attachment_context_budget: str = "balanced"
+    ai_auto_open_activity: bool = True
+    ai_code_line_numbers: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -126,6 +144,12 @@ def validate_ai_model(value: object) -> str:
     return value.strip()
 
 
+def _validate_choice(value: object, allowed: frozenset[str], label: str) -> str:
+    if type(value) is not str or value not in allowed:
+        raise SettingsError(f"{label}不受支持。")
+    return value
+
+
 def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SettingsError("设置参数必须是对象。")
@@ -155,11 +179,27 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         result["ai_base_url"] = validate_ai_base_url(payload["ai_base_url"])
     if "ai_model" in payload:
         result["ai_model"] = validate_ai_model(payload["ai_model"])
+    if "ai_chat_send_shortcut" in payload:
+        result["ai_chat_send_shortcut"] = _validate_choice(
+            payload["ai_chat_send_shortcut"], AI_CHAT_SEND_SHORTCUTS, "发送快捷键"
+        )
+    if "ai_reply_language" in payload:
+        result["ai_reply_language"] = _validate_choice(
+            payload["ai_reply_language"], AI_REPLY_LANGUAGES, "回复语言"
+        )
+    if "ai_attachment_context_budget" in payload:
+        result["ai_attachment_context_budget"] = _validate_choice(
+            payload["ai_attachment_context_budget"],
+            AI_ATTACHMENT_CONTEXT_BUDGETS,
+            "附件上下文预算",
+        )
     for key in (
         "auto_download_current_term",
         "organize_by_category",
         "ai_enabled",
         "ai_key_saved",
+        "ai_auto_open_activity",
+        "ai_code_line_numbers",
     ):
         if key in payload:
             value = payload[key]
@@ -201,6 +241,15 @@ class SettingsStore:
                 "ai_base_url": DEFAULT_AI_BASE_URL,
                 "ai_model": DEFAULT_AI_MODEL,
                 "ai_key_saved": False,
+            }
+        if isinstance(payload, dict) and set(payload) == PRE_PERSONALIZATION_KEYS:
+            defaults = LocalSettings()
+            payload = {
+                **payload,
+                **{
+                    key: getattr(defaults, key)
+                    for key in PERSONALIZATION_KEYS
+                },
             }
         values = _validate_mapping(payload, partial=False)
         return LocalSettings(**values)

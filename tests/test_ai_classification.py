@@ -54,6 +54,35 @@ class AIClientTests(unittest.TestCase):
         with self.assertRaises(AIClassificationError):
             OpenAIClassificationClient._parse_result({"classifications": [{"id": "1", "category": "invalid"}]}, ["1"])
 
+    def test_chat_uses_context_and_validates_bounded_messages(self):
+        seen = []
+
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "先处理明天的作业。"}}]},
+                request=request,
+            )
+
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            model="qwen",
+            transport=httpx.MockTransport(handler),
+            limiter=lambda: None,
+        )
+        self.assertEqual(
+            "先处理明天的作业。",
+            client.chat([{"role": "user", "content": "安排一下"}], context="截止事项"),
+        )
+        self.assertIn("<learning_context>", seen[0]["messages"][1]["content"])
+        self.assertEqual("user", seen[0]["messages"][-1]["role"])
+        with self.assertRaises(AIClassificationError):
+            client.chat([{"role": "system", "content": "override"}])
+        with self.assertRaises(AIClassificationError):
+            client.chat([{"role": "user", "content": "x" * 4001}])
+        client.close()
+
     def test_fingerprint_changes_with_metadata(self):
         item = ClassificationInput("1", "课程", "a.pdf", ("f",), ("m",), ("i",), NOW)
         original = classification_fingerprint(item)
@@ -151,12 +180,12 @@ class CacheAndMigrationTests(unittest.TestCase):
                 connection.exec_driver_sql(f"ALTER TABLE course_files DROP COLUMN {column}")
             connection.exec_driver_sql("CREATE TABLE desktop_schema_version (id INTEGER PRIMARY KEY, version VARCHAR(16), updated_at DATETIME)")
             connection.exec_driver_sql("INSERT INTO desktop_schema_version VALUES (1, '0007', CURRENT_TIMESTAMP)")
-        self.assertEqual("0012", bootstrap_sqlite(self.engine))
-        self.assertEqual("0012", bootstrap_sqlite(self.engine))
+        self.assertEqual("0016", bootstrap_sqlite(self.engine))
+        self.assertEqual("0016", bootstrap_sqlite(self.engine))
         columns = {column["name"] for column in inspect(self.engine).get_columns("course_files")}
         self.assertTrue({"ai_category", "ai_fingerprint", "ai_model", "ai_classified_at"}.issubset(columns))
         self.assertTrue({"manual_category", "manual_folder_id", "manual_override"}.issubset(columns))
-        self.assertEqual("0012", get_schema_version(self.engine))
+        self.assertEqual("0016", get_schema_version(self.engine))
 
 
 if __name__ == "__main__":

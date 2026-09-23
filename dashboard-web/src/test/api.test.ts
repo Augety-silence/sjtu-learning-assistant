@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createAiChatSession,
   deleteBackupToken,
+  getAiPresets,
   getBackupStatus,
   getMessageResource,
   getSettings,
+  ingestAiAttachment,
   invoke,
   openExternal,
   openMailAttachment,
   revealMailAttachment,
   saveBackupToken,
+  sendAiChatMessage,
   startCloudBackup,
   updateSettings,
 } from "@/lib/api";
@@ -95,6 +99,53 @@ describe("pywebview bridge client", () => {
       kind: "email",
       source_id: "mail-1",
       attachment_id: "attachment-1",
+    });
+  });
+
+  it("sends the complete agent preset contract for new sessions and turns", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { default_preset_id: "general", items: [] },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getAiPresets();
+    expect(bridge).toHaveBeenLastCalledWith("ai_presets", {});
+
+    await createAiChatSession("auto", "standard", "general");
+    expect(bridge).toHaveBeenLastCalledWith("ai_chat_new", {
+      model: "auto",
+      thinking_depth: "standard",
+      preset_id: "general",
+    });
+
+    await sendAiChatMessage(
+      "session-1",
+      "查询课程文件",
+      "deepseek-chat",
+      "deep",
+      "review-planner",
+    );
+    expect(bridge).toHaveBeenLastCalledWith("ai_chat_send", {
+      session_id: "session-1",
+      content: "查询课程文件",
+      model: "deepseek-chat",
+      thinking_depth: "deep",
+      preset_id: "review-planner",
+    });
+  });
+
+  it("sends a dropped path only to the attachment ingest bridge action", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { id: 7, name: "notes.md", status: "local" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await ingestAiAttachment("/tmp/notes.md");
+
+    expect(bridge).toHaveBeenCalledWith("ai_attachment_ingest", {
+      path: "/tmp/notes.md",
     });
   });
 

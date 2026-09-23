@@ -9,7 +9,7 @@
 ```
 
 首次打开 SQLite 时通过 SQLAlchemy metadata 创建当前 schema，并在
-`desktop_schema_version` 记录版本 `0006`。每条 SQLite 连接都会启用
+`desktop_schema_version` 记录版本 `0016`。每条 SQLite 连接都会启用
 `foreign_keys=ON`、WAL 和 5000 ms `busy_timeout`。`sync_data_to_db.py`、
 `sync_runner.py`、LaunchAgent 与 Dashboard 都通过同一个默认 URL 写入这个文件；
 LaunchAgent 无需数据库参数，也不会保存秘密。
@@ -21,7 +21,7 @@ LaunchAgent 无需数据库参数，也不会保存秘密。
 - 使用 `import-postgres` 将旧数据一次性导入 SQLite。
 
 PostgreSQL URL 仍只保存在 macOS Keychain（或由进程环境显式注入），不会写入
-SQLite、plist 或日志。SQLite 采用 metadata bootstrap，历史 Alembic `0001`–`0006`
+SQLite、plist 或日志。SQLite 采用 metadata bootstrap，历史 Alembic `0001`–`0016`
 保持不变且只继续用于 PostgreSQL。
 
 ### 初始化与安全导入
@@ -461,6 +461,24 @@ cd ..
 
 资料操作会重新按数据库 `source_id` 查询文件，并校验解析后的本地路径位于配置的归档根目录内；打开和 Reveal 均使用固定参数数组调用 macOS `/usr/bin/open`。外部链接只允许无内嵌账号密码的 HTTPS URL。
 
+### AI Chat 本地附件
+
+AI Chat 输入器的第二行可选择本地附件。选择后应用只读取所选普通文件，并按 SHA-256
+去重复制到归档目录下的 `.ai_attachments/objects/`；不会移动、改名或删除用户选择的
+原始文件。符号链接、越界受控路径、复制期间变化及超过 2 GiB 的输入都会被拒绝。
+支持的文本/代码格式会生成有界正文派生、摘要和标签，聊天消息仅持久化附件 ID 关联；
+Bridge DTO 和 Agent 工具结果不包含本机绝对路径。
+
+Agent 默认先检索附件名称、摘要和标签，只在需要细节时通过附件 ID 调用
+`read_ai_attachment_text`；单次读取最多 12000 字符，本轮消息的工具实例只能读取本轮
+附件。云备份会在上传后重新获取远端元数据，并临时下载计算 SHA-256；只有大小和哈希
+均匹配后，才删除 `.ai_attachments` 内的应用受控副本并标记 `cloud_only`。用户原始文件
+不参与删除。读取云端正文时同样临时下载并校验；显式“在 Finder 中显示”会先恢复到
+受控目录，再以固定参数 `/usr/bin/open -R` 显示。
+
+对应 PostgreSQL 迁移为 `0015_add_ai_managed_files.py` 与
+`0016_link_ai_chat_attachments.py`；已有迁移文件不应改写语义。
+
 ### Phase 5A 验证
 
 ```bash
@@ -535,16 +553,24 @@ git diff --check
 
 默认运行时依赖在 `requirements.txt`；测试和打包工具在 `requirements-dev.txt`；PostgreSQL 迁移工具在 `requirements-postgres.txt`。开发和默认桌面构建均不要安装可选 PostgreSQL 驱动。
 
-### 构建未签名 macOS 应用
+### 构建 macOS 应用与 DMG
 
 ```bash
 scripts/build_macos_app.sh
+scripts/build_macos_dmg.sh
 ```
 
-脚本会创建/复用 `.venv`、安装开发依赖，先从保留的 AI 源图生成透明 1024 PNG、UI Logo、`.iconset` 与 `app.icns`，再执行前端 test/lint/build、Python 单测、许可证和秘密扫描，随后用 `packaging/desktop.spec` 输出：
+第一个脚本会创建/复用 `.venv`、安装开发依赖，先从保留的 AI 源图生成透明 1024 PNG、UI Logo、`.iconset` 与 `app.icns`，再执行前端 test/lint/build、Python 单测、许可证和秘密扫描，随后用 `packaging/desktop.spec` 输出：
 
 ```text
 dist/SJTU Learning Assistant.app
+```
+
+第二个脚本会将已验证的 `.app` 与 Applications 快捷方式封装为压缩 DMG，并同时生成 SHA-256 校验文件：
+
+```text
+dist/SJTU-Learning-Assistant-<version>-macOS-<arch>.dmg
+dist/SJTU-Learning-Assistant-<version>-macOS-<arch>.dmg.sha256
 ```
 
 品牌源图保存在 `packaging/assets/app-icon-source.jpg` 与 `dashboard-web/src/assets/app-logo-source.jpg`，生成物分别为 `packaging/assets/app-icon.png`、`packaging/app.icns` 和 `dashboard-web/src/assets/app-logo.png`，可通过 `scripts/generate_macos_icon.py` 重现。

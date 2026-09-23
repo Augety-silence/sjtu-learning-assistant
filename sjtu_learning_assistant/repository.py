@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.models import (
+    AIFileDerivative,
+    AIManagedFile,
     Announcement,
     Assignment,
     CloudFile,

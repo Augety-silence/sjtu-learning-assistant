@@ -16,8 +16,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: 安装 Python 运行依赖
-        run: python -m pip install -r requirements.txt
+      - name: 安装 Python 测试依赖
+        run: python -m pip install -r requirements-dev.txt
       - name: 运行 Python 单元测试
         run: python -m unittest discover -s tests -v
 
@@ -30,10 +30,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.22.0"
+          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: dashboard-web/package-lock.json
-      - run: npm ci
+      - name: 固定 npm 版本
+        run: npm install --global npm@11.6.0
+      - name: 安装前端依赖
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
       - run: npm run test
       - run: npm run lint
       - run: npm run build
@@ -48,11 +52,15 @@ jobs:
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.22.0"
+          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: dashboard-web/package-lock.json
+      - name: 固定 npm 版本
+        run: npm install --global npm@11.6.0
       - run: python -m pip install -r requirements-dev.txt
-      - run: npm --prefix dashboard-web ci
+      - name: 安装许可证检查依赖
+        run: npm --prefix dashboard-web ci --no-audit --no-fund || npm --prefix dashboard-web install --no-audit --no-fund
       - run: python scripts/check_licenses.py
       - run: node scripts/check_licenses.mjs
 
@@ -78,9 +86,12 @@ jobs:
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.22.0"
+          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: dashboard-web/package-lock.json
+      - name: 固定 npm 版本
+        run: npm install --global npm@11.6.0
       - name: 构建并验证未签名 .app
         run: scripts/build_macos_app.sh
       - name: 打包 artifact（不签名、不公证）

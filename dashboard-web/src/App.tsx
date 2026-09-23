@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
@@ -18,6 +19,7 @@ const views: ViewName[] = [
   "assignments",
   "materials",
   "backup",
+  "ai-chat",
   "settings",
 ];
 
@@ -104,6 +106,9 @@ export default function App() {
   };
 
   const syncing = syncRequested || syncStatus?.status === "syncing";
+  if (view === "ai-chat") {
+    return <AIChatView onBack={() => setView("overview")} />;
+  }
   return (
     <AppShell
       view={view}

@@ -498,6 +498,194 @@ class NotificationEvent(TimestampMixin, Base):
     )
 
 
+class AIManagedFile(TimestampMixin, Base):
+    """A deduplicated copy owned by the application, never the user's source file."""
+
+    __tablename__ = "ai_managed_files"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="local")
+    controlled_relpath: Mapped[str | None] = mapped_column(Text)
+    cloud_provider: Mapped[str | None] = mapped_column(String(64))
+    cloud_remote_id: Mapped[str | None] = mapped_column(String(512))
+    cloud_path: Mapped[str | None] = mapped_column(Text)
+    cloud_size: Mapped[int | None] = mapped_column(BigInteger)
+    cloud_sha256: Mapped[str | None] = mapped_column(String(64))
+    cloud_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    derivative: Mapped["AIFileDerivative | None"] = relationship(
+        back_populates="managed_file", cascade="all, delete-orphan", uselist=False
+    )
+    message_links: Mapped[list["AIChatMessageAttachment"]] = relationship(
+        back_populates="managed_file"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('local', 'cloud_only', 'failed')",
+            name="ck_ai_managed_files_status",
+        ),
+        CheckConstraint("size >= 0", name="ck_ai_managed_files_size_nonnegative"),
+        Index("ix_ai_managed_files_status", "status"),
+    )
+
+
+class AIFileDerivative(TimestampMixin, Base):
+    """Searchable, bounded text derivative for an application-managed file."""
+
+    __tablename__ = "ai_file_derivatives"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    managed_file_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_managed_files.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    summary: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list, nullable=False)
+    text_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    text: Mapped[str | None] = mapped_column(Text)
+    extractor: Mapped[str | None] = mapped_column(String(64))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    managed_file: Mapped[AIManagedFile] = relationship(back_populates="derivative")
+
+    __table_args__ = (
+        CheckConstraint(
+            "text_status IN ('pending', 'ready', 'unsupported', 'failed', 'unavailable')",
+            name="ck_ai_file_derivatives_text_status",
+        ),
+        Index("ix_ai_file_derivatives_text_status", "text_status"),
+    )
+
+
+class AIChatSession(TimestampMixin, Base):
+    __tablename__ = "ai_chat_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    thinking_depth: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    preset_id: Mapped[str] = mapped_column(
+        String(32), default="general", server_default="general", nullable=False
+    )
+
+    messages: Mapped[list["AIChatMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    traces: Mapped[list["AIAgentTrace"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "thinking_depth IN ('quick', 'standard', 'deep')",
+            name="ck_ai_chat_sessions_thinking_depth",
+        ),
+        Index("ix_ai_chat_sessions_updated_at", "updated_at"),
+    )
+
+
+class AIChatMessage(Base):
+    __tablename__ = "ai_chat_messages"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    reasoning_content: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(64))
+    trace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_agent_traces.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[AIChatSession] = relationship(back_populates="messages")
+    trace: Mapped["AIAgentTrace | None"] = relationship(back_populates="messages")
+    attachment_links: Mapped[list["AIChatMessageAttachment"]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="AIChatMessageAttachment.position",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_ai_chat_messages_sequence"),
+        CheckConstraint(
+            "role IN ('user', 'assistant')", name="ck_ai_chat_messages_role"
+        ),
+        Index("ix_ai_chat_messages_session", "session_id", "sequence"),
+        Index("ix_ai_chat_messages_trace", "trace_id"),
+    )
+
+
+class AIChatMessageAttachment(Base):
+    """Stable ordered link from a user chat message to a managed attachment."""
+
+    __tablename__ = "ai_chat_message_attachments"
+
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_chat_messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    managed_file_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_managed_files.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    message: Mapped[AIChatMessage] = relationship(back_populates="attachment_links")
+    managed_file: Mapped[AIManagedFile] = relationship(back_populates="message_links")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "position", name="uq_ai_chat_message_attachments_position"
+        ),
+        CheckConstraint(
+            "position >= 0 AND position < 20",
+            name="ck_ai_chat_message_attachments_position",
+        ),
+        Index("ix_ai_chat_message_attachments_file", "managed_file_id"),
+    )
+
+
+class AIAgentTrace(Base):
+    __tablename__ = "ai_agent_traces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    preset_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    steps: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_runs: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_TYPE, default=list, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[AIChatSession] = relationship(back_populates="traces")
+    messages: Mapped[list[AIChatMessage]] = relationship(back_populates="trace")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('completed', 'max_steps', 'timeout', 'failed')",
+            name="ck_ai_agent_traces_status",
+        ),
+        CheckConstraint("steps >= 0 AND steps <= 6", name="ck_ai_agent_traces_steps"),
+        Index("ix_ai_agent_traces_session", "session_id", "created_at"),
+    )
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

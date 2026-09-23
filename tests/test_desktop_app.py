@@ -71,6 +71,12 @@ class FakeService:
     def settings_status(self):
         return {"missing": []}
 
+    def ai_chat(self, messages):
+        return {"reply": messages[-1]["content"], "model": "qwen"}
+
+    def ai_attachment_ingest(self, path):
+        return {"id": 7, "name": path.rsplit("/", 1)[-1], "status": "local"}
+
     def open_external(self, url):
         return {"url": url, "status": "opened"}
 
@@ -142,6 +148,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("not_allowed", self.bridge.invoke("__dict__")["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("messages", {"kind": "secret"})["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("material_open", {"source_id": ""})["error"]["code"])
+        chat = self.bridge.invoke("ai_chat", {"messages": [{"role": "user", "content": "你好"}]})
+        self.assertEqual("你好", chat["data"]["reply"])
+        self.assertEqual("operation_failed", self.bridge.invoke("ai_chat", {})["error"]["code"])
         moved = self.bridge.invoke(
             "material_move",
             {"source_id": "file-1", "target_node_id": "category:course-1:other"},
@@ -271,6 +280,26 @@ class DesktopBridgeTests(unittest.TestCase):
                 "operation_failed",
                 bridge.invoke("backup_token_delete", {"token": secret})["error"]["code"],
             )
+
+    def test_ai_attachment_ingest_is_strictly_allowlisted(self):
+        result = self.bridge.invoke(
+            "ai_attachment_ingest", {"path": "/tmp/lecture-notes.md"}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("lecture-notes.md", result["data"]["name"])
+        self.assertNotIn("path", result["data"])
+        for payload in (
+            {},
+            {"path": "relative.txt"},
+            {"path": "/tmp/file.txt", "extra": True},
+            {"path": 42},
+            {"path": "/tmp/bad\x00.txt"},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    "operation_failed",
+                    self.bridge.invoke("ai_attachment_ingest", payload)["error"]["code"],
+                )
 
     def test_local_file_must_come_from_native_picker(self):
         import tempfile

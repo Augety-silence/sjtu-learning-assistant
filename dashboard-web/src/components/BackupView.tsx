@@ -2,12 +2,7 @@ import { CloudUpload, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
-import {
-  deleteBackupToken,
-  getBackupStatus,
-  saveBackupToken,
-  startCloudBackup,
-} from "@/lib/api";
+import { getBackupStatus, startCloudBackup } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { BackupFailure, BackupResult, BackupStatus } from "@/lib/types";
 
@@ -104,10 +99,6 @@ export function BackupView() {
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [watching, setWatching] = useState(false);
-  const [token, setToken] = useState("");
-  const [credentialBusy, setCredentialBusy] = useState<"save" | "delete" | "">(
-    "",
-  );
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -158,49 +149,6 @@ export function BackupView() {
       );
     } finally {
       setStarting(false);
-    }
-  };
-
-  const saveToken = async () => {
-    if (!token.trim() || credentialBusy) return;
-    setCredentialBusy("save");
-    setOperationFailed(false);
-    setOperationMessage("正在将 UserToken 保存到 macOS Keychain…");
-    try {
-      await saveBackupToken(token);
-      setToken("");
-      setOperationMessage("UserToken 已保存到 macOS Keychain。");
-      await load();
-    } catch (reason) {
-      setOperationFailed(true);
-      setOperationMessage(
-        reason instanceof Error ? reason.message : "UserToken 保存失败",
-      );
-    } finally {
-      setCredentialBusy("");
-    }
-  };
-
-  const deleteToken = async () => {
-    if (credentialBusy) return;
-    if (!window.confirm("确定从 macOS Keychain 删除交大云盘 UserToken？")) {
-      return;
-    }
-    setCredentialBusy("delete");
-    setOperationFailed(false);
-    setOperationMessage("正在删除 macOS Keychain 中的 UserToken…");
-    try {
-      await deleteBackupToken();
-      setToken("");
-      setOperationMessage("UserToken 已从 macOS Keychain 删除。");
-      await load();
-    } catch (reason) {
-      setOperationFailed(true);
-      setOperationMessage(
-        reason instanceof Error ? reason.message : "UserToken 删除失败",
-      );
-    } finally {
-      setCredentialBusy("");
     }
   };
 
@@ -288,53 +236,9 @@ export function BackupView() {
 
         <div className="backup-credentials">
           <div>
-            <strong>交大云盘 UserToken</strong>
-            <small>UserToken 仅存入 macOS Keychain，不会写入本地设置。</small>
+            <strong>交大云盘连接</strong>
+            <small>UserToken 已统一移至“系统设置 → 交大云盘”管理。</small>
           </div>
-          {backup.available ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={Boolean(credentialBusy) || running}
-              loading={credentialBusy === "delete"}
-              loadingLabel="正在删除…"
-              onClick={() => void deleteToken()}
-            >
-              删除凭据
-            </Button>
-          ) : (
-            <form
-              className="backup-token-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void saveToken();
-              }}
-            >
-              <label className="sr-only" htmlFor="backup-user-token">
-                交大云盘 UserToken
-              </label>
-              <input
-                id="backup-user-token"
-                type="password"
-                autoComplete="new-password"
-                spellCheck={false}
-                maxLength={4096}
-                value={token}
-                disabled={Boolean(credentialBusy)}
-                placeholder="输入 UserToken"
-                onChange={(event) => setToken(event.target.value)}
-              />
-              <Button
-                type="submit"
-                variant="outline"
-                disabled={!token.trim() || Boolean(credentialBusy)}
-                loading={credentialBusy === "save"}
-                loadingLabel="正在保存…"
-              >
-                保存到 Keychain
-              </Button>
-            </form>
-          )}
         </div>
 
         <dl className="backup-counts" aria-label="备份候选统计">

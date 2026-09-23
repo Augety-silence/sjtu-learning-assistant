@@ -1,12 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  BookOpen,
+  Bot,
+  Cloud,
+  Database,
+  ExternalLink,
+  Mail,
+  Pencil,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
+  deleteCredential,
   getSettings,
-  importAiConnection,
+  openExternal,
   organizeArchive,
   pickArchiveRoot,
+  saveCredential,
   testAiConnection,
   updateSettings,
 } from "@/lib/api";
@@ -20,6 +33,40 @@ const AI_MODELS = [
   "qwen",
   "qwen3.8-27b",
 ] as const;
+const CONFIGURATION_GUIDE_URL =
+  "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f";
+type ConfigKind = "canvas" | "mail" | "cloud" | "ai";
+
+const configMeta = {
+  canvas: {
+    title: "Canvas",
+    description: "课程、公告、作业与资料同步",
+    secretLabel: "Canvas Access Token",
+    placeholder: "粘贴 Canvas Access Token",
+    icon: Database,
+  },
+  mail: {
+    title: "交大邮箱",
+    description: "邮件正文、内嵌图片与附件同步",
+    secretLabel: "邮箱密码",
+    placeholder: "输入邮箱密码",
+    icon: Mail,
+  },
+  cloud: {
+    title: "交大云盘",
+    description: "Canvas 文件与邮件附件云端归档",
+    secretLabel: "UserToken",
+    placeholder: "粘贴交大云盘 UserToken",
+    icon: Cloud,
+  },
+  ai: {
+    title: "AI 模型",
+    description: "AI Chat 与资料自动分类",
+    secretLabel: "API Key",
+    placeholder: "粘贴 API Key",
+    icon: Bot,
+  },
+} as const;
 
 export function SettingsView({
   onArchiveChanged,
@@ -29,18 +76,19 @@ export function SettingsView({
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [editing, setEditing] = useState<ConfigKind | null>(null);
   const [mailAccount, setMailAccount] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModel, setAiModel] = useState("");
-  const [connectionJson, setConnectionJson] = useState("");
+  const [secret, setSecret] = useState("");
   const { showToast } = useToast();
 
-  const applyStatus = (next: SettingsStatus) => {
+  const applyStatus = useCallback((next: SettingsStatus) => {
     setStatus(next);
     setMailAccount(next.mail_account);
     setAiBaseUrl(next.ai_base_url);
     setAiModel(next.ai_model);
-  };
+  }, []);
 
   const load = useCallback(async () => {
     setError("");
@@ -49,7 +97,7 @@ export function SettingsView({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "设置状态读取失败");
     }
-  }, []);
+  }, [applyStatus]);
 
   useEffect(() => {
     void load();
@@ -68,20 +116,17 @@ export function SettingsView({
       >
     >,
   ) => {
-    const toastId = "settings-update";
     setBusy("update");
-    showToast({
-      id: toastId,
-      kind: "info",
-      message: "正在保存设置…",
-      duration: 0,
-    });
     try {
       applyStatus(await updateSettings(changes));
-      showToast({ id: toastId, kind: "success", message: "设置已保存。" });
+      showToast({
+        id: "settings-update",
+        kind: "success",
+        message: "设置已保存。",
+      });
     } catch (reason) {
       showToast({
-        id: toastId,
+        id: "settings-update",
         kind: "error",
         message: reason instanceof Error ? reason.message : "设置保存失败",
       });
@@ -90,77 +135,101 @@ export function SettingsView({
     }
   };
 
-  const importConnection = async () => {
-    const toastId = "settings-ai-import";
-    setBusy("ai-import");
-    showToast({
-      id: toastId,
-      kind: "info",
-      message: "正在保存 AI 连接…",
-      duration: 0,
-    });
+  const saveConfig = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editing) return;
+    setBusy(`save-${editing}`);
     try {
-      applyStatus(await importAiConnection(connectionJson));
-      setConnectionJson("");
+      let next = status as SettingsStatus;
+      if (editing === "mail") {
+        next = await updateSettings({ mail_account: mailAccount.trim() });
+        if (secret.trim()) {
+          next = await saveCredential("mail", secret, mailAccount.trim());
+        }
+      } else if (editing === "ai") {
+        next = await updateSettings({
+          ai_base_url: aiBaseUrl.trim(),
+          ai_model: aiModel,
+        });
+        if (secret.trim()) next = await saveCredential("ai", secret);
+      } else if (secret.trim()) {
+        next = await saveCredential(editing, secret);
+      }
+      applyStatus(next);
+      setSecret("");
+      setEditing(null);
       showToast({
-        id: toastId,
+        id: "settings-credential",
         kind: "success",
-        message: "AI 连接已保存；API key 仅存入 macOS Keychain。",
+        message: `${configMeta[editing].title} 配置已保存。敏感信息仅存入 macOS Keychain。`,
       });
     } catch (reason) {
       showToast({
-        id: toastId,
+        id: "settings-credential",
         kind: "error",
-        message: reason instanceof Error ? reason.message : "AI 连接保存失败",
+        message: reason instanceof Error ? reason.message : "配置保存失败",
       });
     } finally {
       setBusy("");
     }
   };
 
-  const testConnection = async () => {
-    const toastId = "settings-ai-test";
-    setBusy("ai-test");
-    showToast({
-      id: toastId,
-      kind: "info",
-      message: "正在测试 AI 连接…",
-      duration: 0,
-    });
+  const removeCredential = async () => {
+    if (
+      !editing ||
+      !window.confirm(`确定删除${configMeta[editing].secretLabel}？`)
+    )
+      return;
+    setBusy(`delete-${editing}`);
     try {
-      const result = await testAiConnection();
+      applyStatus(
+        await deleteCredential(
+          editing,
+          editing === "mail" ? mailAccount.trim() : "",
+        ),
+      );
+      setSecret("");
       showToast({
-        id: toastId,
+        id: "settings-credential",
         kind: "success",
-        message: `AI 连接测试成功：${result.model} 返回 ${result.category}。`,
+        message: "凭据已删除。",
       });
     } catch (reason) {
       showToast({
-        id: toastId,
+        id: "settings-credential",
         kind: "error",
-        message: reason instanceof Error ? reason.message : "AI 连接测试失败",
+        message: reason instanceof Error ? reason.message : "凭据删除失败",
       });
     } finally {
       setBusy("");
+    }
+  };
+
+  const openConfigurationGuide = async () => {
+    try {
+      await openExternal(CONFIGURATION_GUIDE_URL);
+    } catch (reason) {
+      showToast({
+        id: "settings-guide",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "配置指南打开失败",
+      });
     }
   };
 
   const chooseFolder = async () => {
-    const toastId = "settings-pick-folder";
     setBusy("pick");
     try {
       const result = await pickArchiveRoot();
       applyStatus(result.settings);
       showToast({
-        id: toastId,
+        id: "settings-pick-folder",
         kind: result.cancelled ? "info" : "success",
-        message: result.cancelled
-          ? "已取消选择，归档目录未更改。"
-          : "归档目录已更新。",
+        message: result.cancelled ? "已取消选择。" : "归档目录已更新。",
       });
     } catch (reason) {
       showToast({
-        id: toastId,
+        id: "settings-pick-folder",
         kind: "error",
         message: reason instanceof Error ? reason.message : "目录选择失败",
       });
@@ -170,25 +239,18 @@ export function SettingsView({
   };
 
   const organize = async () => {
-    const toastId = "settings-organize";
     setBusy("organize");
-    showToast({
-      id: toastId,
-      kind: "info",
-      message: "正在执行 AI 归档分类与整理…",
-      duration: 0,
-    });
     try {
       const result = await organizeArchive();
       showToast({
-        id: toastId,
+        id: "settings-organize",
         kind: result.failed > 0 ? "info" : "success",
         message: `AI 归档完成：新分类 ${result.classified}，复用 ${result.reused}，规则回退 ${result.fallback}；移动 ${result.moved}，无需移动 ${result.unchanged}，失败 ${result.failed}。`,
       });
       onArchiveChanged?.();
     } catch (reason) {
       showToast({
-        id: toastId,
+        id: "settings-organize",
         kind: "error",
         message: reason instanceof Error ? reason.message : "整理失败",
       });
@@ -197,182 +259,360 @@ export function SettingsView({
     }
   };
 
+  const testAI = async () => {
+    setBusy("ai-test");
+    try {
+      const result = await testAiConnection();
+      showToast({
+        id: "settings-ai-test",
+        kind: "success",
+        message: `AI 连接测试成功：${result.model}。`,
+      });
+    } catch (reason) {
+      showToast({
+        id: "settings-ai-test",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "AI 连接测试失败",
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+
   if (!status && error) return <ErrorState message={error} retry={load} />;
-  if (!status) return <LoadingState label="正在读取归档设置…" />;
+  if (!status) return <LoadingState label="正在读取系统设置…" />;
+
+  const savedByKind: Record<ConfigKind, boolean> = {
+    canvas: status.canvas_token_saved,
+    mail: status.mail_password_saved,
+    cloud: status.cloud_token_saved,
+    ai: status.ai_key_saved,
+  };
 
   return (
     <div className="section-stack settings-page">
       <div className="view-intro">
         <div>
-          <h2>归档与同步偏好</h2>
-          <p>配置当前学期资料的自动归档、AI 分类与目录整理方式。</p>
-        </div>
-      </div>
-      <div className="settings-list">
-        <div className="settings-row settings-path-row">
-          <div>
-            <strong>资料归档目录</strong>
-            <span title={status.archive_root}>{status.archive_root}</span>
-          </div>
-          <Button
-            variant="outline"
-            disabled={Boolean(busy)}
-            onClick={() => void chooseFolder()}
-          >
-            {busy === "pick" ? "选择中…" : "选择目录"}
-          </Button>
-        </div>
-        <div className="settings-row settings-account-row">
-          <div>
-            <label htmlFor="mail-account">
-              <strong>邮箱账号</strong>
-            </label>
-            <small>
-              {status.mail_account
-                ? "同步将同时运行 Canvas 与邮箱。"
-                : "未设置邮箱账号；当前同步仅运行 Canvas。"}
-              密码不会保存在设置中，仅在同步时按需从 macOS Keychain 读取。
-            </small>
-          </div>
-          <div className="settings-account-controls">
-            <input
-              id="mail-account"
-              type="text"
-              autoComplete="username"
-              value={mailAccount}
-              disabled={Boolean(busy)}
-              onChange={(event) => setMailAccount(event.target.value)}
-              placeholder="邮箱地址或账号标识"
-            />
-            <Button
-              variant="outline"
-              disabled={Boolean(busy)}
-              onClick={() => void update({ mail_account: mailAccount.trim() })}
-            >
-              {busy === "update" ? "保存中…" : "保存邮箱账号"}
-            </Button>
-          </div>
-        </div>
-        <ToggleRow
-          label="自动下载本学期资料"
-          description="每次 Canvas 同步后自动下载最近 active 课程；历史学期仍需单文件下载。"
-          checked={status.auto_download_current_term}
-          disabled={Boolean(busy)}
-          onChange={(checked) =>
-            void update({ auto_download_current_term: checked })
-          }
-        />
-        <ToggleRow
-          label="按类别整理"
-          description="路径中增加课程作业、课件、补充资料或其他分类层级。"
-          checked={status.organize_by_category}
-          disabled={Boolean(busy)}
-          onChange={(checked) => void update({ organize_by_category: checked })}
-        />
-      </div>
-
-      <section className="ai-settings" aria-labelledby="ai-settings-title">
-        <div>
-          <h3 id="ai-settings-title">AI 增量归档分类</h3>
+          <h2>系统设置</h2>
           <p>
-            AI 只处理课程名、文件名、Canvas
-            文件夹及模块元数据，不会上传文件正文。
+            统一管理 Canvas、邮箱、交大云盘与 AI。凭据不会显示或写入设置文件。
           </p>
         </div>
-        <ToggleRow
-          label="启用 AI 归档分类"
-          description={
-            status.ai_key_saved
-              ? "API key 已保存在 macOS Keychain。"
-              : "尚未保存 API key；未配置时会安全回退规则分类。"
-          }
-          checked={status.ai_enabled}
-          disabled={Boolean(busy)}
-          onChange={(checked) => void update({ ai_enabled: checked })}
-        />
-        <div className="ai-settings-grid">
-          <label htmlFor="ai-base-url">
-            <span>Base URL</span>
-            <input
-              id="ai-base-url"
-              value={aiBaseUrl}
-              disabled={Boolean(busy)}
-              onChange={(event) => setAiBaseUrl(event.target.value)}
-            />
-          </label>
-          <label htmlFor="ai-model">
-            <span>模型</span>
-            <select
-              id="ai-model"
-              value={aiModel}
-              disabled={Boolean(busy)}
-              onChange={(event) => setAiModel(event.target.value)}
-            >
-              {AI_MODELS.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Button
-            variant="outline"
-            disabled={Boolean(busy)}
-            onClick={() =>
-              void update({
-                ai_base_url: aiBaseUrl.trim(),
-                ai_model: aiModel,
-              })
-            }
+      </div>
+
+      {status.credential_status_error && (
+        <p className="settings-warning" role="status">
+          {status.credential_status_error}
+        </p>
+      )}
+
+      <section
+        className="configuration-section"
+        aria-labelledby="configuration-title"
+      >
+        <div className="section-header">
+          <div>
+            <h3 id="configuration-title">连接配置</h3>
+            <p>集中管理连接凭据；敏感信息只保存到 macOS 钥匙串。</p>
+          </div>
+          <button
+            type="button"
+            className="configuration-guide-link"
+            aria-label="打开连接配置指南"
+            onClick={() => void openConfigurationGuide()}
           >
-            保存 AI 参数
-          </Button>
+            <BookOpen aria-hidden="true" />
+            <span>配置指南</span>
+            <ExternalLink aria-hidden="true" />
+          </button>
         </div>
-        <label className="ai-json-field" htmlFor="ai-connection-json">
-          <span>粘贴连接配置 JSON</span>
-          <small>
-            首次 macOS 授权请选择“始终允许”；本次运行后不再重复询问。
-          </small>
-          <textarea
-            id="ai-connection-json"
-            aria-label="粘贴连接配置 JSON"
-            value={connectionJson}
-            disabled={Boolean(busy)}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => setConnectionJson(event.target.value)}
-            placeholder={
-              '{"_type":"newapi_channel_conn","url":"https://…/api/v1","key":"…","model":"deepseek-chat"}'
-            }
-          />
-        </label>
-        <div className="ai-settings-actions">
-          <Button
-            variant="outline"
-            disabled={Boolean(busy) || !connectionJson.trim()}
-            onClick={() => void importConnection()}
-          >
-            {busy === "ai-import" ? "保存中…" : "保存连接配置"}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={Boolean(busy) || !status.ai_key_saved}
-            onClick={() => void testConnection()}
-          >
-            {busy === "ai-test" ? "测试中…" : "测试 AI 归档连接"}
-          </Button>
+        <div className="configuration-grid">
+          {(Object.keys(configMeta) as ConfigKind[]).map((kind) => {
+            const meta = configMeta[kind];
+            const Icon = meta.icon;
+            return (
+              <article className="configuration-card" key={kind}>
+                <span className="configuration-icon">
+                  <Icon aria-hidden="true" />
+                </span>
+                <div>
+                  <h4>{meta.title}</h4>
+                  <p>{meta.description}</p>
+                  <span
+                    className={
+                      savedByKind[kind]
+                        ? "config-status configured"
+                        : "config-status"
+                    }
+                  >
+                    {savedByKind[kind] ? "已配置" : "未配置"}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="configuration-edit-button"
+                  onClick={() => {
+                    setSecret("");
+                    setEditing(kind);
+                  }}
+                >
+                  <Pencil aria-hidden="true" />
+                  修改配置
+                </Button>
+              </article>
+            );
+          })}
         </div>
       </section>
 
-      <div className="settings-actions">
-        <Button
-          disabled={Boolean(busy) || !status.organize_by_category}
-          onClick={() => void organize()}
-        >
-          {busy === "organize" ? "正在分类整理…" : "AI 归档分类/整理"}
-        </Button>
-        <span>仅处理最近同步的 Canvas active 课程，不触碰历史课程。</span>
-      </div>
+      <section
+        className="settings-panel"
+        aria-labelledby="archive-settings-title"
+      >
+        <div className="section-header">
+          <div>
+            <h3 id="archive-settings-title">归档偏好</h3>
+            <p>控制本地资料目录和自动整理行为。</p>
+          </div>
+        </div>
+        <div className="settings-list">
+          <div className="settings-row settings-path-row">
+            <div>
+              <strong>资料归档目录</strong>
+              <span title={status.archive_root}>{status.archive_root}</span>
+            </div>
+            <Button
+              variant="outline"
+              disabled={Boolean(busy)}
+              onClick={() => void chooseFolder()}
+            >
+              {busy === "pick" ? "选择中…" : "选择目录"}
+            </Button>
+          </div>
+          <ToggleRow
+            label="自动下载本学期资料"
+            description="Canvas 同步后下载最近 active 课程资料。"
+            checked={status.auto_download_current_term}
+            disabled={Boolean(busy)}
+            onChange={(checked) =>
+              void update({ auto_download_current_term: checked })
+            }
+          />
+          <ToggleRow
+            label="按类别整理"
+            description="按作业、课件和其他资料整理文件。"
+            checked={status.organize_by_category}
+            disabled={Boolean(busy)}
+            onChange={(checked) =>
+              void update({ organize_by_category: checked })
+            }
+          />
+          <ToggleRow
+            label="启用 AI 归档分类"
+            description={
+              status.ai_key_saved
+                ? "使用已保存的 AI 配置辅助归档。"
+                : "未配置时自动回退规则分类。"
+            }
+            checked={status.ai_enabled}
+            disabled={Boolean(busy)}
+            onChange={(checked) => void update({ ai_enabled: checked })}
+          />
+        </div>
+        <div className="settings-actions">
+          <Button
+            disabled={Boolean(busy) || !status.organize_by_category}
+            onClick={() => void organize()}
+          >
+            {busy === "organize" ? "正在分类整理…" : "AI 归档分类/整理"}
+          </Button>
+          <span>仅处理最近同步的 Canvas active 课程。</span>
+        </div>
+      </section>
+
+      {editing && (
+        <ConfigDialog
+          kind={editing}
+          saved={savedByKind[editing]}
+          busy={Boolean(busy)}
+          mailAccount={mailAccount}
+          aiBaseUrl={aiBaseUrl}
+          aiModel={aiModel}
+          secret={secret}
+          onMailAccount={setMailAccount}
+          onAiBaseUrl={setAiBaseUrl}
+          onAiModel={setAiModel}
+          onSecret={setSecret}
+          onClose={() => {
+            if (!busy) setEditing(null);
+          }}
+          onSave={saveConfig}
+          onDelete={() => void removeCredential()}
+          onTestAI={() => void testAI()}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConfigDialog({
+  kind,
+  saved,
+  busy,
+  mailAccount,
+  aiBaseUrl,
+  aiModel,
+  secret,
+  onMailAccount,
+  onAiBaseUrl,
+  onAiModel,
+  onSecret,
+  onClose,
+  onSave,
+  onDelete,
+  onTestAI,
+}: {
+  kind: ConfigKind;
+  saved: boolean;
+  busy: boolean;
+  mailAccount: string;
+  aiBaseUrl: string;
+  aiModel: string;
+  secret: string;
+  onMailAccount: (value: string) => void;
+  onAiBaseUrl: (value: string) => void;
+  onAiModel: (value: string) => void;
+  onSecret: (value: string) => void;
+  onClose: () => void;
+  onSave: (event: FormEvent) => void;
+  onDelete: () => void;
+  onTestAI: () => void;
+}) {
+  const meta = configMeta[kind];
+  const canSave =
+    (kind === "mail" ? Boolean(mailAccount.trim()) : true) &&
+    (kind === "ai" || kind === "mail" ? true : Boolean(secret.trim()));
+  return (
+    <div
+      className="config-dialog-layer"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="config-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="config-dialog-title"
+      >
+        <header>
+          <div>
+            <h3 id="config-dialog-title">{meta.title} 配置</h3>
+            <p>{meta.description}</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="关闭配置窗口"
+            onClick={onClose}
+          >
+            <X aria-hidden="true" />
+          </Button>
+        </header>
+        <form onSubmit={onSave}>
+          <div className="credential-note">
+            <ShieldCheck aria-hidden="true" />
+            <span>敏感信息只保存在 macOS Keychain。已保存的内容不会回显。</span>
+          </div>
+          {kind === "mail" && (
+            <label>
+              <span>邮箱账号</span>
+              <input
+                aria-label="邮箱账号"
+                type="text"
+                value={mailAccount}
+                onChange={(event) => onMailAccount(event.target.value)}
+                placeholder="name@sjtu.edu.cn"
+                autoComplete="username"
+              />
+            </label>
+          )}
+          {kind === "ai" && (
+            <>
+              <label>
+                <span>Base URL</span>
+                <input
+                  value={aiBaseUrl}
+                  onChange={(event) => onAiBaseUrl(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>默认模型</span>
+                <select
+                  value={aiModel}
+                  onChange={(event) => onAiModel(event.target.value)}
+                >
+                  {AI_MODELS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
+          <label>
+            <span>
+              {meta.secretLabel}
+              {saved ? "（留空则保持不变）" : ""}
+            </span>
+            <input
+              aria-label={meta.secretLabel}
+              type="password"
+              value={secret}
+              onChange={(event) => onSecret(event.target.value)}
+              placeholder={meta.placeholder}
+              autoComplete="new-password"
+            />
+          </label>
+          <footer>
+            {saved && (
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={busy}
+                onClick={onDelete}
+              >
+                删除凭据
+              </Button>
+            )}
+            {kind === "ai" && saved && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={onTestAI}
+              >
+                测试连接
+              </Button>
+            )}
+            <span />
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={onClose}
+            >
+              取消
+            </Button>
+            <Button type="submit" disabled={busy || !canSave}>
+              {busy ? "保存中…" : "保存配置"}
+            </Button>
+          </footer>
+        </form>
+      </section>
     </div>
   );
 }

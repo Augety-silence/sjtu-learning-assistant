@@ -189,7 +189,7 @@ class LegacySQLiteUpgradeTests(unittest.TestCase):
             self.assertIn("body_text", {column["name"] for column in inspect(engine).get_columns("emails")})
             with engine.connect() as connection:
                 self.assertEqual("保留", connection.exec_driver_sql("SELECT subject FROM emails WHERE source_id='old'").scalar_one())
-            self.assertEqual("0012", get_schema_version(engine))
+            self.assertEqual("0016", get_schema_version(engine))
             engine.dispose()
 
 

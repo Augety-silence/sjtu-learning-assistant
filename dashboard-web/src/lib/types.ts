@@ -5,7 +5,115 @@ export type ViewName =
   | "assignments"
   | "materials"
   | "backup"
+  | "ai-chat"
   | "settings";
+
+export type AIModel =
+  | "auto"
+  | "deepseek-chat"
+  | "deepseek-reasoner"
+  | "minimax"
+  | "minimax-m2.7"
+  | "qwen"
+  | "qwen3.8-27b";
+export type AIThinkingDepth = "quick" | "standard" | "deep";
+export type AIChatSendShortcut = "enter" | "cmd_enter";
+export type AIReplyLanguage = "auto" | "zh" | "en";
+export type AIAttachmentContextBudget = "economy" | "balanced" | "deep";
+
+export interface AIChatPreferences {
+  ai_chat_send_shortcut: AIChatSendShortcut;
+  ai_reply_language: AIReplyLanguage;
+  ai_attachment_context_budget: AIAttachmentContextBudget;
+  ai_auto_open_activity: boolean;
+  ai_code_line_numbers: boolean;
+}
+
+export type AIToolRunPhase = "prefetch" | "model";
+export type AIToolRunStatus = "ok" | "rejected";
+
+export interface AIToolRun {
+  tool_name: string;
+  phase: AIToolRunPhase;
+  status: AIToolRunStatus;
+  arguments_summary: unknown;
+  result_summary: unknown;
+}
+
+export interface AIAgentTrace {
+  id: string;
+  preset_id: string;
+  status: string;
+  steps: number;
+  tool_runs: AIToolRun[];
+  created_at?: string | null;
+}
+
+export interface AIAgentPreset {
+  id: string;
+  name: string;
+  description: string;
+  allowed_tools: string[];
+  is_default: boolean;
+}
+
+export interface AIAgentPresetsResult {
+  default_preset_id: string;
+  items: AIAgentPreset[];
+}
+
+export interface AIManagedAttachment {
+  id: number;
+  name: string;
+  size: number;
+  sha256: string;
+  status: "local" | "cloud_only" | "failed";
+  cloud_ready: boolean;
+  summary: string | null;
+  tags: string[];
+  text_status: "pending" | "ready" | "unsupported" | "failed" | "unavailable";
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AIChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reasoning_content?: string | null;
+  model?: string | null;
+  trace_id?: string | null;
+  tool_runs?: AIToolRun[];
+  attachments?: AIManagedAttachment[];
+  created_at?: string | null;
+}
+
+export interface AIChatSessionSummary {
+  id: string;
+  title: string;
+  model: string;
+  thinking_depth: AIThinkingDepth;
+  preset_id: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AIChatSession extends AIChatSessionSummary {
+  messages: AIChatMessage[];
+  traces: AIAgentTrace[];
+}
+
+export interface AIChatSendResult {
+  session: AIChatSessionSummary;
+  trace: AIAgentTrace;
+  user_message: AIChatMessage;
+  assistant_message: AIChatMessage;
+}
+
+export interface AIChatResult {
+  reply: string;
+  model: string;
+}
 
 export interface Deadline {
   source_id: string;
@@ -129,10 +237,19 @@ export interface SettingsStatus {
   auto_download_current_term: boolean;
   organize_by_category: boolean;
   mail_account: string;
+  canvas_token_saved: boolean;
+  mail_password_saved: boolean;
+  cloud_token_saved: boolean;
+  credential_status_error: string | null;
   ai_enabled: boolean;
   ai_base_url: string;
   ai_model: string;
   ai_key_saved: boolean;
+  ai_chat_send_shortcut: AIChatSendShortcut;
+  ai_reply_language: AIReplyLanguage;
+  ai_attachment_context_budget: AIAttachmentContextBudget;
+  ai_auto_open_activity: boolean;
+  ai_code_line_numbers: boolean;
 }
 
 export interface MaterialMoveResult {

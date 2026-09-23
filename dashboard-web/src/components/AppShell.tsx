@@ -6,6 +6,7 @@ import {
   Home,
   type LucideIcon,
   Mail,
+  MessageCircle,
   RefreshCw,
   Settings,
 } from "lucide-react";
@@ -22,6 +23,7 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "assignments", label: "作业中心", icon: ClipboardCheck },
   { id: "materials", label: "课程资料", icon: FolderOpen },
   { id: "backup", label: "云盘备份", icon: CloudUpload },
+  { id: "ai-chat", label: "AI Chat", icon: MessageCircle },
   { id: "settings", label: "设置", icon: Settings },
 ];
 

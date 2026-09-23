@@ -103,8 +103,8 @@ class ArchiveSchemaTests(unittest.TestCase):
                 with patch(
                     "sjtu_learning_assistant.desktop_database.Base.metadata.create_all"
                 ):
-                    self.assertEqual("0012", bootstrap_sqlite(engine))
-                    self.assertEqual("0012", bootstrap_sqlite(engine))
+                    self.assertEqual("0016", bootstrap_sqlite(engine))
+                    self.assertEqual("0016", bootstrap_sqlite(engine))
                 columns = tuple(
                     column["name"]
                     for column in inspect(engine).get_columns("course_files")
