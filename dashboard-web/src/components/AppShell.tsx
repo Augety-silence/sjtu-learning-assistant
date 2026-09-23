@@ -62,6 +62,8 @@ function NavItems({
             ref={view === item.id ? currentItemRef : undefined}
             type="button"
             className={`nav-item ${view === item.id ? "nav-selected" : ""}`}
+            aria-label={item.label}
+            title={item.label}
             aria-current={view === item.id ? "page" : undefined}
             onClick={() => select(item.id)}
           >

@@ -105,6 +105,11 @@ describe("AppShell 移动导航", () => {
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
     expect(within(mainNavigation).getAllByRole("button")).toHaveLength(6);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
+    const overviewButton = within(mainNavigation).getByRole("button", {
+      name: "概览",
+    });
+    expect(overviewButton.getAttribute("aria-label")).toBe("概览");
+    expect(overviewButton.getAttribute("title")).toBe("概览");
     expect(
       within(mainNavigation).queryByRole("button", { name: "设置" }),
     ).toBeNull();
