@@ -297,6 +297,18 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(1, len(confirmed))
         self.assertEqual(snapshot, UploadSession.from_dict(snapshot).to_dict())
 
+    def test_sjtu_jcloud_object_host_is_trusted(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        try:
+            self.assertEqual(
+                "https://s3pan3.jcloud.sjtu.edu.cn/object",
+                provider._validate_object_url("https://s3pan3.jcloud.sjtu.edu.cn/object"),
+            )
+            with self.assertRaisesRegex(CloudRemoteApiError, "不可信"):
+                provider._validate_object_url("https://jcloud.sjtu.edu.cn.evil.test/object")
+        finally:
+            client.close()
+
     def test_download_redirect_range_and_target_validation(self) -> None:
         requests: list[httpx.Request] = []
 

@@ -37,7 +37,11 @@ KEYCHAIN_SERVICE = "SJTU Learning Assistant - SJTU Pan"
 KEYCHAIN_ACCOUNT = "user-token"
 MAX_TOKEN_LENGTH = 4096
 MAX_PARTS_PER_RENEWAL = 50
-TRUSTED_OBJECT_HOST_SUFFIXES = (".myqcloud.com", ".tencentcos.cn")
+TRUSTED_OBJECT_HOST_SUFFIXES = (
+    ".myqcloud.com",
+    ".tencentcos.cn",
+    ".jcloud.sjtu.edu.cn",
+)
 SAFE_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(?:\d+|\*)$")
 
