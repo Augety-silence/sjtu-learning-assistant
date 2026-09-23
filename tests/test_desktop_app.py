@@ -86,6 +86,22 @@ class FakeLearningService:
         return {"status": "requires_external_submission"}
 
 
+class FakeBackupManager:
+    def __init__(self):
+        self.starts = 0
+
+    def status(self):
+        return {
+            "status": "idle",
+            "preview": {"canvas": 1, "mail": 2, "ready": 2, "missing": 1, "total": 3},
+            "last_result": None,
+        }
+
+    def start(self):
+        self.starts += 1
+        return {"status": "started" if self.starts == 1 else "already_running"}
+
+
 class DesktopBridgeTests(unittest.TestCase):
     def setUp(self):
         self.bridge = DesktopBridge(FakeService())
@@ -156,6 +172,22 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("operation_failed", self.bridge.invoke("assignments_list", {})["error"]["code"])
         self.assertEqual("ok", self.bridge.invoke("health")["data"]["status"])
 
+    def test_backup_actions_are_allowlisted_require_empty_payload_and_report_start_state(self):
+        manager = FakeBackupManager()
+        bridge = DesktopBridge(FakeService(), backup_manager=manager)
+        self.assertEqual({"backup_status", "backup_start"}, {name for name in bridge._handlers if name.startswith("backup_")})
+        status = bridge.invoke("backup_status", {})
+        self.assertTrue(status["ok"])
+        self.assertEqual(1, status["data"]["preview"]["missing"])
+        self.assertEqual("started", bridge.invoke("backup_start")["data"]["status"])
+        self.assertEqual("already_running", bridge.invoke("backup_start", {})["data"]["status"])
+        for action in ("backup_status", "backup_start"):
+            self.assertEqual(
+                "operation_failed",
+                bridge.invoke(action, {"unexpected": True})["error"]["code"],
+            )
+        self.assertEqual("operation_failed", self.bridge.invoke("backup_status")["error"]["code"])
+
     def test_local_file_must_come_from_native_picker(self):
         import tempfile
         from pathlib import Path
@@ -225,6 +257,8 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         dashboard = Mock()
         learning = Mock()
         scheduler = Mock()
+        backup_manager = Mock()
+        dashboard.settings_store.load.return_value = SimpleNamespace(mail_account="student")
         webview = SimpleNamespace(
             OPEN_DIALOG=1,
             FOLDER_DIALOG=2,
@@ -239,11 +273,19 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             patch("desktop_app.create_database_engine", return_value=engine),
             patch("desktop_app.DashboardService", return_value=dashboard),
             patch("desktop_app.DesktopLearningService", return_value=learning),
+            patch("desktop_app.BackupManager", return_value=backup_manager) as manager_factory,
             patch("desktop_app.DesktopScheduler", return_value=scheduler),
         ):
             self.assertEqual(0, run_desktop_app())
 
         webview.start.assert_called_once_with(debug=False)
+        manager_factory.assert_called_once_with(
+            engine,
+            archive_root=dashboard.archive_root,
+            mail_attachments_root=dashboard.mail_attachments_root,
+            mail_account="student",
+        )
+        backup_manager.close.assert_called_once_with()
         dashboard.close.assert_called_once_with()
         learning.close.assert_called_once_with()
         engine.dispose.assert_called_once_with()

@@ -14,12 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sjtu_learning_assistant.archive_service import ArchiveError
 from sjtu_learning_assistant.assignment_service import AssignmentServiceError
+from sjtu_learning_assistant.backup_service import BackupError, BackupManager
 from sjtu_learning_assistant.canvas_client import CanvasError
 from sjtu_learning_assistant.cloud_storage import CloudStorageError
-from sjtu_learning_assistant.local_settings import SettingsError
+from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import create_database_engine
 from sjtu_learning_assistant.desktop_database import initialize_desktop_database
+from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
 from sjtu_learning_assistant.desktop_learning_service import (
     DesktopLearningService,
     LearningServiceError,
@@ -179,10 +181,12 @@ class DesktopBridge:
         learning_service: DesktopLearningService | None = None,
         *,
         file_picker: Callable[[], str | None] | None = None,
+        backup_manager: BackupManager | None = None,
     ) -> None:
         self._service = service
         self._learning_service = learning_service
         self._file_picker = file_picker
+        self._backup_manager = backup_manager
         self._picked_files: set[str] = set()
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "health": lambda payload: self._without_payload(
@@ -219,6 +223,8 @@ class DesktopBridge:
             "settings_pick_archive_root": self._settings_pick_archive_root,
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
+            "backup_status": self._backup_status,
+            "backup_start": self._backup_start,
             "open_external": self._open_external,
             "assignments_list": self._assignments_list,
             "detail": self._assignment_detail,
@@ -298,6 +304,19 @@ class DesktopBridge:
     ) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.download_current_term()
+
+    def _backup(self) -> BackupManager:
+        if self._backup_manager is None:
+            raise BackupError("备份服务未配置。")
+        return self._backup_manager
+
+    def _backup_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._backup().status()
+
+    def _backup_start(self, payload: Mapping[str, Any]) -> dict[str, str]:
+        _empty_payload(payload)
+        return self._backup().start()
 
     def _deadlines(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"window"})
@@ -481,6 +500,7 @@ class DesktopBridge:
         except (
             DashboardError,
             ArchiveError,
+            BackupError,
             SettingsError,
             LearningServiceError,
             AssignmentServiceError,
@@ -561,6 +581,7 @@ def run_desktop_app() -> int:
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None
     learning_service: DesktopLearningService | None = None
+    backup_manager: BackupManager | None = None
     try:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
@@ -579,7 +600,25 @@ def run_desktop_app() -> int:
 
         service = DashboardService(engine, folder_picker=pick_folder)
         learning_service = DesktopLearningService(engine)
-        bridge = DesktopBridge(service, learning_service, file_picker=pick_file)
+        settings_store = getattr(service, "settings_store", None)
+        settings = settings_store.load() if settings_store is not None else LocalSettings()
+        archive_root = getattr(service, "archive_root", None) or Path(
+            getattr(settings, "archive_root", LocalSettings().archive_root)
+        )
+        backup_manager = BackupManager(
+            engine,
+            archive_root=archive_root,
+            mail_attachments_root=getattr(
+                service, "mail_attachments_root", MAIL_ATTACHMENTS_ROOT
+            ),
+            mail_account=settings.mail_account,
+        )
+        bridge = DesktopBridge(
+            service,
+            learning_service,
+            file_picker=pick_file,
+            backup_manager=backup_manager,
+        )
         scheduler = DesktopScheduler(service.trigger_sync)
         webview.create_window(
             "SJTU 学习助手",
@@ -595,6 +634,8 @@ def run_desktop_app() -> int:
     finally:
         if scheduler is not None:
             scheduler.stop()
+        if backup_manager is not None:
+            backup_manager.close()
         if service is not None:
             service.close()
         if learning_service is not None:
