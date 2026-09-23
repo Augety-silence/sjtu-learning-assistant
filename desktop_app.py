@@ -8,14 +8,22 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import urlparse
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from sjtu_learning_assistant.archive_service import ArchiveError
+from sjtu_learning_assistant.assignment_service import AssignmentServiceError
+from sjtu_learning_assistant.canvas_client import CanvasError
+from sjtu_learning_assistant.cloud_storage import CloudStorageError
 from sjtu_learning_assistant.local_settings import SettingsError
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import create_database_engine
 from sjtu_learning_assistant.desktop_database import initialize_desktop_database
+from sjtu_learning_assistant.desktop_learning_service import (
+    DesktopLearningService,
+    LearningServiceError,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATIC_INDEX = PROJECT_ROOT / "dashboard-web" / "dist" / "index.html"
@@ -114,11 +122,68 @@ def _source_ids(value: object) -> list[str]:
     return result
 
 
+def _positive_id(value: object, label: str) -> int:
+    if type(value) is not int or value <= 0 or value > 9_007_199_254_740_991:
+        raise DashboardError(f"{label}不正确。")
+    return value
+
+
+def _bounded_text(value: object, *, limit: int, label: str, allow_empty: bool = False) -> str:
+    if type(value) is not str or len(value) > limit or "\x00" in value:
+        raise DashboardError(f"{label}不正确。")
+    clean = value.strip()
+    if not allow_empty and not clean:
+        raise DashboardError(f"{label}不能为空。")
+    return clean
+
+
+def _safe_http_url(value: object) -> str:
+    url = _bounded_text(value, limit=4096, label="链接")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise DashboardError("链接必须是有效的 HTTP 或 HTTPS 地址。")
+    return url
+
+
+def _remote_path(value: object, *, allow_root: bool = True) -> str:
+    if type(value) is not list or len(value) > 128:
+        raise DashboardError("云盘路径必须是分段数组。")
+    if not value and not allow_root:
+        raise DashboardError("云盘文件路径不能为空。")
+    parts: list[str] = []
+    for raw_part in value:
+        if type(raw_part) is not str:
+            raise DashboardError("云盘路径分段不正确。")
+        part = raw_part.strip()
+        if (
+            not part
+            or len(part) > 255
+            or part in {".", ".."}
+            or "/" in part
+            or "\\" in part
+            or any(ord(character) < 32 or ord(character) == 127 for character in part)
+        ):
+            raise DashboardError("云盘路径分段不正确。")
+        parts.append(part)
+    if len("/".join(parts)) > 2048:
+        raise DashboardError("云盘路径过长。")
+    return "/".join(parts)
+
+
 class DesktopBridge:
     """Single pywebview API surface; actions are explicit and allowlisted."""
 
-    def __init__(self, service: DashboardService) -> None:
+    def __init__(
+        self,
+        service: DashboardService,
+        learning_service: DesktopLearningService | None = None,
+        *,
+        file_picker: Callable[[], str | None] | None = None,
+    ) -> None:
         self._service = service
+        self._learning_service = learning_service
+        self._file_picker = file_picker
+        self._picked_files: set[str] = set()
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "health": lambda payload: self._without_payload(
                 payload, service.health
@@ -155,6 +220,16 @@ class DesktopBridge:
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
             "open_external": self._open_external,
+            "assignments_list": self._assignments_list,
+            "detail": self._assignment_detail,
+            "can_submit": self._assignment_can_submit,
+            "submit_text": self._assignment_submit_text,
+            "submit_url": self._assignment_submit_url,
+            "pick_local_file": self._assignment_pick_local_file,
+            "submit_local_file": self._assignment_submit_local_file,
+            "pan_list": self._assignment_pan_list,
+            "submit_cloud_file": self._assignment_submit_cloud_file,
+            "open_external_assignment": self._assignment_open_external,
         }
 
     @staticmethod
@@ -289,6 +364,97 @@ class DesktopBridge:
         ids = _source_ids(payload["ids"]) if has_ids else None
         return self._service.message_mark_read(kind, ids)
 
+    def _learning(self) -> DesktopLearningService:
+        if self._learning_service is None:
+            raise LearningServiceError("作业服务未配置；应用的其他功能仍可正常使用。")
+        return self._learning_service
+
+    @staticmethod
+    def _assignment_ids(payload: Mapping[str, Any], extra: set[str] | None = None) -> tuple[int, int]:
+        allowed = {"course_id", "assignment_id"} | (extra or set())
+        _only_keys(payload, allowed)
+        if not {"course_id", "assignment_id"}.issubset(payload):
+            raise DashboardError("课程或作业标识缺失。")
+        return (
+            _positive_id(payload["course_id"], "课程标识"),
+            _positive_id(payload["assignment_id"], "作业标识"),
+        )
+
+    def _assignments_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"category"})
+        category = payload.get("category", "today")
+        categories = {"today", "upcoming", "overdue", "missing", "unsubmitted", "submitted", "pending_review", "graded"}
+        if type(category) is not str or category not in categories:
+            raise DashboardError("作业分类不正确。")
+        return self._learning().assignments_list(category)
+
+    def _assignment_detail(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload)
+        return self._learning().assignment_detail(course_id, assignment_id)
+
+    def _assignment_can_submit(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload, {"submission_type"})
+        value = payload.get("submission_type")
+        submission_type = None
+        if value is not None:
+            submission_type = _bounded_text(value, limit=80, label="提交类型")
+            if submission_type not in {"online_text_entry", "online_url", "online_upload"}:
+                raise DashboardError("提交类型不正确。")
+        return self._learning().can_submit(course_id, assignment_id, submission_type)
+
+    def _assignment_submit_text(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload, {"text"})
+        return self._learning().submit_text(
+            course_id, assignment_id, _bounded_text(payload.get("text"), limit=200_000, label="文本内容")
+        )
+
+    def _assignment_submit_url(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload, {"url"})
+        return self._learning().submit_url(course_id, assignment_id, _safe_http_url(payload.get("url")))
+
+    def _assignment_pick_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._file_picker is None:
+            raise LearningServiceError("当前环境不支持本地文件选择。")
+        selected = self._file_picker()
+        if not selected:
+            return {"cancelled": True}
+        path = Path(selected).expanduser().resolve()
+        if not path.is_file() or len(str(path)) > 4096 or path.stat().st_size > 2 * 1024**3:
+            raise DashboardError("所选文件无效或超过 2 GiB。")
+        normalized = str(path)
+        self._picked_files.add(normalized)
+        return {"cancelled": False, "path": normalized, "name": path.name, "size": path.stat().st_size}
+
+    def _assignment_submit_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload, {"path"})
+        raw = _bounded_text(payload.get("path"), limit=4096, label="本地文件路径")
+        path = str(Path(raw).expanduser().resolve())
+        if path not in self._picked_files or not Path(path).is_file():
+            raise DashboardError("请先通过安全文件选择器选择待提交文件。")
+        self._picked_files.discard(path)
+        return self._learning().submit_local_file(course_id, assignment_id, path)
+
+    def _assignment_pan_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"remote_path", "page", "page_size"})
+        path = _remote_path(payload.get("remote_path", []))
+        page = payload.get("page", 1)
+        page_size = payload.get("page_size", 50)
+        if type(page) is not int or not 1 <= page <= 10_000:
+            raise DashboardError("页码不正确。")
+        if type(page_size) is not int or not 1 <= page_size <= 100:
+            raise DashboardError("每页数量不正确。")
+        return self._learning().pan_list(path, page, page_size)
+
+    def _assignment_submit_cloud_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload, {"remote_path"})
+        path = _remote_path(payload.get("remote_path"), allow_root=False)
+        return self._learning().submit_cloud_file(course_id, assignment_id, path)
+
+    def _assignment_open_external(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        course_id, assignment_id = self._assignment_ids(payload)
+        return self._learning().open_external_assignment(course_id, assignment_id)
+
     def _open_external(self, payload: Mapping[str, Any]) -> dict[str, str]:
         _only_keys(payload, {"url"})
         value = payload.get("url")
@@ -312,7 +478,15 @@ class DesktopBridge:
                 }
             result = handler(_require_payload(payload))
             return {"ok": True, "data": result}
-        except (DashboardError, ArchiveError, SettingsError) as exc:
+        except (
+            DashboardError,
+            ArchiveError,
+            SettingsError,
+            LearningServiceError,
+            AssignmentServiceError,
+            CanvasError,
+            CloudStorageError,
+        ) as exc:
             return {
                 "ok": False,
                 "error": {"code": "operation_failed", "message": safe_message(exc)},
@@ -386,6 +560,7 @@ def run_desktop_app() -> int:
     engine = create_database_engine()
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None
+    learning_service: DesktopLearningService | None = None
     try:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
@@ -396,8 +571,15 @@ def run_desktop_app() -> int:
                 return None
             return str(result[0] if isinstance(result, (list, tuple)) else result)
 
+        def pick_file() -> str | None:
+            result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
+            if not result:
+                return None
+            return str(result[0] if isinstance(result, (list, tuple)) else result)
+
         service = DashboardService(engine, folder_picker=pick_folder)
-        bridge = DesktopBridge(service)
+        learning_service = DesktopLearningService(engine)
+        bridge = DesktopBridge(service, learning_service, file_picker=pick_file)
         scheduler = DesktopScheduler(service.trigger_sync)
         webview.create_window(
             "SJTU 学习助手",
@@ -415,6 +597,8 @@ def run_desktop_app() -> int:
             scheduler.stop()
         if service is not None:
             service.close()
+        if learning_service is not None:
+            learning_service.close()
         engine.dispose()
 
 

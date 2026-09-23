@@ -77,6 +77,7 @@ class Course(TimestampMixin, Base):
     assignments: Mapped[list["Assignment"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
     )
+    submissions: Mapped[list["Submission"]] = relationship(back_populates="course")
     files: Mapped[list["CourseFile"]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
     )
@@ -134,8 +135,73 @@ class Assignment(TimestampMixin, Base):
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
 
     course: Mapped[Course] = relationship(back_populates="assignments")
+    submissions: Mapped[list["Submission"]] = relationship(back_populates="assignment")
 
     __table_args__ = (Index("ix_assignments_due_at", "due_at"),)
+
+
+class CloudFile(TimestampMixin, Base):
+    """Provider-neutral cloud file metadata; no provider implementation is imported."""
+
+    __tablename__ = "cloud_files"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_id: Mapped[str] = mapped_column(
+        String(255), default="default", server_default="default", nullable=False
+    )
+    remote_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    parent_remote_id: Mapped[str | None] = mapped_column(String(512))
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str | None] = mapped_column(Text)
+    is_directory: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    size: Mapped[int | None] = mapped_column(BigInteger)
+    content_type: Mapped[str | None] = mapped_column(String(255))
+    modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    download_url: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
+
+    submissions: Mapped[list["Submission"]] = relationship(back_populates="cloud_file")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "account_id", "remote_id", name="uq_cloud_files_identity"),
+        Index("ix_cloud_files_parent", "provider", "account_id", "parent_remote_id"),
+    )
+
+
+class Submission(TimestampMixin, Base):
+    """Auditable local record of a Canvas submission workflow."""
+
+    __tablename__ = "submissions"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    course_id: Mapped[int | None] = mapped_column(ForeignKey("courses.id", ondelete="SET NULL"))
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("assignments.id", ondelete="SET NULL"))
+    canvas_course_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    canvas_assignment_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    canvas_submission_id: Mapped[str | None] = mapped_column(String(128))
+    submission_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    cloud_file_id: Mapped[int | None] = mapped_column(ForeignKey("cloud_files.id", ondelete="SET NULL"))
+    local_filename: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
+
+    course: Mapped[Course | None] = relationship(back_populates="submissions")
+    assignment: Mapped[Assignment | None] = relationship(back_populates="submissions")
+    cloud_file: Mapped[CloudFile | None] = relationship(back_populates="submissions")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'submitted', 'verified', 'failed', 'requires_external_submission')",
+            name="ck_submissions_status",
+        ),
+        Index("ix_submissions_canvas_assignment", "canvas_course_id", "canvas_assignment_id"),
+    )
 
 
 class Email(TimestampMixin, Base):

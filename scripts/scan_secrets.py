@@ -23,6 +23,7 @@ ALLOWLIST = {
     "tests/test_database.py",
     "tests/test_desktop_app.py",
     "tests/test_notifications.py",
+    "tests/test_sjtu_pan.py",
     "tests/test_sync_runner.py",
 }
 

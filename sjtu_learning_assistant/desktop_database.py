@@ -31,7 +31,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0010"
+SCHEMA_VERSION = "0011"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
@@ -41,6 +41,8 @@ BUSINESS_TABLES = (
     "sync_state",
     "announcements",
     "assignments",
+    "cloud_files",
+    "submissions",
     "course_folders",
     "course_files",
     "course_modules",

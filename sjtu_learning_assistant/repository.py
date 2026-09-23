@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable, Protocol, TypeVar
+from typing import Any, Iterable, Mapping, Protocol, TypeVar
 
 from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -20,6 +20,7 @@ from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
+    CloudFile,
     Course,
     CourseFile,
     CourseFolder,
@@ -27,6 +28,7 @@ from sjtu_learning_assistant.models import (
     CourseModuleItem,
     Email,
     EmailAttachment,
+    Submission,
     SyncRun,
     SyncState,
     UnifiedItem,
@@ -1402,3 +1404,184 @@ def upsert_courses(engine: Engine, courses: Iterable[CourseLike]) -> UpsertResul
         assignments_by_course={},
     )
     return result.courses
+
+
+@dataclass(frozen=True)
+class CloudFileUpsertResult:
+    fetched: int
+    inserted: int
+    updated: int
+    records: tuple[CloudFile, ...]
+
+
+def _cloud_value(item: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        if isinstance(item, Mapping) and name in item:
+            return item[name]
+        if hasattr(item, name):
+            return getattr(item, name)
+    metadata = getattr(item, "metadata", None)
+    if isinstance(metadata, Mapping):
+        for name in names:
+            if name in metadata:
+                return metadata[name]
+    return default
+
+
+def _cloud_remote_id(item: Any) -> str | None:
+    value = _cloud_value(item, "remote_id", "id", "item_id", "itemId")
+    if value is None:
+        value = _cloud_value(item, "path")
+    if isinstance(value, (tuple, list)):
+        return "/".join(str(part) for part in value)
+    return str(value) if value is not None else None
+
+
+def upsert_cloud_files(
+    engine: Engine,
+    *,
+    provider: str,
+    files: Iterable[Any],
+    account_id: str = "default",
+    parent_remote_id: str | None = None,
+) -> CloudFileUpsertResult:
+    """Upsert provider-neutral metadata by stable provider/account/remote identity."""
+    records = list(files)
+    rows: list[dict[str, Any]] = []
+    for item in records:
+        remote_id = _cloud_remote_id(item)
+        if remote_id is None:
+            continue
+        if isinstance(item, Mapping):
+            raw = dict(item)
+        else:
+            metadata = getattr(item, "metadata", {}) or {}
+            raw = dict(metadata) if isinstance(metadata, Mapping) else {}
+            for key in (
+                "name",
+                "path",
+                "is_directory",
+                "size",
+                "content_type",
+                "etag",
+                "created_at",
+                "modified_at",
+            ):
+                value = getattr(item, key, None)
+                if value is not None:
+                    raw[key] = list(value) if isinstance(value, tuple) else value
+        modified = _cloud_value(item, "modified_at", "updated_at")
+        rows.append(
+            {
+                "provider": provider,
+                "account_id": account_id,
+                "remote_id": str(remote_id),
+                "parent_remote_id": _cloud_remote_id(
+                    {"path": _cloud_value(
+                        item,
+                        "parent_remote_id",
+                        "parent_id",
+                        "parentItemId",
+                        default=parent_remote_id,
+                    )}
+                ),
+                "name": str(_cloud_value(item, "name", "filename", default="（未命名文件）")),
+                "path": _cloud_remote_id({"path": _cloud_value(item, "path")}),
+                "is_directory": bool(_cloud_value(item, "is_directory", "is_dir", default=False)),
+                "size": int_or_none(_cloud_value(item, "size")),
+                "content_type": _cloud_value(item, "content_type", "mime_type", "mime"),
+                "modified_at": modified if isinstance(modified, datetime) else parse_iso_datetime(modified),
+                "download_url": _cloud_value(item, "download_url", "downloadUrl", "url"),
+                "raw_data": raw,
+            }
+        )
+    rows = list(
+        {
+            (row["provider"], row["account_id"], row["remote_id"]): row
+            for row in rows
+        }.values()
+    )
+    identities = [(row["provider"], row["account_id"], row["remote_id"]) for row in rows]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session, session.begin():
+        existing = set(
+            session.execute(
+                select(CloudFile.provider, CloudFile.account_id, CloudFile.remote_id).where(
+                    CloudFile.provider == provider,
+                    CloudFile.account_id == account_id,
+                    CloudFile.remote_id.in_([row["remote_id"] for row in rows]),
+                )
+            ).all()
+        ) if rows else set()
+        if rows:
+            statement = _dialect_insert(session, CloudFile).values(rows)
+            statement = statement.on_conflict_do_update(
+                index_elements=[CloudFile.provider, CloudFile.account_id, CloudFile.remote_id],
+                set_={
+                    "parent_remote_id": statement.excluded.parent_remote_id,
+                    "name": statement.excluded.name,
+                    "path": statement.excluded.path,
+                    "is_directory": statement.excluded.is_directory,
+                    "size": statement.excluded.size,
+                    "content_type": statement.excluded.content_type,
+                    "modified_at": statement.excluded.modified_at,
+                    "download_url": statement.excluded.download_url,
+                    "raw_data": statement.excluded.raw_data,
+                    "updated_at": now,
+                },
+            )
+            session.execute(statement)
+        persisted = tuple(
+            session.scalars(
+                select(CloudFile).where(
+                    CloudFile.provider == provider,
+                    CloudFile.account_id == account_id,
+                    CloudFile.remote_id.in_([row["remote_id"] for row in rows]),
+                ).order_by(CloudFile.id)
+            ).all()
+        ) if rows else ()
+        # Expunge so returned metadata remains usable after transaction/session close.
+        for record in persisted:
+            session.expunge(record)
+    inserted = sum(identity not in existing for identity in identities)
+    return CloudFileUpsertResult(len(rows), inserted, len(rows) - inserted, persisted)
+
+
+def record_submission(
+    engine: Engine,
+    *,
+    canvas_course_id: int | str,
+    canvas_assignment_id: int | str,
+    submission_type: str,
+    status: str,
+    canvas_submission_id: int | str | None = None,
+    cloud_file_id: int | None = None,
+    local_filename: str | None = None,
+    raw_data: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> int:
+    """Append a submission audit record; submission actions themselves are never retried here."""
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session, session.begin():
+        course = session.scalar(select(Course).where(Course.source_id == str(canvas_course_id)))
+        assignment = session.scalar(
+            select(Assignment).where(Assignment.source_id == str(canvas_assignment_id))
+        )
+        row = Submission(
+            course_id=course.id if course else None,
+            assignment_id=assignment.id if assignment else None,
+            canvas_course_id=str(canvas_course_id),
+            canvas_assignment_id=str(canvas_assignment_id),
+            canvas_submission_id=str(canvas_submission_id) if canvas_submission_id is not None else None,
+            submission_type=submission_type,
+            status=status,
+            cloud_file_id=cloud_file_id,
+            local_filename=local_filename,
+            submitted_at=now if status in {"submitted", "verified"} else None,
+            verified_at=now if status == "verified" else None,
+            last_error=error,
+            raw_data=raw_data or {},
+        )
+        session.add(row)
+        session.flush()
+        return row.id

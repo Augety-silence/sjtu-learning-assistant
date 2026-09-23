@@ -4,9 +4,9 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from desktop_app import DesktopBridge, DesktopScheduler, main, safe_message
+from desktop_app import DesktopBridge, DesktopScheduler, main, run_desktop_app, safe_message
 
 
 class FakeService:
@@ -57,6 +57,35 @@ class FakeService:
         return {"url": url, "status": "opened"}
 
 
+class FakeLearningService:
+    def assignments_list(self, category):
+        return {"category": category, "items": []}
+
+    def assignment_detail(self, course_id, assignment_id):
+        return {"course_id": course_id, "id": assignment_id}
+
+    def can_submit(self, course_id, assignment_id, submission_type=None):
+        return {"can_submit": True, "submission_types": [submission_type]}
+
+    def submit_text(self, course_id, assignment_id, text):
+        return {"verified": True, "text": text}
+
+    def submit_url(self, course_id, assignment_id, url):
+        return {"verified": True, "url": url}
+
+    def submit_local_file(self, course_id, assignment_id, path):
+        return {"verified": True, "path": path}
+
+    def pan_list(self, path, page, page_size):
+        return {"remote_path": path, "page": page, "page_size": page_size, "items": []}
+
+    def submit_cloud_file(self, course_id, assignment_id, path):
+        return {"verified": True, "remote_path": path}
+
+    def open_external_assignment(self, course_id, assignment_id):
+        return {"status": "requires_external_submission"}
+
+
 class DesktopBridgeTests(unittest.TestCase):
     def setUp(self):
         self.bridge = DesktopBridge(FakeService())
@@ -86,6 +115,60 @@ class DesktopBridgeTests(unittest.TestCase):
                 {"source_id": "file-1", "target_node_id": 1},
             )["error"]["code"],
         )
+
+    def test_assignment_action_names_match_public_contract(self):
+        bridge = DesktopBridge(FakeService(), FakeLearningService())
+        expected = {
+            "assignments_list",
+            "detail",
+            "can_submit",
+            "submit_text",
+            "submit_url",
+            "pick_local_file",
+            "submit_local_file",
+            "pan_list",
+            "submit_cloud_file",
+            "open_external_assignment",
+        }
+        self.assertTrue(expected.issubset(bridge._handlers))
+        self.assertFalse({f"assignment_{name}" for name in expected} & set(bridge._handlers))
+
+    def test_assignment_actions_validate_payloads_and_keep_fake_compatibility(self):
+        bridge = DesktopBridge(FakeService(), FakeLearningService())
+        self.assertEqual("today", bridge.invoke("assignments_list", {"category": "today"})["data"]["category"])
+        self.assertTrue(bridge.invoke("submit_text", {"course_id": 1, "assignment_id": 2, "text": "答案"})["data"]["verified"])
+        self.assertEqual("operation_failed", bridge.invoke("submit_text", {"course_id": "1", "assignment_id": 2, "text": "答案"})["error"]["code"])
+        self.assertEqual("operation_failed", bridge.invoke("submit_url", {"course_id": 1, "assignment_id": 2, "url": "file:///tmp/a"})["error"]["code"])
+        self.assertEqual("operation_failed", bridge.invoke("pan_list", {"remote_path": "../secret"})["error"]["code"])
+        valid_pan = bridge.invoke("pan_list", {"remote_path": ["课程", "作业"], "page": 2, "page_size": 20})
+        self.assertEqual("课程/作业", valid_pan["data"]["remote_path"])
+        for invalid_path in ([".."], ["课程/作业"], [1], "课程/作业", [""], ["课程", "a\\b"]):
+            with self.subTest(invalid_path=invalid_path):
+                self.assertEqual(
+                    "operation_failed",
+                    bridge.invoke("pan_list", {"remote_path": invalid_path})["error"]["code"],
+                )
+        cloud = bridge.invoke(
+            "submit_cloud_file",
+            {"course_id": 1, "assignment_id": 2, "remote_path": ["课程", "report.pdf"]},
+        )
+        self.assertEqual("课程/report.pdf", cloud["data"]["remote_path"])
+        self.assertEqual("operation_failed", self.bridge.invoke("assignments_list", {})["error"]["code"])
+        self.assertEqual("ok", self.bridge.invoke("health")["data"]["status"])
+
+    def test_local_file_must_come_from_native_picker(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            selected = Path(directory) / "answer.txt"
+            selected.write_text("answer")
+            bridge = DesktopBridge(FakeService(), FakeLearningService(), file_picker=lambda: str(selected))
+            picked = bridge.invoke("pick_local_file")["data"]
+            self.assertEqual("answer.txt", picked["name"])
+            payload = {"course_id": 1, "assignment_id": 2, "path": picked["path"]}
+            self.assertTrue(bridge.invoke("submit_local_file", payload)["data"]["verified"])
+            self.assertEqual("operation_failed", bridge.invoke("submit_local_file", payload)["error"]["code"])
 
     def test_errors_are_sanitized_or_hidden(self):
         text = safe_message("postgresql://user:password@db/token=placeholder /Users/example/private/file")
@@ -133,6 +216,37 @@ class DesktopBridgeTests(unittest.TestCase):
                 for fragment in sensitive_fragments:
                     self.assertNotIn(fragment, text)
                 self.assertIn("[已隐藏]", text)
+
+
+class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_startup_does_not_require_credentials_and_closes_services(self):
+        engine = Mock()
+        engine.dialect.name = "postgresql"
+        dashboard = Mock()
+        learning = Mock()
+        scheduler = Mock()
+        webview = SimpleNamespace(
+            OPEN_DIALOG=1,
+            FOLDER_DIALOG=2,
+            windows=[],
+            create_window=Mock(),
+            start=Mock(),
+        )
+        static_index = SimpleNamespace(is_file=lambda: True, as_uri=lambda: "file:///index.html")
+        with (
+            patch.dict("sys.modules", {"webview": webview}),
+            patch("desktop_app.STATIC_INDEX", static_index),
+            patch("desktop_app.create_database_engine", return_value=engine),
+            patch("desktop_app.DashboardService", return_value=dashboard),
+            patch("desktop_app.DesktopLearningService", return_value=learning),
+            patch("desktop_app.DesktopScheduler", return_value=scheduler),
+        ):
+            self.assertEqual(0, run_desktop_app())
+
+        webview.start.assert_called_once_with(debug=False)
+        dashboard.close.assert_called_once_with()
+        learning.close.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
 
 
 class DesktopBackgroundSyncTests(unittest.TestCase):
