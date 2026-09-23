@@ -97,9 +97,6 @@ export function MaterialTreeBranch({
       onClick={(event) => {
         event.stopPropagation();
         select(node);
-      }}
-      onDoubleClick={(event) => {
-        event.stopPropagation();
         if (children.length > 0) toggle(node.id, !expanded);
       }}
       onDragEnter={

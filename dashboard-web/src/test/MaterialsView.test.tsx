@@ -15,7 +15,6 @@ vi.mock("@/lib/api", () => ({
 const categories = [
   { id: "assignments", label: "课程作业" },
   { id: "courseware", label: "课件" },
-  { id: "supplementary", label: "补充资料" },
   { id: "other", label: "其他" },
 ];
 
@@ -84,14 +83,6 @@ const tree: MaterialTree = {
                 ],
               },
               {
-                id: "category:course-1:supplementary",
-                kind: "category",
-                name: "补充资料",
-                course_id: "course-1",
-                category: "supplementary",
-                children: [],
-              },
-              {
                 id: "category:course-1:other",
                 kind: "category",
                 name: "其他",
@@ -134,7 +125,10 @@ function dataTransfer() {
 
 async function renderFile() {
   render(<MaterialsView />);
-  await screen.findByText("自然语言处理");
+  const course = await screen.findByRole("treeitem", {
+    name: "自然语言处理",
+  });
+  fireEvent.click(course);
   const coursewareTarget = document.querySelector<HTMLElement>(
     '[data-material-target-id="category:course-1:courseware"]',
   );
@@ -145,10 +139,6 @@ async function renderFile() {
   );
   expect(folderTarget).toBeTruthy();
   fireEvent.click(folderTarget as HTMLElement);
-  expect(
-    screen.queryByRole("listitem", { name: "拖动资料：讲义.pdf" }),
-  ).toBeNull();
-  fireEvent.doubleClick(folderTarget as HTMLElement);
   return await screen.findByRole("listitem", { name: "拖动资料：讲义.pdf" });
 }
 
@@ -187,7 +177,17 @@ afterEach(() => {
 
 describe("MaterialsView manual filing", () => {
   it("supports same-course drag/drop and rejects cross-course drop with feedback", async () => {
-    const row = await renderFile();
+    await renderFile();
+    const secondCourse = screen.getByRole("treeitem", { name: "数据库" });
+    fireEvent.click(secondCourse);
+    const firstFolder = document.querySelector<HTMLElement>(
+      '[data-material-target-id="folder:1:courseware:10"]',
+    );
+    expect(firstFolder).toBeTruthy();
+    fireEvent.click(firstFolder as HTMLElement);
+    const row = await screen.findByRole("listitem", {
+      name: "拖动资料：讲义.pdf",
+    });
     const transfer = dataTransfer();
     const sameCourse = document.querySelector<HTMLElement>(
       '[data-material-target-id="category:course-1:assignments"]',
@@ -219,6 +219,16 @@ describe("MaterialsView manual filing", () => {
 
   it("accepts a drop on a Canvas folder in the right-hand folder list", async () => {
     render(<MaterialsView />);
+    const course = await screen.findByRole("treeitem", {
+      name: "自然语言处理",
+    });
+    expect(course.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      screen.queryByRole("treeitem", {
+        name: "课件，可接收同课程资料拖放",
+      }),
+    ).toBeNull();
+    fireEvent.click(course);
     const categoryTarget = await screen.findByRole("treeitem", {
       name: "课件，可接收同课程资料拖放",
     });
@@ -252,12 +262,12 @@ describe("MaterialsView manual filing", () => {
 
     fireEvent.change(
       screen.getByRole("combobox", { name: "归档“讲义.pdf”到分类" }),
-      { target: { value: "supplementary" } },
+      { target: { value: "other" } },
     );
     await waitFor(() =>
       expect(moveMaterial).toHaveBeenCalledWith(
         "file-1",
-        "category:course-1:supplementary",
+        "category:course-1:other",
       ),
     );
   });
@@ -364,6 +374,10 @@ describe("MaterialsView ARIA tree", () => {
     fireEvent.keyDown(term, { key: "ArrowRight" });
     const course = screen.getByRole("treeitem", { name: "自然语言处理" });
     expect(document.activeElement).toBe(course);
+    expect(course.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.keyDown(course, { key: "ArrowRight" });
+    expect(course.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(course);
     fireEvent.keyDown(course, { key: "ArrowRight" });
     const category = screen.getAllByRole("treeitem", { name: /课程作业/ })[0];
     expect(document.activeElement).toBe(category);
@@ -376,16 +390,16 @@ describe("MaterialsView ARIA tree", () => {
 
     fireEvent.keyDown(category, { key: "ArrowLeft" });
     expect(document.activeElement).toBe(course);
-    const expandedBeforeSpace = course.getAttribute("aria-expanded");
     fireEvent.keyDown(course, { key: " " });
     expect(course.getAttribute("aria-selected")).toBe("true");
-    expect(course.getAttribute("aria-expanded")).toBe(expandedBeforeSpace);
+    expect(course.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("支持 Up/Down/Home/End，折叠后移除后代", async () => {
     render(<MaterialsView />);
     const root = await screen.findByRole("treeitem", { name: "全部资料" });
     const course = screen.getByRole("treeitem", { name: "自然语言处理" });
+    fireEvent.click(course);
     const category = screen.getAllByRole("treeitem", { name: /课程作业/ })[0];
 
     category.focus();
@@ -400,8 +414,9 @@ describe("MaterialsView ARIA tree", () => {
     course.focus();
     fireEvent.keyDown(course, { key: "ArrowLeft" });
     expect(course.getAttribute("aria-expanded")).toBe("false");
+    const treeView = screen.getByRole("tree", { name: "资料目录" });
     expect(
-      document.querySelector(
+      treeView.querySelector(
         '[data-material-target-id="category:course-1:assignments"]',
       ),
     ).toBeNull();

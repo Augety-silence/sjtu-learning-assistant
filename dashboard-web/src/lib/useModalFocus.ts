@@ -90,6 +90,14 @@ export function useModalFocus(
     }, 0);
 
     const onKeyDown = (event: KeyboardEvent) => {
+      const modalLayer = container.closest("[data-modal-layer]");
+      const modalLayers = document.querySelectorAll("[data-modal-layer]");
+      if (
+        modalLayer &&
+        modalLayers.item(modalLayers.length - 1) !== modalLayer
+      ) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         dismissRef.current();

@@ -1,4 +1,5 @@
 import {
+  type KeyboardEvent,
   type MouseEvent,
   useCallback,
   useEffect,
@@ -20,6 +21,7 @@ import type {
   MessageDetail,
   MessageKind,
 } from "@/lib/types";
+import { useModalFocus } from "@/lib/useModalFocus";
 
 const ALLOWED_TAGS = new Set([
   "p",
@@ -128,6 +130,64 @@ interface MessageDetailContentProps {
   sourceId: string;
 }
 
+type PreviewImage = {
+  alt: string;
+  messageKey: string;
+  src: string;
+};
+
+function MessageImagePreview({
+  alt,
+  onClose,
+  src,
+}: {
+  alt: string;
+  onClose: () => void;
+  src: string;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  useModalFocus(dialogRef, onClose, { initialFocusRef: closeButtonRef });
+
+  return (
+    <div
+      className="message-dialog-layer message-image-preview-layer"
+      data-modal-layer
+    >
+      <button
+        type="button"
+        className="message-dialog-backdrop"
+        aria-label="关闭图片预览"
+        onClick={onClose}
+      />
+      <section
+        ref={dialogRef}
+        className="message-image-preview-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="正文图片预览"
+        tabIndex={-1}
+      >
+        <header className="message-image-preview-header">
+          <span>{alt || "正文图片"}</span>
+          <Button
+            ref={closeButtonRef}
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+          >
+            关闭
+          </Button>
+        </header>
+        <div className="message-image-preview-stage">
+          <img src={src} alt={alt || "正文图片"} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function MessageDetailContent({
   detail,
   kind,
@@ -135,7 +195,9 @@ export function MessageDetailContent({
 }: MessageDetailContentProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [busyAttachment, setBusyAttachment] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const { showToast } = useToast();
+  const messageKey = `${kind}:${sourceId}`;
   const safeHtml = useMemo(
     () =>
       detail.body_html?.trim() ? sanitizeMessageHtml(detail.body_html) : "",
@@ -176,8 +238,21 @@ export function MessageDetailContent({
         retryButton?.remove();
         retryButton = null;
       };
+      const markPreviewable = () => {
+        image.classList.add("message-resource-previewable");
+        image.tabIndex = 0;
+        image.setAttribute("role", "button");
+        image.setAttribute(
+          "aria-label",
+          originalAlt ? `放大查看：${originalAlt}` : "放大查看正文图片",
+        );
+      };
       const markFailed = () => {
         image.removeAttribute("src");
+        image.classList.remove("message-resource-previewable");
+        image.removeAttribute("tabindex");
+        image.removeAttribute("role");
+        image.removeAttribute("aria-label");
         image.classList.add("message-resource-failed");
         image.alt = originalAlt || "图片加载失败";
         if (retryButton) return;
@@ -201,6 +276,7 @@ export function MessageDetailContent({
             if (!cancelled) {
               clearFailure();
               image.src = dataUrl;
+              markPreviewable();
             }
           })
           .catch(() => {
@@ -226,6 +302,7 @@ export function MessageDetailContent({
       const inlineUrl = inlineData.get(resourceId);
       if (inlineUrl) {
         image.src = inlineUrl;
+        markPreviewable();
         continue;
       }
       if (!resourceIds.has(resourceId)) {
@@ -266,12 +343,36 @@ export function MessageDetailContent({
   const handleBodyClick = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    const image = target.closest<HTMLImageElement>(
+      "img.message-resource-previewable",
+    );
+    if (image && event.currentTarget.contains(image) && image.src) {
+      event.preventDefault();
+      event.stopPropagation();
+      setPreviewImage({ alt: image.alt, messageKey, src: image.src });
+      return;
+    }
     const anchor = target.closest("a");
     if (!anchor || !event.currentTarget.contains(anchor)) return;
     event.preventDefault();
     event.stopPropagation();
     const href = anchor.getAttribute("href");
     if (href && isHttpsUrl(href)) void openLink(href);
+  };
+
+  const handleBodyKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof HTMLImageElement)) return;
+    if (
+      !target.classList.contains("message-resource-previewable") ||
+      !target.src
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setPreviewImage({ alt: target.alt, messageKey, src: target.src });
   };
 
   const runMailAction = async (
@@ -316,6 +417,7 @@ export function MessageDetailContent({
           role="document"
           tabIndex={0}
           onClick={handleBodyClick}
+          onKeyDown={handleBodyKeyDown}
           dangerouslySetInnerHTML={{ __html: safeHtml }}
         />
       ) : (
@@ -390,6 +492,13 @@ export function MessageDetailContent({
             })}
           </ul>
         </section>
+      )}
+      {previewImage?.messageKey === messageKey && (
+        <MessageImagePreview
+          alt={previewImage.alt}
+          src={previewImage.src}
+          onClose={() => setPreviewImage(null)}
+        />
       )}
     </div>
   );

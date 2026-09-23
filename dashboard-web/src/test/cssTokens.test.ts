@@ -18,6 +18,10 @@ describe("CSS semantic tokens", () => {
     expect(css).not.toContain("0.5px");
   });
 
+  it("消息正文显式允许文本选择复制", () => {
+    expect(css).toContain("user-select: text");
+  });
+
   it("关键移动热区与紧凑 KPI 使用 599px 断点", () => {
     expect(css).toContain("@media (max-width: 599px)");
     expect(css).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");

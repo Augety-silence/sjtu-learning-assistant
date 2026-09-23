@@ -209,6 +209,42 @@ describe("MessageDetailContent", () => {
     );
   });
 
+  it("已加载正文图片支持键盘和鼠标放大，并可关闭预览", async () => {
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,preview",
+    });
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-resource-id="preview" alt="课程图片">',
+          format: "html",
+          resources: [{ id: "preview", type: "image" }],
+        })}
+        kind="announcement"
+        sourceId="announcement-1"
+      />,
+    );
+
+    const image = await screen.findByRole("button", {
+      name: "放大查看：课程图片",
+    });
+    expect(image.getAttribute("tabindex")).toBe("0");
+
+    fireEvent.keyDown(image, { key: "Enter" });
+    let preview = screen.getByRole("dialog", { name: "正文图片预览" });
+    expect(preview.querySelector("img")?.getAttribute("src")).toBe(
+      "data:image/png;base64,preview",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog", { name: "正文图片预览" })).toBeNull();
+
+    fireEvent.click(image);
+    preview = screen.getByRole("dialog", { name: "正文图片预览" });
+    expect(preview).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "正文图片预览" })).toBeNull();
+  });
+
   it("图片加载失败后可重试并重新请求资源", async () => {
     vi.mocked(getMessageResource)
       .mockRejectedValueOnce(new Error("暂时失败"))

@@ -33,7 +33,7 @@ import { useCompactViewport } from "@/lib/useCompactViewport";
 function defaultExpandedIds(root: MaterialNode) {
   const expanded = new Set<string>();
   const visit = (node: MaterialNode) => {
-    if (["root", "term", "course"].includes(node.kind)) {
+    if (["root", "term"].includes(node.kind)) {
       expanded.add(node.id);
       for (const child of containerChildren(node)) visit(child);
     }
@@ -212,6 +212,7 @@ export function MaterialsView() {
         case "Enter":
         case " ":
           selectTreeItem(node);
+          if (children.length > 0) toggleTreeItem(node.id, !expanded);
           break;
         default:
           handled = false;
