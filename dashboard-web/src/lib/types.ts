@@ -5,7 +5,19 @@ export type ViewName =
   | "assignments"
   | "materials"
   | "backup"
+  | "ai-chat"
   | "settings";
+
+export interface AIChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AIChatResult {
+  reply: string;
+  model: string;
+}
 
 export interface Deadline {
   source_id: string;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
@@ -18,6 +19,7 @@ const views: ViewName[] = [
   "assignments",
   "materials",
   "backup",
+  "ai-chat",
   "settings",
 ];
 
@@ -123,6 +125,7 @@ export default function App() {
         {view === "assignments" && <AssignmentsView key={dataVersion} />}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "backup" && <BackupView />}
+        {view === "ai-chat" && <AIChatView />}
         {view === "settings" && (
           <SettingsView
             onArchiveChanged={() => setDataVersion((value) => value + 1)}

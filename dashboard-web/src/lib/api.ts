@@ -161,6 +161,12 @@ export function testAiConnection() {
   );
 }
 
+export function sendAiChat(
+  messages: Array<{ role: "user" | "assistant"; content: string }>,
+) {
+  return invoke<import("@/lib/types").AIChatResult>("ai_chat", { messages });
+}
+
 export function pickArchiveRoot() {
   return invoke<{
     cancelled: boolean;

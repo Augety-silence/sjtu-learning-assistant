@@ -225,6 +225,7 @@ class DesktopBridge:
             "settings_update": self._settings_update,
             "settings_ai_import": self._settings_ai_import,
             "settings_ai_test": self._settings_ai_test,
+            "ai_chat": self._ai_chat,
             "settings_pick_archive_root": self._settings_pick_archive_root,
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
@@ -295,6 +296,12 @@ class DesktopBridge:
     def _settings_ai_test(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.test_ai_connection()
+
+    def _ai_chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"messages"})
+        if "messages" not in payload:
+            raise DashboardError("缺少 AI 对话消息。")
+        return self._service.ai_chat(payload["messages"])
 
     def _settings_pick_archive_root(
         self, payload: Mapping[str, Any]

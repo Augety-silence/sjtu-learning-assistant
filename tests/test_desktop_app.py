@@ -71,6 +71,9 @@ class FakeService:
     def settings_status(self):
         return {"missing": []}
 
+    def ai_chat(self, messages):
+        return {"reply": messages[-1]["content"], "model": "qwen"}
+
     def open_external(self, url):
         return {"url": url, "status": "opened"}
 
@@ -142,6 +145,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("not_allowed", self.bridge.invoke("__dict__")["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("messages", {"kind": "secret"})["error"]["code"])
         self.assertEqual("operation_failed", self.bridge.invoke("material_open", {"source_id": ""})["error"]["code"])
+        chat = self.bridge.invoke("ai_chat", {"messages": [{"role": "user", "content": "你好"}]})
+        self.assertEqual("你好", chat["data"]["reply"])
+        self.assertEqual("operation_failed", self.bridge.invoke("ai_chat", {})["error"]["code"])
         moved = self.bridge.invoke(
             "material_move",
             {"source_id": "file-1", "target_node_id": "category:course-1:other"},

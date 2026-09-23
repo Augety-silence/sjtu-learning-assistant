@@ -1344,6 +1344,33 @@ class DashboardService:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
+    def ai_chat(self, messages: object) -> dict[str, Any]:
+        if type(messages) is not list:
+            raise DashboardError("AI 对话消息格式无效。")
+        settings = self._effective_settings()
+        client = self._get_ai_client(settings, required=True)
+        assert client is not None
+        overview = self.overview()
+        context = json.dumps(
+            {
+                "generated_at": to_shanghai(self.now()),
+                "summary": {
+                    "courses": overview["courses"],
+                    "upcoming_deadlines": overview["upcoming_deadlines"],
+                    "unread_emails": overview["unread_emails"],
+                },
+                "upcoming_deadlines": overview["deadlines"],
+                "recent_messages": overview["messages"],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        try:
+            reply = client.chat(messages, context=context)
+        except AIClassificationError as exc:
+            raise DashboardError(str(exc)) from None
+        return {"reply": reply, "model": settings.ai_model}
+
     def test_ai_connection(self) -> dict[str, Any]:
         settings = self._effective_settings()
         try:
