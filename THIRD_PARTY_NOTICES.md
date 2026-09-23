@@ -13,11 +13,13 @@
 | idna、MarkupSafe | BSD-3-Clause | https://github.com/kjd/idna；https://github.com/pallets/markupsafe |
 | typing_extensions | PSF-2.0 | https://github.com/python/typing_extensions |
 | keyring、jaraco.classes、jaraco.context、jaraco.functools、more-itertools | MIT | https://github.com/jaraco/keyring；https://github.com/jaraco/jaraco.classes；https://github.com/jaraco/jaraco.context；https://github.com/jaraco/jaraco.functools；https://github.com/more-itertools/more-itertools |
+| platformdirs | MIT | https://github.com/tox-dev/platformdirs |
+| tzdata（Windows） | Apache-2.0 | https://github.com/python/tzdata |
 | pywebview | BSD-3-Clause | https://github.com/r0x0r/pywebview |
 | bottle、proxy_tools | MIT | https://github.com/bottlepy/bottle；https://github.com/jtushman/proxy_tools |
 | PyObjC（core、Cocoa、Quartz、Security、WebKit） | MIT | https://github.com/ronaldoussoren/pyobjc |
 
-Apple 的系统框架由 macOS 提供，不复制到本仓库。应用发布包应同时携带各分发包自带的完整许可证文本；本文件不是许可证全文的替代品。
+Apple 的系统框架由 macOS 提供；Windows WebView2、.NET 运行时与系统通知框架由 Windows 提供。它们不会复制到本仓库。应用发布包应同时携带各分发包自带的完整许可证文本；本文件不是许可证全文的替代品。
 
 ## 前端运行时
 

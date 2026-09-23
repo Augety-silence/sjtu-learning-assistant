@@ -18,6 +18,8 @@ from sjtu_learning_assistant.notifications import (
     NotificationCandidate,
     NotificationError,
     NotificationService,
+    WindowsNotificationSender,
+    default_notification_sender,
     sanitize_notification_text,
 )
 from sjtu_learning_assistant.repository import (
@@ -146,6 +148,30 @@ class MacOSNotificationSenderTests(unittest.TestCase):
         self.assertNotIn("\x00", cleaned)
         self.assertLessEqual(len(cleaned), 512)
         self.assertTrue(cleaned.endswith("…"))
+
+
+class WindowsNotificationSenderTests(unittest.TestCase):
+    def test_uses_fixed_powershell_script_and_passes_text_as_arguments(self) -> None:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def runner(arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        WindowsNotificationSender(runner=runner, platform="win32").send(
+            "标题", "副标题", "正文\x00内容"
+        )
+        arguments, kwargs = calls[0]
+        self.assertEqual("powershell.exe", arguments[0])
+        self.assertEqual("-Command", arguments[6])
+        self.assertEqual("标题", arguments[8])
+        self.assertNotIn("标题", arguments[7])
+        self.assertNotIn("\x00", arguments[10])
+        self.assertNotIn("shell", kwargs)
+
+    @patch("sjtu_learning_assistant.notifications.sys.platform", "win32")
+    def test_default_sender_selects_windows(self) -> None:
+        self.assertIsInstance(default_notification_sender(), WindowsNotificationSender)
 
 
 class NotificationServiceTests(unittest.TestCase):

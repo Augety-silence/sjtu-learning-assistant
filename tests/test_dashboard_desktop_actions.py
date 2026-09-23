@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
+from sjtu_learning_assistant.dashboard_service import (
+    DashboardError,
+    DashboardService,
+    _desktop_open_command,
+)
 
 
 class DesktopActionSafetyTests(unittest.TestCase):
@@ -53,6 +57,20 @@ class DesktopActionSafetyTests(unittest.TestCase):
         ):
             with self.subTest(url=unsafe), self.assertRaises(DashboardError):
                 self.service.open_external(unsafe)
+
+
+    def test_windows_commands_use_shell_free_system_handlers(self) -> None:
+        document = Path(r"C:\Users\Student\讲义.pdf")
+        with patch("sjtu_learning_assistant.dashboard_service.sys.platform", "win32"):
+            self.assertEqual(["explorer.exe", str(document)], _desktop_open_command(document))
+            self.assertEqual(
+                ["explorer.exe", f"/select,{document}"],
+                _desktop_open_command(document, reveal=True),
+            )
+            self.assertEqual(
+                ["rundll32.exe", "url.dll,FileProtocolHandler", "https://example.edu"],
+                _desktop_open_command("https://example.edu"),
+            )
 
 
 class SyncReentryTests(unittest.TestCase):

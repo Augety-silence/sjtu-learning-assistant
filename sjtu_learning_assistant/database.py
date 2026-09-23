@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from platformdirs import user_data_path
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +15,11 @@ from sqlalchemy.exc import SQLAlchemyError
 DATABASE_URL_ENV = "SJTU_DATABASE_URL"
 KEYCHAIN_SERVICE = "SJTU Learning Assistant - PostgreSQL"
 KEYCHAIN_ACCOUNT = "database-url"
-APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "SJTU Learning Assistant"
+APP_SUPPORT_DIR = (
+    user_data_path("SJTU Learning Assistant", appauthor=False)
+    if sys.platform == "win32"
+    else Path.home() / "Library" / "Application Support" / "SJTU Learning Assistant"
+)
 DEFAULT_SQLITE_PATH = APP_SUPPORT_DIR / "data" / "app.db"
 SQLITE_BUSY_TIMEOUT_MS = 5000
 
