@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import {
   EmptyState,
@@ -22,6 +22,7 @@ export function OverviewView({
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState("");
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
   const { showToast } = useToast();
   const load = useCallback(async () => {
     setError("");
@@ -73,26 +74,62 @@ export function OverviewView({
     );
   };
 
+  const prioritizedDeadlines = useMemo(() => {
+    if (!data) return [];
+    return data.deadlines
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const leftTime = left.item.due_at
+          ? new Date(left.item.due_at).getTime()
+          : Number.POSITIVE_INFINITY;
+        const rightTime = right.item.due_at
+          ? new Date(right.item.due_at).getTime()
+          : Number.POSITIVE_INFINITY;
+        return leftTime - rightTime || left.index - right.index;
+      })
+      .map(({ item }) => item);
+  }, [data]);
+  const prioritizedMessages = useMemo(() => {
+    if (!data) return [];
+    return data.messages
+      .map((item, index) => ({ item, index }))
+      .sort(
+        (left, right) =>
+          Number(right.item.is_unread) - Number(left.item.is_unread) ||
+          left.index - right.index,
+      )
+      .map(({ item }) => item);
+  }, [data]);
+  const deadlinesWithin24Hours = useMemo(() => {
+    const now = Date.now();
+    const end = now + 24 * 60 * 60 * 1000;
+    return prioritizedDeadlines.filter((item) => {
+      if (!item.due_at) return false;
+      const due = new Date(item.due_at).getTime();
+      return due >= now && due <= end;
+    }).length;
+  }, [prioritizedDeadlines]);
+
   if (error) return <ErrorState message={error} retry={() => void load()} />;
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
 
   return (
     <div className="section-stack">
       <section className="kpi-grid" aria-label="学习概览">
-        <div className="kpi">
-          <p>课程数</p>
-          <strong>{data.courses}</strong>
-          <span>已同步课程</span>
+        <div className="kpi kpi-urgent">
+          <p>24 小时内截止</p>
+          <strong>{deadlinesWithin24Hours}</strong>
+          <span>优先处理</span>
         </div>
-        <div className="kpi">
-          <p>未来 7 天作业</p>
-          <strong>{data.upcoming_deadlines}</strong>
-          <span>尚未完成</span>
-        </div>
-        <div className="kpi">
+        <div className="kpi kpi-priority">
           <p>未读邮件</p>
           <strong>{data.unread_emails}</strong>
           <span>等待处理</span>
+        </div>
+        <div className="kpi kpi-secondary">
+          <p>已同步课程</p>
+          <strong>{data.courses}</strong>
+          <span>未来 7 天还有 {data.upcoming_deadlines} 项作业</span>
         </div>
       </section>
       <Section
@@ -110,7 +147,7 @@ export function OverviewView({
               description="未来 7 天内暂无未完成作业。"
             />
           ) : (
-            data.deadlines.map((item) => (
+            prioritizedDeadlines.map((item) => (
               <button
                 type="button"
                 className="list-row list-row-button"
@@ -148,13 +185,16 @@ export function OverviewView({
               description="同步后，邮件与课程公告会显示在这里。"
             />
           ) : (
-            data.messages.map((item) => (
+            prioritizedMessages.map((item) => (
               <button
                 type="button"
                 className="list-row list-row-button"
                 key={messageKey(item)}
                 aria-label={`打开消息详情：${item.title}`}
-                onClick={() => setDetailItem(item)}
+                onClick={(event) => {
+                  detailTriggerRef.current = event.currentTarget;
+                  setDetailItem(item);
+                }}
               >
                 <div className="min-w-0">
                   <div className="message-title">
@@ -179,6 +219,7 @@ export function OverviewView({
           item={detailItem}
           onClose={() => setDetailItem(null)}
           onMarkedRead={markMessageRead}
+          triggerRef={detailTriggerRef}
         />
       )}
     </div>

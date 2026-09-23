@@ -46,14 +46,13 @@ export function MessagesView() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
   const { showToast } = useToast();
 
   const closeDetail = useCallback(() => {
     setDetailItem(null);
-    window.setTimeout(() => {
-      if (selectedKey) rowRefs.current.get(selectedKey)?.focus();
-    });
-  }, [selectedKey]);
+  }, []);
 
   const load = useCallback(async () => {
     setItems(null);
@@ -82,10 +81,34 @@ export function MessagesView() {
     );
   }, [items]);
 
-  const openDetail = useCallback((item: MessageItem) => {
-    setSelectedKey(messageKey(item));
-    setDetailItem(item);
+  const openDetail = useCallback(
+    (item: MessageItem, trigger?: HTMLElement | null) => {
+      const key = messageKey(item);
+      setSelectedKey(key);
+      detailTriggerRef.current = trigger ?? rowRefs.current.get(key) ?? null;
+      setDetailItem(item);
+    },
+    [],
+  );
+
+  const scheduleRowFocus = useCallback((key: string) => {
+    if (focusTimerRef.current !== null) {
+      window.clearTimeout(focusTimerRef.current);
+    }
+    focusTimerRef.current = window.setTimeout(() => {
+      focusTimerRef.current = null;
+      rowRefs.current.get(key)?.focus();
+    }, 0);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (focusTimerRef.current !== null) {
+        window.clearTimeout(focusTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const applyRead = useCallback((item: MessageItem) => {
     const key = messageKey(item);
@@ -199,7 +222,7 @@ export function MessagesView() {
         );
         const nextKey = messageKey(items[nextIndex]);
         setSelectedKey(nextKey);
-        window.setTimeout(() => rowRefs.current.get(nextKey)?.focus());
+        scheduleRowFocus(nextKey);
       } else if (event.key === "Enter") {
         event.preventDefault();
         openDetail(items[selectedIndex]);
@@ -219,6 +242,7 @@ export function MessagesView() {
     markCurrentFilterRead,
     markOneRead,
     openDetail,
+    scheduleRowFocus,
     selectedKey,
   ]);
 
@@ -257,14 +281,28 @@ export function MessagesView() {
         </div>
       </div>
 
+      <p className="result-count" aria-live="polite">
+        {items ? `共 ${items.length} 条消息${unreadCount ? `，${unreadCount} 条未读` : ""}` : ""}
+      </p>
       {error ? (
         <ErrorState message={error} retry={() => void load()} />
       ) : items === null ? (
         <LoadingState />
       ) : items.length === 0 ? (
         <EmptyState
-          title="没有消息"
-          description="这个筛选条件下暂时没有内容。"
+          title={kind === "all" ? "暂无消息" : "当前筛选没有结果"}
+          description={
+            kind === "all"
+              ? "完成同步后，邮件、公告与作业消息会显示在这里。"
+              : "可以清除筛选查看全部消息。"
+          }
+          action={
+            kind !== "all" ? (
+              <Button variant="outline" size="sm" onClick={() => setKind("all")}>
+                清除筛选
+              </Button>
+            ) : undefined
+          }
         />
       ) : (
         <div className="list-surface" aria-label="消息列表">
@@ -286,7 +324,7 @@ export function MessagesView() {
                     else rowRefs.current.delete(key);
                   }}
                   onFocus={() => setSelectedKey(key)}
-                  onClick={() => openDetail(item)}
+                  onClick={(event) => openDetail(item, event.currentTarget)}
                 >
                   <div className="min-w-0">
                     <div className="message-title">
@@ -326,10 +364,10 @@ export function MessagesView() {
 
       {detailItem && (
         <MessageDetailDialog
-          key={messageKey(detailItem)}
           item={detailItem}
           onClose={closeDetail}
           onMarkedRead={applyRead}
+          triggerRef={detailTriggerRef}
         />
       )}
     </div>

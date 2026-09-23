@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { MessageDetailContent } from "@/components/MessageDetailContent";
 import { LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -6,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { getMessageDetail, markMessagesRead, openExternal } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { MessageDetail, MessageItem, MessageKind } from "@/lib/types";
+import { useModalFocus } from "@/lib/useModalFocus";
 
 const kindLabels: Record<MessageKind, string> = {
   email: "邮件",
@@ -21,17 +28,25 @@ export function MessageDetailDialog({
   item,
   onClose,
   onMarkedRead,
+  triggerRef,
 }: {
   item: MessageItem;
   onClose: () => void;
   onMarkedRead?: (item: MessageItem) => void;
+  triggerRef?: RefObject<HTMLElement | null>;
 }) {
   const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailError, setDetailError] = useState("");
   const [requestVersion, setRequestVersion] = useState(0);
   const [markingRead, setMarkingRead] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const { showToast } = useToast();
+
+  useModalFocus(dialogRef, onClose, {
+    initialFocusRef: closeButtonRef,
+    triggerRef,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -50,21 +65,6 @@ export function MessageDetailDialog({
       cancelled = true;
     };
   }, [item.kind, item.source_id, requestVersion]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => closeButtonRef.current?.focus());
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   const markRead = useCallback(async () => {
     if (markingRead) return;
@@ -114,7 +114,7 @@ export function MessageDetailDialog({
   );
 
   return (
-    <div className="message-dialog-layer">
+    <div className="message-dialog-layer" data-modal-layer>
       <button
         type="button"
         className="message-dialog-backdrop"
@@ -122,10 +122,12 @@ export function MessageDetailDialog({
         onClick={onClose}
       />
       <section
+        ref={dialogRef}
         className="message-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="message-detail-title"
+        tabIndex={-1}
       >
         <header className="message-dialog-header">
           <div className="min-w-0">

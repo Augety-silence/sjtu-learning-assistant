@@ -1,7 +1,34 @@
 import type { MaterialNode } from "@/lib/types";
 
+export interface VisibleMaterialTreeItem {
+  id: string;
+  node: MaterialNode;
+  parentId?: string;
+  level: number;
+}
+
 export function containerChildren(node: MaterialNode): MaterialNode[] {
   return (node.children ?? []).filter((child) => child.kind !== "file");
+}
+
+export function visibleTreeItems(
+  root: MaterialNode,
+  expandedIds: ReadonlySet<string>,
+): VisibleMaterialTreeItem[] {
+  const result: VisibleMaterialTreeItem[] = [
+    { id: root.id, node: root, level: 1 },
+  ];
+
+  const visit = (parent: MaterialNode, parentId: string, level: number) => {
+    if (!expandedIds.has(parentId)) return;
+    for (const node of containerChildren(parent)) {
+      result.push({ id: node.id, node, parentId, level });
+      visit(node, node.id, level + 1);
+    }
+  };
+
+  visit(root, root.id, 2);
+  return result;
 }
 
 export function directFiles(

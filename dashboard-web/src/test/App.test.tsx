@@ -74,7 +74,12 @@ beforeEach(() => {
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  window.location.hash = "";
+});
 
 describe("overview message detail", () => {
   it("在概览页原地打开同款详情弹窗，不切换消息视图", async () => {
@@ -88,7 +93,7 @@ describe("overview message detail", () => {
       expect(window.location.hash).toBe("#/overview");
       expect(
         screen
-          .getByRole("button", { name: "概览" })
+          .getByRole("button", { name: "概览", hidden: true })
           .getAttribute("aria-current"),
       ).toBe("page");
       expect(screen.queryByText("消息收件箱")).toBeNull();
@@ -101,16 +106,37 @@ describe("overview message detail", () => {
 
   it("概览 DTO 不依赖消息列表或 URL，关闭后仍停留在概览", async () => {
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "打开消息详情：无链接邮件" }),
-    );
+    const trigger = await screen.findByRole("button", {
+      name: "打开消息详情：无链接邮件",
+    });
+    fireEvent.click(trigger);
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "关闭消息详情" }));
 
     expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
     expect(window.location.hash).toBe("#/overview");
     expect(getMessages).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /在 Canvas 打开/ })).toBeNull();
+  });
+});
+
+describe("页面标题焦点", () => {
+  it("hash 导航后聚焦新页面标题，但首次加载不抢焦点", async () => {
+    render(<App />);
+    const initialHeading = screen.getByRole("heading", {
+      level: 1,
+      name: "概览",
+    });
+    expect(document.activeElement).not.toBe(initialHeading);
+
+    window.location.hash = "#/messages";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    const heading = await screen.findByRole("heading", {
+      level: 1,
+      name: "消息",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
   });
 });
 

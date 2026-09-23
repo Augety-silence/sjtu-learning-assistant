@@ -18,11 +18,17 @@ import {
 
 export type ToastKind = "success" | "error" | "info";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastInput {
   id?: string;
   kind: ToastKind;
   message: string;
   duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastItem extends ToastInput {
@@ -59,6 +65,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       const id = input.id ?? `toast-${++sequence.current}`;
       const previousTimer = timers.current.get(id);
       if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      timers.current.delete(id);
       setToasts((current) => {
         const next = { ...input, id };
         if (current.some((toast) => toast.id === id)) {
@@ -66,14 +73,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         }
         return [...current, next];
       });
-      const duration = input.duration ?? 4500;
+      const duration = input.duration ?? (input.kind === "error" ? 0 : 4500);
       if (duration > 0) {
         timers.current.set(
           id,
           window.setTimeout(() => dismissToast(id), duration),
         );
-      } else {
-        timers.current.delete(id);
       }
       return id;
     },
@@ -112,6 +117,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             >
               <Icon className="toast-icon" aria-hidden="true" />
               <p>{toast.message}</p>
+              {toast.action && (
+                <button
+                  type="button"
+                  className="toast-action"
+                  onClick={() => {
+                    toast.action?.onClick();
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {toast.action.label}
+                </button>
+              )}
               <button
                 type="button"
                 className="toast-close"

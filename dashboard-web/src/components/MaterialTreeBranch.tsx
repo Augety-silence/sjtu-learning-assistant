@@ -1,5 +1,5 @@
 import { ChevronDown, Folder } from "lucide-react";
-import { type DragEvent, useState } from "react";
+import type { DragEvent, KeyboardEvent, RefCallback } from "react";
 import { containerChildren } from "@/lib/materialTree";
 import type { MaterialNode } from "@/lib/types";
 
@@ -37,107 +37,131 @@ export function materialTargetAriaLabel(node: MaterialNode) {
     : node.name;
 }
 
-export function MaterialTreeBranch({
-  node,
-  selected,
-  select,
-  dragSource,
-  dropTargetId,
-  hoverTarget,
-  drop,
-}: {
+interface MaterialTreeBranchProps {
   node: MaterialNode;
-  selected: string;
+  level: number;
+  selectedId: string;
+  activeId: string;
+  expandedIds: ReadonlySet<string>;
   select: (node: MaterialNode) => void;
+  focusItem: (id: string) => void;
+  toggle: (id: string, expanded: boolean) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLElement>, node: MaterialNode) => void;
+  registerItem: (id: string) => RefCallback<HTMLElement>;
   dragSource: MaterialDragSource | null;
   dropTargetId: string | null;
   hoverTarget: HoverHandler;
   drop: MaterialDropHandler;
-}) {
-  const [expanded, setExpanded] = useState(
-    node.kind === "root" || node.kind === "term" || node.kind === "course",
-  );
+}
+
+export function MaterialTreeBranch({
+  node,
+  level,
+  selectedId,
+  activeId,
+  expandedIds,
+  select,
+  focusItem,
+  toggle,
+  onKeyDown,
+  registerItem,
+  dragSource,
+  dropTargetId,
+  hoverTarget,
+  drop,
+}: MaterialTreeBranchProps) {
   const children = containerChildren(node);
-  if (node.kind === "root") {
-    return (
-      <>
-        {children.map((child) => (
-          <MaterialTreeBranch
-            key={child.id}
-            node={child}
-            selected={selected}
-            select={select}
-            dragSource={dragSource}
-            dropTargetId={dropTargetId}
-            hoverTarget={hoverTarget}
-            drop={drop}
-          />
-        ))}
-      </>
-    );
-  }
+  const expanded = children.length > 0 && expandedIds.has(node.id);
   const target = isMaterialDropTarget(node);
+  const dropClass = materialDropClass(node, dragSource, dropTargetId);
+
   return (
-    <div className="tree-branch">
-      <button
-        type="button"
-        aria-label={materialTargetAriaLabel(node)}
-        aria-describedby={target ? "material-drop-help" : undefined}
-        data-material-target-id={target ? node.id : undefined}
-        className={`tree-row ${selected === node.id ? "tree-selected" : ""}${materialDropClass(node, dragSource, dropTargetId)}`}
-        onClick={() => select(node)}
-        onDragEnter={
-          target
-            ? (event) => {
-                event.preventDefault();
-                hoverTarget(node);
+    <div
+      ref={registerItem(node.id)}
+      className={`tree-branch${dropClass}`}
+      role="treeitem"
+      tabIndex={activeId === node.id ? 0 : -1}
+      aria-level={level}
+      aria-selected={selectedId === node.id}
+      aria-expanded={children.length > 0 ? expanded : undefined}
+      aria-label={materialTargetAriaLabel(node)}
+      aria-describedby={target ? "material-drop-help" : undefined}
+      data-material-target-id={target ? node.id : undefined}
+      onFocus={(event) => {
+        if (event.target === event.currentTarget) focusItem(node.id);
+      }}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        onKeyDown(event, node);
+      }}
+      onClick={(event) => {
+        event.stopPropagation();
+        select(node);
+      }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        if (children.length > 0) toggle(node.id, !expanded);
+      }}
+      onDragEnter={
+        target
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              hoverTarget(node);
+            }
+          : undefined
+      }
+      onDragOver={
+        target
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect =
+                dragSource?.courseId === node.course_id ? "move" : "none";
+              hoverTarget(node);
+            }
+          : undefined
+      }
+      onDragLeave={
+        target
+          ? (event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                hoverTarget(null);
               }
-            : undefined
-        }
-        onDragOver={
-          target
-            ? (event) => {
-                event.preventDefault();
-                event.dataTransfer.dropEffect =
-                  dragSource?.courseId === node.course_id ? "move" : "none";
-                hoverTarget(node);
-              }
-            : undefined
-        }
-        onDragLeave={
-          target
-            ? (event) => {
-                if (
-                  !event.currentTarget.contains(event.relatedTarget as Node)
-                ) {
-                  hoverTarget(null);
-                }
-              }
-            : undefined
-        }
-        onDrop={target ? (event) => drop(event, node) : undefined}
+            }
+          : undefined
+      }
+      onDrop={target ? (event) => drop(event, node) : undefined}
+    >
+      <div
+        className={`tree-row ${selectedId === node.id ? "tree-selected" : ""}${dropClass}`}
       >
-        {children.length > 0 && (
+        {children.length > 0 ? (
           <ChevronDown
             className={`tree-chevron ${expanded ? "tree-chevron-open" : ""}`}
             aria-hidden="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setExpanded((value) => !value);
-            }}
           />
+        ) : (
+          <span className="tree-chevron-placeholder" aria-hidden="true" />
         )}
         <Folder className="tree-kind-icon" aria-hidden="true" />
         <span>{node.name}</span>
-      </button>
-      {expanded && children.length > 0 && (
-        <div className="tree-children">
+      </div>
+      {expanded && (
+        <div className="tree-children" role="group">
           {children.map((child) => (
             <MaterialTreeBranch
               key={child.id}
               node={child}
-              selected={selected}
+              level={level + 1}
+              selectedId={selectedId}
+              activeId={activeId}
+              expandedIds={expandedIds}
               select={select}
+              focusItem={focusItem}
+              toggle={toggle}
+              onKeyDown={onKeyDown}
+              registerItem={registerItem}
               dragSource={dragSource}
               dropTargetId={dropTargetId}
               hoverTarget={hoverTarget}

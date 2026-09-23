@@ -163,7 +163,11 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("MaterialsView manual filing", () => {
   it("supports same-course drag/drop and rejects cross-course drop with feedback", async () => {
@@ -199,7 +203,7 @@ describe("MaterialsView manual filing", () => {
 
   it("accepts a drop on a Canvas folder in the right-hand folder list", async () => {
     render(<MaterialsView />);
-    const categoryTarget = await screen.findByRole("button", {
+    const categoryTarget = await screen.findByRole("treeitem", {
       name: "课件，可接收同课程资料拖放",
     });
     fireEvent.click(categoryTarget);
@@ -240,5 +244,69 @@ describe("MaterialsView manual filing", () => {
         "category:course-1:supplementary",
       ),
     );
+  });
+});
+
+describe("MaterialsView ARIA tree", () => {
+  it("使用唯一 roving tabIndex 并按父子语义遍历至少三层", async () => {
+    render(<MaterialsView />);
+    const root = await screen.findByRole("treeitem", { name: "全部资料" });
+    const tabbable = () =>
+      screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0);
+    expect(tabbable()).toEqual([root]);
+
+    root.focus();
+    fireEvent.keyDown(root, { key: "ArrowDown" });
+    const term = screen.getByRole("treeitem", { name: "2026 Fall" });
+    expect(document.activeElement).toBe(term);
+    expect(term.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.keyDown(term, { key: "ArrowRight" });
+    const course = screen.getByRole("treeitem", { name: "自然语言处理" });
+    expect(document.activeElement).toBe(course);
+    fireEvent.keyDown(course, { key: "ArrowRight" });
+    const category = screen.getAllByRole("treeitem", { name: /课程作业/ })[0];
+    expect(document.activeElement).toBe(category);
+    expect(category.getAttribute("aria-level")).toBe("4");
+    expect(category.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.keyDown(category, { key: "Enter" });
+    expect(category.getAttribute("aria-selected")).toBe("true");
+    expect(tabbable()).toEqual([category]);
+
+    fireEvent.keyDown(category, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(course);
+    const expandedBeforeSpace = course.getAttribute("aria-expanded");
+    fireEvent.keyDown(course, { key: " " });
+    expect(course.getAttribute("aria-selected")).toBe("true");
+    expect(course.getAttribute("aria-expanded")).toBe(expandedBeforeSpace);
+  });
+
+  it("支持 Up/Down/Home/End，折叠后移除后代", async () => {
+    render(<MaterialsView />);
+    const root = await screen.findByRole("treeitem", { name: "全部资料" });
+    const course = screen.getByRole("treeitem", { name: "自然语言处理" });
+    const category = screen.getAllByRole("treeitem", { name: /课程作业/ })[0];
+
+    category.focus();
+    fireEvent.keyDown(category, { key: "Home" });
+    expect(document.activeElement).toBe(root);
+    fireEvent.keyDown(root, { key: "End" });
+    const last = screen.getAllByRole("treeitem").at(-1);
+    expect(document.activeElement).toBe(last);
+    fireEvent.keyDown(last as HTMLElement, { key: "ArrowUp" });
+    expect(document.activeElement).not.toBe(last);
+
+    course.focus();
+    fireEvent.keyDown(course, { key: "ArrowLeft" });
+    expect(course.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      document.querySelector(
+        '[data-material-target-id="category:course-1:assignments"]',
+      ),
+    ).toBeNull();
+    expect(
+      screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0),
+    ).toEqual([course]);
   });
 });

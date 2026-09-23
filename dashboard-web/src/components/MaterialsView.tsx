@@ -1,5 +1,12 @@
-import { File, Folder, Search } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronLeft, File, Folder, Search } from "lucide-react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   isMaterialDropTarget,
   type MaterialDragSource,
@@ -18,25 +25,61 @@ import {
   directFiles,
   filesBelow,
   findNodePath,
+  visibleTreeItems,
 } from "@/lib/materialTree";
+import { useCompactViewport } from "@/lib/useCompactViewport";
 import type { MaterialNode, MaterialTree } from "@/lib/types";
+
+function defaultExpandedIds(root: MaterialNode) {
+  const expanded = new Set<string>();
+  const visit = (node: MaterialNode) => {
+    if (["root", "term", "course"].includes(node.kind)) {
+      expanded.add(node.id);
+      for (const child of containerChildren(node)) visit(child);
+    }
+  };
+  visit(root);
+  return expanded;
+}
 
 export function MaterialsView() {
   const [tree, setTree] = useState<MaterialTree | null>(null);
   const [selectedId, setSelectedId] = useState("root");
+  const [activeId, setActiveId] = useState("root");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(
+    () => new Set(["root"]),
+  );
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [status, setStatus] = useState("all");
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  const [mobilePane, setMobilePane] = useState<"directory" | "content">(
+    "directory",
+  );
+  const [restoreTreeFocus, setRestoreTreeFocus] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [dragSource, setDragSource] = useState<MaterialDragSource | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const itemRefs = useRef(new Map<string, HTMLElement>());
+  const contentHeadingRef = useRef<HTMLHeadingElement>(null);
+  const compact = useCompactViewport();
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setError("");
     try {
-      setTree(await invoke<MaterialTree>("material_tree"));
+      const nextTree = await invoke<MaterialTree>("material_tree");
+      setTree(nextTree);
+      setExpandedIds((current) =>
+        current.size > 1 ? current : defaultExpandedIds(nextTree.root),
+      );
+      setActiveId((current) =>
+        findNodePath(nextTree.root, current) ? current : nextTree.root.id,
+      );
+      setSelectedId((current) =>
+        findNodePath(nextTree.root, current) ? current : nextTree.root.id,
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "资料加载失败");
     }
@@ -68,6 +111,114 @@ export function MaterialsView() {
   });
   const childFolders =
     query.trim() || !current ? [] : containerChildren(current);
+  const visibleItems = useMemo(
+    () => (tree ? visibleTreeItems(tree.root, expandedIds) : []),
+    [expandedIds, tree],
+  );
+  const hasFilters = Boolean(
+    query.trim() || category !== "all" || status !== "all",
+  );
+
+  useEffect(() => {
+    setSelectedContentId(null);
+  }, [category, query, selectedId, status]);
+
+  useEffect(() => {
+    if (!compact || mobilePane !== "directory" || !restoreTreeFocus) return;
+    itemRefs.current.get(activeId)?.focus();
+    setRestoreTreeFocus(false);
+  }, [activeId, compact, mobilePane, restoreTreeFocus]);
+
+  const registerItem = useCallback(
+    (id: string) => (node: HTMLElement | null) => {
+      if (node) itemRefs.current.set(id, node);
+      else itemRefs.current.delete(id);
+    },
+    [],
+  );
+
+  const focusItem = useCallback((id: string) => {
+    setActiveId(id);
+    itemRefs.current.get(id)?.focus();
+  }, []);
+
+  const toggleTreeItem = useCallback(
+    (id: string, expanded: boolean) => {
+      setExpandedIds((currentIds) => {
+        const next = new Set(currentIds);
+        if (expanded) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+      if (!expanded && tree) {
+        const activePath = findNodePath(tree.root, activeId);
+        if (activePath?.some((node) => node.id === id) && activeId !== id) {
+          focusItem(id);
+        }
+      }
+    },
+    [activeId, focusItem, tree],
+  );
+
+  const selectTreeItem = useCallback(
+    (node: MaterialNode) => {
+      setSelectedId(node.id);
+      setActiveId(node.id);
+      if (compact) setMobilePane("content");
+    },
+    [compact],
+  );
+
+  useEffect(() => {
+    if (compact && mobilePane === "content") contentHeadingRef.current?.focus();
+  }, [compact, mobilePane, selectedId]);
+
+  const onTreeKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>, node: MaterialNode) => {
+      const index = visibleItems.findIndex((item) => item.id === node.id);
+      if (index < 0) return;
+      const item = visibleItems[index];
+      const children = containerChildren(node);
+      const expanded = expandedIds.has(node.id);
+      let handled = true;
+
+      switch (event.key) {
+        case "ArrowDown":
+          focusItem(
+            visibleItems[Math.min(index + 1, visibleItems.length - 1)].id,
+          );
+          break;
+        case "ArrowUp":
+          focusItem(visibleItems[Math.max(index - 1, 0)].id);
+          break;
+        case "Home":
+          focusItem(visibleItems[0].id);
+          break;
+        case "End":
+          focusItem(visibleItems[visibleItems.length - 1].id);
+          break;
+        case "ArrowRight":
+          if (children.length === 0) handled = false;
+          else if (!expanded) toggleTreeItem(node.id, true);
+          else focusItem(children[0].id);
+          break;
+        case "ArrowLeft":
+          if (expanded && children.length > 0) toggleTreeItem(node.id, false);
+          else if (item.parentId) focusItem(item.parentId);
+          else handled = false;
+          break;
+        case "Enter":
+        case " ":
+          selectTreeItem(node);
+          break;
+        default:
+          handled = false;
+      }
+
+      if (handled) event.preventDefault();
+    },
+    [expandedIds, focusItem, selectTreeItem, toggleTreeItem, visibleItems],
+  );
 
   const act = async (
     file: MaterialNode,
@@ -113,6 +264,32 @@ export function MaterialsView() {
         return next;
       });
     }
+  };
+
+  const runDefaultAction = (node: MaterialNode) => {
+    if (node.kind === "file") {
+      if (busy[node.source_id ?? ""]) return;
+      void act(node, node.can_open ? "open" : "download");
+      return;
+    }
+    setSelectedId(node.id);
+    setActiveId(node.id);
+    setSelectedContentId(null);
+  };
+
+  const onContentKeyDown = (
+    event: KeyboardEvent<HTMLElement>,
+    node: MaterialNode,
+  ) => {
+    if (event.target !== event.currentTarget || event.key !== "Enter") return;
+    event.preventDefault();
+    runDefaultAction(node);
+  };
+
+  const clearFilters = () => {
+    setQuery("");
+    setCategory("all");
+    setStatus("all");
   };
 
   const move = useCallback(
@@ -235,7 +412,10 @@ export function MaterialsView() {
           <Search aria-hidden="true" />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              if (compact) setMobilePane("content");
+            }}
             placeholder="搜索文件名"
             aria-label="搜索文件名"
           />
@@ -244,7 +424,10 @@ export function MaterialsView() {
           <span>分类</span>
           <select
             value={category}
-            onChange={(event) => setCategory(event.target.value)}
+            onChange={(event) => {
+              setCategory(event.target.value);
+              if (compact) setMobilePane("content");
+            }}
           >
             <option value="all">全部分类</option>
             {tree?.categories.map((item) => (
@@ -258,7 +441,10 @@ export function MaterialsView() {
           <span>状态</span>
           <select
             value={status}
-            onChange={(event) => setStatus(event.target.value)}
+            onChange={(event) => {
+              setStatus(event.target.value);
+              if (compact) setMobilePane("content");
+            }}
           >
             <option value="all">全部状态</option>
             <option value="downloaded">已下载</option>
@@ -277,51 +463,88 @@ export function MaterialsView() {
           description="完成 Canvas 同步后，资料会按课程目录显示。"
         />
       ) : (
-        <div className="finder">
-          <aside className="finder-tree" aria-label="资料目录">
-            <button
-              type="button"
-              className={`tree-row ${selectedId === "root" ? "tree-selected" : ""}`}
-              onClick={() => setSelectedId("root")}
-            >
-              <Folder className="tree-kind-icon" aria-hidden="true" />
-              <span>全部资料</span>
-            </button>
+        <div className={`finder finder-${mobilePane}`}>
+          {(!compact || mobilePane === "directory") && (
+            <aside className="finder-tree" role="tree" aria-label="资料目录">
             <MaterialTreeBranch
               node={tree.root}
-              selected={selectedId}
-              select={(node) => setSelectedId(node.id)}
+              level={1}
+              selectedId={selectedId}
+              activeId={activeId}
+              expandedIds={expandedIds}
+              select={selectTreeItem}
+              focusItem={setActiveId}
+              toggle={toggleTreeItem}
+              onKeyDown={onTreeKeyDown}
+              registerItem={registerItem}
               dragSource={dragSource}
               dropTargetId={dropTargetId}
               hoverTarget={(node) => setDropTargetId(node?.id ?? null)}
               drop={drop}
             />
-          </aside>
-          <section className="finder-content">
+            </aside>
+          )}
+          {(!compact || mobilePane === "content") && (
+          <section className="finder-content" aria-label="目录内容">
+            {compact && (
+              <div className="finder-mobile-header">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setRestoreTreeFocus(true);
+                    setMobilePane("directory");
+                  }}
+                >
+                  <ChevronLeft aria-hidden="true" />
+                  返回目录
+                </Button>
+                <h3 ref={contentHeadingRef} tabIndex={-1}>
+                  {query.trim() ? "搜索结果" : current?.name}
+                </h3>
+              </div>
+            )}
             <nav className="breadcrumbs" aria-label="路径">
               {path.map((node, index) => (
                 <span key={node.id}>
-                  <button type="button" onClick={() => setSelectedId(node.id)}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedId(node.id);
+                      setActiveId(node.id);
+                    }}
+                  >
                     {node.name}
                   </button>
                   {index < path.length - 1 && <span>/</span>}
                 </span>
               ))}
             </nav>
+            <p className="result-count finder-result-count" aria-live="polite">
+              {childFolders.length + visibleFiles.length} 个结果
+            </p>
             <div className="finder-list" role="list">
-              {childFolders.map((folder) => {
+              {childFolders.map((folder, folderIndex) => {
                 const target = isMaterialDropTarget(folder);
                 return (
-                  <button
-                    type="button"
+                  <div
                     role="listitem"
+                    tabIndex={
+                      selectedContentId === folder.id ||
+                      (selectedContentId === null && folderIndex === 0)
+                        ? 0
+                        : -1
+                    }
+                    aria-current={selectedContentId === folder.id ? "true" : undefined}
                     aria-label={materialTargetAriaLabel(folder)}
                     aria-describedby={target ? "material-drop-help" : undefined}
                     data-material-target-id={target ? folder.id : undefined}
-                    className={`finder-row folder-row${materialDropClass(folder, dragSource, dropTargetId)}`}
+                    className={`finder-row folder-row${selectedContentId === folder.id ? " finder-row-selected" : ""}${materialDropClass(folder, dragSource, dropTargetId)}`}
                     key={folder.id}
-                    onDoubleClick={() => setSelectedId(folder.id)}
-                    onClick={() => setSelectedId(folder.id)}
+                    onFocus={() => setSelectedContentId(folder.id)}
+                    onClick={() => setSelectedContentId(folder.id)}
+                    onDoubleClick={() => runDefaultAction(folder)}
+                    onKeyDown={(event) => onContentKeyDown(event, folder)}
                     onDragEnter={
                       target
                         ? (event) => {
@@ -360,19 +583,36 @@ export function MaterialsView() {
                     <Folder aria-hidden="true" />
                     <span className="finder-name">{folder.name}</span>
                     <span className="finder-meta">文件夹</span>
-                  </button>
+                  </div>
                 );
               })}
-              {visibleFiles.map(({ file, path: filePath }) => {
+              {visibleFiles.map(({ file, path: filePath }, fileIndex) => {
                 const active = file.source_id
                   ? busy[file.source_id]
                   : undefined;
                 return (
                   <div
-                    className={`finder-row material-file-row${dragSource?.sourceId === file.source_id ? " material-dragging" : ""}`}
+                    className={`finder-row material-file-row${selectedContentId === file.id ? " finder-row-selected" : ""}${dragSource?.sourceId === file.source_id ? " material-dragging" : ""}`}
                     role="listitem"
+                    tabIndex={
+                      selectedContentId === file.id ||
+                      (selectedContentId === null &&
+                        childFolders.length === 0 &&
+                        fileIndex === 0)
+                        ? 0
+                        : -1
+                    }
+                    aria-current={selectedContentId === file.id ? "true" : undefined}
                     aria-label={`拖动资料：${file.name}`}
                     aria-describedby="material-drop-help"
+                    onFocus={() => setSelectedContentId(file.id)}
+                    onClick={() => setSelectedContentId(file.id)}
+                    onDoubleClick={(event) => {
+                      if (!(event.target as Element).closest(".finder-actions")) {
+                        runDefaultAction(file);
+                      }
+                    }}
+                    onKeyDown={(event) => onContentKeyDown(event, file)}
                     draggable={Boolean(
                       file.source_id && file.course_id && !active,
                     )}
@@ -406,16 +646,12 @@ export function MaterialsView() {
                   >
                     <File aria-hidden="true" />
                     <div className="finder-file-details">
-                      <button
+                      <span
                         className="finder-name file-name"
-                        type="button"
                         title={filePath.map((node) => node.name).join(" / ")}
-                        onDoubleClick={() =>
-                          file.can_open && void act(file, "open")
-                        }
                       >
                         {file.name}
-                      </button>
+                      </span>
                       {file.local_path && (
                         <span
                           className="finder-local-path"
@@ -446,6 +682,7 @@ export function MaterialsView() {
                           </span>
                           <select
                             aria-label={`归档“${file.name}”到分类`}
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
                             value=""
                             disabled={Boolean(active)}
                             onChange={(event) => {
@@ -515,6 +752,7 @@ export function MaterialsView() {
               )}
             </div>
           </section>
+          )}
         </div>
       )}
     </div>

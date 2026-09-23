@@ -59,7 +59,11 @@ beforeEach(() => {
   vi.mocked(openExternal).mockResolvedValue({ status: "opened" });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("MessagesView", () => {
   it("显示纯文本 fallback，仅在有 URL 时提供 Canvas 操作", async () => {
@@ -167,5 +171,55 @@ describe("MessagesView", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(markMessagesRead).not.toHaveBeenCalled();
     expect(getMessageDetail).not.toHaveBeenCalled();
+  });
+
+  it.each(["按钮", "Escape", "遮罩"])(
+    "%s 关闭详情后恢复实际触发按钮并恢复背景属性",
+    async (method) => {
+      render(<MessagesView />);
+      const trigger = await screen.findByRole("button", {
+        name: "打开消息详情：邮件一",
+      });
+      const background = trigger.closest<HTMLElement>(".list-surface");
+      background?.setAttribute("aria-hidden", "false");
+      fireEvent.click(trigger);
+
+      const dialog = await screen.findByRole("dialog");
+      const close = screen.getByRole("button", { name: "关闭消息详情" });
+      await waitFor(() => expect(document.activeElement).toBe(close));
+      expect(dialog.getAttribute("aria-modal")).toBe("true");
+      expect(background?.getAttribute("aria-hidden")).toBe("true");
+
+      fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      trigger.focus();
+      fireEvent.keyDown(document, { key: "Tab" });
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      if (method === "按钮") fireEvent.click(close);
+      else if (method === "Escape") {
+        fireEvent.keyDown(document, { key: "Escape" });
+      } else {
+        fireEvent.click(
+          document.querySelector(".message-dialog-backdrop") as HTMLElement,
+        );
+      }
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+      expect(background?.getAttribute("aria-hidden")).toBe("false");
+      expect(background?.hasAttribute("inert")).toBe(false);
+    },
+  );
+
+  it("卸载弹窗时清除初始焦点 timer", async () => {
+    const { unmount } = render(<MessagesView />);
+    const trigger = await screen.findByRole("button", {
+      name: "打开消息详情：邮件一",
+    });
+    vi.useFakeTimers();
+    fireEvent.click(trigger);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

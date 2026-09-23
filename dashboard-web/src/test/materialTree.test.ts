@@ -4,6 +4,7 @@ import {
   directFiles,
   filesBelow,
   findNodePath,
+  visibleTreeItems,
 } from "@/lib/materialTree";
 import type { MaterialNode } from "@/lib/types";
 
@@ -50,6 +51,22 @@ describe("material tree helpers", () => {
     ]);
     expect(filesBelow(tree).map(({ file }) => file.source_id)).toEqual(["1"]);
     expect(containerChildren(tree).map((node) => node.id)).toEqual(["term"]);
+  });
+
+  it("按展开状态生成深度优先的可见节点及父级信息", () => {
+    expect(visibleTreeItems(tree, new Set(["root"]))).toEqual([
+      { id: "root", node: tree, level: 1 },
+      {
+        id: "term",
+        node: tree.children?.[0],
+        parentId: "root",
+        level: 2,
+      },
+    ]);
+
+    const visible = visibleTreeItems(tree, new Set(["root", "term", "course"]));
+    expect(visible.map(({ id }) => id)).toEqual(["root", "term", "course"]);
+    expect(visible[2]).toMatchObject({ parentId: "term", level: 3 });
   });
 
   it("returns null for missing nodes", () => {
