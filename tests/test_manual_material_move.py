@@ -197,12 +197,17 @@ class ManualMaterialMoveTests(unittest.TestCase):
         self.assertIn("课程作业", planned.parts)
 
         self.service.restore_file_auto("file-1")
+        with Session(self.engine) as session, session.begin():
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "file-1")
+            )
+            record.ai_category = "assignments"
         folder_target = self.folder_id(
-            self.first_course_id, "courseware", self.first_folder_id
+            self.first_course_id, "assignments", self.first_folder_id
         )
         self.service.move_file_by_source_id("file-1", folder_target)
         record = self.record()
-        self.assertEqual("courseware", record.manual_category)
+        self.assertEqual("assignments", record.manual_category)
         self.assertEqual(self.first_folder_id, record.manual_folder_id)
         context = self.service._load_contexts(source_id="file-1")[0]
         self.assertEqual(("Week 1",), context.folder_names)

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -178,7 +179,7 @@ class ArchiveOrganizerTests(unittest.TestCase):
         source = self.root / "legacy.pdf"
         context = self.context(source)
         self.assertEqual(
-            ("2026-2027 Fall", "NLP", "课件", "week 1", "lecture.pdf"),
+            ("2026-2027 Fall", "NLP", "课件", "lecture.pdf"),
             self.target(context).relative_to(self.root).parts,
         )
         legacy = ArchiveService(
@@ -213,10 +214,34 @@ class ArchiveOrganizerTests(unittest.TestCase):
         self.assertEqual(1, summary.moved)
         self.assertFalse(source.exists())
         self.assertEqual(
-            ("2026-2027 Fall", "NLP", "课件", "week 1", "lecture.pdf"),
+            ("2026-2027 Fall", "NLP", "课件", "lecture.pdf"),
+            target.relative_to(self.root).parts,
+        )
+        self.assertFalse((self.root / "2026-2027 Fall" / "NLP" / "NLP").exists())
+        self.assertEqual(b"same", target.read_bytes())
+
+    def test_organize_migrates_legacy_supplementary_tree_to_flat_other(self) -> None:
+        legacy_category = self.root / "2026-2027 Fall" / "NLP" / "补充资料"
+        source = legacy_category / "References" / "Deep" / "lecture.pdf"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"same")
+        context = replace(
+            self.context(source),
+            category="supplementary",
+            folder_names=("References", "Deep"),
+            ai_category="supplementary",
+        )
+        target = self.target(context)
+
+        result = self.service._organize_one(context, target)
+
+        self.assertEqual("moved", result.status)
+        self.assertEqual(
+            ("2026-2027 Fall", "NLP", "其他", "lecture.pdf"),
             target.relative_to(self.root).parts,
         )
         self.assertEqual(b"same", target.read_bytes())
+        self.assertFalse(legacy_category.exists())
 
     def test_move_is_idempotent_and_recovers_interrupted_db_update(self) -> None:
         source = self.root / "2026-2027 Fall" / "NLP" / "Week 1" / "lecture.pdf"

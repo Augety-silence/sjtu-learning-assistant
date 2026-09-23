@@ -9,17 +9,14 @@ from typing import Any, Iterable
 CATEGORY_LABELS = {
     "assignments": "课程作业",
     "courseware": "课件",
-    "supplementary": "补充资料",
     "other": "其他",
 }
 CATEGORY_ORDER = tuple(CATEGORY_LABELS)
+LEGACY_CATEGORY_ALIASES = {"supplementary": "other"}
+LEGACY_CATEGORY_LABELS = ("补充资料",)
 KEYWORDS = (
     ("assignments", ("作业", "homework", "assignment", "exercise", "实验", "lab")),
     ("courseware", ("课件", "讲义", "lecture", "slide", "ppt", "slides", "教案")),
-    (
-        "supplementary",
-        ("补充", "课程资料", "additional", "reading", "reference", "supplementary", "拓展", "参考"),
-    ),
 )
 
 
@@ -48,8 +45,25 @@ def classify_material(
     return "other"
 
 
+def normalize_category(category: str | None) -> str:
+    """Map persisted legacy values into the current category set."""
+    normalized = LEGACY_CATEGORY_ALIASES.get(category, category)
+    return normalized if normalized in CATEGORY_LABELS else "other"
+
+
+def is_known_category(category: str | None) -> bool:
+    return category in CATEGORY_LABELS or category in LEGACY_CATEGORY_ALIASES
+
+
+def archive_folder_names(
+    category: str | None, folder_names: Iterable[str]
+) -> tuple[str, ...]:
+    """Only assignment archives retain their Canvas folder hierarchy."""
+    return tuple(folder_names) if normalize_category(category) == "assignments" else ()
+
+
 def category_label(category: str) -> str:
-    return CATEGORY_LABELS.get(category, CATEGORY_LABELS["other"])
+    return CATEGORY_LABELS[normalize_category(category)]
 
 
 def safe_folder_chain(folder_id: int | None, folder_by_id: dict[int, Any]) -> tuple[Any, ...]:

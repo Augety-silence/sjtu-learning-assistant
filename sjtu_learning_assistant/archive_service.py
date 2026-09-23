@@ -29,9 +29,13 @@ from sjtu_learning_assistant.ai_classifier import (
 )
 from sjtu_learning_assistant.material_classifier import (
     CATEGORY_LABELS,
+    LEGACY_CATEGORY_LABELS,
+    archive_folder_names,
     category_label,
     classify_material,
+    is_known_category,
     load_module_signals,
+    normalize_category,
     safe_folder_chain,
 )
 from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder, SyncState
@@ -590,7 +594,7 @@ class ArchiveService:
                     filename=file.display_name or file.filename or "unnamed-file",
                 )
                 manual_override = bool(
-                    file.manual_override and file.manual_category in CATEGORY_LABELS
+                    file.manual_override and is_known_category(file.manual_category)
                 )
                 manual_folder = folder_by_id.get(file.manual_folder_id)
                 manual_folder_names = (
@@ -602,9 +606,17 @@ class ArchiveService:
                     else ()
                 )
                 automatic_category = (
-                    file.ai_category
-                    if file.ai_category in CATEGORY_LABELS
+                    normalize_category(file.ai_category)
+                    if is_known_category(file.ai_category)
                     else rule_category
+                )
+                category = (
+                    normalize_category(file.manual_category)
+                    if manual_override
+                    else automatic_category
+                )
+                selected_folder_names = (
+                    manual_folder_names if manual_override else canvas_folder_names
                 )
                 contexts.append(
                     ArchiveFileContext(
@@ -622,25 +634,27 @@ class ArchiveService:
                         downloaded_size=file.downloaded_size,
                         downloaded_sha256=file.download_sha256,
                         downloaded_source_updated_at=file.downloaded_source_updated_at,
-                        folder_names=(
-                            manual_folder_names
-                            if manual_override
-                            else canvas_folder_names
+                        folder_names=archive_folder_names(
+                            category, selected_folder_names
                         ),
-                        category=(
-                            str(file.manual_category)
-                            if manual_override
-                            else automatic_category
-                        ),
+                        category=category,
                         course_code=course.course_code,
                         module_names=module_names,
                         module_item_names=module_item_names,
-                        ai_category=file.ai_category,
+                        ai_category=(
+                            normalize_category(file.ai_category)
+                            if is_known_category(file.ai_category)
+                            else file.ai_category
+                        ),
                         ai_fingerprint=file.ai_fingerprint,
                         ai_model=file.ai_model,
                         rule_category=rule_category,
                         canvas_folder_names=canvas_folder_names,
-                        manual_category=file.manual_category,
+                        manual_category=(
+                            normalize_category(file.manual_category)
+                            if is_known_category(file.manual_category)
+                            else file.manual_category
+                        ),
                         manual_folder_id=file.manual_folder_id,
                         manual_override=manual_override,
                         course_source_id=course.source_id,
@@ -946,14 +960,17 @@ class ArchiveService:
                 local_path=original.local_path,
             )
         course_contexts = self._load_contexts(course_ids={original.course_id})
+        automatic_category = (
+            str(original.ai_category)
+            if original.ai_category in CATEGORY_LABELS
+            else original.rule_category
+        )
         automatic_seed = replace(
             original,
-            category=(
-                str(original.ai_category)
-                if original.ai_category in CATEGORY_LABELS
-                else original.rule_category
+            category=automatic_category,
+            folder_names=archive_folder_names(
+                automatic_category, original.canvas_folder_names
             ),
-            folder_names=original.canvas_folder_names,
             manual_category=None,
             manual_folder_id=None,
             manual_override=False,
@@ -1008,7 +1025,11 @@ class ArchiveService:
                     else []
                 ),
                 *canonical_folder_chain(
-                    context.folder_names,
+                    (
+                        archive_folder_names(context.category, context.folder_names)
+                        if use_category
+                        else context.folder_names
+                    ),
                     course_name=context.course_name,
                     course_code=context.course_code,
                     category=context.category if use_category else None,
@@ -1135,7 +1156,7 @@ class ArchiveService:
         layouts = [(term, course, *folders)]
         layouts.extend(
             (term, course, label, *folders)
-            for label in CATEGORY_LABELS.values()
+            for label in (*CATEGORY_LABELS.values(), *LEGACY_CATEGORY_LABELS)
         )
         parent_parts = source.parent.parts
         for layout in layouts:
@@ -1143,6 +1164,15 @@ class ArchiveService:
                 continue
             root_parts = parent_parts[: -len(layout)]
             root = Path(*root_parts)
+            if root != Path(root.anchor):
+                return root
+        # Older archive versions retained arbitrary Canvas descendants after the
+        # term/course pair. Locate that stable prefix so flattening can also
+        # migrate files from a previous configured archive root.
+        for index in range(len(parent_parts) - 1):
+            if parent_parts[index : index + 2] != (term, course):
+                continue
+            root = Path(*parent_parts[:index])
             if root != Path(root.anchor):
                 return root
         raise ArchiveError("已下载文件不符合归档目录结构，已拒绝迁移。")
@@ -1163,10 +1193,14 @@ class ArchiveService:
         return size, digest
 
     def _conflict_target(self, target: Path, context: ArchiveFileContext) -> Path:
-        candidate = ensure_within_root(
-            self.archive_root,
-            target.with_name(add_source_id_suffix(target.name, context.source_id)),
+        safe_id = sanitize_component(context.source_id, fallback="unknown", max_length=48)
+        marker = f" [{safe_id}]"
+        candidate = (
+            target
+            if target.stem.endswith(marker)
+            else target.with_name(add_source_id_suffix(target.name, context.source_id))
         )
+        candidate = ensure_within_root(self.archive_root, candidate)
         if _path_mode(candidate) is None:
             return candidate
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

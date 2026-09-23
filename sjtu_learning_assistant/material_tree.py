@@ -7,8 +7,11 @@ from typing import Any
 from sjtu_learning_assistant.material_classifier import (
     CATEGORY_LABELS,
     CATEGORY_ORDER,
+    archive_folder_names,
     classify_material,
+    is_known_category,
     load_module_signals,
+    normalize_category,
     safe_folder_chain,
 )
 
@@ -90,12 +93,18 @@ def build_material_tree(session: Any) -> dict[str, Any]:
             filename=file.display_name or file.filename or "无名文件",
         )
         automatic_category = (
-            file.ai_category if file.ai_category in CATEGORY_ORDER else rule_category
+            normalize_category(file.ai_category)
+            if is_known_category(file.ai_category)
+            else rule_category
         )
         manual_override = bool(
-            file.manual_override and file.manual_category in CATEGORY_ORDER
+            file.manual_override and is_known_category(file.manual_category)
         )
-        category = file.manual_category if manual_override else automatic_category
+        category = (
+            normalize_category(file.manual_category)
+            if manual_override
+            else automatic_category
+        )
         if manual_override and file.manual_folder_id is not None:
             manual_folder = folder_by_id.get(file.manual_folder_id)
             chain = (
@@ -105,6 +114,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
             )
         else:
             chain = () if manual_override else canvas_chain
+        chain = archive_folder_names(category, chain)
         parent = category_nodes[(file.course_id, category)]
         for folder in chain:
             node_id = f"folder:{file.course_id}:{category}:{folder.id}"

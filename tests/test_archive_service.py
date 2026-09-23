@@ -342,9 +342,14 @@ class ArchiveDownloadTests(unittest.TestCase):
 
     def test_same_name_collisions_are_suffixed_and_folder_tree_is_used(self) -> None:
         service = self.make_service()
-        first = replace(self.context("42"), folder_names=("course files", "Week 1"))
+        first = replace(
+            self.context("42"),
+            category="assignments",
+            folder_names=("course files", "Week 1"),
+        )
         second = replace(
             self.context("43"),
+            category="assignments",
             folder_names=("course files", "Ｗｅｅｋ－１"),
         )
         planned = service._planned_paths([first, second])
@@ -353,6 +358,44 @@ class ArchiveDownloadTests(unittest.TestCase):
         self.assertIn("2026-2027 Fall", planned["42"].parts)
         self.assertIn("文本_分析", planned["42"].parts)
         self.assertIn("week 1", planned["42"].parts)
+
+    def test_only_assignments_keep_canvas_folders_and_flat_collisions_are_suffixed(self) -> None:
+        service = self.make_service()
+        assignment = replace(
+            self.context("assignment", "task.pdf"),
+            category="assignments",
+            folder_names=("Week 1", "Deep"),
+        )
+        courseware = replace(
+            self.context("slides", "same.pdf"),
+            category="courseware",
+            folder_names=("course files", "Week 1", "Deep"),
+        )
+        other = replace(
+            self.context("reference", "same.pdf"),
+            category="supplementary",
+            folder_names=("course files", "References", "Deep"),
+        )
+        duplicate = replace(
+            self.context("notes", "same.pdf"),
+            category="other",
+            folder_names=("course files", "Notes"),
+        )
+
+        planned = service._planned_paths([assignment, courseware, other, duplicate])
+
+        self.assertEqual(
+            ("2026-2027 Fall", "文本_分析", "课程作业", "week 1", "deep", "task.pdf"),
+            planned["assignment"].relative_to(self.root).parts,
+        )
+        self.assertEqual(
+            ("2026-2027 Fall", "文本_分析", "课件", "same.pdf"),
+            planned["slides"].relative_to(self.root).parts,
+        )
+        self.assertEqual("same [reference].pdf", planned["reference"].name)
+        self.assertEqual("same [notes].pdf", planned["notes"].name)
+        self.assertEqual("其他", planned["reference"].parent.name)
+        self.assertNotIn("References", planned["reference"].parts)
 
     def test_same_source_id_keeps_one_unsuffixed_target(self) -> None:
         service = self.make_service()
@@ -380,6 +423,7 @@ class ArchiveDownloadTests(unittest.TestCase):
         target = service._planned_paths([context])[context.source_id]
         target.parent.mkdir(parents=True)
         target.write_bytes(b"old")
+        context = replace(context, local_path=str(target))
         result = service._download_one(context, target)
         self.assertEqual("downloaded", result.status)
         self.assertEqual(b"content", target.read_bytes())

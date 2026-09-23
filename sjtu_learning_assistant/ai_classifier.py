@@ -28,8 +28,9 @@ ALLOWED_AI_MODELS = frozenset(
 )
 SYSTEM_PROMPT = (
     "You classify university course file metadata. Return JSON only with exactly "
-    '{"classifications":[{"id":"input id","category":"assignments|courseware|supplementary|other"}]}. '
-    "Return one item for every input id. Never infer or request file contents."
+    '{"classifications":[{"id":"input id","category":"assignments|courseware|other"}]}. '
+    "Use other for supplementary/reference material. Return one item for every input id. "
+    "Never infer or request file contents."
 )
 
 

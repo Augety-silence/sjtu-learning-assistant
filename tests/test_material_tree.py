@@ -20,7 +20,7 @@ class MaterialClassificationTests(unittest.TestCase):
     def test_priority_is_module_then_folder_then_filename(self):
         self.assertEqual("assignments", classify_material(module_names=["Homework"], folder_names=["课件"], filename="reading.pdf"))
         self.assertEqual("courseware", classify_material(module_names=[], folder_names=["Lecture 01"], filename="homework.pdf"))
-        self.assertEqual("supplementary", classify_material(module_names=[], folder_names=[], filename="reference.pdf"))
+        self.assertEqual("other", classify_material(module_names=[], folder_names=[], filename="reference.pdf"))
         self.assertEqual("other", classify_material(module_names=[], folder_names=[], filename="syllabus.pdf"))
         self.assertEqual(
             "assignments",
@@ -79,7 +79,45 @@ class MaterialTreeTests(unittest.TestCase):
         assignment_files = categories["assignments"]["children"][0]["children"]
         self.assertEqual(["file-1"], [item["source_id"] for item in assignment_files])
         self.assertNotIn("file-old", str(tree))
-        self.assertEqual(4, len(categories))
+        self.assertEqual({"assignments", "courseware", "other"}, set(categories))
+
+    def test_tree_matches_flat_archive_layout_and_merges_legacy_supplementary(self):
+        with Session(self.engine) as session:
+            course = Course(source_id="course-1", name="自然语言处理", term_name="2026-2027 Fall", raw_data={})
+            session.add(course)
+            session.flush()
+            root = CourseFolder(source_id="root", course_id=course.id, name="course files", is_active=True, last_seen_at=NOW, raw_data={})
+            session.add(root)
+            session.flush()
+            week = CourseFolder(source_id="week", course_id=course.id, name="Week 1", parent_folder_id=root.id, is_active=True, last_seen_at=NOW, raw_data={})
+            session.add(week)
+            session.flush()
+            leaf = CourseFolder(source_id="leaf", course_id=course.id, name="Deep", parent_folder_id=week.id, is_active=True, last_seen_at=NOW, raw_data={})
+            session.add(leaf)
+            session.flush()
+            session.add_all(
+                [
+                    CourseFile(source_id="assignment", course_id=course.id, folder_id=leaf.id, display_name="homework.pdf", is_active=True, last_seen_at=NOW, raw_data={}),
+                    CourseFile(source_id="courseware", course_id=course.id, folder_id=leaf.id, display_name="slides.pdf", ai_category="courseware", is_active=True, last_seen_at=NOW, raw_data={}),
+                    CourseFile(source_id="legacy-ai", course_id=course.id, folder_id=leaf.id, display_name="reference.pdf", ai_category="supplementary", is_active=True, last_seen_at=NOW, raw_data={}),
+                    CourseFile(source_id="legacy-manual", course_id=course.id, folder_id=leaf.id, display_name="notes.pdf", manual_category="supplementary", manual_folder_id=leaf.id, manual_override=True, is_active=True, last_seen_at=NOW, raw_data={}),
+                ]
+            )
+            session.commit()
+            tree = build_material_tree(session)
+
+        course_node = tree["root"]["children"][0]["children"][0]
+        categories = {node["category"]: node for node in course_node["children"]}
+        assignments = categories["assignments"]["children"]
+        self.assertEqual("Week 1", assignments[0]["name"])
+        self.assertEqual("Deep", assignments[0]["children"][0]["name"])
+        self.assertEqual("assignment", assignments[0]["children"][0]["children"][0]["source_id"])
+        self.assertEqual(["courseware"], [item["source_id"] for item in categories["courseware"]["children"]])
+        self.assertEqual(
+            ["legacy-manual", "legacy-ai"],
+            [item["source_id"] for item in categories["other"]["children"]],
+        )
+        self.assertNotIn("supplementary", {item["id"] for item in tree["categories"]})
 
 
 if __name__ == "__main__":
