@@ -166,3 +166,109 @@ export function organizeArchive() {
 export function openExternal(url: string): Promise<{ status: string }> {
   return invoke("open_external", { url });
 }
+
+export function getAssignments(
+  category: import("@/lib/types").AssignmentCategory,
+) {
+  return invoke<{
+    category: string;
+    items: import("@/lib/types").AssignmentItem[];
+  }>("assignments_list", { category });
+}
+
+export function getAssignmentDetail(courseId: number, assignmentId: number) {
+  return invoke<import("@/lib/types").AssignmentItem>("detail", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+  });
+}
+
+export function canSubmitAssignment(
+  courseId: number,
+  assignmentId: number,
+  submissionType?: import("@/lib/types").NativeSubmissionType,
+) {
+  return invoke<{
+    can_submit: boolean;
+    requires_external_submission: boolean;
+    submission_types: string[];
+  }>("can_submit", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    ...(submissionType ? { submission_type: submissionType } : {}),
+  });
+}
+
+export function submitAssignmentText(
+  courseId: number,
+  assignmentId: number,
+  text: string,
+) {
+  return invoke<import("@/lib/types").SubmissionResult>("submit_text", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    text,
+  });
+}
+
+export function submitAssignmentUrl(
+  courseId: number,
+  assignmentId: number,
+  url: string,
+) {
+  return invoke<import("@/lib/types").SubmissionResult>("submit_url", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    url,
+  });
+}
+
+export function pickAssignmentLocalFile() {
+  return invoke<import("@/lib/types").PickedLocalFile>("pick_local_file");
+}
+
+export function submitAssignmentLocalFile(
+  courseId: number,
+  assignmentId: number,
+  path: string,
+) {
+  return invoke<import("@/lib/types").SubmissionResult>("submit_local_file", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    path,
+  });
+}
+
+function panPathSegments(remotePath: string): string[] {
+  return remotePath ? remotePath.split("/") : [];
+}
+
+export function getPanFiles(remotePath = "", page = 1, pageSize = 50) {
+  return invoke<import("@/lib/types").PanPage>("pan_list", {
+    remote_path: panPathSegments(remotePath),
+    page,
+    page_size: pageSize,
+  });
+}
+
+export function submitAssignmentCloudFile(
+  courseId: number,
+  assignmentId: number,
+  remotePath: string,
+) {
+  return invoke<import("@/lib/types").SubmissionResult>("submit_cloud_file", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    remote_path: panPathSegments(remotePath),
+  });
+}
+
+export function openExternalAssignment(courseId: number, assignmentId: number) {
+  return invoke<import("@/lib/types").SubmissionResult>(
+    "open_external_assignment",
+    {
+      course_id: courseId,
+      assignment_id: assignmentId,
+    },
+  );
+}

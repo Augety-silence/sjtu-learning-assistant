@@ -1,0 +1,467 @@
+import { ExternalLink, Upload } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PanFilePicker } from "@/components/PanFilePicker";
+import { EmptyState, ErrorState, LoadingState } from "@/components/States";
+import { useToast } from "@/components/Toast";
+import { Button } from "@/components/ui/Button";
+import {
+  getAssignmentDetail,
+  getAssignments,
+  openExternalAssignment,
+  pickAssignmentLocalFile,
+  submitAssignmentCloudFile,
+  submitAssignmentLocalFile,
+  submitAssignmentText,
+  submitAssignmentUrl,
+} from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
+import type {
+  AssignmentCategory,
+  AssignmentItem,
+  NativeSubmissionType,
+  PanItem,
+  PickedLocalFile,
+  SubmissionResult,
+} from "@/lib/types";
+import { useModalFocus } from "@/lib/useModalFocus";
+
+const filters: Array<{ value: AssignmentCategory; label: string }> = [
+  { value: "today", label: "今天" },
+  { value: "upcoming", label: "即将截止" },
+  { value: "overdue", label: "已逾期" },
+  { value: "missing", label: "缺交" },
+  { value: "unsubmitted", label: "未提交" },
+  { value: "submitted", label: "已提交" },
+  { value: "pending_review", label: "待批改" },
+  { value: "graded", label: "已评分" },
+];
+
+const typeLabels: Record<string, string> = {
+  online_text_entry: "文本提交",
+  online_url: "网址提交",
+  online_upload: "文件提交",
+  external_tool: "外部工具",
+  none: "无在线提交",
+};
+
+type PendingSubmission = {
+  type: NativeSubmissionType;
+  label: string;
+  run: () => Promise<SubmissionResult>;
+};
+
+function VerificationDetails({ result }: { result: SubmissionResult }) {
+  return (
+    <div className="submission-success" role="status">
+      <strong>提交已由 Canvas 验证</strong>
+      <span>提交 ID：{result.submission_id ?? "—"}</span>
+      <span>状态：{result.workflow_state ?? "—"}</span>
+      <span>时间：{formatDateTime(result.submitted_at)}</span>
+      <span>尝试次数：{result.attempt ?? "—"}</span>
+      {result.attachments.map((item) => (
+        <span key={String(item.id)}>文件：{item.name || item.id}</span>
+      ))}
+    </div>
+  );
+}
+
+function SubmissionConfirmDialog({
+  assignment,
+  pending,
+  submitting,
+  onCancel,
+  onConfirm,
+}: {
+  assignment: AssignmentItem;
+  pending: PendingSubmission;
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useModalFocus(dialogRef, onCancel, { initialFocusRef: cancelRef });
+
+  return (
+    <div className="confirm-layer" data-modal-layer>
+      <button
+        type="button"
+        className="confirm-backdrop"
+        aria-label="取消提交"
+        disabled={submitting}
+        onClick={onCancel}
+      />
+      <section
+        ref={dialogRef}
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-description"
+        tabIndex={-1}
+      >
+        <h3 id="confirm-title">确认提交作业？</h3>
+        <div id="confirm-description">
+          <p>课程：{assignment.course_name}</p>
+          <p>作业：{assignment.name}</p>
+          <p>类型：{typeLabels[pending.type]}</p>
+          <p>内容 / 文件：{pending.label}</p>
+        </div>
+        <div className="confirm-actions">
+          <Button
+            ref={cancelRef}
+            type="button"
+            variant="outline"
+            disabled={submitting}
+            onClick={onCancel}
+          >
+            取消
+          </Button>
+          <Button type="button" disabled={submitting} onClick={onConfirm}>
+            {submitting ? "提交并验证中…" : "确认提交"}
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function AssignmentsView() {
+  const [category, setCategory] = useState<AssignmentCategory>("today");
+  const [items, setItems] = useState<AssignmentItem[] | null>(null);
+  const [selected, setSelected] = useState<AssignmentItem | null>(null);
+  const [error, setError] = useState("");
+  const [text, setText] = useState("");
+  const [url, setUrl] = useState("");
+  const [localFile, setLocalFile] = useState<PickedLocalFile | null>(null);
+  const [showPan, setShowPan] = useState(false);
+  const [pending, setPending] = useState<PendingSubmission | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<SubmissionResult | null>(null);
+  const { showToast } = useToast();
+
+  const load = useCallback(async () => {
+    setItems(null);
+    setError("");
+    setSelected(null);
+    try {
+      setItems((await getAssignments(category)).items);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "作业读取失败");
+    }
+  }, [category]);
+  useEffect(() => void load(), [load]);
+
+  const selectAssignment = async (item: AssignmentItem) => {
+    setError("");
+    setResult(null);
+    try {
+      setSelected(
+        await getAssignmentDetail(Number(item.course_id), Number(item.id)),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "作业详情读取失败");
+    }
+  };
+
+  const queue = (
+    type: NativeSubmissionType,
+    label: string,
+    run: () => Promise<SubmissionResult>,
+  ) => {
+    setPending({ type, label, run });
+  };
+
+  const submit = async () => {
+    if (!pending) return;
+    setSubmitting(true);
+    setResult(null);
+    try {
+      const next = await pending.run();
+      if (!next.verified) {
+        throw new Error(
+          next.message || "Canvas 尚未验证本次提交，不能标记为成功。",
+        );
+      }
+      setResult(next);
+      setPending(null);
+      showToast({ kind: "success", message: "Canvas 已验证提交成功。" });
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "提交失败",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const chooseLocal = async () => {
+    try {
+      const picked = await pickAssignmentLocalFile();
+      if (!picked.cancelled) setLocalFile(picked);
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "文件选择失败",
+      });
+    }
+  };
+
+  const openExternal = async () => {
+    if (!selected) return;
+    try {
+      await openExternalAssignment(
+        Number(selected.course_id),
+        Number(selected.id),
+      );
+      showToast({
+        kind: "success",
+        message: "已在浏览器打开 Canvas 作业页面。",
+      });
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "打开失败",
+      });
+    }
+  };
+
+  const hasType = (type: string) => selected?.submission_types.includes(type);
+  return (
+    <div className="section-stack assignments-page">
+      <div className="view-intro">
+        <div>
+          <h2>Assignment Center</h2>
+          <p>查看 Canvas 实时状态并安全提交作业。</p>
+        </div>
+      </div>
+      <div className="assignment-filters" role="tablist" aria-label="作业分类">
+        {filters.map((filter) => (
+          <button
+            key={filter.value}
+            type="button"
+            role="tab"
+            aria-selected={category === filter.value}
+            className={
+              category === filter.value ? "assignment-filter-active" : ""
+            }
+            onClick={() => setCategory(filter.value)}
+          >
+            {filter.label}
+          </button>
+        ))}
+      </div>
+      {error ? (
+        <ErrorState message={error} retry={() => void load()} />
+      ) : items === null ? (
+        <LoadingState />
+      ) : items.length === 0 ? (
+        <EmptyState
+          title="此分类暂无作业"
+          description="Canvas 没有返回符合条件的作业。"
+        />
+      ) : (
+        <div className="assignment-layout">
+          <div className="assignment-list" aria-label="作业列表">
+            {items.map((item) => (
+              <button
+                key={`${item.course_id}:${item.id}`}
+                type="button"
+                className={
+                  selected?.id === item.id
+                    ? "assignment-card assignment-card-active"
+                    : "assignment-card"
+                }
+                onClick={() => void selectAssignment(item)}
+              >
+                <strong>{item.name}</strong>
+                <span>{item.course_name}</span>
+                <small>{formatDateTime(item.due_at)}</small>
+              </button>
+            ))}
+          </div>
+          <section className="assignment-detail" aria-live="polite">
+            {!selected ? (
+              <p className="finder-empty">选择一项作业查看详情</p>
+            ) : (
+              <>
+                <div className="assignment-detail-heading">
+                  <div>
+                    <span>{selected.course_name}</span>
+                    <h3>{selected.name}</h3>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openExternal()}
+                  >
+                    <ExternalLink aria-hidden="true" />在 Canvas 打开
+                  </Button>
+                </div>
+                <dl className="assignment-meta">
+                  <div>
+                    <dt>截止时间</dt>
+                    <dd>{formatDateTime(selected.due_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{selected.submission?.workflow_state || "未提交"}</dd>
+                  </div>
+                  <div>
+                    <dt>提交类型</dt>
+                    <dd>
+                      {selected.submission_types
+                        .map((value) => typeLabels[value] || value)
+                        .join("、") || "无"}
+                    </dd>
+                  </div>
+                </dl>
+                {selected.description && (
+                  <p className="assignment-description">
+                    {selected.description}
+                  </p>
+                )}
+                {selected.requires_external_submission && (
+                  <div className="notice">
+                    此作业需要在 Canvas 外部页面完成提交。
+                  </div>
+                )}
+                {selected.can_submit && (
+                  <div className="submission-forms">
+                    {hasType("online_text_entry") && (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          queue("online_text_entry", "文本内容", () =>
+                            submitAssignmentText(
+                              Number(selected.course_id),
+                              Number(selected.id),
+                              text,
+                            ),
+                          );
+                        }}
+                      >
+                        <label htmlFor="assignment-text">文本内容</label>
+                        <textarea
+                          id="assignment-text"
+                          value={text}
+                          maxLength={200000}
+                          required
+                          disabled={submitting}
+                          onChange={(event) => setText(event.target.value)}
+                        />
+                        <Button
+                          type="submit"
+                          disabled={submitting || !text.trim()}
+                        >
+                          准备提交文本
+                        </Button>
+                      </form>
+                    )}
+                    {hasType("online_url") && (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          queue("online_url", url, () =>
+                            submitAssignmentUrl(
+                              Number(selected.course_id),
+                              Number(selected.id),
+                              url,
+                            ),
+                          );
+                        }}
+                      >
+                        <label htmlFor="assignment-url">作业网址</label>
+                        <input
+                          id="assignment-url"
+                          type="url"
+                          value={url}
+                          required
+                          disabled={submitting}
+                          onChange={(event) => setUrl(event.target.value)}
+                        />
+                        <Button type="submit" disabled={submitting || !url}>
+                          准备提交网址
+                        </Button>
+                      </form>
+                    )}
+                    {hasType("online_upload") && (
+                      <div className="file-actions">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={submitting}
+                          onClick={() => void chooseLocal()}
+                        >
+                          <Upload aria-hidden="true" />
+                          选择本地文件
+                        </Button>
+                        {localFile?.path && (
+                          <>
+                            <span>{localFile.name}</span>
+                            <Button
+                              type="button"
+                              disabled={submitting}
+                              onClick={() =>
+                                queue(
+                                  "online_upload",
+                                  localFile.name || "本地文件",
+                                  () =>
+                                    submitAssignmentLocalFile(
+                                      Number(selected.course_id),
+                                      Number(selected.id),
+                                      localFile.path as string,
+                                    ),
+                                )
+                              }
+                            >
+                              准备提交本地文件
+                            </Button>
+                          </>
+                        )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={submitting}
+                          onClick={() => setShowPan((value) => !value)}
+                        >
+                          从交大云盘选择
+                        </Button>
+                        {showPan && (
+                          <PanFilePicker
+                            disabled={submitting}
+                            onSelect={(item: PanItem) =>
+                              queue("online_upload", item.name, () =>
+                                submitAssignmentCloudFile(
+                                  Number(selected.course_id),
+                                  Number(selected.id),
+                                  item.remote_path,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {result?.verified && <VerificationDetails result={result} />}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+      {pending && selected && (
+        <SubmissionConfirmDialog
+          assignment={selected}
+          pending={pending}
+          submitting={submitting}
+          onCancel={() => setPending(null)}
+          onConfirm={() => void submit()}
+        />
+      )}
+    </div>
+  );
+}

@@ -2,6 +2,7 @@ export type ViewName =
   | "overview"
   | "deadlines"
   | "messages"
+  | "assignments"
   | "materials"
   | "settings";
 
@@ -137,4 +138,86 @@ export interface ArchiveActionResult {
   moved: number;
   unchanged: number;
   failed: number;
+}
+
+export type AssignmentCategory =
+  | "today"
+  | "upcoming"
+  | "overdue"
+  | "missing"
+  | "unsubmitted"
+  | "submitted"
+  | "pending_review"
+  | "graded";
+
+export type NativeSubmissionType =
+  | "online_text_entry"
+  | "online_url"
+  | "online_upload";
+
+export interface AssignmentSubmission {
+  id: number | string | null;
+  workflow_state: string;
+  submission_type: string | null;
+  submitted_at: string | null;
+  attempt: number | null;
+  missing: boolean;
+  late: boolean;
+  score: number | null;
+  grade: string | null;
+  attachments: Array<{ id: number | string | null; name: string }>;
+}
+
+export interface AssignmentItem {
+  course_id: string;
+  course_name: string;
+  id: string;
+  name: string;
+  description: string;
+  due_at: string | null;
+  unlock_at: string | null;
+  lock_at: string | null;
+  points_possible: number | null;
+  html_url: string | null;
+  submission_types: string[];
+  submission: AssignmentSubmission | null;
+  can_submit: boolean;
+  requires_external_submission: boolean;
+  categories: AssignmentCategory[];
+}
+
+export interface SubmissionResult {
+  verified: boolean;
+  status: string;
+  message: string | null;
+  submission_type: string | null;
+  submission_id: number | string | null;
+  submitted_at: string | null;
+  attempt: number | null;
+  attachments: Array<{ id: number | string | null; name: string }>;
+  workflow_state: string | null;
+}
+
+export interface PickedLocalFile {
+  cancelled: boolean;
+  path?: string;
+  name?: string;
+  size?: number;
+}
+
+export interface PanItem {
+  remote_path: string;
+  name: string;
+  is_directory: boolean;
+  size: number | null;
+  modified_at: string | null;
+}
+
+export interface PanPage {
+  remote_path: string;
+  page: number;
+  page_size: number;
+  total: number;
+  has_more: boolean;
+  items: PanItem[];
 }

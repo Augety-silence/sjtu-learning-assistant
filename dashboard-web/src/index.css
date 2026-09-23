@@ -2025,5 +2025,357 @@ a {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+
+/* Canvas Assignment Center and SJTU Pan picker */
+.assignments-page {
+  gap: 24px;
+}
+
+.assignment-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assignment-filters button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9999px;
+  background: var(--surface-page);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.assignment-filters button:hover {
+  background: var(--surface-hover);
+}
+
+.assignment-filters button:focus-visible,
+.assignment-card:focus-visible,
+.pan-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.assignment-filters .assignment-filter-active {
+  border-color: var(--border-info);
+  background: var(--surface-selected);
+  color: var(--action-primary);
+}
+
+.assignment-layout {
+  min-height: 560px;
+  display: grid;
+  grid-template-columns: minmax(240px, 34%) minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.assignment-list {
+  overflow: auto;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.assignment-card {
+  width: 100%;
+  min-height: 82px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.assignment-card:hover {
+  background: var(--surface-hover);
+}
+
+.assignment-card strong {
+  font-weight: 500;
+}
+
+.assignment-card span,
+.assignment-card small {
+  color: var(--text-secondary);
+}
+
+.assignment-card-active,
+.assignment-card-active:hover {
+  background: var(--surface-selected);
+  box-shadow: inset 3px 0 var(--action-primary);
+}
+
+.assignment-detail {
+  min-width: 0;
+  padding: 24px;
+  overflow: auto;
+}
+
+.assignment-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.assignment-detail-heading span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.assignment-detail-heading h3 {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.assignment-meta {
+  margin: 20px 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.assignment-meta div {
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--surface-subtle);
+}
+
+.assignment-meta dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.assignment-meta dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.assignment-description {
+  max-height: 180px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  white-space: pre-wrap;
+}
+
+.submission-forms {
+  margin-top: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.submission-forms form,
+.file-actions {
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.submission-forms label {
+  font-weight: 500;
+}
+
+.submission-forms textarea,
+.submission-forms input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.submission-forms textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.submission-forms textarea:focus,
+.submission-forms input:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.submission-forms form > button,
+.file-actions > button {
+  justify-self: start;
+}
+
+.pan-picker {
+  display: grid;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.pan-toolbar,
+.pan-pagination {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface-subtle);
+}
+
+.pan-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pan-list {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.pan-row {
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: 20px minmax(100px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-page);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pan-row:hover {
+  background: var(--surface-hover);
+}
+
+.pan-row svg {
+  width: 18px;
+}
+
+.pan-row small {
+  color: var(--text-secondary);
+}
+
+.submission-success {
+  margin-top: 20px;
+  padding: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  border: 1px solid var(--status-success);
+  border-radius: 8px;
+  background: var(--status-success-bg);
+  color: var(--status-success);
+}
+
+.submission-success strong {
+  flex-basis: 100%;
+}
+
+.confirm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: var(--surface-mask-soft);
+}
+
+.confirm-dialog {
+  position: relative;
+  width: min(480px, 100%);
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--surface-page);
+  box-shadow: 0 16px 48px var(--shadow-overlay);
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+
+.confirm-dialog p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+.confirm-actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Keep snapshot responsive regression coverage while retaining current layout. */
+.page-heading h1 {
+  overflow-wrap: anywhere;
+}
+
+.table-surface {
+  overflow-x: auto;
+}
+
+.table-surface table {
+  min-width: 760px;
+}
+
+@media (max-width: 760px) {
+  .assignment-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .assignment-list {
+    max-height: 300px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .assignment-detail {
+    padding: 16px;
+  }
+
+  .assignment-detail-heading {
+    flex-direction: column;
+  }
+
+  .assignment-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .pan-row {
+    grid-template-columns: 20px minmax(100px, 1fr) auto;
+  }
+
+  .pan-row small:last-child {
+    display: none;
   }
 }

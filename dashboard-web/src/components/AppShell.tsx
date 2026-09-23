@@ -1,5 +1,6 @@
 import {
   CalendarDays,
+  ClipboardCheck,
   FolderOpen,
   Home,
   type LucideIcon,
@@ -17,6 +18,7 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: Home },
   { id: "deadlines", label: "截止事项", icon: CalendarDays },
   { id: "messages", label: "消息", icon: Mail },
+  { id: "assignments", label: "作业中心", icon: ClipboardCheck },
   { id: "materials", label: "课程资料", icon: FolderOpen },
   { id: "settings", label: "设置", icon: Settings },
 ];

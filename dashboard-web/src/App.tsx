@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { AssignmentsView } from "@/components/AssignmentsView";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
@@ -13,6 +14,7 @@ const views: ViewName[] = [
   "overview",
   "deadlines",
   "messages",
+  "assignments",
   "materials",
   "settings",
 ];
@@ -116,6 +118,7 @@ export default function App() {
         )}
         {view === "deadlines" && <DeadlinesView key={dataVersion} />}
         {view === "messages" && <MessagesView key={dataVersion} />}
+        {view === "assignments" && <AssignmentsView key={dataVersion} />}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "settings" && (
           <SettingsView
