@@ -31,7 +31,7 @@ export const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "h-14 border-b border-neutral-divider last:border-0 hover:bg-neutral-hover",
+      "interactive-table-row h-14 border-b border-neutral-divider last:border-0",
       className,
     )}
     {...props}

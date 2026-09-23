@@ -79,7 +79,11 @@ describe("OverviewView", () => {
     );
     expect(within(summary).getByText("1")).toBeTruthy();
     expect(within(summary).getByText("0")).toBeTruthy();
-    expect(summary.querySelector(".kpi-secondary")?.textContent).toContain("8");
+    expect(summary.classList.contains("summary-strip")).toBe(true);
+    expect(summary.children).toHaveLength(3);
+    expect(summary.querySelector(".summary-secondary")?.textContent).toContain(
+      "8",
+    );
 
     const messageButtons = screen.getAllByRole("button", {
       name: /打开消息详情/,

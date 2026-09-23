@@ -85,6 +85,37 @@ afterEach(() => {
 });
 
 describe("AppShell 移动导航", () => {
+  it("保留全高壳体结构，并将设置放在侧栏底部辅助分组", () => {
+    render(<Harness />);
+    const shell = document.querySelector(".app-shell");
+    const sidebar = shell?.querySelector(":scope > .sidebar");
+    const workspace = shell?.querySelector(":scope > .workspace");
+    const mainNavigation = within(sidebar as HTMLElement).getByRole(
+      "navigation",
+      { name: "主导航" },
+    );
+    const utilityNavigation = within(sidebar as HTMLElement).getByRole(
+      "navigation",
+      { name: "辅助导航" },
+    );
+
+    expect(shell).toBeTruthy();
+    expect(sidebar).toBeTruthy();
+    expect(workspace).toBeTruthy();
+    expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(6);
+    expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
+    expect(
+      within(mainNavigation).queryByRole("button", { name: "设置" }),
+    ).toBeNull();
+    expect(
+      within(utilityNavigation).getByRole("button", { name: "设置" }),
+    ).toBeTruthy();
+    expect(
+      sidebar?.querySelector(".sidebar-lower")?.contains(utilityNavigation),
+    ).toBe(true);
+  });
+
   it("在左侧与移动导航中提供独立云盘备份入口", () => {
     render(<Harness />);
     const sidebar = document.querySelector(".sidebar");

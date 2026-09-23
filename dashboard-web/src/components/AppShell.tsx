@@ -25,6 +25,9 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+const primaryNavigation = navigation.filter((item) => item.id !== "settings");
+const utilityNavigation = navigation.filter((item) => item.id === "settings");
+
 interface AppShellProps {
   view: ViewName;
   setView: (view: ViewName) => void;
@@ -37,17 +40,21 @@ interface AppShellProps {
 }
 
 function NavItems({
+  items,
+  label,
   view,
   select,
   currentItemRef,
 }: {
+  items: typeof navigation;
+  label: string;
   view: ViewName;
   select: (view: ViewName) => void;
   currentItemRef?: RefObject<HTMLButtonElement | null>;
 }) {
   return (
-    <nav aria-label="主导航">
-      {navigation.map((item) => {
+    <nav aria-label={label} data-nav-group={label}>
+      {items.map((item) => {
         const Icon = item.icon;
         return (
           <button
@@ -112,10 +119,27 @@ function MobileDrawer({
             <span>学习助手</span>
           </div>
         </div>
-        <NavItems view={view} select={select} currentItemRef={currentItemRef} />
-        <Button variant="ghost" className="mt-auto" onClick={close}>
-          关闭
-        </Button>
+        <div className="sidebar-scroll">
+          <NavItems
+            items={primaryNavigation}
+            label="主导航"
+            view={view}
+            select={select}
+            currentItemRef={currentItemRef}
+          />
+        </div>
+        <div className="sidebar-lower">
+          <NavItems
+            items={utilityNavigation}
+            label="辅助导航"
+            view={view}
+            select={select}
+            currentItemRef={currentItemRef}
+          />
+          <Button variant="ghost" className="drawer-close" onClick={close}>
+            关闭
+          </Button>
+        </div>
       </aside>
     </div>
   );
@@ -196,10 +220,28 @@ export function AppShell({
             <span>学习助手</span>
           </div>
         </div>
-        <NavItems view={view} select={select} />
-        <div className="sidebar-footer">
-          <span className={`status-dot ${syncing ? "status-running" : ""}`} />
-          <span>{syncing ? "正在同步" : "本地运行"}</span>
+        <div className="sidebar-scroll">
+          <NavItems
+            items={primaryNavigation}
+            label="主导航"
+            view={view}
+            select={select}
+          />
+        </div>
+        <div className="sidebar-lower">
+          <NavItems
+            items={utilityNavigation}
+            label="辅助导航"
+            view={view}
+            select={select}
+          />
+          <div className="sidebar-footer" aria-live="polite">
+            <span
+              className={`status-dot ${syncing ? "status-running" : ""}`}
+              aria-hidden="true"
+            />
+            <span>{syncing ? "正在同步" : "本地运行"}</span>
+          </div>
         </div>
       </aside>
       {drawerOpen && isMobile && (

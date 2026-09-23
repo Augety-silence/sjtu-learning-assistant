@@ -116,22 +116,22 @@ export function OverviewView({
 
   return (
     <div className="section-stack">
-      <dl className="kpi-grid" aria-label="学习概览">
+      <dl className="summary-strip" aria-label="学习概览">
         <div
-          className={`kpi kpi-urgent${deadlinesWithin24Hours === 0 ? " kpi-zero" : ""}`}
+          className={`summary-item summary-urgent${deadlinesWithin24Hours === 0 ? " summary-zero" : ""}`}
         >
           <dt>24 小时内截止</dt>
           <dd>{deadlinesWithin24Hours}</dd>
           <span>优先处理</span>
         </div>
         <div
-          className={`kpi kpi-priority${data.unread_emails === 0 ? " kpi-zero" : ""}`}
+          className={`summary-item summary-priority${data.unread_emails === 0 ? " summary-zero" : ""}`}
         >
           <dt>未读邮件</dt>
           <dd>{data.unread_emails}</dd>
           <span>等待处理</span>
         </div>
-        <div className="kpi kpi-secondary">
+        <div className="summary-item summary-secondary">
           <dt>已同步课程</dt>
           <dd>{data.courses}</dd>
           <span>未来 7 天 {data.upcoming_deadlines} 项作业</span>
