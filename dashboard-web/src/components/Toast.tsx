@@ -117,26 +117,28 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             >
               <Icon className="toast-icon" aria-hidden="true" />
               <p>{toast.message}</p>
-              {toast.action && (
+              <div className="toast-controls">
+                {toast.action && (
+                  <button
+                    type="button"
+                    className="toast-action"
+                    onClick={() => {
+                      toast.action?.onClick();
+                      dismissToast(toast.id);
+                    }}
+                  >
+                    {toast.action.label}
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="toast-action"
-                  onClick={() => {
-                    toast.action?.onClick();
-                    dismissToast(toast.id);
-                  }}
+                  className="toast-close"
+                  aria-label="关闭通知"
+                  onClick={() => dismissToast(toast.id)}
                 >
-                  {toast.action.label}
+                  <X aria-hidden="true" />
                 </button>
-              )}
-              <button
-                type="button"
-                className="toast-close"
-                aria-label="关闭通知"
-                onClick={() => dismissToast(toast.id)}
-              >
-                <X aria-hidden="true" />
-              </button>
+              </div>
             </div>
           );
         })}

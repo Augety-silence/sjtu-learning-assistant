@@ -27,8 +27,8 @@ import {
   findNodePath,
   visibleTreeItems,
 } from "@/lib/materialTree";
-import { useCompactViewport } from "@/lib/useCompactViewport";
 import type { MaterialNode, MaterialTree } from "@/lib/types";
+import { useCompactViewport } from "@/lib/useCompactViewport";
 
 function defaultExpandedIds(root: MaterialNode) {
   const expanded = new Set<string>();
@@ -52,7 +52,9 @@ export function MaterialsView() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [status, setStatus] = useState("all");
-  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(
+    null,
+  );
   const [mobilePane, setMobilePane] = useState<"directory" | "content">(
     "directory",
   );
@@ -454,304 +456,356 @@ export function MaterialsView() {
         </label>
       </div>
       {error ? (
-        <ErrorState message={error} retry={() => void load()} />
+        <ErrorState message={error} retry={load} />
       ) : !tree ? (
         <LoadingState label="正在整理课程资料…" />
       ) : tree.root.children?.length === 0 ? (
         <EmptyState
           title="暂无课程资料"
           description="完成 Canvas 同步后，资料会按课程目录显示。"
+          action={
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              重新检查
+            </Button>
+          }
         />
       ) : (
         <div className={`finder finder-${mobilePane}`}>
           {(!compact || mobilePane === "directory") && (
             <aside className="finder-tree" role="tree" aria-label="资料目录">
-            <MaterialTreeBranch
-              node={tree.root}
-              level={1}
-              selectedId={selectedId}
-              activeId={activeId}
-              expandedIds={expandedIds}
-              select={selectTreeItem}
-              focusItem={setActiveId}
-              toggle={toggleTreeItem}
-              onKeyDown={onTreeKeyDown}
-              registerItem={registerItem}
-              dragSource={dragSource}
-              dropTargetId={dropTargetId}
-              hoverTarget={(node) => setDropTargetId(node?.id ?? null)}
-              drop={drop}
-            />
+              <MaterialTreeBranch
+                node={tree.root}
+                level={1}
+                selectedId={selectedId}
+                activeId={activeId}
+                expandedIds={expandedIds}
+                select={selectTreeItem}
+                focusItem={setActiveId}
+                toggle={toggleTreeItem}
+                onKeyDown={onTreeKeyDown}
+                registerItem={registerItem}
+                dragSource={dragSource}
+                dropTargetId={dropTargetId}
+                hoverTarget={(node) => setDropTargetId(node?.id ?? null)}
+                drop={drop}
+              />
             </aside>
           )}
           {(!compact || mobilePane === "content") && (
-          <section className="finder-content" aria-label="目录内容">
-            {compact && (
-              <div className="finder-mobile-header">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setRestoreTreeFocus(true);
-                    setMobilePane("directory");
-                  }}
-                >
-                  <ChevronLeft aria-hidden="true" />
-                  返回目录
-                </Button>
-                <h3 ref={contentHeadingRef} tabIndex={-1}>
-                  {query.trim() ? "搜索结果" : current?.name}
-                </h3>
-              </div>
-            )}
-            <nav className="breadcrumbs" aria-label="路径">
-              {path.map((node, index) => (
-                <span key={node.id}>
-                  <button
-                    type="button"
+            <section className="finder-content" aria-label="目录内容">
+              {compact && (
+                <div className="finder-mobile-header">
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => {
-                      setSelectedId(node.id);
-                      setActiveId(node.id);
+                      setRestoreTreeFocus(true);
+                      setMobilePane("directory");
                     }}
                   >
-                    {node.name}
-                  </button>
-                  {index < path.length - 1 && <span>/</span>}
-                </span>
-              ))}
-            </nav>
-            <p className="result-count finder-result-count" aria-live="polite">
-              {childFolders.length + visibleFiles.length} 个结果
-            </p>
-            <div className="finder-list" role="list">
-              {childFolders.map((folder, folderIndex) => {
-                const target = isMaterialDropTarget(folder);
-                return (
-                  <div
-                    role="listitem"
-                    tabIndex={
-                      selectedContentId === folder.id ||
-                      (selectedContentId === null && folderIndex === 0)
-                        ? 0
-                        : -1
-                    }
-                    aria-current={selectedContentId === folder.id ? "true" : undefined}
-                    aria-label={materialTargetAriaLabel(folder)}
-                    aria-describedby={target ? "material-drop-help" : undefined}
-                    data-material-target-id={target ? folder.id : undefined}
-                    className={`finder-row folder-row${selectedContentId === folder.id ? " finder-row-selected" : ""}${materialDropClass(folder, dragSource, dropTargetId)}`}
-                    key={folder.id}
-                    onFocus={() => setSelectedContentId(folder.id)}
-                    onClick={() => setSelectedContentId(folder.id)}
-                    onDoubleClick={() => runDefaultAction(folder)}
-                    onKeyDown={(event) => onContentKeyDown(event, folder)}
-                    onDragEnter={
-                      target
-                        ? (event) => {
-                            event.preventDefault();
-                            setDropTargetId(folder.id);
-                          }
-                        : undefined
-                    }
-                    onDragOver={
-                      target
-                        ? (event) => {
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect =
-                              dragSource?.courseId === folder.course_id
-                                ? "move"
-                                : "none";
-                            setDropTargetId(folder.id);
-                          }
-                        : undefined
-                    }
-                    onDragLeave={
-                      target
-                        ? (event) => {
-                            if (
-                              !event.currentTarget.contains(
-                                event.relatedTarget as Node,
-                              )
-                            ) {
-                              setDropTargetId(null);
-                            }
-                          }
-                        : undefined
-                    }
-                    onDrop={target ? (event) => drop(event, folder) : undefined}
-                  >
-                    <Folder aria-hidden="true" />
-                    <span className="finder-name">{folder.name}</span>
-                    <span className="finder-meta">文件夹</span>
-                  </div>
-                );
-              })}
-              {visibleFiles.map(({ file, path: filePath }, fileIndex) => {
-                const active = file.source_id
-                  ? busy[file.source_id]
-                  : undefined;
-                return (
-                  <div
-                    className={`finder-row material-file-row${selectedContentId === file.id ? " finder-row-selected" : ""}${dragSource?.sourceId === file.source_id ? " material-dragging" : ""}`}
-                    role="listitem"
-                    tabIndex={
-                      selectedContentId === file.id ||
-                      (selectedContentId === null &&
-                        childFolders.length === 0 &&
-                        fileIndex === 0)
-                        ? 0
-                        : -1
-                    }
-                    aria-current={selectedContentId === file.id ? "true" : undefined}
-                    aria-label={`拖动资料：${file.name}`}
-                    aria-describedby="material-drop-help"
-                    onFocus={() => setSelectedContentId(file.id)}
-                    onClick={() => setSelectedContentId(file.id)}
-                    onDoubleClick={(event) => {
-                      if (!(event.target as Element).closest(".finder-actions")) {
-                        runDefaultAction(file);
-                      }
-                    }}
-                    onKeyDown={(event) => onContentKeyDown(event, file)}
-                    draggable={Boolean(
-                      file.source_id && file.course_id && !active,
-                    )}
-                    onDragStart={(event) => {
-                      if (!file.source_id || !file.course_id) {
-                        event.preventDefault();
-                        return;
-                      }
-                      const source = {
-                        sourceId: file.source_id,
-                        courseId: file.course_id,
-                        name: file.name,
-                      };
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData(
-                        "application/x-sjtu-material",
-                        JSON.stringify(source),
-                      );
-                      event.dataTransfer.setData("text/plain", file.source_id);
-                      setDragSource(source);
-                      showToast({
-                        kind: "info",
-                        message: `正在移动“${file.name}”，请选择同课程目标目录。`,
-                      });
-                    }}
-                    onDragEnd={() => {
-                      setDragSource(null);
-                      setDropTargetId(null);
-                    }}
-                    key={file.id}
-                  >
-                    <File aria-hidden="true" />
-                    <div className="finder-file-details">
-                      <span
-                        className="finder-name file-name"
-                        title={filePath.map((node) => node.name).join(" / ")}
-                      >
-                        {file.name}
-                      </span>
-                      {file.local_path && (
-                        <span
-                          className="finder-local-path"
-                          title={file.local_path}
-                        >
-                          {file.local_path}
-                        </span>
-                      )}
-                    </div>
-                    <span
-                      className={`status-tag status-${file.download_status}`}
-                    >
-                      {file.download_status === "downloaded"
-                        ? "已下载"
-                        : file.download_status === "failed"
-                          ? "失败"
-                          : "未下载"}
-                    </span>
-                    <span className="finder-meta">
-                      {formatSize(file.size ?? null)} ·{" "}
-                      {formatDateTime(file.updated_at ?? null)}
-                    </span>
-                    <div className="finder-actions">
-                      {file.course_id && (
-                        <label className="material-move-menu">
-                          <span className="sr-only">
-                            选择“{file.name}”的归档分类
-                          </span>
-                          <select
-                            aria-label={`归档“${file.name}”到分类`}
-                            tabIndex={selectedContentId === file.id ? 0 : -1}
-                            value=""
-                            disabled={Boolean(active)}
-                            onChange={(event) => {
-                              const selectedCategory = event.target.value;
-                              if (!selectedCategory || !tree) return;
-                              const targetPath = findNodePath(
-                                tree.root,
-                                `category:${file.course_id}:${selectedCategory}`,
-                              );
-                              const target =
-                                targetPath?.[targetPath.length - 1];
-                              if (target) void move(file, target);
-                            }}
-                          >
-                            <option value="">归档到…</option>
-                            {tree.categories.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
-                      {file.manual_override && (
-                        <Button
-                          variant="link"
-                          disabled={Boolean(active)}
-                          onClick={() => void restoreAuto(file)}
-                        >
-                          恢复自动分类
-                        </Button>
-                      )}
-                      {file.can_open ? (
-                        <>
-                          <Button
-                            variant="link"
-                            disabled={Boolean(active)}
-                            onClick={() => void act(file, "open")}
-                          >
-                            打开
-                          </Button>
-                          <Button
-                            variant="link"
-                            disabled={Boolean(active)}
-                            onClick={() => void act(file, "reveal")}
-                          >
-                            Reveal
-                          </Button>
-                        </>
-                      ) : (
-                        <Button
-                          variant="link"
-                          disabled={Boolean(active)}
-                          onClick={() => void act(file, "download")}
-                        >
-                          {active === "download" ? "下载中…" : "下载"}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-              {childFolders.length === 0 && visibleFiles.length === 0 && (
-                <div className="finder-empty">
-                  当前目录或筛选条件下没有文件。
+                    <ChevronLeft aria-hidden="true" />
+                    返回目录
+                  </Button>
+                  <h3 ref={contentHeadingRef} tabIndex={-1}>
+                    {query.trim() ? "搜索结果" : current?.name}
+                  </h3>
                 </div>
               )}
-            </div>
-          </section>
+              <nav className="breadcrumbs" aria-label="路径">
+                {path.map((node, index) => (
+                  <span key={node.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(node.id);
+                        setActiveId(node.id);
+                      }}
+                    >
+                      {node.name}
+                    </button>
+                    {index < path.length - 1 && <span>/</span>}
+                  </span>
+                ))}
+              </nav>
+              <p
+                className="result-count finder-result-count"
+                aria-live="polite"
+              >
+                {childFolders.length + visibleFiles.length} 个结果
+              </p>
+              <div className="finder-list" role="list">
+                {childFolders.map((folder, folderIndex) => {
+                  const target = isMaterialDropTarget(folder);
+                  return (
+                    <div
+                      role="listitem"
+                      tabIndex={
+                        selectedContentId === folder.id ||
+                        (selectedContentId === null && folderIndex === 0)
+                          ? 0
+                          : -1
+                      }
+                      aria-current={
+                        selectedContentId === folder.id ? "true" : undefined
+                      }
+                      aria-label={materialTargetAriaLabel(folder)}
+                      aria-describedby={
+                        target ? "material-drop-help" : undefined
+                      }
+                      data-material-target-id={target ? folder.id : undefined}
+                      className={`finder-row folder-row${selectedContentId === folder.id ? " finder-row-selected" : ""}${materialDropClass(folder, dragSource, dropTargetId)}`}
+                      key={folder.id}
+                      onFocus={() => setSelectedContentId(folder.id)}
+                      onClick={() => setSelectedContentId(folder.id)}
+                      onDoubleClick={() => runDefaultAction(folder)}
+                      onKeyDown={(event) => onContentKeyDown(event, folder)}
+                      onDragEnter={
+                        target
+                          ? (event) => {
+                              event.preventDefault();
+                              setDropTargetId(folder.id);
+                            }
+                          : undefined
+                      }
+                      onDragOver={
+                        target
+                          ? (event) => {
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect =
+                                dragSource?.courseId === folder.course_id
+                                  ? "move"
+                                  : "none";
+                              setDropTargetId(folder.id);
+                            }
+                          : undefined
+                      }
+                      onDragLeave={
+                        target
+                          ? (event) => {
+                              if (
+                                !event.currentTarget.contains(
+                                  event.relatedTarget as Node,
+                                )
+                              ) {
+                                setDropTargetId(null);
+                              }
+                            }
+                          : undefined
+                      }
+                      onDrop={
+                        target ? (event) => drop(event, folder) : undefined
+                      }
+                    >
+                      <Folder aria-hidden="true" />
+                      <span className="finder-name">{folder.name}</span>
+                      <span className="finder-meta">文件夹</span>
+                    </div>
+                  );
+                })}
+                {visibleFiles.map(({ file, path: filePath }, fileIndex) => {
+                  const active = file.source_id
+                    ? busy[file.source_id]
+                    : undefined;
+                  return (
+                    <div
+                      className={`finder-row material-file-row${selectedContentId === file.id ? " finder-row-selected" : ""}${dragSource?.sourceId === file.source_id ? " material-dragging" : ""}`}
+                      role="listitem"
+                      tabIndex={
+                        selectedContentId === file.id ||
+                        (selectedContentId === null &&
+                          childFolders.length === 0 &&
+                          fileIndex === 0)
+                          ? 0
+                          : -1
+                      }
+                      aria-current={
+                        selectedContentId === file.id ? "true" : undefined
+                      }
+                      aria-label={`拖动资料：${file.name}`}
+                      aria-describedby="material-drop-help"
+                      onFocus={() => setSelectedContentId(file.id)}
+                      onClick={() => setSelectedContentId(file.id)}
+                      onDoubleClick={(event) => {
+                        if (
+                          !(event.target as Element).closest(".finder-actions")
+                        ) {
+                          runDefaultAction(file);
+                        }
+                      }}
+                      onKeyDown={(event) => onContentKeyDown(event, file)}
+                      draggable={Boolean(
+                        file.source_id && file.course_id && !active,
+                      )}
+                      onDragStart={(event) => {
+                        if (!file.source_id || !file.course_id) {
+                          event.preventDefault();
+                          return;
+                        }
+                        const source = {
+                          sourceId: file.source_id,
+                          courseId: file.course_id,
+                          name: file.name,
+                        };
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData(
+                          "application/x-sjtu-material",
+                          JSON.stringify(source),
+                        );
+                        event.dataTransfer.setData(
+                          "text/plain",
+                          file.source_id,
+                        );
+                        setDragSource(source);
+                        showToast({
+                          kind: "info",
+                          message: `正在移动“${file.name}”，请选择同课程目标目录。`,
+                        });
+                      }}
+                      onDragEnd={() => {
+                        setDragSource(null);
+                        setDropTargetId(null);
+                      }}
+                      key={file.id}
+                    >
+                      <File aria-hidden="true" />
+                      <div className="finder-file-details">
+                        <span
+                          className="finder-name file-name"
+                          title={filePath.map((node) => node.name).join(" / ")}
+                        >
+                          {file.name}
+                        </span>
+                        {file.local_path && (
+                          <span
+                            className="finder-local-path"
+                            title={file.local_path}
+                          >
+                            {file.local_path}
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className={`status-tag status-${file.download_status}`}
+                      >
+                        {file.download_status === "downloaded"
+                          ? "已下载"
+                          : file.download_status === "failed"
+                            ? "失败"
+                            : "未下载"}
+                      </span>
+                      <span className="finder-meta">
+                        {formatSize(file.size ?? null)} ·{" "}
+                        {formatDateTime(file.updated_at ?? null)}
+                      </span>
+                      <div className="finder-actions">
+                        {file.course_id && (
+                          <label className="material-move-menu">
+                            <span className="sr-only">
+                              选择“{file.name}”的归档分类
+                            </span>
+                            <select
+                              aria-label={`归档“${file.name}”到分类`}
+                              tabIndex={selectedContentId === file.id ? 0 : -1}
+                              value=""
+                              disabled={Boolean(active)}
+                              onChange={(event) => {
+                                const selectedCategory = event.target.value;
+                                if (!selectedCategory || !tree) return;
+                                const targetPath = findNodePath(
+                                  tree.root,
+                                  `category:${file.course_id}:${selectedCategory}`,
+                                );
+                                const target =
+                                  targetPath?.[targetPath.length - 1];
+                                if (target) void move(file, target);
+                              }}
+                            >
+                              <option value="">归档到…</option>
+                              {tree.categories.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        {file.manual_override && (
+                          <Button
+                            variant="link"
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
+                            loading={active === "restore"}
+                            loadingLabel="恢复中…"
+                            disabled={Boolean(active)}
+                            onClick={() => void restoreAuto(file)}
+                          >
+                            恢复自动分类
+                          </Button>
+                        )}
+                        {file.can_open ? (
+                          <>
+                            <Button
+                              variant="link"
+                              tabIndex={selectedContentId === file.id ? 0 : -1}
+                              loading={active === "open"}
+                              loadingLabel="打开中…"
+                              disabled={Boolean(active)}
+                              onClick={() => void act(file, "open")}
+                            >
+                              打开
+                            </Button>
+                            <Button
+                              variant="link"
+                              tabIndex={selectedContentId === file.id ? 0 : -1}
+                              loading={active === "reveal"}
+                              loadingLabel="定位中…"
+                              disabled={Boolean(active)}
+                              onClick={() => void act(file, "reveal")}
+                            >
+                              Reveal
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="link"
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
+                            loading={active === "download"}
+                            loadingLabel="下载中…"
+                            disabled={Boolean(active)}
+                            onClick={() => void act(file, "download")}
+                          >
+                            下载
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {childFolders.length === 0 && visibleFiles.length === 0 && (
+                  <div className="finder-empty">
+                    {hasFilters ? (
+                      <EmptyState
+                        title="没有匹配资料"
+                        description="请调整筛选条件，或清除筛选查看当前目录。"
+                        action={
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={clearFilters}
+                          >
+                            清除筛选
+                          </Button>
+                        }
+                      />
+                    ) : (
+                      <EmptyState
+                        title="当前目录为空"
+                        description="这个目录暂时没有可显示的文件或子目录。"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
           )}
         </div>
       )}

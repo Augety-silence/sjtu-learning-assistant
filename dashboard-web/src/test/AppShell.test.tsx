@@ -74,6 +74,14 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   mediaListeners.clear();
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: undefined,
+  });
 });
 
 describe("AppShell 移动导航", () => {

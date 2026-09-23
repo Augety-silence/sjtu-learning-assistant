@@ -197,8 +197,7 @@ export function SettingsView({
     }
   };
 
-  if (!status && error)
-    return <ErrorState message={error} retry={() => void load()} />;
+  if (!status && error) return <ErrorState message={error} retry={load} />;
   if (!status) return <LoadingState label="正在读取归档设置…" />;
 
   return (

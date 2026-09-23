@@ -145,11 +145,23 @@ async function renderFile() {
   );
   expect(folderTarget).toBeTruthy();
   fireEvent.click(folderTarget as HTMLElement);
+  expect(
+    screen.queryByRole("listitem", { name: "拖动资料：讲义.pdf" }),
+  ).toBeNull();
+  fireEvent.doubleClick(folderTarget as HTMLElement);
   return await screen.findByRole("listitem", { name: "拖动资料：讲义.pdf" });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: undefined,
+  });
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
   vi.mocked(invoke).mockResolvedValue(tree);
   vi.mocked(moveMaterial).mockResolvedValue({
     source_id: "file-1",
@@ -167,6 +179,10 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1024,
+  });
 });
 
 describe("MaterialsView manual filing", () => {
@@ -245,6 +261,90 @@ describe("MaterialsView manual filing", () => {
       ),
     );
   });
+});
+
+describe("MaterialsView selection and responsive states", () => {
+  it("文件单击只选择，Enter 与双击执行同一默认动作", async () => {
+    const row = await renderFile();
+    vi.mocked(invoke).mockClear();
+
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-current")).toBe("true");
+    expect(invoke).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(row, { key: "Enter" });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("material_download", {
+        source_id: "file-1",
+      }),
+    );
+    vi.mocked(invoke).mockClear();
+    fireEvent.doubleClick(row);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("material_download", {
+        source_id: "file-1",
+      }),
+    );
+  });
+
+  it("非选中行的次要操作不进入 Tab 顺序", async () => {
+    render(<MaterialsView />);
+    const search = await screen.findByRole("textbox", { name: "搜索文件名" });
+    fireEvent.change(search, { target: { value: ".pdf" } });
+    const first = screen.getByRole("listitem", { name: "拖动资料：讲义.pdf" });
+    const second = screen.getByRole("listitem", { name: "拖动资料：概览.pdf" });
+
+    fireEvent.click(first);
+    expect(
+      screen.getByRole("combobox", { name: "归档“讲义.pdf”到分类" }).tabIndex,
+    ).toBe(0);
+    expect(
+      screen.getByRole("combobox", { name: "归档“概览.pdf”到分类" }).tabIndex,
+    ).toBe(-1);
+    expect(second.tabIndex).toBe(-1);
+  });
+
+  it("筛选无结果可清除并通过 live region 宣告", async () => {
+    render(<MaterialsView />);
+    const search = await screen.findByRole("textbox", { name: "搜索文件名" });
+    fireEvent.change(search, { target: { value: "不存在的资料" } });
+
+    expect(screen.getByText("0 个结果").getAttribute("aria-live")).toBe(
+      "polite",
+    );
+    expect(screen.getByText("没有匹配资料")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect((search as HTMLInputElement).value).toBe("");
+    expect(screen.queryByText("没有匹配资料")).toBeNull();
+  });
+
+  it.each([320, 375, 599])(
+    "%ipx 使用目录/内容主从切换并恢复焦点",
+    async (width) => {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: width,
+      });
+      render(<MaterialsView />);
+      const course = await screen.findByRole("treeitem", {
+        name: "自然语言处理",
+      });
+      fireEvent.click(course);
+
+      const back = await screen.findByRole("button", { name: "返回目录" });
+      expect(screen.queryByRole("tree", { name: "资料目录" })).toBeNull();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("heading", { level: 3, name: "自然语言处理" }),
+        ),
+      );
+      fireEvent.click(back);
+      const restoredCourse = await screen.findByRole("treeitem", {
+        name: "自然语言处理",
+      });
+      await waitFor(() => expect(document.activeElement).toBe(restoredCourse));
+    },
+  );
 });
 
 describe("MaterialsView ARIA tree", () => {

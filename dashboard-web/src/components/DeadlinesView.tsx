@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
+import { Button } from "@/components/ui/Button";
 import {
   Table,
   TableBody,
@@ -36,12 +37,22 @@ const groupLabels: Record<DeadlineGroupId, string> = {
   undated: "无日期",
 };
 
-export function groupDeadlines(items: Deadline[], now = new Date()): DeadlineGroup[] {
-  const endOfToday = new Date(now);
-  endOfToday.setHours(23, 59, 59, 999);
-  const endOfWeek = new Date(endOfToday);
-  const daysUntilSunday = (7 - endOfToday.getDay()) % 7;
-  endOfWeek.setDate(endOfWeek.getDate() + daysUntilSunday);
+export function groupDeadlines(
+  items: Deadline[],
+  now = new Date(),
+): DeadlineGroup[] {
+  const shanghaiOffset = 8 * 60 * 60 * 1000;
+  const shanghaiNow = new Date(now.getTime() + shanghaiOffset);
+  const endOfToday =
+    Date.UTC(
+      shanghaiNow.getUTCFullYear(),
+      shanghaiNow.getUTCMonth(),
+      shanghaiNow.getUTCDate() + 1,
+    ) -
+    shanghaiOffset -
+    1;
+  const daysUntilSunday = (7 - shanghaiNow.getUTCDay()) % 7;
+  const endOfWeek = endOfToday + daysUntilSunday * 24 * 60 * 60 * 1000;
 
   const groups: Record<DeadlineGroupId, Deadline[]> = {
     today: [],
@@ -58,9 +69,9 @@ export function groupDeadlines(items: Deadline[], now = new Date()): DeadlineGro
     const due = new Date(item.due_at);
     if (Number.isNaN(due.getTime())) {
       groups.undated.push(item);
-    } else if (due <= endOfToday) {
+    } else if (due.getTime() <= endOfToday) {
       groups.today.push(item);
-    } else if (due <= endOfWeek) {
+    } else if (due.getTime() <= endOfWeek) {
       groups.week.push(item);
     } else {
       groups.later.push(item);
@@ -71,7 +82,7 @@ export function groupDeadlines(items: Deadline[], now = new Date()): DeadlineGro
     const byTime =
       new Date(left.due_at as string).getTime() -
       new Date(right.due_at as string).getTime();
-    return byTime || left.title.localeCompare(right.title, "zh-CN");
+    return byTime;
   };
   groups.today.sort(datedSort);
   groups.week.sort(datedSort);
@@ -115,6 +126,7 @@ export function DeadlinesView() {
       showToast({
         kind: "error",
         message: reason instanceof Error ? reason.message : "链接打开失败",
+        action: { label: "重试", onClick: () => void open(url) },
       });
     }
   };
@@ -137,20 +149,26 @@ export function DeadlinesView() {
         </Tabs>
       </div>
       {error ? (
-        <ErrorState message={error} retry={() => void load()} />
+        <ErrorState message={error} retry={load} />
       ) : items === null ? (
         <LoadingState />
       ) : items.length === 0 ? (
         <EmptyState
-          title="暂无截止事项"
+          title="当前范围没有截止事项"
           description="系统中有数据后，所选时间范围内的待完成作业会显示在这里。"
+          action={
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              重新检查
+            </Button>
+          }
         />
       ) : compact ? (
         <div className="deadline-mobile-list" aria-label="截止事项列表">
           {groups.map((group) => (
             <section className="deadline-mobile-group" key={group.id}>
               <h3>
-                {group.label}<span>{group.items.length}</span>
+                {group.label}
+                <span>{group.items.length}</span>
               </h3>
               <div className="list-surface">
                 {group.items.map((item) => (

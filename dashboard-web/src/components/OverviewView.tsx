@@ -45,6 +45,7 @@ export function OverviewView({
       showToast({
         kind: "error",
         message: reason instanceof Error ? reason.message : "链接打开失败",
+        action: { label: "重试", onClick: () => void open(url) },
       });
     }
   };
@@ -110,28 +111,32 @@ export function OverviewView({
     }).length;
   }, [prioritizedDeadlines]);
 
-  if (error) return <ErrorState message={error} retry={() => void load()} />;
+  if (error) return <ErrorState message={error} retry={load} />;
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
 
   return (
     <div className="section-stack">
-      <section className="kpi-grid" aria-label="学习概览">
-        <div className="kpi kpi-urgent">
-          <p>24 小时内截止</p>
-          <strong>{deadlinesWithin24Hours}</strong>
+      <dl className="kpi-grid" aria-label="学习概览">
+        <div
+          className={`kpi kpi-urgent${deadlinesWithin24Hours === 0 ? " kpi-zero" : ""}`}
+        >
+          <dt>24 小时内截止</dt>
+          <dd>{deadlinesWithin24Hours}</dd>
           <span>优先处理</span>
         </div>
-        <div className="kpi kpi-priority">
-          <p>未读邮件</p>
-          <strong>{data.unread_emails}</strong>
+        <div
+          className={`kpi kpi-priority${data.unread_emails === 0 ? " kpi-zero" : ""}`}
+        >
+          <dt>未读邮件</dt>
+          <dd>{data.unread_emails}</dd>
           <span>等待处理</span>
         </div>
         <div className="kpi kpi-secondary">
-          <p>已同步课程</p>
-          <strong>{data.courses}</strong>
-          <span>未来 7 天还有 {data.upcoming_deadlines} 项作业</span>
+          <dt>已同步课程</dt>
+          <dd>{data.courses}</dd>
+          <span>未来 7 天 {data.upcoming_deadlines} 项作业</span>
         </div>
-      </section>
+      </dl>
       <Section
         title="临期事项"
         action={

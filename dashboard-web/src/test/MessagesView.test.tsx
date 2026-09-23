@@ -212,6 +212,28 @@ describe("MessagesView", () => {
     },
   );
 
+  it("区分系统空态与筛选无结果，并提供真实恢复动作", async () => {
+    vi.mocked(getMessages).mockResolvedValue({ items: [] });
+    render(<MessagesView />);
+
+    expect(await screen.findByText("暂无消息")).toBeTruthy();
+    expect(screen.getByText("共 0 条消息").getAttribute("aria-live")).toBe(
+      "polite",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    await waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2));
+
+    const emailTab = screen.getByRole("tab", { name: "邮件" });
+    fireEvent.mouseDown(emailTab, { button: 0, ctrlKey: false });
+    expect(await screen.findByText("当前筛选没有结果")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("tab", { name: "全部" }).getAttribute("data-state"),
+      ).toBe("active"),
+    );
+  });
+
   it("卸载弹窗时清除初始焦点 timer", async () => {
     const { unmount } = render(<MessagesView />);
     const trigger = await screen.findByRole("button", {

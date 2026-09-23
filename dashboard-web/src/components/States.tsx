@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/Button";
 
 export function LoadingState({ label = "正在加载…" }: { label?: string }) {
@@ -28,20 +28,60 @@ export function EmptyState({
   );
 }
 
+export interface StateAction {
+  label: string;
+  onClick: () => void | Promise<void>;
+}
+
 export function ErrorState({
   message,
   retry,
+  retryLabel = "重试",
+  secondaryAction,
 }: {
   message: string;
-  retry: () => void;
+  retry?: () => void | Promise<void>;
+  retryLabel?: string;
+  secondaryAction?: StateAction;
 }) {
+  const [retrying, setRetrying] = useState(false);
+  const runRetry = async () => {
+    if (!retry || retrying) return;
+    setRetrying(true);
+    try {
+      await retry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   return (
-    <div className="state-box state-stack" role="alert">
+    <div className="state-box state-stack state-error" role="alert">
       <p className="font-medium text-danger">加载失败</p>
       <p className="text-sm text-caption">{message}</p>
-      <Button variant="outline" size="sm" onClick={retry}>
-        重试
-      </Button>
+      <div className="state-actions">
+        {retry && (
+          <Button
+            variant="outline"
+            size="sm"
+            loading={retrying}
+            loadingLabel="正在重试…"
+            onClick={() => void runRetry()}
+          >
+            {retryLabel}
+          </Button>
+        )}
+        {secondaryAction && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={retrying}
+            onClick={() => void secondaryAction.onClick()}
+          >
+            {secondaryAction.label}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

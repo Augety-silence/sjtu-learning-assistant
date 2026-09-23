@@ -282,10 +282,12 @@ export function MessagesView() {
       </div>
 
       <p className="result-count" aria-live="polite">
-        {items ? `共 ${items.length} 条消息${unreadCount ? `，${unreadCount} 条未读` : ""}` : ""}
+        {items
+          ? `共 ${items.length} 条消息${unreadCount ? `，${unreadCount} 条未读` : ""}`
+          : ""}
       </p>
       {error ? (
-        <ErrorState message={error} retry={() => void load()} />
+        <ErrorState message={error} retry={load} />
       ) : items === null ? (
         <LoadingState />
       ) : items.length === 0 ? (
@@ -298,10 +300,18 @@ export function MessagesView() {
           }
           action={
             kind !== "all" ? (
-              <Button variant="outline" size="sm" onClick={() => setKind("all")}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setKind("all")}
+              >
                 清除筛选
               </Button>
-            ) : undefined
+            ) : (
+              <Button variant="outline" size="sm" onClick={() => void load()}>
+                重新检查
+              </Button>
+            )
           }
         />
       ) : (
