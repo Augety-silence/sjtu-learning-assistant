@@ -21,6 +21,7 @@ from sjtu_learning_assistant.cloud_storage import (
     CloudConflictError,
     CloudStorageProvider,
     SJTUCloudPanProvider,
+    load_user_token,
 )
 from sjtu_learning_assistant.models import Course, CourseFile, Email, EmailAttachment
 
@@ -28,6 +29,10 @@ BACKUP_ROOT = "SJTU Learning Assistant"
 DEFAULT_MULTIPART_THRESHOLD = 8 * 1024 * 1024
 MAX_COMPONENT_LENGTH = 120
 MAX_FILENAME_LENGTH = 200
+MAX_FAILURE_DETAILS = 100
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 class BackupError(RuntimeError):
@@ -172,7 +177,7 @@ def preview_counts(candidates: tuple[BackupCandidate, ...]) -> dict[str, int]:
         "canvas": canvas,
         "mail": mail,
         "ready": ready,
-        "missing": len(candidates) - ready,
+        "missing_local": len(candidates) - ready,
         "total": len(candidates),
     }
 
@@ -296,33 +301,44 @@ class BackupService:
         candidates: tuple[BackupCandidate, ...] | None = None,
         *,
         cancel_event: threading.Event | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         if self.provider is None:
             raise BackupError("交大云盘备份服务未配置。")
         selected = candidates if candidates is not None else self.scan()
-        counts = preview_counts(selected)
+        started_at = datetime.now(timezone.utc).isoformat()
         result: dict[str, Any] = {
-            "status": "completed",
-            **counts,
+            "started_at": started_at,
+            "finished_at": None,
             "uploaded": 0,
-            "uploaded_simple": 0,
-            "uploaded_multipart": 0,
-            "overwritten": 0,
             "skipped_existing": 0,
             "skipped_missing_local": 0,
             "failed": 0,
-            "items": [],
+            "failures": [],
         }
+        total = len(selected)
+        done = 0
         ensured: set[tuple[str, ...]] = set()
+
+        def report(current_name: str | None) -> None:
+            if progress_callback is None:
+                return
+            progress_callback({"done": done, "total": total, "current_name": current_name})
+
+        report(None)
         for candidate in selected:
             if cancel_event is not None and cancel_event.is_set():
-                result["status"] = "cancelled"
                 break
-            if not candidate.ready:
-                result["skipped_missing_local"] += 1
-                result["items"].append({**candidate.dto(), "status": "skipped_missing_local"})
-                continue
+            current_name = safe_path_component(
+                candidate.remote_path[-1] if candidate.remote_path else "文件",
+                fallback="文件",
+                limit=MAX_FILENAME_LENGTH,
+            )
+            report(current_name)
             try:
+                if not candidate.ready:
+                    result["skipped_missing_local"] += 1
+                    continue
                 with open_controlled_file(candidate.local_root, candidate.local_path) as (source, size):
                     directory = candidate.remote_path[:-1]
                     if directory not in ensured:
@@ -334,7 +350,6 @@ class BackupService:
                         remote = self.provider.get_info(candidate.remote_path)
                         if not remote.is_directory and remote.size == size:
                             result["skipped_existing"] += 1
-                            result["items"].append({**candidate.dto(), "status": "skipped_existing"})
                             continue
                         overwrite = True
                     if size >= self.multipart_threshold:
@@ -343,33 +358,41 @@ class BackupService:
                             source,
                             overwrite=overwrite,
                         )
-                        result["uploaded_multipart"] += 1
                     else:
                         self.provider.simple_upload(
                             candidate.remote_path,
                             source,
                             overwrite=overwrite,
                         )
-                        result["uploaded_simple"] += 1
                     result["uploaded"] += 1
-                    if overwrite:
-                        result["overwritten"] += 1
-                    result["items"].append(
-                        {
-                            **candidate.dto(),
-                            "status": "overwritten" if overwrite else "uploaded",
-                        }
-                    )
             except BackupError:
                 result["skipped_missing_local"] += 1
-                result["items"].append(
-                    {**candidate.dto(), "status": "skipped_missing_local"}
-                )
             except Exception:
-                # Provider exceptions may contain credentials or signed URLs.
-                # Keep only a generic per-item marker and continue with the next candidate.
+                # Provider exceptions may contain credentials or signed URLs. Never
+                # copy their text into a bridge DTO.
                 result["failed"] += 1
-                result["items"].append({**candidate.dto(), "status": "failed"})
+                if len(result["failures"]) < MAX_FAILURE_DETAILS:
+                    safe_source = safe_path_component(
+                        candidate.source,
+                        fallback="unknown",
+                        limit=32,
+                    )
+                    safe_remote_path = "/".join(
+                        safe_path_component(part, fallback="未命名")
+                        for part in candidate.remote_path
+                    )
+                    result["failures"].append(
+                        {
+                            "source": safe_source,
+                            "name": current_name,
+                            "remote_path": safe_remote_path,
+                            "error": "上传失败，请检查云盘凭据或网络连接。",
+                        }
+                    )
+            finally:
+                done += 1
+                report(current_name)
+        result["finished_at"] = datetime.now(timezone.utc).isoformat()
         return result
 
 
@@ -384,6 +407,7 @@ class BackupManager:
         mail_attachments_root: Path,
         mail_account: str = "",
         provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
+        token_loader: Callable[[], str | None] | None = None,
         multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
     ) -> None:
         self._engine = engine
@@ -391,12 +415,21 @@ class BackupManager:
         self._mail_attachments_root = Path(mail_attachments_root)
         self._mail_account = mail_account
         self._provider_factory = provider_factory
+        self._token_loader = token_loader or load_user_token
         self._multipart_threshold = multipart_threshold
         self._lock = threading.RLock()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
-        self._state = "idle"
-        self._preview = {"canvas": 0, "mail": 0, "ready": 0, "missing": 0, "total": 0}
+        self._closed = False
+        self._state: Literal["idle", "running", "finished"] = "idle"
+        self._counts = {
+            "canvas": 0,
+            "mail": 0,
+            "ready": 0,
+            "missing_local": 0,
+            "total": 0,
+        }
+        self._progress: dict[str, Any] | None = None
         self._last_result: dict[str, Any] | None = None
 
     def _service(self, provider: CloudStorageProvider | None = None) -> BackupService:
@@ -409,29 +442,53 @@ class BackupManager:
             multipart_threshold=self._multipart_threshold,
         )
 
+    def _availability(self) -> tuple[bool, str | None]:
+        try:
+            # Only retain whether a credential exists; the token never enters a DTO or
+            # manager state.
+            configured = self._token_loader() is not None
+        except Exception:
+            return False, "无法读取系统 Keychain 中的交大云盘凭据。"
+        if not configured:
+            return False, "尚未在系统 Keychain 中配置交大云盘 UserToken。"
+        return True, None
+
     def status(self) -> dict[str, Any]:
+        available, availability_message = self._availability()
         with self._lock:
             state = self._state
-        if state == "idle":
-            preview = self._service().preview()
-            with self._lock:
-                if self._state == "idle":
-                    self._preview = preview
+        if state in {"idle", "finished"}:
+            try:
+                counts = self._service().preview()
+            except Exception:
+                counts = None
+            if counts is not None:
+                with self._lock:
+                    if self._state == state:
+                        self._counts = counts
         with self._lock:
             return {
                 "status": self._state,
-                "preview": dict(self._preview),
+                "available": available,
+                "availability_message": availability_message,
+                "counts": dict(self._counts),
+                "progress": copy.deepcopy(self._progress),
                 "last_result": copy.deepcopy(self._last_result),
             }
 
     def start(self) -> dict[str, str]:
         with self._lock:
-            if self._state == "closed":
+            if self._closed:
                 raise BackupError("备份服务已关闭。")
             if self._thread is not None and self._thread.is_alive():
                 return {"status": "already_running"}
             self._cancel.clear()
             self._state = "running"
+            self._progress = {
+                "done": 0,
+                "total": self._counts["total"],
+                "current_name": None,
+            }
             self._thread = threading.Thread(
                 target=self._run,
                 name="sjtu-cloud-backup",
@@ -440,33 +497,60 @@ class BackupManager:
             self._thread.start()
             return {"status": "started"}
 
+    def _update_progress(self, progress: dict[str, Any]) -> None:
+        current_name = progress.get("current_name")
+        safe_name = (
+            safe_path_component(current_name, fallback="文件", limit=MAX_FILENAME_LENGTH)
+            if current_name is not None
+            else None
+        )
+        with self._lock:
+            self._progress = {
+                "done": max(0, int(progress.get("done", 0))),
+                "total": max(0, int(progress.get("total", 0))),
+                "current_name": safe_name,
+            }
+
+    def _fatal_result(self, started_at: str) -> dict[str, Any]:
+        with self._lock:
+            failed = self._counts["ready"] or 1
+        return {
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "uploaded": 0,
+            "skipped_existing": 0,
+            "skipped_missing_local": 0,
+            "failed": failed,
+            "failures": [
+                {
+                    "source": "backup",
+                    "name": "云盘备份",
+                    "remote_path": BACKUP_ROOT,
+                    "error": "备份失败，请检查云盘凭据、网络连接后重试。",
+                }
+            ],
+        }
+
     def _run(self) -> None:
         provider: CloudStorageProvider | None = None
+        started_at = datetime.now(timezone.utc).isoformat()
         result: dict[str, Any] | None = None
         try:
             provider = self._provider_factory()
             service = self._service(provider)
             candidates = service.scan()
+            counts = preview_counts(candidates)
             with self._lock:
-                self._preview = preview_counts(candidates)
-            result = service.backup(candidates, cancel_event=self._cancel)
+                self._counts = counts
+                self._progress = {"done": 0, "total": len(candidates), "current_name": None}
+            result = service.backup(
+                candidates,
+                cancel_event=self._cancel,
+                progress_callback=self._update_progress,
+            )
         except Exception:
-            result = {
-                "status": "failed",
-                "canvas": self._preview["canvas"],
-                "mail": self._preview["mail"],
-                "ready": self._preview["ready"],
-                "missing": self._preview["missing"],
-                "total": self._preview["total"],
-                "uploaded": 0,
-                "uploaded_simple": 0,
-                "uploaded_multipart": 0,
-                "overwritten": 0,
-                "skipped_existing": 0,
-                "skipped_missing_local": 0,
-                "failed": self._preview["ready"],
-                "items": [],
-            }
+            # Provider, Keychain and database exceptions can contain sensitive values.
+            result = self._fatal_result(started_at)
         finally:
             if provider is not None:
                 close = getattr(provider, "close", None)
@@ -478,16 +562,13 @@ class BackupManager:
             with self._lock:
                 if result is not None:
                     self._last_result = result
-                if self._state != "closed":
-                    self._state = "idle"
+                self._state = "finished"
+                self._thread = None
 
     def close(self, timeout: float = 10.0) -> None:
         with self._lock:
-            if self._state == "closed":
-                thread = self._thread
-            else:
-                self._state = "closed"
-                self._cancel.set()
-                thread = self._thread
+            self._closed = True
+            self._cancel.set()
+            thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout)

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -195,7 +195,7 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual("2026-09", mail.remote_path[3])
         self.assertTrue(all(part not in {".", ".."} and "/" not in part and "\\" not in part for item in candidates for part in item.remote_path))
         self.assertEqual(
-            {"canvas": 1, "mail": 1, "ready": 2, "missing": 0, "total": 2},
+            {"canvas": 1, "mail": 1, "ready": 2, "missing_local": 0, "total": 2},
             self._service().preview(),
         )
         serialized = json.dumps([item.dto() for item in candidates], ensure_ascii=False)
@@ -247,9 +247,10 @@ class BackupServiceTests(unittest.TestCase):
         result = self._service(provider, threshold=8).backup(candidates)
         self.assertEqual(1, result["skipped_existing"])
         self.assertEqual(3, result["uploaded"])
-        self.assertEqual(1, result["overwritten"])
-        self.assertEqual(2, result["uploaded_simple"])
-        self.assertEqual(1, result["uploaded_multipart"])
+        self.assertEqual(2, len(provider.simple))
+        self.assertEqual(1, len(provider.multipart))
+        self.assertNotIn("items", result)
+        self.assertEqual([], result["failures"])
         overwrite_call = next(call for call in provider.simple if call[0] == candidates[1].remote_path)
         self.assertTrue(overwrite_call[2])
         self.assertEqual(candidates[3].remote_path, provider.multipart[0][0])
@@ -277,6 +278,14 @@ class BackupServiceTests(unittest.TestCase):
         result = self._service(provider).backup(candidates)
         self.assertEqual(1, result["failed"])
         self.assertEqual(1, result["uploaded"])
+        self.assertNotIn("items", result)
+        self.assertEqual(1, len(result["failures"]))
+        failure = result["failures"][0]
+        self.assertEqual({"source", "name", "remote_path", "error"}, set(failure))
+        self.assertEqual("canvas", failure["source"])
+        self.assertEqual(candidates[0].remote_path[-1], failure["name"])
+        self.assertEqual("/".join(candidates[0].remote_path), failure["remote_path"])
+        self.assertIsInstance(failure["remote_path"], str)
         serialized = json.dumps(result, ensure_ascii=False)
         self.assertNotIn(str(self.archive), serialized)
         self.assertNotIn("provider-secret", serialized)
@@ -299,34 +308,166 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual(1, result["skipped_missing_local"])
         self.assertEqual(0, result["failed"])
 
-    def test_manager_previews_idle_prevents_concurrent_runs_and_closes_provider(self) -> None:
+    def _wait_for_status(self, manager: BackupManager, expected: str, timeout: float = 2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = manager.status()
+            if status["status"] == expected:
+                return status
+            time.sleep(0.01)
+        self.fail(f"backup manager did not reach {expected}")
+
+    def test_manager_idle_running_finished_progress_and_second_start(self) -> None:
         canvas_file = self.archive / "lecture.pdf"
         canvas_file.write_bytes(b"canvas")
         self._add_records(canvas_path=str(canvas_file), mail_path=None)
-        provider = BlockingProvider()
+        first_provider = BlockingProvider()
+        providers = [first_provider, FakeProvider()]
         manager = BackupManager(
             self.engine,
             archive_root=self.archive,
             mail_attachments_root=self.mail,
             mail_account="student",
-            provider_factory=lambda: provider,
+            provider_factory=lambda: providers.pop(0),
+            token_loader=lambda: "configured-but-never-returned",
         )
         idle = manager.status()
         self.assertEqual("idle", idle["status"])
-        self.assertEqual(2, idle["preview"]["total"])
-        self.assertEqual(1, idle["preview"]["missing"])
+        self.assertTrue(idle["available"])
+        self.assertIsNone(idle["availability_message"])
+        self.assertEqual(2, idle["counts"]["total"])
+        self.assertEqual(1, idle["counts"]["missing_local"])
+        self.assertIsNone(idle["progress"])
+        self.assertNotIn("configured-but-never-returned", json.dumps(idle, ensure_ascii=False))
 
         self.assertEqual("started", manager.start()["status"])
-        self.assertTrue(provider.upload_entered.wait(1))
+        self.assertTrue(first_provider.upload_entered.wait(1))
         self.assertEqual("already_running", manager.start()["status"])
-        self.assertEqual("running", manager.status()["status"])
-        releaser = threading.Timer(0.02, provider.release.set)
-        releaser.start()
+        running = manager.status()
+        self.assertEqual("running", running["status"])
+        self.assertEqual(0, running["progress"]["done"])
+        self.assertEqual(2, running["progress"]["total"])
+        self.assertEqual(Path(running["progress"]["current_name"]).name, running["progress"]["current_name"])
+        self.assertNotIn(str(self.archive), running["progress"]["current_name"])
+
+        first_provider.release.set()
+        finished = self._wait_for_status(manager, "finished")
+        self.assertEqual(2, finished["progress"]["done"])
+        self.assertEqual(2, finished["progress"]["total"])
+        self.assertEqual(
+            {
+                "started_at",
+                "finished_at",
+                "uploaded",
+                "skipped_existing",
+                "skipped_missing_local",
+                "failed",
+                "failures",
+            },
+            set(finished["last_result"]),
+        )
+        self.assertTrue(first_provider.closed)
+
+        self.assertEqual("started", manager.start()["status"])
+        second_finished = self._wait_for_status(manager, "finished")
+        self.assertEqual(1, second_finished["last_result"]["uploaded"])
         manager.close(timeout=1)
-        releaser.join()
-        self.assertTrue(provider.closed)
-        self.assertEqual("closed", manager.status()["status"])
-        self.assertIsNotNone(manager.status()["last_result"])
+        self.assertIn(manager.status()["status"], {"idle", "running", "finished"})
+
+    def test_status_without_pan_token_is_safe_and_does_not_construct_provider(self) -> None:
+        provider_factory_called = False
+
+        def provider_factory():
+            nonlocal provider_factory_called
+            provider_factory_called = True
+            raise AssertionError("status must not construct provider")
+
+        manager = BackupManager(
+            self.engine,
+            archive_root=self.archive,
+            mail_attachments_root=self.mail,
+            provider_factory=provider_factory,
+            token_loader=lambda: None,
+        )
+        status = manager.status()
+        self.assertFalse(status["available"])
+        self.assertIsInstance(status["availability_message"], str)
+        self.assertNotIn("token_loader", json.dumps(status, ensure_ascii=False))
+        self.assertFalse(provider_factory_called)
+        manager.close()
+
+    def test_manager_fatal_error_uses_complete_sanitized_result_contract(self) -> None:
+        sensitive_value = "runtime-token-secret"
+        manager = BackupManager(
+            self.engine,
+            archive_root=self.archive,
+            mail_attachments_root=self.mail,
+            provider_factory=lambda: (_ for _ in ()).throw(
+                RuntimeError(f"token={sensitive_value}")
+            ),
+            token_loader=lambda: "configured",
+        )
+        self.assertTrue(manager.status()["available"])
+        self.assertEqual("started", manager.start()["status"])
+        finished = self._wait_for_status(manager, "finished")
+        result = finished["last_result"]
+        self.assertGreaterEqual(result["failed"], 1)
+        self.assertEqual(1, len(result["failures"]))
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn(sensitive_value, serialized)
+        self.assertNotIn("items", result)
+        manager.close()
+
+    def test_backend_status_dto_mirrors_frontend_typescript_contract(self) -> None:
+        types_path = Path(__file__).parents[1] / "dashboard-web" / "src" / "lib" / "types.ts"
+        source = types_path.read_text(encoding="utf-8")
+
+        def fields(interface: str) -> set[str]:
+            match = re.search(rf"export interface {interface} \{{(?P<body>.*?)\n\}}", source, re.S)
+            self.assertIsNotNone(match, f"missing TypeScript interface {interface}")
+            return set(re.findall(r"^\s*(\w+)\??:", match.group("body"), re.M))
+
+        status_fields = fields("BackupStatus")
+        count_fields = fields("BackupCounts")
+        progress_fields = fields("BackupProgress")
+        result_fields = fields("BackupResult")
+        failure_fields = fields("BackupFailure")
+        self.assertEqual(
+            {"status", "available", "availability_message", "counts", "progress", "last_result"},
+            status_fields,
+        )
+        self.assertEqual(
+            {"canvas", "mail", "ready", "missing_local", "total"},
+            count_fields,
+        )
+        self.assertEqual({"done", "total", "current_name"}, progress_fields)
+        self.assertEqual(
+            {
+                "started_at",
+                "finished_at",
+                "uploaded",
+                "skipped_existing",
+                "skipped_missing_local",
+                "failed",
+                "failures",
+            },
+            result_fields,
+        )
+        self.assertEqual({"source", "name", "remote_path", "error"}, failure_fields)
+        status_body = re.search(r"export interface BackupStatus \{(?P<body>.*?)\n\}", source, re.S)
+        self.assertIsNotNone(status_body)
+        self.assertIn('status: "idle" | "running" | "finished";', status_body.group("body"))
+
+        manager = BackupManager(
+            self.engine,
+            archive_root=self.archive,
+            mail_attachments_root=self.mail,
+            token_loader=lambda: None,
+        )
+        backend_status = manager.status()
+        self.assertEqual(status_fields, set(backend_status))
+        self.assertEqual(count_fields, set(backend_status["counts"]))
+        manager.close()
 
 
 if __name__ == "__main__":

@@ -93,7 +93,16 @@ class FakeBackupManager:
     def status(self):
         return {
             "status": "idle",
-            "preview": {"canvas": 1, "mail": 2, "ready": 2, "missing": 1, "total": 3},
+            "available": True,
+            "availability_message": None,
+            "counts": {
+                "canvas": 1,
+                "mail": 2,
+                "ready": 2,
+                "missing_local": 1,
+                "total": 3,
+            },
+            "progress": None,
             "last_result": None,
         }
 
@@ -178,7 +187,18 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual({"backup_status", "backup_start"}, {name for name in bridge._handlers if name.startswith("backup_")})
         status = bridge.invoke("backup_status", {})
         self.assertTrue(status["ok"])
-        self.assertEqual(1, status["data"]["preview"]["missing"])
+        self.assertEqual(1, status["data"]["counts"]["missing_local"])
+        self.assertEqual(
+            {
+                "status",
+                "available",
+                "availability_message",
+                "counts",
+                "progress",
+                "last_result",
+            },
+            set(status["data"]),
+        )
         self.assertEqual("started", bridge.invoke("backup_start")["data"]["status"])
         self.assertEqual("already_running", bridge.invoke("backup_start", {})["data"]["status"])
         for action in ("backup_status", "backup_start"):
