@@ -161,6 +161,69 @@ export function testAiConnection() {
   );
 }
 
+export function saveCredential(
+  kind: "canvas" | "mail" | "cloud" | "ai",
+  value: string,
+  account = "",
+) {
+  return invoke<import("@/lib/types").SettingsStatus>(
+    "settings_credential_save",
+    { kind, value, account },
+  );
+}
+
+export function deleteCredential(
+  kind: "canvas" | "mail" | "cloud" | "ai",
+  account = "",
+) {
+  return invoke<import("@/lib/types").SettingsStatus>(
+    "settings_credential_delete",
+    { kind, account },
+  );
+}
+
+export function getAiChatSessions() {
+  return invoke<{ items: import("@/lib/types").AIChatSessionSummary[] }>(
+    "ai_chat_sessions",
+  );
+}
+
+export function getAiChatSession(sessionId: string) {
+  return invoke<import("@/lib/types").AIChatSession>("ai_chat_session", {
+    session_id: sessionId,
+  });
+}
+
+export function createAiChatSession(
+  model: import("@/lib/types").AIModel,
+  thinkingDepth: import("@/lib/types").AIThinkingDepth,
+) {
+  return invoke<import("@/lib/types").AIChatSession>("ai_chat_new", {
+    model,
+    thinking_depth: thinkingDepth,
+  });
+}
+
+export function sendAiChatMessage(
+  sessionId: string,
+  content: string,
+  model: import("@/lib/types").AIModel,
+  thinkingDepth: import("@/lib/types").AIThinkingDepth,
+) {
+  return invoke<import("@/lib/types").AIChatSendResult>("ai_chat_send", {
+    session_id: sessionId,
+    content,
+    model,
+    thinking_depth: thinkingDepth,
+  });
+}
+
+export function deleteAiChatSession(sessionId: string) {
+  return invoke<{ deleted: boolean }>("ai_chat_delete", {
+    session_id: sessionId,
+  });
+}
+
 export function sendAiChat(
   messages: Array<{ role: "user" | "assistant"; content: string }>,
 ) {

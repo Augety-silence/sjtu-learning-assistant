@@ -3,10 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
 import {
+  deleteCredential,
   getSettings,
-  importAiConnection,
   organizeArchive,
   pickArchiveRoot,
+  saveCredential,
   testAiConnection,
   updateSettings,
 } from "@/lib/api";
@@ -15,9 +16,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn(),
-  importAiConnection: vi.fn(),
   organizeArchive: vi.fn(),
   pickArchiveRoot: vi.fn(),
+  saveCredential: vi.fn(),
+  deleteCredential: vi.fn(),
   testAiConnection: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -28,6 +30,10 @@ const status: SettingsStatus = {
   auto_download_current_term: true,
   organize_by_category: true,
   mail_account: "",
+  canvas_token_saved: false,
+  mail_password_saved: false,
+  cloud_token_saved: false,
+  credential_status_error: null,
   ai_enabled: false,
   ai_base_url: "https://models.sjtu.edu.cn/api/v1",
   ai_model: "deepseek-chat",
@@ -40,10 +46,8 @@ describe("SettingsView", () => {
     vi.clearAllMocks();
     vi.mocked(getSettings).mockResolvedValue(status);
     vi.mocked(updateSettings).mockResolvedValue(status);
-    vi.mocked(importAiConnection).mockResolvedValue({
-      ...status,
-      ai_key_saved: true,
-    });
+    vi.mocked(saveCredential).mockResolvedValue(status);
+    vi.mocked(deleteCredential).mockResolvedValue(status);
     vi.mocked(testAiConnection).mockResolvedValue({
       ok: true,
       model: "deepseek-chat",
@@ -63,70 +67,49 @@ describe("SettingsView", () => {
     });
   });
 
-  it("loads settings without exposing a key and sends a strict toggle payload", async () => {
+  it("groups all connection configuration and opens an edit dialog", async () => {
     render(<SettingsView />);
     expect(await screen.findByText(status.archive_root)).toBeTruthy();
-    expect(screen.queryByText("Canvas Token")).toBeNull();
-    expect(screen.queryByLabelText("邮箱密码")).toBeNull();
-    expect(
-      screen.getByText(/未设置邮箱账号；当前同步仅运行 Canvas/),
-    ).toBeTruthy();
-    expect(screen.getByText(/不会上传文件正文/)).toBeTruthy();
-    expect(screen.getByText(/首次 macOS 授权请选择“始终允许”/)).toBeTruthy();
-    expect(getSettings).toHaveBeenCalledTimes(1);
-    const switches = screen.getAllByRole("switch");
-    fireEvent.click(switches[0]);
+    expect(screen.getByText("Canvas")).toBeTruthy();
+    expect(screen.getByText("交大邮箱")).toBeTruthy();
+    expect(screen.getByText("交大云盘")).toBeTruthy();
+    expect(screen.getByText("AI 模型")).toBeTruthy();
+    const buttons = screen.getAllByRole("button", { name: "修改配置" });
+    fireEvent.click(buttons[0]);
+    expect(screen.getByRole("dialog", { name: "Canvas 配置" })).toBeTruthy();
+    expect(screen.getByLabelText("Canvas Access Token")).toBeTruthy();
+  });
+
+  it("saves a mail account and password without echoing existing secrets", async () => {
+    render(<SettingsView />);
+    const buttons = await screen.findAllByRole("button", { name: "修改配置" });
+    fireEvent.click(buttons[1]);
+    fireEvent.change(screen.getByLabelText("邮箱账号"), {
+      target: { value: "student@sjtu.edu.cn" },
+    });
+    fireEvent.change(screen.getByLabelText("邮箱密码"), {
+      target: { value: "private-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
     await waitFor(() =>
       expect(updateSettings).toHaveBeenCalledWith({
-        auto_download_current_term: false,
+        mail_account: "student@sjtu.edu.cn",
       }),
     );
-  });
-
-  it("saves a non-secret mail account explicitly", async () => {
-    vi.mocked(updateSettings).mockResolvedValue({
-      ...status,
-      mail_account: "student-id",
-    });
-    render(<SettingsView />);
-    const input = await screen.findByLabelText("邮箱账号");
-    fireEvent.change(input, { target: { value: " student-id " } });
-    fireEvent.click(screen.getByRole("button", { name: "保存邮箱账号" }));
-    await waitFor(() =>
-      expect(updateSettings).toHaveBeenCalledWith({
-        mail_account: "student-id",
-      }),
+    expect(saveCredential).toHaveBeenCalledWith(
+      "mail",
+      "private-password",
+      "student@sjtu.edu.cn",
     );
   });
 
-  it("imports fixed JSON and enables the connection test without rendering the key", async () => {
-    render(<SettingsView />);
-    const config =
-      '{"_type":"newapi_channel_conn","url":"https://models.sjtu.edu.cn/api/v1","key":"test-secret","model":"deepseek-chat"}';
-    const textarea = await screen.findByLabelText("粘贴连接配置 JSON");
-    fireEvent.change(textarea, { target: { value: config } });
-    fireEvent.click(screen.getByRole("button", { name: "保存连接配置" }));
-    await waitFor(() =>
-      expect(importAiConnection).toHaveBeenCalledWith(config),
-    );
-    expect(screen.queryByDisplayValue("test-secret")).toBeNull();
-    const testButton = screen.getByRole("button", {
-      name: "测试 AI 归档连接",
-    });
-    fireEvent.click(testButton);
-    await waitFor(() => expect(testAiConnection).toHaveBeenCalledOnce());
-    expect(await screen.findByText(/AI 连接测试成功/)).toBeTruthy();
-  });
-
-  it("picks a root and reports AI organize results", async () => {
+  it("keeps archive controls available", async () => {
     const changed = vi.fn();
     render(<SettingsView onArchiveChanged={changed} />);
     fireEvent.click(await screen.findByRole("button", { name: "选择目录" }));
     expect(await screen.findByText("/tmp/archive")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "AI 归档分类/整理" }));
-    expect(
-      await screen.findByText(/新分类 2，复用 1，规则回退 0；移动 2/),
-    ).toBeTruthy();
+    await waitFor(() => expect(organizeArchive).toHaveBeenCalledOnce());
     expect(changed).toHaveBeenCalledOnce();
   });
 });

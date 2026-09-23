@@ -34,7 +34,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0012"
+SCHEMA_VERSION = "0013"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",

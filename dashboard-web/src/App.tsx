@@ -106,6 +106,9 @@ export default function App() {
   };
 
   const syncing = syncRequested || syncStatus?.status === "syncing";
+  if (view === "ai-chat") {
+    return <AIChatView onBack={() => setView("overview")} />;
+  }
   return (
     <AppShell
       view={view}
@@ -125,7 +128,6 @@ export default function App() {
         {view === "assignments" && <AssignmentsView key={dataVersion} />}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "backup" && <BackupView />}
-        {view === "ai-chat" && <AIChatView />}
         {view === "settings" && (
           <SettingsView
             onArchiveChanged={() => setDataVersion((value) => value + 1)}

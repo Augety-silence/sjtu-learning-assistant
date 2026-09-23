@@ -180,12 +180,12 @@ class CacheAndMigrationTests(unittest.TestCase):
                 connection.exec_driver_sql(f"ALTER TABLE course_files DROP COLUMN {column}")
             connection.exec_driver_sql("CREATE TABLE desktop_schema_version (id INTEGER PRIMARY KEY, version VARCHAR(16), updated_at DATETIME)")
             connection.exec_driver_sql("INSERT INTO desktop_schema_version VALUES (1, '0007', CURRENT_TIMESTAMP)")
-        self.assertEqual("0012", bootstrap_sqlite(self.engine))
-        self.assertEqual("0012", bootstrap_sqlite(self.engine))
+        self.assertEqual("0013", bootstrap_sqlite(self.engine))
+        self.assertEqual("0013", bootstrap_sqlite(self.engine))
         columns = {column["name"] for column in inspect(self.engine).get_columns("course_files")}
         self.assertTrue({"ai_category", "ai_fingerprint", "ai_model", "ai_classified_at"}.issubset(columns))
         self.assertTrue({"manual_category", "manual_folder_id", "manual_override"}.issubset(columns))
-        self.assertEqual("0012", get_schema_version(self.engine))
+        self.assertEqual("0013", get_schema_version(self.engine))
 
 
 if __name__ == "__main__":

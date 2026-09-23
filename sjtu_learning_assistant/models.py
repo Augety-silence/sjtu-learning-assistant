@@ -498,6 +498,54 @@ class NotificationEvent(TimestampMixin, Base):
     )
 
 
+class AIChatSession(TimestampMixin, Base):
+    __tablename__ = "ai_chat_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    thinking_depth: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    messages: Mapped[list["AIChatMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "thinking_depth IN ('quick', 'standard', 'deep')",
+            name="ck_ai_chat_sessions_thinking_depth",
+        ),
+        Index("ix_ai_chat_sessions_updated_at", "updated_at"),
+    )
+
+
+class AIChatMessage(Base):
+    __tablename__ = "ai_chat_messages"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    reasoning_content: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[AIChatSession] = relationship(back_populates="messages")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_ai_chat_messages_sequence"),
+        CheckConstraint(
+            "role IN ('user', 'assistant')", name="ck_ai_chat_messages_role"
+        ),
+        Index("ix_ai_chat_messages_session", "session_id", "sequence"),
+    )
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

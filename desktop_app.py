@@ -225,7 +225,14 @@ class DesktopBridge:
             "settings_update": self._settings_update,
             "settings_ai_import": self._settings_ai_import,
             "settings_ai_test": self._settings_ai_test,
+            "settings_credential_save": self._settings_credential_save,
+            "settings_credential_delete": self._settings_credential_delete,
             "ai_chat": self._ai_chat,
+            "ai_chat_sessions": self._ai_chat_sessions,
+            "ai_chat_session": self._ai_chat_session,
+            "ai_chat_new": self._ai_chat_new,
+            "ai_chat_send": self._ai_chat_send,
+            "ai_chat_delete": self._ai_chat_delete,
             "settings_pick_archive_root": self._settings_pick_archive_root,
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
@@ -297,11 +304,58 @@ class DesktopBridge:
         _empty_payload(payload)
         return self._service.test_ai_connection()
 
+    def _settings_credential_save(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"kind", "value", "account"})
+        kind = _bounded_text(payload.get("kind"), limit=16, label="配置类型")
+        value = _bounded_text(payload.get("value"), limit=4096, label="凭据")
+        account = payload.get("account", "")
+        if type(account) is not str or len(account) > 254:
+            raise DashboardError("账号格式不正确。")
+        return self._service.save_credential(kind, value, account)
+
+    def _settings_credential_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"kind", "account"})
+        kind = _bounded_text(payload.get("kind"), limit=16, label="配置类型")
+        account = payload.get("account", "")
+        if type(account) is not str or len(account) > 254:
+            raise DashboardError("账号格式不正确。")
+        return self._service.delete_credential(kind, account)
+
     def _ai_chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"messages"})
         if "messages" not in payload:
             raise DashboardError("缺少 AI 对话消息。")
         return self._service.ai_chat(payload["messages"])
+
+    def _ai_chat_sessions(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.ai_chat_sessions()
+
+    def _chat_session_id(self, payload: Mapping[str, Any]) -> str:
+        return _bounded_id(payload.get("session_id"), limit=36, label="对话标识")
+
+    def _ai_chat_session(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"session_id"})
+        return self._service.ai_chat_session(self._chat_session_id(payload))
+
+    def _ai_chat_new(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"model", "thinking_depth"})
+        return self._service.ai_chat_new(
+            payload.get("model", "auto"), payload.get("thinking_depth", "standard")
+        )
+
+    def _ai_chat_send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"session_id", "content", "model", "thinking_depth"})
+        return self._service.ai_chat_send(
+            self._chat_session_id(payload),
+            payload.get("content"),
+            payload.get("model", "auto"),
+            payload.get("thinking_depth", "standard"),
+        )
+
+    def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"session_id"})
+        return self._service.ai_chat_delete(self._chat_session_id(payload))
 
     def _settings_pick_archive_root(
         self, payload: Mapping[str, Any]

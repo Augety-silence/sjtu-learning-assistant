@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
@@ -29,15 +30,31 @@ from sjtu_learning_assistant.ai_classifier import (
 )
 from sjtu_learning_assistant.ai_keychain import (
     AIKeychainError,
+    delete_ai_api_key,
     get_ai_api_key,
     save_ai_api_key,
+)
+from sjtu_learning_assistant.credential_store import (
+    CredentialStoreError,
+    canvas_token_saved,
+    delete_canvas_token,
+    delete_mail_password,
+    mail_password_saved,
+    save_canvas_token,
+    save_mail_password,
 )
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
 )
 from sjtu_learning_assistant.backup_service import canvas_remote_path
-from sjtu_learning_assistant.cloud_storage import CloudStorageProvider, SJTUCloudPanProvider
+from sjtu_learning_assistant.cloud_storage import (
+    CloudStorageProvider,
+    SJTUCloudPanProvider,
+    delete_user_token,
+    load_user_token,
+    save_user_token,
+)
 from sjtu_learning_assistant.local_settings import (
     LocalSettings,
     SettingsError,
@@ -47,6 +64,8 @@ from sjtu_learning_assistant.local_settings import (
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
 from sjtu_learning_assistant.models import (
+    AIChatMessage,
+    AIChatSession,
     Announcement,
     Assignment,
     Course,
@@ -93,6 +112,15 @@ MATERIAL_IMAGE_TYPES = {
 INLINE_IMAGE_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
+CHAT_MODELS = frozenset(
+    {"deepseek-chat", "deepseek-reasoner", "minimax", "minimax-m2.7", "qwen", "qwen3.8-27b"}
+)
+CHAT_DEPTHS = frozenset({"quick", "standard", "deep"})
+CHAT_DEPTH_OPTIONS = {
+    "quick": {"model": "deepseek-chat", "max_tokens": 800, "temperature": 0.4},
+    "standard": {"model": "deepseek-chat", "max_tokens": 1400, "temperature": 0.3},
+    "deep": {"model": "deepseek-reasoner", "max_tokens": 3000, "temperature": 0.2},
+}
 
 
 class DashboardError(RuntimeError):
@@ -1344,14 +1372,98 @@ class DashboardService:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
-    def ai_chat(self, messages: object) -> dict[str, Any]:
-        if type(messages) is not list:
-            raise DashboardError("AI 对话消息格式无效。")
+    @staticmethod
+    def _chat_model(model: object, depth: object, default_model: str) -> tuple[str, str]:
+        if type(depth) is not str or depth not in CHAT_DEPTHS:
+            raise DashboardError("思考深度不受支持。")
+        if type(model) is not str or (model != "auto" and model not in CHAT_MODELS):
+            raise DashboardError("AI 模型不受支持。")
+        selected = str(CHAT_DEPTH_OPTIONS[depth]["model"]) if model == "auto" else model
+        return selected or default_model, depth
+
+    @staticmethod
+    def _chat_message_dto(message: AIChatMessage) -> dict[str, Any]:
+        return {
+            "id": str(message.id),
+            "role": message.role,
+            "content": message.content,
+            "reasoning_content": message.reasoning_content,
+            "model": message.model,
+            "created_at": to_shanghai(message.created_at),
+        }
+
+    def ai_chat_sessions(self) -> dict[str, Any]:
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(AIChatSession)
+                .order_by(AIChatSession.updated_at.desc(), AIChatSession.created_at.desc())
+                .limit(100)
+            ).all()
+            items = [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "model": row.model,
+                    "thinking_depth": row.thinking_depth,
+                    "created_at": to_shanghai(row.created_at),
+                    "updated_at": to_shanghai(row.updated_at),
+                }
+                for row in rows
+            ]
+        return {"items": items}
+
+    def ai_chat_new(self, model: object = "auto", depth: object = "standard") -> dict[str, Any]:
         settings = self._effective_settings()
-        client = self._get_ai_client(settings, required=True)
-        assert client is not None
+        _, selected_depth = self._chat_model(model, depth, settings.ai_model)
+        requested_model = str(model)
+        chat_id = str(uuid.uuid4())
+        with Session(self.engine) as session, session.begin():
+            row = AIChatSession(
+                id=chat_id,
+                title="新对话",
+                model=requested_model,
+                thinking_depth=selected_depth,
+            )
+            session.add(row)
+        return {
+            "id": chat_id,
+            "title": "新对话",
+            "model": requested_model,
+            "thinking_depth": selected_depth,
+            "messages": [],
+        }
+
+    def ai_chat_session(self, session_id: str) -> dict[str, Any]:
+        with Session(self.engine) as session:
+            row = session.get(AIChatSession, session_id)
+            if row is None:
+                raise NotFoundError("对话不存在或已被删除。")
+            messages = session.scalars(
+                select(AIChatMessage)
+                .where(AIChatMessage.session_id == session_id)
+                .order_by(AIChatMessage.sequence.asc())
+            ).all()
+            return {
+                "id": row.id,
+                "title": row.title,
+                "model": row.model,
+                "thinking_depth": row.thinking_depth,
+                "created_at": to_shanghai(row.created_at),
+                "updated_at": to_shanghai(row.updated_at),
+                "messages": [self._chat_message_dto(message) for message in messages],
+            }
+
+    def ai_chat_delete(self, session_id: str) -> dict[str, bool]:
+        with Session(self.engine) as session, session.begin():
+            row = session.get(AIChatSession, session_id)
+            if row is None:
+                return {"deleted": False}
+            session.delete(row)
+        return {"deleted": True}
+
+    def _learning_context(self) -> str:
         overview = self.overview()
-        context = json.dumps(
+        return json.dumps(
             {
                 "generated_at": to_shanghai(self.now()),
                 "summary": {
@@ -1365,8 +1477,120 @@ class DashboardService:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+
+    def ai_chat_send(
+        self,
+        session_id: str,
+        content: object,
+        model: object = "auto",
+        depth: object = "standard",
+    ) -> dict[str, Any]:
+        if type(content) is not str or not content.strip() or len(content) > 4000:
+            raise DashboardError("消息不能为空或超过 4000 字。")
+        text = content.strip()
+        settings = self._effective_settings()
+        selected_model, selected_depth = self._chat_model(model, depth, settings.ai_model)
+        with Session(self.engine) as session:
+            chat = session.get(AIChatSession, session_id)
+            if chat is None:
+                raise NotFoundError("对话不存在或已被删除。")
+            history = session.scalars(
+                select(AIChatMessage)
+                .where(AIChatMessage.session_id == session_id)
+                .order_by(AIChatMessage.sequence.desc())
+                .limit(23)
+            ).all()
+            prompt = [
+                {"role": message.role, "content": message.content}
+                for message in reversed(history)
+            ]
+        prompt.append({"role": "user", "content": text})
+
+        client: OpenAIClassificationClient | None = None
+        owns_client = selected_model != settings.ai_model
         try:
-            reply = client.chat(messages, context=context)
+            if owns_client:
+                key = self.ai_key_loader()
+                if not key:
+                    raise DashboardError("未找到已保存的 AI API key。")
+                client = self.ai_client_factory(
+                    api_key=key,
+                    base_url=settings.ai_base_url,
+                    model=selected_model,
+                )
+            else:
+                client = self._get_ai_client(settings, required=True)
+            assert client is not None
+            options = CHAT_DEPTH_OPTIONS[selected_depth]
+            completion = client.chat_completion(
+                prompt,
+                context=self._learning_context(),
+                max_tokens=int(options["max_tokens"]),
+                temperature=float(options["temperature"]),
+            )
+        except AIClassificationError as exc:
+            raise DashboardError(str(exc)) from None
+        finally:
+            if owns_client:
+                self._close_client(client)
+
+        now = self.now()
+        with Session(self.engine) as session, session.begin():
+            chat = session.get(AIChatSession, session_id)
+            if chat is None:
+                raise NotFoundError("对话不存在或已被删除。")
+            next_sequence = int(
+                session.scalar(
+                    select(func.max(AIChatMessage.sequence)).where(
+                        AIChatMessage.session_id == session_id
+                    )
+                )
+                or 0
+            ) + 1
+            user_row = AIChatMessage(
+                session_id=session_id,
+                sequence=next_sequence,
+                role="user",
+                content=text,
+                model=selected_model,
+            )
+            assistant_row = AIChatMessage(
+                session_id=session_id,
+                sequence=next_sequence + 1,
+                role="assistant",
+                content=str(completion["content"]),
+                reasoning_content=completion.get("reasoning_content"),
+                model=selected_model,
+            )
+            session.add_all((user_row, assistant_row))
+            chat.model = str(model)
+            chat.thinking_depth = selected_depth
+            chat.updated_at = now
+            if chat.title == "新对话":
+                chat.title = text[:36] + ("…" if len(text) > 36 else "")
+            session.flush()
+            result = {
+                "session": {
+                    "id": chat.id,
+                    "title": chat.title,
+                    "model": chat.model,
+                    "thinking_depth": chat.thinking_depth,
+                    "updated_at": to_shanghai(chat.updated_at),
+                },
+                "user_message": self._chat_message_dto(user_row),
+                "assistant_message": self._chat_message_dto(assistant_row),
+            }
+        return result
+
+    def ai_chat(self, messages: object) -> dict[str, Any]:
+        """Compatibility endpoint for pre-history clients."""
+        if type(messages) is not list:
+            raise DashboardError("AI 对话消息格式无效。")
+        settings = self._effective_settings()
+        client = self._get_ai_client(settings, required=True)
+        assert client is not None
+        try:
+            reply = client.chat(messages, context=self._learning_context())
         except AIClassificationError as exc:
             raise DashboardError(str(exc)) from None
         return {"reply": reply, "model": settings.ai_model}
@@ -1421,6 +1645,52 @@ class DashboardService:
         self._close_client(canvas_client)
         self._close_client(ai_client)
         self._material_temp.cleanup()
+
+    def save_credential(
+        self, kind: object, value: object, account: object = ""
+    ) -> dict[str, Any]:
+        try:
+            if kind == "canvas":
+                save_canvas_token(value)
+                with self._client_lock:
+                    client = self._canvas_client
+                    self._canvas_client = None
+                self._close_client(client)
+            elif kind == "mail":
+                save_mail_password(account, value)
+            elif kind == "cloud":
+                save_user_token(value)
+            elif kind == "ai":
+                self.ai_key_saver(value)
+                self.settings_store.update({"ai_key_saved": True})
+                self._discard_ai_client()
+            else:
+                raise DashboardError("配置类型不受支持。")
+        except (CredentialStoreError, AIKeychainError) as exc:
+            raise DashboardError(str(exc)) from exc
+        return self.settings_status()
+
+    def delete_credential(self, kind: object, account: object = "") -> dict[str, Any]:
+        try:
+            if kind == "canvas":
+                delete_canvas_token()
+                with self._client_lock:
+                    client = self._canvas_client
+                    self._canvas_client = None
+                self._close_client(client)
+            elif kind == "mail":
+                delete_mail_password(account)
+            elif kind == "cloud":
+                delete_user_token()
+            elif kind == "ai":
+                delete_ai_api_key()
+                self.settings_store.update({"ai_key_saved": False, "ai_enabled": False})
+                self._discard_ai_client()
+            else:
+                raise DashboardError("配置类型不受支持。")
+        except (CredentialStoreError, AIKeychainError) as exc:
+            raise DashboardError(str(exc)) from exc
+        return self.settings_status()
 
     def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.settings_store.update(dict(payload))
@@ -1477,19 +1747,47 @@ class DashboardService:
         }
 
     def settings_status(self) -> dict[str, Any]:
-        """Return non-sensitive preferences without probing Keychain credentials."""
+        """Return non-sensitive preferences and credential-presence flags."""
         settings = self._effective_settings()
         self.archive_root = Path(settings.archive_root)
+        credential_errors = False
+        try:
+            canvas_saved = canvas_token_saved()
+        except Exception:
+            canvas_saved = False
+            credential_errors = True
+        try:
+            mail_saved = mail_password_saved(settings.mail_account)
+        except Exception:
+            mail_saved = False
+            credential_errors = True
+        try:
+            cloud_saved = bool(load_user_token())
+        except Exception:
+            cloud_saved = False
+            credential_errors = True
+        try:
+            ai_saved = bool(self.ai_key_loader()) if settings.ai_key_saved else False
+        except Exception:
+            ai_saved = settings.ai_key_saved
+            credential_errors = True
+        credential_error = (
+            "无法读取部分 Keychain 配置状态。" if credential_errors else None
+        )
         return {
             "archive_root_ready": self.archive_root.is_dir(),
             "archive_root": str(self.archive_root),
             "auto_download_current_term": settings.auto_download_current_term,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,
+            "canvas_token_saved": canvas_saved,
+            "mail_password_saved": mail_saved,
+            "cloud_token_saved": cloud_saved,
+            "credential_status_error": credential_error,
             "ai_enabled": settings.ai_enabled,
             "ai_base_url": settings.ai_base_url,
             "ai_model": settings.ai_model,
-            "ai_key_saved": settings.ai_key_saved,
+            "ai_key_saved": ai_saved,
         }
 
     def _release_sync_when_done(self, process: Any) -> None:

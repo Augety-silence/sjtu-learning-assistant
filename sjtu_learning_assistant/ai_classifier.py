@@ -196,8 +196,15 @@ class OpenAIClassificationClient:
             raise AIClassificationError("AI 分类结果不完整。")
         return result
 
-    def chat(self, messages: list[dict[str, str]], *, context: str = "") -> str:
-        if not messages or len(messages) > 12:
+    def chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        context: str = "",
+        max_tokens: int = 1200,
+        temperature: float = 0.3,
+    ) -> dict[str, str | None]:
+        if not messages or len(messages) > 24:
             raise AIClassificationError("AI 对话消息数量无效。")
         clean_messages: list[dict[str, str]] = []
         total_length = 0
@@ -226,22 +233,36 @@ class OpenAIClassificationClient:
         request_messages.extend(clean_messages)
         try:
             self._limiter()
+            request_body: dict[str, object] = {
+                "model": self.model,
+                "max_tokens": max(256, min(int(max_tokens), 4096)),
+                "messages": request_messages,
+            }
+            if self.model != "deepseek-reasoner":
+                request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
             response = self._client.post(
                 "chat/completions",
-                json={
-                    "model": self.model,
-                    "temperature": 0.3,
-                    "max_tokens": 1200,
-                    "messages": request_messages,
-                },
+                json=request_body,
             )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+            message = response.json()["choices"][0]["message"]
+            content = message["content"]
+            reasoning = message.get("reasoning_content")
             if type(content) is not str or not content.strip():
                 raise ValueError("empty response")
-            return content.strip()
+            return {
+                "content": content.strip(),
+                "reasoning_content": reasoning.strip()
+                if type(reasoning) is str and reasoning.strip()
+                else None,
+            }
         except Exception:
             raise AIClassificationError("AI 对话请求失败，请稍后重试。") from None
+
+    def chat(self, messages: list[dict[str, str]], *, context: str = "") -> str:
+        """Compatibility wrapper returning only the visible assistant answer."""
+        result = self.chat_completion(messages, context=context)
+        return str(result["content"])
 
     def test_connection(self) -> str:
         sample = ClassificationInput(

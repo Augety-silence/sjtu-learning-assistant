@@ -8,10 +8,42 @@ export type ViewName =
   | "ai-chat"
   | "settings";
 
+export type AIModel =
+  | "auto"
+  | "deepseek-chat"
+  | "deepseek-reasoner"
+  | "minimax"
+  | "minimax-m2.7"
+  | "qwen"
+  | "qwen3.8-27b";
+export type AIThinkingDepth = "quick" | "standard" | "deep";
+
 export interface AIChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  reasoning_content?: string | null;
+  model?: string | null;
+  created_at?: string | null;
+}
+
+export interface AIChatSessionSummary {
+  id: string;
+  title: string;
+  model: string;
+  thinking_depth: AIThinkingDepth;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AIChatSession extends AIChatSessionSummary {
+  messages: AIChatMessage[];
+}
+
+export interface AIChatSendResult {
+  session: AIChatSessionSummary;
+  user_message: AIChatMessage;
+  assistant_message: AIChatMessage;
 }
 
 export interface AIChatResult {
@@ -141,6 +173,10 @@ export interface SettingsStatus {
   auto_download_current_term: boolean;
   organize_by_category: boolean;
   mail_account: string;
+  canvas_token_saved: boolean;
+  mail_password_saved: boolean;
+  cloud_token_saved: boolean;
+  credential_status_error: string | null;
   ai_enabled: boolean;
   ai_base_url: string;
   ai_model: string;
