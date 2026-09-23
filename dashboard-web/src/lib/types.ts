@@ -18,12 +18,47 @@ export type AIModel =
   | "qwen3.8-27b";
 export type AIThinkingDepth = "quick" | "standard" | "deep";
 
+export type AIToolRunPhase = "prefetch" | "model";
+export type AIToolRunStatus = "ok" | "rejected";
+
+export interface AIToolRun {
+  tool_name: string;
+  phase: AIToolRunPhase;
+  status: AIToolRunStatus;
+  arguments_summary: unknown;
+  result_summary: unknown;
+}
+
+export interface AIAgentTrace {
+  id: string;
+  preset_id: string;
+  status: string;
+  steps: number;
+  tool_runs: AIToolRun[];
+  created_at?: string | null;
+}
+
+export interface AIAgentPreset {
+  id: string;
+  name: string;
+  description: string;
+  allowed_tools: string[];
+  is_default: boolean;
+}
+
+export interface AIAgentPresetsResult {
+  default_preset_id: string;
+  items: AIAgentPreset[];
+}
+
 export interface AIChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   reasoning_content?: string | null;
   model?: string | null;
+  trace_id?: string | null;
+  tool_runs?: AIToolRun[];
   created_at?: string | null;
 }
 
@@ -32,16 +67,19 @@ export interface AIChatSessionSummary {
   title: string;
   model: string;
   thinking_depth: AIThinkingDepth;
+  preset_id: string;
   created_at?: string | null;
   updated_at?: string | null;
 }
 
 export interface AIChatSession extends AIChatSessionSummary {
   messages: AIChatMessage[];
+  traces: AIAgentTrace[];
 }
 
 export interface AIChatSendResult {
   session: AIChatSessionSummary;
+  trace: AIAgentTrace;
   user_message: AIChatMessage;
   assistant_message: AIChatMessage;
 }

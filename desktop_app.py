@@ -83,6 +83,13 @@ def _bounded_id(value: object, *, limit: int, label: str) -> str:
     return value.strip()
 
 
+def _preset_id(value: object) -> str:
+    result = _bounded_id(value, limit=32, label="Agent preset")
+    if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", result) is None:
+        raise DashboardError("Agent preset 不正确。")
+    return result
+
+
 def _source_id(payload: Mapping[str, Any]) -> str:
     _only_keys(payload, {"source_id"})
     return _bounded_id(payload.get("source_id"), limit=255, label="资源标识")
@@ -228,6 +235,7 @@ class DesktopBridge:
             "settings_credential_save": self._settings_credential_save,
             "settings_credential_delete": self._settings_credential_delete,
             "ai_chat": self._ai_chat,
+            "ai_presets": self._ai_presets,
             "ai_chat_sessions": self._ai_chat_sessions,
             "ai_chat_session": self._ai_chat_session,
             "ai_chat_new": self._ai_chat_new,
@@ -327,6 +335,10 @@ class DesktopBridge:
             raise DashboardError("缺少 AI 对话消息。")
         return self._service.ai_chat(payload["messages"])
 
+    def _ai_presets(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.ai_presets()
+
     def _ai_chat_sessions(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.ai_chat_sessions()
@@ -339,18 +351,27 @@ class DesktopBridge:
         return self._service.ai_chat_session(self._chat_session_id(payload))
 
     def _ai_chat_new(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"model", "thinking_depth"})
+        _only_keys(payload, {"model", "thinking_depth", "preset_id"})
         return self._service.ai_chat_new(
-            payload.get("model", "auto"), payload.get("thinking_depth", "standard")
+            payload.get("model", "auto"),
+            payload.get("thinking_depth", "standard"),
+            _preset_id(payload["preset_id"]) if payload.get("preset_id") is not None else None,
         )
 
     def _ai_chat_send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"session_id", "content", "model", "thinking_depth"})
+        _only_keys(
+            payload,
+            {"session_id", "content", "model", "thinking_depth", "preset_id"},
+        )
+        preset_id = payload.get("preset_id")
+        if preset_id is not None:
+            preset_id = _preset_id(preset_id)
         return self._service.ai_chat_send(
             self._chat_session_id(payload),
             payload.get("content"),
             payload.get("model", "auto"),
             payload.get("thinking_depth", "standard"),
+            preset_id,
         )
 
     def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:

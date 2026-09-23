@@ -1,15 +1,11 @@
 import {
-  ArrowLeft,
+  Activity,
   ArrowUp,
   Bot,
-  Check,
   ChevronDown,
-  Copy,
-  Menu,
-  Plus,
+  PanelLeftOpen,
+  PanelRightOpen,
   Sparkles,
-  Trash2,
-  X,
 } from "lucide-react";
 import {
   type FormEvent,
@@ -18,18 +14,20 @@ import {
   useRef,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
+import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
+import { AIChatSidebar } from "@/components/AIChatSidebar";
+import { AIChatTracePanel } from "@/components/AIChatTracePanel";
 import { Button } from "@/components/ui/Button";
 import {
   createAiChatSession,
   deleteAiChatSession,
   getAiChatSession,
   getAiChatSessions,
+  getAiPresets,
   sendAiChatMessage,
 } from "@/lib/api";
 import type {
+  AIAgentPreset,
   AIChatMessage,
   AIChatSession,
   AIChatSessionSummary,
@@ -38,9 +36,9 @@ import type {
 } from "@/lib/types";
 
 const starters = [
-  "帮我整理最近一周的待办和优先级",
-  "总结最近的课程消息，指出需要我行动的内容",
-  "根据近期截止事项，给我一份学习安排",
+  "列出本周所有课程的截止事项，并按紧急程度排序",
+  "搜索最近的课程消息，告诉我有哪些需要处理",
+  "梳理每门课程的文件，并给出本周复习建议",
 ];
 const models: Array<{ value: AIModel; label: string }> = [
   { value: "auto", label: "自动选择" },
@@ -56,6 +54,8 @@ const depths: Array<{ value: AIThinkingDepth; label: string }> = [
 ];
 
 export function AIChatView({ onBack }: { onBack: () => void }) {
+  const [presets, setPresets] = useState<AIAgentPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [sessions, setSessions] = useState<AIChatSessionSummary[]>([]);
   const [active, setActive] = useState<AIChatSession | null>(null);
   const [draft, setDraft] = useState("");
@@ -65,6 +65,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -74,62 +75,84 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     return result.items;
   }, []);
 
-  const openSession = useCallback(async (sessionId: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const session = await getAiChatSession(sessionId);
-      setActive(session);
-      setModel((session.model as AIModel) || "auto");
-      setDepth(session.thinking_depth);
-      setHistoryOpen(false);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "对话读取失败");
-    } finally {
-      setLoading(false);
-    }
+  const applySession = useCallback((session: AIChatSession) => {
+    setActive(session);
+    setModel((session.model as AIModel) || "auto");
+    setDepth(session.thinking_depth);
+    setSelectedPresetId(session.preset_id);
   }, []);
 
-  const newSession = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const session = await createAiChatSession("auto", "standard");
-      setActive(session);
-      setModel("auto");
-      setDepth("standard");
-      setHistoryOpen(false);
-      await refreshSessions();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "无法创建新对话");
-    } finally {
-      setLoading(false);
-    }
-  }, [refreshSessions]);
+  const openSession = useCallback(
+    async (sessionId: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        applySession(await getAiChatSession(sessionId));
+        setHistoryOpen(false);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "对话读取失败");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession],
+  );
+
+  const newSession = useCallback(
+    async (presetId = selectedPresetId) => {
+      if (!presetId) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const session = await createAiChatSession("auto", "standard", presetId);
+        applySession(session);
+        setHistoryOpen(false);
+        await refreshSessions();
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "无法创建新对话");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySession, refreshSessions, selectedPresetId],
+  );
 
   useEffect(() => {
     let cancelled = false;
     const initialLoad = async () => {
-      setLoading(true);
       try {
-        const rows = await refreshSessions();
+        const [presetResult, sessionResult] = await Promise.all([
+          getAiPresets(),
+          getAiChatSessions(),
+        ]);
         if (cancelled) return;
-        if (rows[0]) await openSession(rows[0].id);
-        else await newSession();
+        setPresets(presetResult.items);
+        setSessions(sessionResult.items);
+        const defaultPresetId =
+          presetResult.default_preset_id || presetResult.items[0]?.id || "";
+        setSelectedPresetId(defaultPresetId);
+        if (!defaultPresetId) throw new Error("没有可用的 Agent 预设。");
+        const session = sessionResult.items[0]
+          ? await getAiChatSession(sessionResult.items[0].id)
+          : await createAiChatSession("auto", "standard", defaultPresetId);
+        if (cancelled) return;
+        applySession(session);
+        if (!sessionResult.items[0]) await refreshSessions();
       } catch (reason) {
         if (!cancelled) {
           setError(
-            reason instanceof Error ? reason.message : "历史对话读取失败",
+            reason instanceof Error ? reason.message : "AI 工作区加载失败",
           );
-          setLoading(false);
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
     void initialLoad();
     return () => {
       cancelled = true;
     };
-  }, [newSession, openSession, refreshSessions]);
+  }, [applySession, refreshSessions]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
@@ -137,20 +160,32 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const submit = async (content: string) => {
     const text = content.trim();
-    if (!text || busy || !active) return;
+    if (!text || busy || !active || !selectedPresetId) return;
+    const sessionId = active.id;
     const optimistic: AIChatMessage = {
       id: `pending-${Date.now()}`,
       role: "user",
       content: text,
     };
-    setActive({ ...active, messages: [...active.messages, optimistic] });
+    setActive((current) =>
+      current?.id === sessionId
+        ? { ...current, messages: [...current.messages, optimistic] }
+        : current,
+    );
     setDraft("");
     setError(null);
     setBusy(true);
+    setActivityOpen(true);
     try {
-      const result = await sendAiChatMessage(active.id, text, model, depth);
+      const result = await sendAiChatMessage(
+        sessionId,
+        text,
+        model,
+        depth,
+        selectedPresetId,
+      );
       setActive((current) =>
-        current
+        current?.id === sessionId
           ? {
               ...current,
               ...result.session,
@@ -159,13 +194,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                 result.user_message,
                 result.assistant_message,
               ],
+              traces: [...current.traces, result.trace],
             }
           : current,
       );
       await refreshSessions();
     } catch (reason) {
       setActive((current) =>
-        current
+        current?.id === sessionId
           ? {
               ...current,
               messages: current.messages.filter(
@@ -178,7 +214,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setError(
         reason instanceof Error
           ? reason.message
-          : "AI 暂时无法回答，请稍后重试。",
+          : "Agent 暂时无法完成检索，请稍后重试。",
       );
     } finally {
       setBusy(false);
@@ -188,12 +224,20 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const removeSession = async (sessionId: string) => {
     if (!window.confirm("确定删除这段历史对话？")) return;
-    await deleteAiChatSession(sessionId);
-    const remaining = await refreshSessions();
-    if (remaining[0]) await openSession(remaining[0].id);
-    else await newSession();
+    try {
+      await deleteAiChatSession(sessionId);
+      const remaining = await refreshSessions();
+      if (sessionId !== active?.id) return;
+      if (remaining[0]) await openSession(remaining[0].id);
+      else await newSession();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除对话失败");
+    }
   };
 
+  const selectedPreset =
+    presets.find((preset) => preset.id === selectedPresetId) ?? null;
+  const hasMessages = Boolean(active?.messages.length);
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     void submit(draft);
@@ -201,102 +245,86 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   return (
     <main className="ai-workspace">
-      <header className="ai-workspace-header">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" />
-          返回
-        </Button>
-        <div className="ai-workspace-title">
-          <Sparkles aria-hidden="true" />
-          <div>
-            <strong>AI 学习助手</strong>
-            <span>{active?.title ?? "新对话"}</span>
-          </div>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void newSession()}
-          disabled={busy}
-        >
-          <Plus aria-hidden="true" />
-          新对话
-        </Button>
-      </header>
+      <div
+        className={
+          activityOpen
+            ? "ai-workspace-body"
+            : "ai-workspace-body activity-closed"
+        }
+      >
+        <AIChatSidebar
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onBack={onBack}
+          onNew={() => void newSession()}
+          presets={presets}
+          selectedPresetId={selectedPresetId}
+          onSelectPreset={setSelectedPresetId}
+          sessions={sessions}
+          activeSessionId={active?.id}
+          onOpenSession={(id) => void openSession(id)}
+          onDeleteSession={(id) => void removeSession(id)}
+          busy={busy}
+        />
 
-      <div className="ai-workspace-body">
-        <aside className={historyOpen ? "ai-history is-open" : "ai-history"}>
-          <div className="ai-history-heading">
-            <strong>历史对话</strong>
+        <section
+          className={
+            hasMessages
+              ? "ai-conversation has-messages"
+              : "ai-conversation is-empty"
+          }
+          aria-label="AI Agent 对话"
+        >
+          <header className="ai-conversation-header">
             <Button
               variant="ghost"
               size="icon"
-              aria-label="关闭历史"
-              onClick={() => setHistoryOpen(false)}
-            >
-              <X />
-            </Button>
-          </div>
-          <div className="ai-history-list">
-            {sessions.length === 0 && <p>还没有历史对话</p>}
-            {sessions.map((session) => (
-              <div
-                className={
-                  session.id === active?.id
-                    ? "ai-history-item active"
-                    : "ai-history-item"
-                }
-                key={session.id}
-              >
-                <button
-                  type="button"
-                  onClick={() => void openSession(session.id)}
-                >
-                  <strong>{session.title}</strong>
-                  <span>
-                    {
-                      depths.find(
-                        (item) => item.value === session.thinking_depth,
-                      )?.label
-                    }{" "}
-                    · {session.model === "auto" ? "自动选择" : session.model}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  aria-label={`删除对话：${session.title}`}
-                  onClick={() => void removeSession(session.id)}
-                >
-                  <Trash2 aria-hidden="true" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        <section className="ai-conversation" aria-label="AI 对话">
-          <div className="ai-mobile-history">
-            <Button
-              variant="ghost"
-              size="sm"
+              className="ai-panel-toggle ai-left-toggle"
+              aria-label="打开对话导航"
               onClick={() => setHistoryOpen(true)}
             >
-              <Menu aria-hidden="true" />
-              历史对话
+              <PanelLeftOpen />
             </Button>
-          </div>
+            <div>
+              <span className="ai-header-agent">
+                <Bot aria-hidden="true" />
+                {selectedPreset?.name ?? "学习 Agent"}
+              </span>
+              <strong>{active?.title ?? "新对话"}</strong>
+            </div>
+            <Button
+              variant={activityOpen ? "outline" : "ghost"}
+              size="sm"
+              aria-expanded={activityOpen}
+              aria-label="切换 Activity 检索轨迹"
+              onClick={() => setActivityOpen((open) => !open)}
+            >
+              {activityOpen ? (
+                <Activity aria-hidden="true" />
+              ) : (
+                <PanelRightOpen aria-hidden="true" />
+              )}
+              Activity
+            </Button>
+          </header>
+
           <div className="ai-chat-thread" aria-live="polite">
             {loading ? (
               <div className="ai-thinking" role="status">
-                正在读取对话…
+                正在准备本地学习 Agent…
               </div>
-            ) : !active?.messages.length ? (
+            ) : !hasMessages ? (
               <div className="ai-chat-empty">
                 <span className="ai-chat-mark">
-                  <Bot aria-hidden="true" />
+                  <Sparkles aria-hidden="true" />
                 </span>
-                <h2>今天想先处理什么？</h2>
-                <p>我可以结合最近同步的课程、消息与截止事项，帮你梳理重点。</p>
+                <p className="ai-empty-kicker">
+                  {selectedPreset?.name ?? "学习 Agent"}
+                </p>
+                <h1>今天想从学习数据里查什么？</h1>
+                <p>
+                  我会按需调用只读工具，查询课程、课程文件、截止日期、消息和资料树，并在右侧展示完整检索轨迹。
+                </p>
                 <div className="ai-chat-starters">
                   {starters.map((starter) => (
                     <button
@@ -304,19 +332,25 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                       type="button"
                       onClick={() => void submit(starter)}
                     >
-                      {starter}
+                      <span>{starter}</span>
+                      <ArrowUp aria-hidden="true" />
                     </button>
                   ))}
                 </div>
               </div>
             ) : (
               <div className="ai-chat-messages">
-                {active.messages.map((message) => (
-                  <MessageBubble key={message.id} message={message} />
+                {active?.messages.map((message) => (
+                  <AIChatMessageBubble
+                    key={message.id}
+                    message={message}
+                    onOpenActivity={() => setActivityOpen(true)}
+                  />
                 ))}
                 {busy && (
                   <div className="ai-thinking" role="status">
-                    AI 正在整理学习信息…
+                    <span />
+                    Agent 正在检索本地学习数据…
                   </div>
                 )}
                 <div ref={endRef} />
@@ -330,53 +364,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                 {error}
               </p>
             )}
-            <div className="ai-chat-controls">
-              <label>
-                <span className="sr-only">模型</span>
-                <select
-                  aria-label="模型"
-                  value={model}
-                  disabled={busy}
-                  onChange={(event) => setModel(event.target.value as AIModel)}
-                >
-                  {models.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown aria-hidden="true" />
-              </label>
-              <label>
-                <span className="sr-only">思考深度</span>
-                <select
-                  aria-label="思考深度"
-                  value={depth}
-                  disabled={busy}
-                  onChange={(event) =>
-                    setDepth(event.target.value as AIThinkingDepth)
-                  }
-                >
-                  {depths.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown aria-hidden="true" />
-              </label>
-              {model === "auto" && (
-                <span>自动：深度思考将切换为 deepseek-reasoner</span>
-              )}
-            </div>
             <div className="ai-composer-box">
               <textarea
                 ref={textareaRef}
                 value={draft}
                 maxLength={4000}
-                rows={3}
+                rows={hasMessages ? 2 : 3}
                 aria-label="输入问题"
-                placeholder="询问课程消息、截止事项或学习安排…"
+                placeholder="让 Agent 检索课程、文件、截止日期或消息…"
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -385,60 +380,75 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                   }
                 }}
               />
-              <Button
-                type="submit"
-                aria-label="发送消息"
-                disabled={busy || !draft.trim() || !active}
-              >
-                <ArrowUp aria-hidden="true" />
-                发送
-              </Button>
+              <div className="ai-composer-toolbar">
+                <div className="ai-chat-controls">
+                  <span className="ai-agent-control">
+                    <Bot aria-hidden="true" />
+                    {selectedPreset?.name ?? "Agent"}
+                  </span>
+                  <label>
+                    <span className="sr-only">模型</span>
+                    <select
+                      aria-label="模型"
+                      value={model}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setModel(event.target.value as AIModel)
+                      }
+                    >
+                      {models.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown aria-hidden="true" />
+                  </label>
+                  <label>
+                    <span className="sr-only">思考深度</span>
+                    <select
+                      aria-label="思考深度"
+                      value={depth}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setDepth(event.target.value as AIThinkingDepth)
+                      }
+                    >
+                      {depths.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown aria-hidden="true" />
+                  </label>
+                </div>
+                <Button
+                  type="submit"
+                  size="icon"
+                  aria-label="发送消息"
+                  disabled={
+                    busy || !draft.trim() || !active || !selectedPresetId
+                  }
+                >
+                  <ArrowUp aria-hidden="true" />
+                </Button>
+              </div>
             </div>
             <p className="ai-chat-notice">
-              对话保存在本机 SQLite；AI 可能出错，请核对截止时间与提交要求。
+              只读访问本机同步数据 · AI 可能出错，请核对截止时间与提交要求
             </p>
           </form>
         </section>
+
+        <AIChatTracePanel
+          open={activityOpen}
+          onClose={() => setActivityOpen(false)}
+          preset={selectedPreset}
+          traces={active?.traces ?? []}
+          busy={busy}
+        />
       </div>
     </main>
-  );
-}
-
-function MessageBubble({ message }: { message: AIChatMessage }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    await navigator.clipboard.writeText(message.content);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
-  };
-  return (
-    <article className={`ai-message ai-message-${message.role}`}>
-      <header>
-        <span>{message.role === "user" ? "你" : "AI"}</span>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="复制消息"
-          onClick={() => void copy()}
-        >
-          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-        </Button>
-      </header>
-      {message.reasoning_content && (
-        <details className="ai-reasoning">
-          <summary>查看思考过程</summary>
-          <p>{message.reasoning_content}</p>
-        </details>
-      )}
-      <div className="ai-markdown">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
-        >
-          {message.content}
-        </ReactMarkdown>
-      </div>
-      {message.model && <footer>{message.model}</footer>}
-    </article>
   );
 }

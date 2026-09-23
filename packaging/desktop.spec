@@ -33,6 +33,8 @@ datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
     (str(ROOT / "LICENSE"), "licenses"),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
+    (str(ROOT / "AGENT.md"), "."),
+    (str(ROOT / "agent_presets"), "agent_presets"),
 ]
 
 hiddenimports = [

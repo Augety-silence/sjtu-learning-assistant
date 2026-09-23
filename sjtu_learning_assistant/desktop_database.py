@@ -34,7 +34,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0013"
+SCHEMA_VERSION = "0014"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
@@ -116,6 +116,29 @@ def bootstrap_sqlite(engine: Engine) -> str:
             connection.exec_driver_sql("ALTER TABLE emails ADD COLUMN body_text TEXT")
         if "body_html" not in email_columns:
             connection.exec_driver_sql("ALTER TABLE emails ADD COLUMN body_html TEXT")
+        if inspect(connection).has_table("ai_chat_sessions"):
+            session_columns = {
+                str(column["name"])
+                for column in inspect(connection).get_columns("ai_chat_sessions")
+            }
+            if "preset_id" not in session_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ai_chat_sessions ADD COLUMN "
+                    "preset_id VARCHAR(32) NOT NULL DEFAULT 'general'"
+                )
+        if inspect(connection).has_table("ai_chat_messages"):
+            message_columns = {
+                str(column["name"])
+                for column in inspect(connection).get_columns("ai_chat_messages")
+            }
+            if "trace_id" not in message_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ai_chat_messages ADD COLUMN trace_id VARCHAR(36)"
+                )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_ai_chat_messages_trace "
+                "ON ai_chat_messages (trace_id)"
+            )
         file_columns = {
             str(column["name"])
             for column in inspect(connection).get_columns("course_files")

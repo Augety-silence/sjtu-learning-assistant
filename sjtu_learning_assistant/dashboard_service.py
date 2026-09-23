@@ -24,6 +24,13 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from sjtu_learning_assistant.agent_runtime import (
+    AgentLoop,
+    AgentToolError,
+    PresetError,
+    PresetLoader,
+    ReadOnlyToolRegistry,
+)
 from sjtu_learning_assistant.ai_classifier import (
     AIClassificationError,
     OpenAIClassificationClient,
@@ -64,6 +71,7 @@ from sjtu_learning_assistant.local_settings import (
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
 from sjtu_learning_assistant.models import (
+    AIAgentTrace,
     AIChatMessage,
     AIChatSession,
     Announcement,
@@ -1382,14 +1390,32 @@ class DashboardService:
         return selected or default_model, depth
 
     @staticmethod
-    def _chat_message_dto(message: AIChatMessage) -> dict[str, Any]:
+    def _chat_message_dto(
+        message: AIChatMessage,
+        tool_runs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         return {
             "id": str(message.id),
             "role": message.role,
             "content": message.content,
             "reasoning_content": message.reasoning_content,
             "model": message.model,
+            "trace_id": message.trace_id,
+            "tool_runs": tool_runs or [],
             "created_at": to_shanghai(message.created_at),
+        }
+
+    def ai_presets(self) -> dict[str, Any]:
+        try:
+            default_id, presets = PresetLoader().load()
+        except PresetError as exc:
+            raise DashboardError(str(exc)) from None
+        return {
+            "default_preset_id": default_id,
+            "items": [
+                {**preset.dto(), "is_default": preset.id == default_id}
+                for preset in presets.values()
+            ],
         }
 
     def ai_chat_sessions(self) -> dict[str, Any]:
@@ -1405,6 +1431,7 @@ class DashboardService:
                     "title": row.title,
                     "model": row.model,
                     "thinking_depth": row.thinking_depth,
+                    "preset_id": row.preset_id,
                     "created_at": to_shanghai(row.created_at),
                     "updated_at": to_shanghai(row.updated_at),
                 }
@@ -1412,9 +1439,18 @@ class DashboardService:
             ]
         return {"items": items}
 
-    def ai_chat_new(self, model: object = "auto", depth: object = "standard") -> dict[str, Any]:
+    def ai_chat_new(
+        self,
+        model: object = "auto",
+        depth: object = "standard",
+        preset_id: object | None = None,
+    ) -> dict[str, Any]:
         settings = self._effective_settings()
         _, selected_depth = self._chat_model(model, depth, settings.ai_model)
+        try:
+            preset = PresetLoader().get(preset_id)
+        except PresetError as exc:
+            raise DashboardError(str(exc)) from None
         requested_model = str(model)
         chat_id = str(uuid.uuid4())
         with Session(self.engine) as session, session.begin():
@@ -1423,6 +1459,7 @@ class DashboardService:
                 title="新对话",
                 model=requested_model,
                 thinking_depth=selected_depth,
+                preset_id=preset.id,
             )
             session.add(row)
         return {
@@ -1430,7 +1467,9 @@ class DashboardService:
             "title": "新对话",
             "model": requested_model,
             "thinking_depth": selected_depth,
+            "preset_id": preset.id,
             "messages": [],
+            "traces": [],
         }
 
     def ai_chat_session(self, session_id: str) -> dict[str, Any]:
@@ -1443,14 +1482,40 @@ class DashboardService:
                 .where(AIChatMessage.session_id == session_id)
                 .order_by(AIChatMessage.sequence.asc())
             ).all()
+            traces = session.scalars(
+                select(AIAgentTrace)
+                .where(AIAgentTrace.session_id == session_id)
+                .order_by(AIAgentTrace.created_at.asc())
+            ).all()
+            trace_by_id = {trace.id: trace for trace in traces}
             return {
                 "id": row.id,
                 "title": row.title,
                 "model": row.model,
                 "thinking_depth": row.thinking_depth,
+                "preset_id": row.preset_id,
                 "created_at": to_shanghai(row.created_at),
                 "updated_at": to_shanghai(row.updated_at),
-                "messages": [self._chat_message_dto(message) for message in messages],
+                "messages": [
+                    self._chat_message_dto(
+                        message,
+                        list(trace_by_id[message.trace_id].tool_runs)
+                        if message.trace_id in trace_by_id
+                        else [],
+                    )
+                    for message in messages
+                ],
+                "traces": [
+                    {
+                        "id": trace.id,
+                        "preset_id": trace.preset_id,
+                        "status": trace.status,
+                        "steps": trace.steps,
+                        "tool_runs": list(trace.tool_runs),
+                        "created_at": to_shanghai(trace.created_at),
+                    }
+                    for trace in traces
+                ],
             }
 
     def ai_chat_delete(self, session_id: str) -> dict[str, bool]:
@@ -1478,12 +1543,32 @@ class DashboardService:
             separators=(",", ":"),
         )
 
+    def _persist_failed_agent_trace(self, session_id: str, preset_id: str) -> None:
+        """Best-effort failure audit without persisting prompts or exception details."""
+        try:
+            with Session(self.engine) as session, session.begin():
+                if session.get(AIChatSession, session_id) is None:
+                    return
+                session.add(
+                    AIAgentTrace(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        preset_id=preset_id,
+                        status="failed",
+                        steps=0,
+                        tool_runs=[],
+                    )
+                )
+        except Exception:
+            pass
+
     def ai_chat_send(
         self,
         session_id: str,
         content: object,
         model: object = "auto",
         depth: object = "standard",
+        preset_id: object | None = None,
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
@@ -1494,6 +1579,7 @@ class DashboardService:
             chat = session.get(AIChatSession, session_id)
             if chat is None:
                 raise NotFoundError("对话不存在或已被删除。")
+            selected_preset_id = preset_id if preset_id is not None else chat.preset_id
             history = session.scalars(
                 select(AIChatMessage)
                 .where(AIChatMessage.session_id == session_id)
@@ -1505,8 +1591,12 @@ class DashboardService:
                 for message in reversed(history)
             ]
         prompt.append({"role": "user", "content": text})
+        try:
+            preset = PresetLoader().get(selected_preset_id)
+        except PresetError as exc:
+            raise DashboardError(str(exc)) from None
 
-        client: OpenAIClassificationClient | None = None
+        client: Any | None = None
         owns_client = selected_model != settings.ai_model
         try:
             if owns_client:
@@ -1522,19 +1612,26 @@ class DashboardService:
                 client = self._get_ai_client(settings, required=True)
             assert client is not None
             options = CHAT_DEPTH_OPTIONS[selected_depth]
-            completion = client.chat_completion(
+            agent_result = AgentLoop(
+                client,
+                ReadOnlyToolRegistry(self.engine, now_provider=self.now),
+                preset,
+            ).run(
                 prompt,
-                context=self._learning_context(),
+                user_text=text,
                 max_tokens=int(options["max_tokens"]),
                 temperature=float(options["temperature"]),
             )
-        except AIClassificationError as exc:
+        except (AIClassificationError, AgentToolError) as exc:
+            self._persist_failed_agent_trace(session_id, preset.id)
             raise DashboardError(str(exc)) from None
         finally:
             if owns_client:
                 self._close_client(client)
 
         now = self.now()
+        trace_id = str(uuid.uuid4())
+        safe_tool_runs = [dict(run) for run in agent_result.tool_runs]
         with Session(self.engine) as session, session.begin():
             chat = session.get(AIChatSession, session_id)
             if chat is None:
@@ -1547,38 +1644,59 @@ class DashboardService:
                 )
                 or 0
             ) + 1
+            trace_row = AIAgentTrace(
+                id=trace_id,
+                session_id=session_id,
+                preset_id=preset.id,
+                status=agent_result.status,
+                steps=agent_result.steps,
+                tool_runs=safe_tool_runs,
+            )
             user_row = AIChatMessage(
                 session_id=session_id,
                 sequence=next_sequence,
                 role="user",
                 content=text,
                 model=selected_model,
+                trace_id=trace_id,
             )
             assistant_row = AIChatMessage(
                 session_id=session_id,
                 sequence=next_sequence + 1,
                 role="assistant",
-                content=str(completion["content"]),
-                reasoning_content=completion.get("reasoning_content"),
+                content=agent_result.content,
+                reasoning_content=agent_result.reasoning_content,
                 model=selected_model,
+                trace_id=trace_id,
             )
-            session.add_all((user_row, assistant_row))
+            session.add_all((trace_row, user_row, assistant_row))
             chat.model = str(model)
             chat.thinking_depth = selected_depth
+            chat.preset_id = preset.id
             chat.updated_at = now
             if chat.title == "新对话":
                 chat.title = text[:36] + ("…" if len(text) > 36 else "")
             session.flush()
+            trace_dto = {
+                "id": trace_row.id,
+                "preset_id": trace_row.preset_id,
+                "status": trace_row.status,
+                "steps": trace_row.steps,
+                "tool_runs": safe_tool_runs,
+                "created_at": to_shanghai(trace_row.created_at),
+            }
             result = {
                 "session": {
                     "id": chat.id,
                     "title": chat.title,
                     "model": chat.model,
                     "thinking_depth": chat.thinking_depth,
+                    "preset_id": chat.preset_id,
                     "updated_at": to_shanghai(chat.updated_at),
                 },
-                "user_message": self._chat_message_dto(user_row),
-                "assistant_message": self._chat_message_dto(assistant_row),
+                "trace": trace_dto,
+                "user_message": self._chat_message_dto(user_row, safe_tool_runs),
+                "assistant_message": self._chat_message_dto(assistant_row, safe_tool_runs),
             }
         return result
 

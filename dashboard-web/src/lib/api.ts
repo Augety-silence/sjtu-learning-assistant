@@ -182,6 +182,10 @@ export function deleteCredential(
   );
 }
 
+export function getAiPresets() {
+  return invoke<import("@/lib/types").AIAgentPresetsResult>("ai_presets");
+}
+
 export function getAiChatSessions() {
   return invoke<{ items: import("@/lib/types").AIChatSessionSummary[] }>(
     "ai_chat_sessions",
@@ -197,10 +201,12 @@ export function getAiChatSession(sessionId: string) {
 export function createAiChatSession(
   model: import("@/lib/types").AIModel,
   thinkingDepth: import("@/lib/types").AIThinkingDepth,
+  presetId: string,
 ) {
   return invoke<import("@/lib/types").AIChatSession>("ai_chat_new", {
     model,
     thinking_depth: thinkingDepth,
+    preset_id: presetId,
   });
 }
 
@@ -209,12 +215,14 @@ export function sendAiChatMessage(
   content: string,
   model: import("@/lib/types").AIModel,
   thinkingDepth: import("@/lib/types").AIThinkingDepth,
+  presetId: string,
 ) {
   return invoke<import("@/lib/types").AIChatSendResult>("ai_chat_send", {
     session_id: sessionId,
     content,
     model,
     thinking_depth: thinkingDepth,
+    preset_id: presetId,
   });
 }
 

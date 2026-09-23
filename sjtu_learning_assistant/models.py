@@ -506,7 +506,14 @@ class AIChatSession(TimestampMixin, Base):
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     thinking_depth: Mapped[str] = mapped_column(String(16), nullable=False)
 
+    preset_id: Mapped[str] = mapped_column(
+        String(32), default="general", server_default="general", nullable=False
+    )
+
     messages: Mapped[list["AIChatMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    traces: Mapped[list["AIAgentTrace"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
 
@@ -531,11 +538,15 @@ class AIChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     reasoning_content: Mapped[str | None] = mapped_column(Text)
     model: Mapped[str | None] = mapped_column(String(64))
+    trace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_agent_traces.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     session: Mapped[AIChatSession] = relationship(back_populates="messages")
+    trace: Mapped["AIAgentTrace | None"] = relationship(back_populates="messages")
 
     __table_args__ = (
         UniqueConstraint("session_id", "sequence", name="uq_ai_chat_messages_sequence"),
@@ -543,6 +554,37 @@ class AIChatMessage(Base):
             "role IN ('user', 'assistant')", name="ck_ai_chat_messages_role"
         ),
         Index("ix_ai_chat_messages_session", "session_id", "sequence"),
+        Index("ix_ai_chat_messages_trace", "trace_id"),
+    )
+
+
+class AIAgentTrace(Base):
+    __tablename__ = "ai_agent_traces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    preset_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    steps: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_runs: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_TYPE, default=list, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[AIChatSession] = relationship(back_populates="traces")
+    messages: Mapped[list[AIChatMessage]] = relationship(back_populates="trace")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('completed', 'max_steps', 'timeout', 'failed')",
+            name="ck_ai_agent_traces_status",
+        ),
+        CheckConstraint("steps >= 0 AND steps <= 6", name="ck_ai_agent_traces_steps"),
+        Index("ix_ai_agent_traces_session", "session_id", "created_at"),
     )
 
 

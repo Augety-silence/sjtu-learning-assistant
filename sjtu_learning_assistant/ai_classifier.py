@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import httpx
 
@@ -42,6 +42,10 @@ CHAT_SYSTEM_PROMPT = (
 
 class AIClassificationError(RuntimeError):
     """A bounded, credential-safe AI classification failure."""
+
+
+class AIToolsUnsupportedError(AIClassificationError):
+    """The selected OpenAI-compatible endpoint rejected tool calling."""
 
 
 @dataclass(frozen=True)
@@ -198,31 +202,55 @@ class OpenAIClassificationClient:
 
     def chat_completion(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         context: str = "",
         max_tokens: int = 1200,
         temperature: float = 0.3,
-    ) -> dict[str, str | None]:
-        if not messages or len(messages) > 24:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: object | None = None,
+        system_prompt: bool = True,
+    ) -> dict[str, Any]:
+        if not messages or len(messages) > 64:
             raise AIClassificationError("AI 对话消息数量无效。")
-        clean_messages: list[dict[str, str]] = []
+        clean_messages: list[dict[str, Any]] = []
         total_length = 0
         for message in messages:
-            if type(message) is not dict or set(message) != {"role", "content"}:
+            if type(message) is not dict or set(message) - {
+                "role", "content", "tool_calls", "tool_call_id", "name"
+            }:
                 raise AIClassificationError("AI 对话消息格式无效。")
             role = message.get("role")
             content = message.get("content")
-            if role not in {"user", "assistant"} or type(content) is not str:
+            if role not in {"system", "user", "assistant", "tool"}:
                 raise AIClassificationError("AI 对话消息格式无效。")
-            content = content.strip()
-            if not content or len(content) > 4000:
-                raise AIClassificationError("单条消息不能为空或超过 4000 字。")
+            if content is None and role == "assistant" and message.get("tool_calls"):
+                content = ""
+            if type(content) is not str or len(content) > 14_000:
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            if role in {"user", "system"} and not content.strip():
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            clean: dict[str, Any] = {"role": role, "content": content.strip()}
+            if "tool_calls" in message:
+                calls = self._parse_tool_calls(message.get("tool_calls"))
+                clean["tool_calls"] = calls
+            if role == "tool":
+                call_id = message.get("tool_call_id")
+                name = message.get("name")
+                if type(call_id) is not str or not call_id or len(call_id) > 128:
+                    raise AIClassificationError("AI 工具消息格式无效。")
+                clean["tool_call_id"] = call_id
+                if name is not None:
+                    if type(name) is not str or not name or len(name) > 80:
+                        raise AIClassificationError("AI 工具消息格式无效。")
+                    clean["name"] = name
             total_length += len(content)
-            clean_messages.append({"role": role, "content": content})
-        if total_length > 24000 or len(context) > 12000:
+            clean_messages.append(clean)
+        if total_length > 60_000 or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。")
-        request_messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        request_messages: list[dict[str, Any]] = []
+        if system_prompt:
+            request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
         if context:
             request_messages.append(
                 {
@@ -231,6 +259,27 @@ class OpenAIClassificationClient:
                 }
             )
         request_messages.extend(clean_messages)
+        if tools is not None:
+            if type(tools) is not list or len(tools) > 16:
+                raise AIClassificationError("AI 工具定义无效。")
+            try:
+                encoded_tools = json.dumps(tools, ensure_ascii=False)
+            except (TypeError, ValueError):
+                raise AIClassificationError("AI 工具定义无效。") from None
+            if len(encoded_tools) > 32_000 or any(
+                type(item) is not dict
+                or item.get("type") != "function"
+                or type(item.get("function")) is not dict
+                or type(item["function"].get("name")) is not str
+                for item in tools
+            ):
+                raise AIClassificationError("AI 工具定义无效。")
+        if tool_choice is not None:
+            if type(tool_choice) is str:
+                if tool_choice not in {"auto", "none", "required"}:
+                    raise AIClassificationError("AI tool_choice 无效。")
+            elif type(tool_choice) is not dict:
+                raise AIClassificationError("AI tool_choice 无效。")
         try:
             self._limiter()
             request_body: dict[str, object] = {
@@ -238,29 +287,83 @@ class OpenAIClassificationClient:
                 "max_tokens": max(256, min(int(max_tokens), 4096)),
                 "messages": request_messages,
             }
+            if tools:
+                request_body["tools"] = tools
+                request_body["tool_choice"] = tool_choice or "auto"
             if self.model != "deepseek-reasoner":
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
-            response = self._client.post(
-                "chat/completions",
-                json=request_body,
-            )
+            response = self._client.post("chat/completions", json=request_body)
             response.raise_for_status()
             message = response.json()["choices"][0]["message"]
-            content = message["content"]
+            content = message.get("content")
             reasoning = message.get("reasoning_content")
-            if type(content) is not str or not content.strip():
+            tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
+            if (type(content) is not str or not content.strip()) and not tool_calls:
                 raise ValueError("empty response")
             return {
-                "content": content.strip(),
+                "content": content.strip() if type(content) is str else "",
                 "reasoning_content": reasoning.strip()
                 if type(reasoning) is str and reasoning.strip()
                 else None,
+                "tool_calls": tool_calls,
             }
+        except AIClassificationError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            if tools and exc.response.status_code in {400, 404, 405, 415, 422}:
+                raise AIToolsUnsupportedError("当前模型接口不支持工具调用。") from None
+            raise AIClassificationError("AI 对话请求失败，请稍后重试。") from None
         except Exception:
             raise AIClassificationError("AI 对话请求失败，请稍后重试。") from None
 
+    @staticmethod
+    def _parse_tool_calls(value: object) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if type(value) is not list or len(value) > 16:
+            raise AIClassificationError("AI 工具调用格式无效。")
+        result: list[dict[str, Any]] = []
+        for index, call in enumerate(value):
+            if type(call) is not dict or type(call.get("function")) is not dict:
+                raise AIClassificationError("AI 工具调用格式无效。")
+            function = call["function"]
+            name = function.get("name")
+            arguments = function.get("arguments", "{}")
+            call_id = call.get("id", f"call-{index}")
+            if (
+                type(name) is not str
+                or not name
+                or len(name) > 80
+                or type(arguments) is not str
+                or len(arguments) > 8_000
+                or type(call_id) is not str
+                or not call_id
+                or len(call_id) > 128
+            ):
+                raise AIClassificationError("AI 工具调用格式无效。")
+            result.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            )
+        return result
+
     def chat(self, messages: list[dict[str, str]], *, context: str = "") -> str:
         """Compatibility wrapper returning only the visible assistant answer."""
+        if not messages or len(messages) > 24:
+            raise AIClassificationError("AI 对话消息数量无效。")
+        for message in messages:
+            if (
+                type(message) is not dict
+                or set(message) != {"role", "content"}
+                or message.get("role") not in {"user", "assistant"}
+                or type(message.get("content")) is not str
+                or not message["content"].strip()
+                or len(message["content"]) > 4000
+            ):
+                raise AIClassificationError("AI 对话消息格式无效。")
         result = self.chat_completion(messages, context=context)
         return str(result["content"])
 
