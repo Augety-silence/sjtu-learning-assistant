@@ -61,7 +61,7 @@ class MaterialTreeTests(unittest.TestCase):
             folder = CourseFolder(source_id="folder-lecture", course_id=course.id, name="课件", parent_folder_id=root.id, position=1, is_active=True, last_seen_at=NOW, raw_data={})
             session.add(folder)
             session.flush()
-            document = CourseFile(source_id="file-1", course_id=course.id, folder_id=folder.id, display_name="reading.pdf", filename="reading.pdf", size=12, download_status="pending", is_active=True, last_seen_at=NOW, raw_data={})
+            document = CourseFile(source_id="file-1", course_id=course.id, folder_id=folder.id, display_name="reading.pdf", filename="reading.pdf", size=12, download_status="cloud_only", cloud_path="SJTU Learning Assistant/Canvas/reading.pdf", cloud_size=12, cloud_backed_up_at=NOW, is_active=True, last_seen_at=NOW, raw_data={})
             hidden = CourseFile(source_id="file-old", course_id=course.id, folder_id=folder.id, display_name="old.pdf", filename="old.pdf", download_status="pending", is_active=False, last_seen_at=NOW, raw_data={})
             session.add_all([document, hidden])
             session.flush()
@@ -78,6 +78,12 @@ class MaterialTreeTests(unittest.TestCase):
         categories = {node["category"]: node for node in course_node["children"]}
         assignment_files = categories["assignments"]["children"][0]["children"]
         self.assertEqual(["file-1"], [item["source_id"] for item in assignment_files])
+        cloud_file = assignment_files[0]
+        self.assertEqual("cloud_only", cloud_file["download_status"])
+        self.assertEqual("cloud", cloud_file["cloud_status"])
+        self.assertTrue(cloud_file["cloud_ready"])
+        self.assertTrue(cloud_file["can_preview"])
+        self.assertTrue(cloud_file["can_open"])
         self.assertNotIn("file-old", str(tree))
         self.assertEqual({"assignments", "courseware", "other"}, set(categories))
 

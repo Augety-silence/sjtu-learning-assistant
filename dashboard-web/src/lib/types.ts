@@ -88,10 +88,19 @@ export interface MaterialNode {
   manual_override?: boolean;
   size?: number | null;
   updated_at?: string | null;
-  download_status?: "pending" | "downloaded" | "failed";
+  download_status?: "pending" | "downloaded" | "failed" | "cloud_only";
   can_open?: boolean;
+  can_preview?: boolean;
   local_path?: string | null;
+  cloud_path?: string | null;
+  cloud_status?: "cloud" | null;
+  cloud_ready?: boolean;
 }
+
+export type MaterialPreview =
+  | { kind: "text"; name: string; text: string }
+  | { kind: "image"; name: string; data_url: string }
+  | { kind: "pdf"; name: string; data_url: string };
 
 export interface MaterialTree {
   root: MaterialNode;
@@ -227,6 +236,7 @@ export interface BackupCounts {
   canvas: number;
   mail: number;
   ready: number;
+  cloud_only: number;
   missing_local: number;
   total: number;
 }
@@ -250,6 +260,7 @@ export interface BackupResult {
   uploaded?: number;
   skipped_existing?: number;
   skipped_missing_local?: number;
+  local_removed?: number;
   failed?: number;
   failures?: BackupFailure[];
 }

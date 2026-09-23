@@ -23,6 +23,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+
 from sjtu_learning_assistant.database import (
     DATABASE_URL_ENV,
     DatabaseConfigError,
@@ -31,7 +34,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 
-SCHEMA_VERSION = "0011"
+SCHEMA_VERSION = "0012"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
@@ -137,6 +140,41 @@ def bootstrap_sqlite(engine: Engine) -> str:
             if name not in file_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE course_files ADD COLUMN " + name + " " + sql_type
+                )
+        cloud_columns = (
+            ("cloud_path", "TEXT"),
+            ("cloud_size", "BIGINT"),
+            ("cloud_backed_up_at", "DATETIME"),
+        )
+        inspector = inspect(connection)
+        for table_name in ("course_files", "email_attachments"):
+            if not inspector.has_table(table_name):
+                continue
+            existing_columns = {
+                str(column["name"])
+                for column in inspector.get_columns(table_name)
+            }
+            for name, sql_type in cloud_columns:
+                if name not in existing_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE " + table_name + " ADD COLUMN " + name + " " + sql_type
+                    )
+        download_constraints = {
+            str(constraint.get("name")): str(constraint.get("sqltext") or "")
+            for constraint in inspect(connection).get_check_constraints("course_files")
+        }
+        old_download_constraint = download_constraints.get(
+            "ck_course_files_download_status"
+        )
+        if old_download_constraint is not None and "cloud_only" not in old_download_constraint:
+            operations = Operations(MigrationContext.configure(connection))
+            with operations.batch_alter_table("course_files") as batch:
+                batch.drop_constraint(
+                    "ck_course_files_download_status", type_="check"
+                )
+                batch.create_check_constraint(
+                    "ck_course_files_download_status",
+                    "download_status IN ('pending', 'downloaded', 'failed', 'cloud_only')",
                 )
         existing = connection.scalar(select(schema_version.c.id).where(schema_version.c.id == 1))
         if existing is None:

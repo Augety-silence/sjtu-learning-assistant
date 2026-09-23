@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { FilePreviewDialog } from "@/components/FilePreviewDialog";
 import {
   isMaterialDropTarget,
   type MaterialDragSource,
@@ -18,7 +19,12 @@ import {
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
-import { invoke, moveMaterial, restoreMaterialAuto } from "@/lib/api";
+import {
+  invoke,
+  moveMaterial,
+  previewMaterial,
+  restoreMaterialAuto,
+} from "@/lib/api";
 import { formatDateTime, formatSize } from "@/lib/format";
 import {
   containerChildren,
@@ -27,7 +33,7 @@ import {
   findNodePath,
   visibleTreeItems,
 } from "@/lib/materialTree";
-import type { MaterialNode, MaterialTree } from "@/lib/types";
+import type { MaterialNode, MaterialPreview, MaterialTree } from "@/lib/types";
 import { useCompactViewport } from "@/lib/useCompactViewport";
 
 function defaultExpandedIds(root: MaterialNode) {
@@ -60,6 +66,7 @@ export function MaterialsView() {
   );
   const [restoreTreeFocus, setRestoreTreeFocus] = useState(false);
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState<MaterialPreview | null>(null);
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [dragSource, setDragSource] = useState<MaterialDragSource | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -108,7 +115,9 @@ export function MaterialsView() {
       status === "all" ||
       file.download_status === status ||
       (status === "pending" &&
-        !["downloaded", "failed"].includes(file.download_status ?? "pending"));
+        !["downloaded", "cloud_only", "failed"].includes(
+          file.download_status ?? "pending",
+        ));
     return searchMatched && categoryMatched && statusMatched;
   });
   const childFolders =
@@ -269,10 +278,44 @@ export function MaterialsView() {
     }
   };
 
+  const previewFile = async (file: MaterialNode) => {
+    if (!file.source_id) return;
+    const toastId = `material:${file.source_id}:preview`;
+    setBusy((value) => ({ ...value, [file.source_id as string]: "preview" }));
+    showToast({
+      id: toastId,
+      kind: "info",
+      message: `正在加载“${file.name}”预览…`,
+      duration: 0,
+    });
+    try {
+      const nextPreview = await previewMaterial(file.source_id);
+      setPreview(nextPreview);
+      showToast({
+        id: toastId,
+        kind: "success",
+        message: `已加载“${file.name}”`,
+      });
+    } catch (reason) {
+      showToast({
+        id: toastId,
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "预览失败",
+      });
+    } finally {
+      setBusy((value) => {
+        const next = { ...value };
+        delete next[file.source_id as string];
+        return next;
+      });
+    }
+  };
+
   const runDefaultAction = (node: MaterialNode) => {
     if (node.kind === "file") {
       if (busy[node.source_id ?? ""]) return;
-      void act(node, node.can_open ? "open" : "download");
+      if (node.can_preview) void previewFile(node);
+      else void act(node, node.can_open ? "open" : "download");
       return;
     }
     setSelectedId(node.id);
@@ -451,6 +494,7 @@ export function MaterialsView() {
           >
             <option value="all">全部状态</option>
             <option value="downloaded">已下载</option>
+            <option value="cloud_only">仅云端</option>
             <option value="pending">未下载</option>
             <option value="failed">下载失败</option>
           </select>
@@ -676,23 +720,34 @@ export function MaterialsView() {
                         >
                           {file.name}
                         </span>
-                        {file.local_path && (
+                        {file.cloud_ready && file.cloud_path ? (
                           <span
-                            className="finder-local-path"
-                            title={file.local_path}
+                            className="finder-local-path finder-cloud-path"
+                            title={`交大云盘 · ${file.cloud_path}`}
                           >
-                            {file.local_path}
+                            交大云盘 · {file.cloud_path}
                           </span>
+                        ) : (
+                          file.local_path && (
+                            <span
+                              className="finder-local-path"
+                              title={file.local_path}
+                            >
+                              {file.local_path}
+                            </span>
+                          )
                         )}
                       </div>
                       <span
                         className={`status-tag status-${file.download_status}`}
                       >
-                        {file.download_status === "downloaded"
-                          ? "已下载"
-                          : file.download_status === "failed"
-                            ? "失败"
-                            : "未下载"}
+                        {file.cloud_ready
+                          ? "云端"
+                          : file.download_status === "downloaded"
+                            ? "已下载"
+                            : file.download_status === "failed"
+                              ? "失败"
+                              : "未下载"}
                       </span>
                       <span className="finder-meta">
                         {formatSize(file.size ?? null)} ·{" "}
@@ -742,30 +797,43 @@ export function MaterialsView() {
                             恢复自动分类
                           </Button>
                         )}
-                        {file.can_open ? (
-                          <>
-                            <Button
-                              variant="link"
-                              tabIndex={selectedContentId === file.id ? 0 : -1}
-                              loading={active === "open"}
-                              loadingLabel="打开中…"
-                              disabled={Boolean(active)}
-                              onClick={() => void act(file, "open")}
-                            >
-                              打开
-                            </Button>
-                            <Button
-                              variant="link"
-                              tabIndex={selectedContentId === file.id ? 0 : -1}
-                              loading={active === "reveal"}
-                              loadingLabel="定位中…"
-                              disabled={Boolean(active)}
-                              onClick={() => void act(file, "reveal")}
-                            >
-                              Reveal
-                            </Button>
-                          </>
-                        ) : (
+                        {file.can_preview && (
+                          <Button
+                            variant="link"
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
+                            loading={active === "preview"}
+                            loadingLabel="加载中…"
+                            disabled={Boolean(active)}
+                            onClick={() => void previewFile(file)}
+                          >
+                            预览
+                          </Button>
+                        )}
+                        {file.can_open && !file.can_preview && (
+                          <Button
+                            variant="link"
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
+                            loading={active === "open"}
+                            loadingLabel="打开中…"
+                            disabled={Boolean(active)}
+                            onClick={() => void act(file, "open")}
+                          >
+                            打开
+                          </Button>
+                        )}
+                        {file.local_path && (
+                          <Button
+                            variant="link"
+                            tabIndex={selectedContentId === file.id ? 0 : -1}
+                            loading={active === "reveal"}
+                            loadingLabel="定位中…"
+                            disabled={Boolean(active)}
+                            onClick={() => void act(file, "reveal")}
+                          >
+                            Reveal
+                          </Button>
+                        )}
+                        {!file.can_open && (
                           <Button
                             variant="link"
                             tabIndex={selectedContentId === file.id ? 0 : -1}
@@ -809,6 +877,9 @@ export function MaterialsView() {
             </section>
           )}
         </div>
+      )}
+      {preview && (
+        <FilePreviewDialog preview={preview} onClose={() => setPreview(null)} />
       )}
     </div>
   );

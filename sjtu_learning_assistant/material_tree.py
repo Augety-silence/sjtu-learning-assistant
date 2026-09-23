@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from sjtu_learning_assistant.material_classifier import (
@@ -18,6 +19,66 @@ from sjtu_learning_assistant.material_classifier import (
 
 def _new_node(node_id: str, kind: str, name: str) -> dict[str, Any]:
     return {"id": node_id, "kind": kind, "name": name, "children": []}
+
+
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+IMAGE_MEDIA_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
+)
+TEXT_EXTENSIONS = frozenset(
+    {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".yaml", ".yml"}
+)
+
+
+def material_preview_kind(filename: str, content_type: str | None = None) -> str | None:
+    extension = Path(filename).suffix.casefold()
+    media_type = (content_type or "").split(";", 1)[0].strip().casefold()
+    if extension == ".pdf" or media_type == "application/pdf":
+        return "pdf"
+    if extension in IMAGE_EXTENSIONS or media_type in IMAGE_MEDIA_TYPES:
+        return "image"
+    if extension in TEXT_EXTENSIONS or media_type.startswith("text/") or media_type == "application/json":
+        return "text"
+    return None
+
+
+def material_placement(
+    file: Any,
+    folder_by_id: dict[int, Any],
+    module_signals: dict[int, tuple[tuple[str, ...], tuple[str, ...]]],
+) -> tuple[str, tuple[Any, ...], bool]:
+    """Return the exact category/folder placement shared by tree and cloud backup."""
+    canvas_chain = safe_folder_chain(file.folder_id, folder_by_id)
+    module_names, module_item_names = module_signals.get(file.id, ((), ()))
+    rule_category = classify_material(
+        module_names=module_names,
+        module_item_names=module_item_names,
+        folder_names=[folder.name for folder in reversed(canvas_chain)],
+        filename=file.display_name or file.filename or "无名文件",
+    )
+    automatic_category = (
+        normalize_category(file.ai_category)
+        if is_known_category(file.ai_category)
+        else rule_category
+    )
+    manual_override = bool(
+        file.manual_override and is_known_category(file.manual_category)
+    )
+    category = (
+        normalize_category(file.manual_category)
+        if manual_override
+        else automatic_category
+    )
+    if manual_override and file.manual_folder_id is not None:
+        manual_folder = folder_by_id.get(file.manual_folder_id)
+        chain = (
+            safe_folder_chain(file.manual_folder_id, folder_by_id)
+            if manual_folder is not None and manual_folder.course_id == file.course_id
+            else ()
+        )
+    else:
+        chain = () if manual_override else canvas_chain
+    return category, archive_folder_names(category, chain), manual_override
 
 
 def build_material_tree(session: Any) -> dict[str, Any]:
@@ -84,37 +145,9 @@ def build_material_tree(session: Any) -> dict[str, Any]:
         if file.source_id in seen_source_ids or file.course_id not in course_nodes:
             continue
         seen_source_ids.add(file.source_id)
-        canvas_chain = safe_folder_chain(file.folder_id, folder_by_id)
-        module_names, module_item_names = module_signals.get(file.id, ((), ()))
-        rule_category = classify_material(
-            module_names=module_names,
-            module_item_names=module_item_names,
-            folder_names=[folder.name for folder in reversed(canvas_chain)],
-            filename=file.display_name or file.filename or "无名文件",
+        category, chain, manual_override = material_placement(
+            file, folder_by_id, module_signals
         )
-        automatic_category = (
-            normalize_category(file.ai_category)
-            if is_known_category(file.ai_category)
-            else rule_category
-        )
-        manual_override = bool(
-            file.manual_override and is_known_category(file.manual_category)
-        )
-        category = (
-            normalize_category(file.manual_category)
-            if manual_override
-            else automatic_category
-        )
-        if manual_override and file.manual_folder_id is not None:
-            manual_folder = folder_by_id.get(file.manual_folder_id)
-            chain = (
-                safe_folder_chain(file.manual_folder_id, folder_by_id)
-                if manual_folder is not None and manual_folder.course_id == file.course_id
-                else ()
-            )
-        else:
-            chain = () if manual_override else canvas_chain
-        chain = archive_folder_names(category, chain)
         parent = category_nodes[(file.course_id, category)]
         for folder in chain:
             node_id = f"folder:{file.course_id}:{category}:{folder.id}"
@@ -128,6 +161,14 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 existing["category"] = category
                 parent["children"].append(existing)
             parent = existing
+        cloud_ready = bool(
+            file.cloud_path
+            and file.cloud_size is not None
+            and file.cloud_backed_up_at is not None
+        )
+        preview_kind = material_preview_kind(
+            file.display_name or file.filename or "无名文件", file.content_type
+        )
         parent["children"].append(
             {
                 "id": f"file:{file.source_id}",
@@ -143,8 +184,12 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 else None,
                 "download_status": file.download_status,
                 "local_path": file.local_path,
-                "can_open": file.download_status == "downloaded"
-                and bool(file.local_path),
+                "cloud_path": file.cloud_path,
+                "cloud_status": "cloud" if cloud_ready else None,
+                "cloud_ready": cloud_ready,
+                "can_preview": preview_kind is not None
+                and (bool(file.local_path) or cloud_ready),
+                "can_open": bool(file.local_path) or cloud_ready,
             }
         )
 
@@ -169,5 +214,5 @@ def build_material_tree(session: Any) -> dict[str, Any]:
         "categories": [
             {"id": key, "label": label} for key, label in CATEGORY_LABELS.items()
         ],
-        "download_statuses": ["all", "downloaded", "pending", "failed"],
+        "download_statuses": ["all", "downloaded", "cloud_only", "pending", "failed"],
     }

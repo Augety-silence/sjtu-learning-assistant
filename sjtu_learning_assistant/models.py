@@ -244,6 +244,9 @@ class EmailAttachment(TimestampMixin, Base):
     is_inline: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     local_path: Mapped[str | None] = mapped_column(Text)
     sha256: Mapped[str | None] = mapped_column(String(64))
+    cloud_path: Mapped[str | None] = mapped_column(Text)
+    cloud_size: Mapped[int | None] = mapped_column(BigInteger)
+    cloud_backed_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     email: Mapped[Email] = relationship(back_populates="attachments")
 
@@ -324,6 +327,9 @@ class CourseFile(TimestampMixin, Base):
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     url: Mapped[str | None] = mapped_column(Text)
     local_path: Mapped[str | None] = mapped_column(Text)
+    cloud_path: Mapped[str | None] = mapped_column(Text)
+    cloud_size: Mapped[int | None] = mapped_column(BigInteger)
+    cloud_backed_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     download_status: Mapped[str] = mapped_column(
         String(32), default="pending", nullable=False
     )
@@ -359,7 +365,7 @@ class CourseFile(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "download_status IN ('pending', 'downloaded', 'failed')",
+            "download_status IN ('pending', 'downloaded', 'failed', 'cloud_only')",
             name="ck_course_files_download_status",
         ),
         CheckConstraint(

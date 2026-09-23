@@ -107,6 +107,12 @@ export function markMessagesRead(payload: MessageMarkReadPayload) {
   return invoke<{ updated: number }>("message_mark_read", payload);
 }
 
+export function previewMaterial(sourceId: string) {
+  return invoke<import("@/lib/types").MaterialPreview>("material_preview", {
+    source_id: sourceId,
+  });
+}
+
 export function moveMaterial(sourceId: string, targetNodeId: string) {
   return invoke<MaterialMoveResult>("material_move", {
     source_id: sourceId,

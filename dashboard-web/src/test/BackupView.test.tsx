@@ -29,7 +29,14 @@ const idleStatus: BackupStatus = {
   status: "idle",
   available: true,
   availability_message: null,
-  counts: { canvas: 12, mail: 5, ready: 14, missing_local: 3, total: 17 },
+  counts: {
+    canvas: 12,
+    mail: 5,
+    ready: 14,
+    cloud_only: 2,
+    missing_local: 3,
+    total: 17,
+  },
   progress: null,
   last_result: null,
 };
@@ -74,6 +81,9 @@ describe("BackupView", () => {
     expect(screen.getByText("可备份").parentElement?.textContent).toContain(
       "14",
     );
+    expect(screen.getByText("仅云端").parentElement?.textContent).toContain(
+      "2",
+    );
     expect(screen.getByText("本地缺失").parentElement?.textContent).toContain(
       "3",
     );
@@ -100,6 +110,7 @@ describe("BackupView", () => {
         uploaded: 9,
         skipped_existing: 4,
         skipped_missing_local: 1,
+        local_removed: 13,
         failed: 0,
         failures: [],
       },
@@ -127,6 +138,9 @@ describe("BackupView", () => {
     expect(screen.getByText("云端已存在").parentElement?.textContent).toContain(
       "4",
     );
+    expect(
+      screen.getByText("已安全移除本地文件").parentElement?.textContent,
+    ).toContain("13");
     expect(
       screen.getByText("本地缺失跳过").parentElement?.textContent,
     ).toContain("1");

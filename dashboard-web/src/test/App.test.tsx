@@ -82,7 +82,14 @@ beforeEach(() => {
     status: "idle",
     available: true,
     availability_message: null,
-    counts: { canvas: 2, mail: 1, ready: 3, missing_local: 0, total: 3 },
+    counts: {
+      canvas: 2,
+      mail: 1,
+      ready: 3,
+      cloud_only: 0,
+      missing_local: 0,
+      total: 3,
+    },
     progress: null,
     last_result: null,
   });

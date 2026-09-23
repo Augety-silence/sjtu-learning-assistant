@@ -166,6 +166,34 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(["1", "2"], requested_pages)
         self.assertTrue(all("%E8%AF%BE%E7%A8%8B%201" in path for path in paths))
 
+    def test_chinese_reserved_path_segments_are_encoded_exactly_once(self) -> None:
+        raw_paths: list[str] = []
+        name = "中文 空格#?%文件.txt"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            raw_paths.append(request.url.raw_path.decode().split("?", 1)[0])
+            if "/directory/" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={"name": name, "path": [name], "type": "file", "size": 3},
+                    request=request,
+                )
+            return httpx.Response(200, content=b"abc", request=request)
+
+        provider, client = self.provider(handler)
+        try:
+            provider.get_info((name,))
+            self.assertEqual(b"abc", b"".join(provider.download_stream((name,))))
+        finally:
+            client.close()
+
+        expected = "%E4%B8%AD%E6%96%87%20%E7%A9%BA%E6%A0%BC%23%3F%25%E6%96%87%E4%BB%B6.txt"
+        self.assertEqual(2, len(raw_paths))
+        self.assertTrue(all(path.endswith("/" + expected) for path in raw_paths))
+        self.assertTrue(all("%25E4" not in path and "%2523" not in path for path in raw_paths))
+
     def test_create_ensure_exists_move_copy_delete(self) -> None:
         requests: list[httpx.Request] = []
 

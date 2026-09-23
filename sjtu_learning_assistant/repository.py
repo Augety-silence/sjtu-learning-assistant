@@ -854,6 +854,18 @@ def _upsert_files(
                     (metadata_changed, None),
                     else_=CourseFile.download_error,
                 ),
+                "cloud_path": case(
+                    (metadata_changed, None),
+                    else_=CourseFile.cloud_path,
+                ),
+                "cloud_size": case(
+                    (metadata_changed, None),
+                    else_=CourseFile.cloud_size,
+                ),
+                "cloud_backed_up_at": case(
+                    (metadata_changed, None),
+                    else_=CourseFile.cloud_backed_up_at,
+                ),
                 "hidden": statement.excluded.hidden,
                 "locked": statement.excluded.locked,
                 "is_active": True,

@@ -2,13 +2,19 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialsView } from "@/components/MaterialsView";
-import { invoke, moveMaterial, restoreMaterialAuto } from "@/lib/api";
+import {
+  invoke,
+  moveMaterial,
+  previewMaterial,
+  restoreMaterialAuto,
+} from "@/lib/api";
 import type { MaterialTree } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   invoke: vi.fn(),
   moveMaterial: vi.fn(),
+  previewMaterial: vi.fn(),
   restoreMaterialAuto: vi.fn(),
 }));
 
@@ -20,7 +26,7 @@ const categories = [
 
 const tree: MaterialTree = {
   categories,
-  download_statuses: ["all", "downloaded", "pending", "failed"],
+  download_statuses: ["all", "downloaded", "cloud_only", "pending", "failed"],
   root: {
     id: "root",
     kind: "root",
@@ -123,6 +129,18 @@ function dataTransfer() {
   };
 }
 
+function findMaterial(
+  node: import("@/lib/types").MaterialNode,
+  sourceId: string,
+): import("@/lib/types").MaterialNode | undefined {
+  if (node.source_id === sourceId) return node;
+  for (const child of node.children ?? []) {
+    const found = findMaterial(child, sourceId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 async function renderFile() {
   render(<MaterialsView />);
   const course = await screen.findByRole("treeitem", {
@@ -157,6 +175,11 @@ beforeEach(() => {
     source_id: "file-1",
     status: "saved",
     local_path: null,
+  });
+  vi.mocked(previewMaterial).mockResolvedValue({
+    kind: "pdf",
+    name: "讲义.pdf",
+    data_url: "data:application/pdf;base64,cGRm",
   });
   vi.mocked(restoreMaterialAuto).mockResolvedValue({
     source_id: "file-1",
@@ -355,6 +378,92 @@ describe("MaterialsView selection and responsive states", () => {
       await waitFor(() => expect(document.activeElement).toBe(restoredCourse));
     },
   );
+  it("云端资料显示云盘路径，双击预览且不显示 Reveal", async () => {
+    const cloudTree = structuredClone(tree);
+    const cloudFile = findMaterial(cloudTree.root, "file-3");
+    expect(cloudFile).toBeTruthy();
+    Object.assign(cloudFile as import("@/lib/types").MaterialNode, {
+      cloud_path:
+        "SJTU Learning Assistant/Canvas/2026 Fall/自然语言处理/课件/概览--hash.pdf",
+      cloud_ready: true,
+      cloud_status: "cloud",
+      can_open: true,
+      can_preview: true,
+      download_status: "cloud_only",
+      local_path: null,
+    });
+    vi.mocked(invoke).mockResolvedValue(cloudTree);
+    vi.mocked(previewMaterial).mockResolvedValue({
+      kind: "pdf",
+      name: "概览.pdf",
+      data_url: "data:application/pdf;base64,cGRm",
+    });
+
+    render(<MaterialsView />);
+    fireEvent.click(
+      await screen.findByRole("treeitem", { name: "自然语言处理" }),
+    );
+    const category = await screen.findByRole("treeitem", {
+      name: "课件，可接收同课程资料拖放",
+    });
+    fireEvent.click(category);
+    const row = await screen.findByRole("listitem", {
+      name: "拖动资料：概览.pdf",
+    });
+
+    expect(screen.getByText("云端")).toBeTruthy();
+    expect(screen.getByText(/交大云盘 · .*概览--hash\.pdf/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reveal" })).toBeNull();
+    fireEvent.doubleClick(row);
+    await waitFor(() => expect(previewMaterial).toHaveBeenCalledWith("file-3"));
+    expect(
+      await screen.findByRole("dialog", { name: "概览.pdf" }),
+    ).toBeTruthy();
+    expect(screen.getByTitle("概览.pdf PDF 预览")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("仅云端 Office 资料显示打开并在双击时调用 material_open", async () => {
+    const cloudTree = structuredClone(tree);
+    const cloudFile = findMaterial(cloudTree.root, "file-3");
+    expect(cloudFile).toBeTruthy();
+    Object.assign(cloudFile as import("@/lib/types").MaterialNode, {
+      name: "课件.docx",
+      cloud_path:
+        "SJTU Learning Assistant/Canvas/2026 Fall/自然语言处理/课件/课件--hash.docx",
+      cloud_ready: true,
+      cloud_status: "cloud",
+      can_open: true,
+      can_preview: false,
+      download_status: "cloud_only",
+      local_path: null,
+    });
+    vi.mocked(invoke).mockResolvedValue(cloudTree);
+
+    render(<MaterialsView />);
+    fireEvent.click(
+      await screen.findByRole("treeitem", { name: "自然语言处理" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("treeitem", {
+        name: "课件，可接收同课程资料拖放",
+      }),
+    );
+    const row = await screen.findByRole("listitem", {
+      name: "拖动资料：课件.docx",
+    });
+
+    expect(screen.getByRole("button", { name: "打开" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "预览" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reveal" })).toBeNull();
+    fireEvent.doubleClick(row);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("material_open", {
+        source_id: "file-3",
+      }),
+    );
+  });
 });
 
 describe("MaterialsView ARIA tree", () => {

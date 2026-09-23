@@ -88,6 +88,9 @@ class ArchiveFileContext:
     manual_folder_id: int | None = None
     manual_override: bool = False
     course_source_id: str = ""
+    cloud_path: str | None = None
+    cloud_size: int | None = None
+    cloud_backed_up_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -658,6 +661,9 @@ class ArchiveService:
                         manual_folder_id=file.manual_folder_id,
                         manual_override=manual_override,
                         course_source_id=course.source_id,
+                        cloud_path=file.cloud_path,
+                        cloud_size=file.cloud_size,
+                        cloud_backed_up_at=file.cloud_backed_up_at,
                     )
                 )
             return contexts
@@ -857,6 +863,7 @@ class ArchiveService:
         folder_id: int | None,
         local_path: Path | None = None,
         update_local_path: bool = False,
+        cloud_path: str | None = None,
     ) -> None:
         if manual_override and category not in CATEGORY_LABELS:
             raise ArchiveError("目标分类不在允许范围内。")
@@ -885,12 +892,15 @@ class ArchiveService:
             record.manual_folder_id = folder_id
             if update_local_path:
                 record.local_path = str(local_path) if local_path is not None else None
+            if cloud_path is not None:
+                record.cloud_path = cloud_path
 
     def _persist_organized_path(
         self,
         context: ArchiveFileContext,
         target: Path,
         manual_state: tuple[bool, str | None, int | None] | None,
+        cloud_path: str | None = None,
     ) -> None:
         if manual_state is None:
             self._update_local_path(context.source_id, target)
@@ -904,10 +914,15 @@ class ArchiveService:
             folder_id=folder_id,
             local_path=target,
             update_local_path=True,
+            cloud_path=cloud_path,
         )
 
     def move_file_by_source_id(
-        self, source_id: str, target_node_id: str
+        self,
+        source_id: str,
+        target_node_id: str,
+        *,
+        cloud_path: str | None = None,
     ) -> DownloadResult:
         context, category, folder_id, folder_names = self._resolve_manual_target(
             source_id, target_node_id
@@ -933,6 +948,7 @@ class ArchiveService:
                 desired,
                 target,
                 manual_state=(True, category, folder_id),
+                cloud_path=cloud_path,
             )
         self._set_manual_fields(
             current.source_id,
@@ -940,6 +956,7 @@ class ArchiveService:
             manual_override=True,
             category=category,
             folder_id=folder_id,
+            cloud_path=cloud_path,
         )
         return DownloadResult(
             source_id=current.source_id,
@@ -1280,6 +1297,7 @@ class ArchiveService:
         target: Path,
         *,
         manual_state: tuple[bool, str | None, int | None] | None = None,
+        cloud_path: str | None = None,
     ) -> DownloadResult:
         source_path = Path(context.local_path or "")
         previous_manual_state = (
@@ -1295,7 +1313,9 @@ class ArchiveService:
             if recovered is None:
                 raise ArchiveError("已下载文件不存在，且未找到可恢复的目标文件。")
             recovered_path, size, digest = recovered
-            self._persist_organized_path(context, recovered_path, manual_state)
+            self._persist_organized_path(
+                context, recovered_path, manual_state, cloud_path
+            )
             return DownloadResult(
                 context.source_id, "unchanged", str(recovered_path), size, digest
             )
@@ -1304,7 +1324,7 @@ class ArchiveService:
         source_root = self._source_archive_root(context, source)
         size, digest = self._verified_content(context, source)
         if source == target:
-            self._persist_organized_path(context, target, manual_state)
+            self._persist_organized_path(context, target, manual_state, cloud_path)
             return DownloadResult(
                 context.source_id, "unchanged", str(target), size, digest
             )
@@ -1315,7 +1335,9 @@ class ArchiveService:
                 raise ArchiveError("目标路径已存在且不是普通文件。")
             target_size, target_digest = self._file_digest(final_target)
             if target_size == size and target_digest == digest:
-                self._persist_organized_path(context, final_target, manual_state)
+                self._persist_organized_path(
+                    context, final_target, manual_state, cloud_path
+                )
                 try:
                     source.unlink()
                 except OSError:
@@ -1351,7 +1373,9 @@ class ArchiveService:
                     raise
                 self._copy_across_volume(source, final_target)
             try:
-                self._persist_organized_path(context, final_target, manual_state)
+                self._persist_organized_path(
+                    context, final_target, manual_state, cloud_path
+                )
                 database_updated = True
             except Exception:
                 if renamed:
@@ -1547,7 +1571,7 @@ class ArchiveService:
 
     def _fetch_download_url(self, source_id: str) -> str:
         canvas_client = self._require_canvas_client()
-        api_path = f"/api/v1/files/{quote(source_id, safe="")}"
+        api_path = f"/api/v1/files/{quote(source_id, safe='')}"
         ensure_same_origin(canvas_client, api_path)
         try:
             response = canvas_client.get(api_path)

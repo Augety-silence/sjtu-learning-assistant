@@ -7,10 +7,13 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +36,8 @@ from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
 )
+from sjtu_learning_assistant.backup_service import canvas_remote_path
+from sjtu_learning_assistant.cloud_storage import CloudStorageProvider, SJTUCloudPanProvider
 from sjtu_learning_assistant.local_settings import (
     LocalSettings,
     SettingsError,
@@ -40,7 +45,7 @@ from sjtu_learning_assistant.local_settings import (
     validate_ai_base_url,
     validate_ai_model,
 )
-from sjtu_learning_assistant.material_tree import build_material_tree
+from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
 from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
@@ -69,6 +74,22 @@ CANVAS_ORIGIN = ("https", "oc.sjtu.edu.cn", 443)
 CANVAS_REDIRECT_LIMIT = 5
 CANVAS_FILE_API_PATH = re.compile(r"/api/v1/courses/[0-9]+/files/[0-9]+")
 INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
+MATERIAL_IMAGE_LIMIT = 15 * 1024 * 1024
+MATERIAL_PDF_LIMIT = 30 * 1024 * 1024
+MATERIAL_TEXT_LIMIT = 2 * 1024 * 1024
+MATERIAL_PREVIEW_LIMITS = {
+    "image": MATERIAL_IMAGE_LIMIT,
+    "pdf": MATERIAL_PDF_LIMIT,
+    "text": MATERIAL_TEXT_LIMIT,
+}
+MATERIAL_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 INLINE_IMAGE_TYPES = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
@@ -121,6 +142,7 @@ class DashboardService:
         ai_client_factory: Callable[..., OpenAIClassificationClient] = OpenAIClassificationClient,
         mail_attachments_root: Path | None = None,
         canvas_client_factory: Callable[[], Any] | None = None,
+        cloud_provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
     ) -> None:
         self.engine = engine
         self.settings_store = settings_store or SettingsStore()
@@ -139,6 +161,8 @@ class DashboardService:
             mail_attachments_root or MAIL_ATTACHMENTS_ROOT
         )
         self.canvas_client_factory = canvas_client_factory
+        self.cloud_provider_factory = cloud_provider_factory
+        self._material_temp = tempfile.TemporaryDirectory(prefix="sjtu-learning-material-")
         self._sync_lock = threading.Lock()
         self._client_lock = threading.RLock()
         self._canvas_client: Any | None = None
@@ -1009,10 +1033,97 @@ class DashboardService:
             "size": result.size,
         }
 
+    @contextmanager
+    def _cloud_provider(self):
+        provider = self.cloud_provider_factory()
+        try:
+            yield provider
+        finally:
+            self._close_client(provider)
+
+    @staticmethod
+    def _cloud_segments(cloud_path: str | None) -> tuple[str, ...]:
+        if not cloud_path or "\x00" in cloud_path:
+            raise NotFoundError("云端文件不可用。")
+        segments = tuple(cloud_path.split("/"))
+        if any(not part or part in {".", ".."} or "\\" in part for part in segments):
+            raise DashboardError("云端文件路径不安全，已拒绝操作。")
+        return segments
+
+    def _material_record(self, source_id: str) -> CourseFile:
+        if type(source_id) is not str or not source_id or len(source_id) > 255:
+            raise DashboardError("文件标识不正确。")
+        if not callable(getattr(self.engine, "connect", None)):
+            raise NotFoundError("未找到课程资料。")
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(
+                    CourseFile.source_id == source_id,
+                    CourseFile.is_active.is_(True),
+                )
+            )
+            if record is None:
+                raise NotFoundError("未找到课程资料。")
+            session.expunge(record)
+            return record
+
     def move_material(self, source_id: str, target_node_id: str) -> dict[str, Any]:
         service = self._new_archive_service()
+        moved_cloud: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         try:
-            result = service.move_file_by_source_id(source_id, target_node_id)
+            context, category, _folder_id, folder_names = service._resolve_manual_target(
+                source_id, target_node_id
+            )
+            next_cloud_path: str | None = None
+            if context.cloud_path and context.cloud_size is not None:
+                record = self._material_record(source_id)
+                old_path = self._cloud_segments(context.cloud_path)
+                new_path = canvas_remote_path(
+                    term_name=context.term_name,
+                    course_name=context.course_name,
+                    category=category,
+                    folder_names=folder_names,
+                    filename=(
+                        record.display_name or record.filename or context.display_name
+                    ),
+                    identity=context.source_id,
+                )
+                if new_path != old_path:
+                    try:
+                        with self._cloud_provider() as provider:
+                            ensure = getattr(provider, "ensure_directory", None)
+                            if callable(ensure):
+                                ensure(new_path[:-1])
+                            else:
+                                for index in range(1, len(new_path)):
+                                    try:
+                                        provider.create_directory(new_path[:index])
+                                    except Exception:
+                                        pass
+                            provider.move(old_path, new_path, overwrite=False)
+                            moved_cloud = (old_path, new_path)
+                            verified = provider.get_info(new_path)
+                            if verified.is_directory or verified.size != context.cloud_size:
+                                raise DashboardError("云端移动后的文件校验失败。")
+                        next_cloud_path = "/".join(new_path)
+                    except DashboardError:
+                        raise
+                    except Exception:
+                        raise DashboardError("云端资料移动失败，原归档状态已保留。") from None
+                else:
+                    next_cloud_path = context.cloud_path
+            result = service.move_file_by_source_id(
+                source_id, target_node_id, cloud_path=next_cloud_path
+            )
+        except Exception:
+            if moved_cloud is not None:
+                old_path, new_path = moved_cloud
+                try:
+                    with self._cloud_provider() as provider:
+                        provider.move(new_path, old_path, overwrite=False)
+                except Exception:
+                    pass
+            raise
         finally:
             self._close_archive_service(service)
         return {
@@ -1070,11 +1181,120 @@ class DashboardService:
             raise DashboardError("本地目标不是普通文件，已拒绝打开。")
         return resolved
 
+    def material_preview(self, source_id: str) -> dict[str, str]:
+        record = self._material_record(source_id)
+        name = record.display_name or record.filename or "文件"
+        kind = material_preview_kind(name, record.content_type)
+        if kind is None:
+            raise DashboardError("该文件类型不支持 App 内预览，请使用“打开”。")
+        limit = MATERIAL_PREVIEW_LIMITS[kind]
+        payload: bytes
+        try:
+            path = self._resolve_local_file(source_id)
+        except NotFoundError:
+            if (
+                not record.cloud_path
+                or record.cloud_size is None
+                or record.cloud_backed_up_at is None
+            ):
+                raise NotFoundError("资料的本地文件和云端副本均不可用。") from None
+            if record.cloud_size > limit:
+                raise DashboardError("文件超过 App 内预览大小限制，请使用“打开”。")
+            try:
+                with self._cloud_provider() as provider:
+                    remote_path = self._cloud_segments(record.cloud_path)
+                    info = provider.get_info(remote_path)
+                    if info.is_directory or info.size != record.cloud_size:
+                        raise DashboardError("云端文件校验失败，无法预览。")
+                    chunks: list[bytes] = []
+                    size = 0
+                    for chunk in provider.download_stream(remote_path):
+                        size += len(chunk)
+                        if size > limit:
+                            raise DashboardError("文件超过 App 内预览大小限制，请使用“打开”。")
+                        chunks.append(chunk)
+                    payload = b"".join(chunks)
+                    if len(payload) != record.cloud_size:
+                        raise DashboardError("云端文件大小校验失败，无法预览。")
+            except DashboardError:
+                raise
+            except Exception:
+                raise DashboardError("云端文件读取失败，请检查网络后重试。") from None
+        else:
+            try:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    info = os.fstat(descriptor)
+                    if not stat.S_ISREG(info.st_mode):
+                        raise DashboardError("本地目标不是普通文件，已拒绝预览。")
+                    if info.st_size > limit:
+                        raise DashboardError("文件超过 App 内预览大小限制，请使用“打开”。")
+                    payload = os.read(descriptor, limit + 1)
+                finally:
+                    os.close(descriptor)
+            except DashboardError:
+                raise
+            except OSError:
+                raise DashboardError("本地文件读取失败。") from None
+            if len(payload) > limit:
+                raise DashboardError("文件超过 App 内预览大小限制，请使用“打开”。")
+
+        if kind == "text":
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                raise DashboardError("文本不是有效的 UTF-8，无法在 App 内预览。") from None
+            return {"kind": "text", "name": name, "text": text}
+        if kind == "pdf":
+            media_type = "application/pdf"
+        else:
+            media_type = MATERIAL_IMAGE_TYPES.get(Path(name).suffix.casefold())
+            if media_type is None:
+                declared = (record.content_type or "").split(";", 1)[0].casefold()
+                media_type = declared if declared in MATERIAL_IMAGE_TYPES.values() else "image/png"
+        encoded = base64.b64encode(payload).decode("ascii")
+        return {
+            "kind": kind,
+            "name": name,
+            "data_url": f"data:{media_type};base64,{encoded}",
+        }
+
     def open_material(self, source_id: str) -> dict[str, str]:
-        path = self._resolve_local_file(source_id)
+        try:
+            path = self._resolve_local_file(source_id)
+        except NotFoundError:
+            record = self._material_record(source_id)
+            if (
+                not record.cloud_path
+                or record.cloud_size is None
+                or record.cloud_backed_up_at is None
+            ):
+                raise NotFoundError("资料的本地文件和云端副本均不可用。") from None
+            remote_path = self._cloud_segments(record.cloud_path)
+            destination = Path(self._material_temp.name) / (
+                f"{record.id}-" + Path(record.display_name or record.filename or "文件").name
+            )
+            try:
+                with self._cloud_provider() as provider:
+                    info = provider.get_info(remote_path)
+                    if info.is_directory or info.size != record.cloud_size:
+                        raise DashboardError("云端文件校验失败，无法打开。")
+                    with provider.download_temp(
+                        remote_path, directory=Path(self._material_temp.name)
+                    ) as temporary:
+                        shutil.copyfile(temporary, destination)
+                if destination.stat().st_size != record.cloud_size:
+                    destination.unlink(missing_ok=True)
+                    raise DashboardError("云端文件大小校验失败，无法打开。")
+                path = destination
+            except DashboardError:
+                raise
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise DashboardError("云端文件下载失败，请检查网络后重试。") from None
         completed = self.command_runner(["/usr/bin/open", str(path)], check=False)
         if getattr(completed, "returncode", 0) != 0:
-            raise DashboardError("无法通过 macOS 打开本地文件。")
+            raise DashboardError("无法通过 macOS 打开文件。")
         return {"source_id": source_id, "status": "opened"}
 
     def reveal_material(self, source_id: str) -> dict[str, str]:
@@ -1173,6 +1393,7 @@ class DashboardService:
             self._ai_client_config = None
         self._close_client(canvas_client)
         self._close_client(ai_client)
+        self._material_temp.cleanup()
 
     def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.settings_store.update(dict(payload))

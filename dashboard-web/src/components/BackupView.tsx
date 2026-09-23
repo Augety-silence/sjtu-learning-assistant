@@ -34,6 +34,7 @@ function ResultSummary({ result }: { result: BackupResult }) {
   const items = [
     ["已上传", result.uploaded ?? 0],
     ["云端已存在", result.skipped_existing ?? 0],
+    ["已安全移除本地文件", result.local_removed ?? 0],
     ["本地缺失跳过", result.skipped_missing_local ?? 0],
     ["失败", result.failed ?? 0],
   ] as const;
@@ -352,6 +353,10 @@ export function BackupView() {
           <div>
             <dt>可备份</dt>
             <dd>{backup.counts.ready}</dd>
+          </div>
+          <div>
+            <dt>仅云端</dt>
+            <dd>{backup.counts.cloud_only}</dd>
           </div>
           <div>
             <dt>本地缺失</dt>

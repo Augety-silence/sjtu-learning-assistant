@@ -23,7 +23,19 @@ from sjtu_learning_assistant.cloud_storage import (
     SJTUCloudPanProvider,
     load_user_token,
 )
-from sjtu_learning_assistant.models import Course, CourseFile, Email, EmailAttachment
+from sjtu_learning_assistant.material_classifier import (
+    archive_folder_names,
+    category_label,
+    load_module_signals,
+)
+from sjtu_learning_assistant.material_tree import material_placement
+from sjtu_learning_assistant.models import (
+    Course,
+    CourseFile,
+    CourseFolder,
+    Email,
+    EmailAttachment,
+)
 
 BACKUP_ROOT = "SJTU Learning Assistant"
 DEFAULT_MULTIPART_THRESHOLD = 8 * 1024 * 1024
@@ -47,6 +59,13 @@ class BackupCandidate:
     local_path: str | None = field(repr=False)
     local_root: Path = field(repr=False)
     ready: bool
+    record_id: int | None = None
+    cloud_path: str | None = None
+    cloud_size: int | None = None
+
+    @property
+    def cloud_only(self) -> bool:
+        return not self.ready and bool(self.cloud_path) and self.cloud_size is not None
 
     def dto(self) -> dict[str, Any]:
         return {
@@ -87,6 +106,30 @@ def stable_filename(value: object, identity: str) -> str:
     stem_limit = MAX_FILENAME_LENGTH - len(extension) - len(suffix) - 2
     stem = (path.stem if extension else clean)[: max(stem_limit, 1)].rstrip(" .") or "文件"
     return f"{stem}--{suffix}{extension}"
+
+
+def canvas_remote_path(
+    *,
+    term_name: str | None,
+    course_name: str | None,
+    category: str,
+    folder_names: tuple[str, ...],
+    filename: str,
+    identity: str,
+) -> tuple[str, ...]:
+    """Build the Canvas cloud path from the same normalized tree placement."""
+    return (
+        BACKUP_ROOT,
+        "Canvas",
+        safe_path_component(term_name, fallback="未分学期"),
+        safe_path_component(course_name, fallback="未命名课程"),
+        safe_path_component(category_label(category), fallback="其他"),
+        *(
+            safe_path_component(name, fallback="未命名目录")
+            for name in archive_folder_names(category, folder_names)
+        ),
+        stable_filename(filename, identity),
+    )
 
 
 def _candidate_key(source: str, identity: str) -> str:
@@ -169,15 +212,72 @@ def _is_ready(root: Path, raw_path: str | None) -> bool:
         return False
 
 
+def remove_controlled_file(
+    root: Path,
+    raw_path: str | None,
+    expected_size: int,
+    *,
+    expected_identity: tuple[int, int, int] | None = None,
+) -> None:
+    """Unlink only the same regular non-symlink file verified beneath ``root``."""
+    lexical_root, parts = _relative_local_path(root, raw_path)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
+    descriptors: list[int] = []
+    file_fd: int | None = None
+    try:
+        root_mode = lexical_root.lstat().st_mode
+        if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+            raise BackupError("本地备份文件缺失或不安全。")
+        current_fd = os.open(lexical_root, directory_flags)
+        descriptors.append(current_fd)
+        for component in parts[:-1]:
+            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            descriptors.append(current_fd)
+        file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
+        opened = os.fstat(file_fd)
+        current = os.stat(parts[-1], dir_fd=current_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or opened.st_size != expected_size
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or (
+                expected_identity is not None
+                and (opened.st_dev, opened.st_ino, opened.st_mtime_ns)
+                != expected_identity
+            )
+        ):
+            raise BackupError("本地备份文件在删除前发生变化，已保留。")
+        os.unlink(parts[-1], dir_fd=current_fd)
+    except BackupError:
+        raise
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
+        raise BackupError("无法安全删除本地备份文件，已保留记录。") from None
+    finally:
+        if file_fd is not None:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def preview_counts(candidates: tuple[BackupCandidate, ...]) -> dict[str, int]:
     canvas = sum(candidate.source == "canvas" for candidate in candidates)
     mail = len(candidates) - canvas
     ready = sum(candidate.ready for candidate in candidates)
+    cloud_only = sum(candidate.cloud_only for candidate in candidates)
     return {
         "canvas": canvas,
         "mail": mail,
         "ready": ready,
-        "missing_local": len(candidates) - ready,
+        "cloud_only": cloud_only,
+        "missing_local": len(candidates) - ready - cloud_only,
         "total": len(candidates),
     }
 
@@ -205,78 +305,84 @@ class BackupService:
         self.multipart_threshold = multipart_threshold
 
     def scan(self) -> tuple[BackupCandidate, ...]:
-        """Read candidate scalar values, then close the session before filesystem work."""
+        """Read candidate values and material placement in one short-lived session."""
+        candidates: list[BackupCandidate] = []
         with Session(self.engine) as session:
             canvas_rows = session.execute(
-                select(
-                    CourseFile.source_id,
-                    CourseFile.display_name,
-                    CourseFile.filename,
-                    CourseFile.local_path,
-                    Course.term_name,
-                    Course.course_code,
-                    Course.name,
-                )
+                select(CourseFile, Course)
                 .join(Course, Course.id == CourseFile.course_id)
                 .where(CourseFile.is_active.is_(True))
                 .order_by(CourseFile.source_id)
             ).all()
-            mail_rows = session.execute(
-                select(
-                    EmailAttachment.resource_id,
-                    EmailAttachment.filename,
-                    EmailAttachment.local_path,
-                    Email.source_id,
-                    Email.sent_at,
-                    Email.received_at,
-                    Email.created_at,
+            course_ids = {file.course_id for file, _course in canvas_rows}
+            folders = (
+                session.scalars(
+                    select(CourseFolder).where(
+                        CourseFolder.course_id.in_(course_ids),
+                        CourseFolder.is_active.is_(True),
+                    )
+                ).all()
+                if course_ids
+                else ()
+            )
+            folder_by_id = {folder.id: folder for folder in folders}
+            module_signals = load_module_signals(session, course_ids=course_ids)
+            for file, course in canvas_rows:
+                identity = str(file.source_id)
+                category, chain, _manual = material_placement(
+                    file, folder_by_id, module_signals
                 )
+                remote_path = canvas_remote_path(
+                    term_name=course.term_name,
+                    course_name=course.name,
+                    category=category,
+                    folder_names=tuple(folder.name for folder in chain),
+                    filename=file.display_name or file.filename,
+                    identity=identity,
+                )
+                candidates.append(
+                    BackupCandidate(
+                        key=_candidate_key("canvas", identity),
+                        source="canvas",
+                        remote_path=remote_path,
+                        local_path=file.local_path,
+                        local_root=self.archive_root,
+                        ready=_is_ready(self.archive_root, file.local_path),
+                        record_id=file.id,
+                        cloud_path=file.cloud_path,
+                        cloud_size=file.cloud_size,
+                    )
+                )
+
+            mail_rows = session.execute(
+                select(EmailAttachment, Email)
                 .join(Email, Email.id == EmailAttachment.email_id)
                 .order_by(Email.source_id, EmailAttachment.resource_id)
             ).all()
-
-        candidates: list[BackupCandidate] = []
-        for row in canvas_rows:
-            identity = str(row.source_id)
-            filename = stable_filename(row.filename or row.display_name, identity)
-            course_label = row.course_code or row.name
-            remote_path = (
-                BACKUP_ROOT,
-                "Canvas",
-                safe_path_component(row.term_name, fallback="未分学期"),
-                safe_path_component(course_label, fallback="未命名课程"),
-                filename,
-            )
-            candidates.append(
-                BackupCandidate(
-                    key=_candidate_key("canvas", identity),
-                    source="canvas",
-                    remote_path=remote_path,
-                    local_path=row.local_path,
-                    local_root=self.archive_root,
-                    ready=_is_ready(self.archive_root, row.local_path),
+            for attachment, email in mail_rows:
+                identity = f"{email.source_id}:{attachment.resource_id}"
+                remote_path = (
+                    BACKUP_ROOT,
+                    "Mail",
+                    self.mail_account,
+                    _month(email.sent_at or email.received_at or email.created_at),
+                    stable_filename(attachment.filename, identity),
                 )
-            )
-
-        for row in mail_rows:
-            identity = f"{row.source_id}:{row.resource_id}"
-            remote_path = (
-                BACKUP_ROOT,
-                "Mail",
-                self.mail_account,
-                _month(row.sent_at or row.received_at or row.created_at),
-                stable_filename(row.filename, identity),
-            )
-            candidates.append(
-                BackupCandidate(
-                    key=_candidate_key("mail", identity),
-                    source="mail",
-                    remote_path=remote_path,
-                    local_path=row.local_path,
-                    local_root=self.mail_attachments_root,
-                    ready=_is_ready(self.mail_attachments_root, row.local_path),
+                candidates.append(
+                    BackupCandidate(
+                        key=_candidate_key("mail", identity),
+                        source="mail",
+                        remote_path=remote_path,
+                        local_path=attachment.local_path,
+                        local_root=self.mail_attachments_root,
+                        ready=_is_ready(
+                            self.mail_attachments_root, attachment.local_path
+                        ),
+                        record_id=attachment.id,
+                        cloud_path=attachment.cloud_path,
+                        cloud_size=attachment.cloud_size,
+                    )
                 )
-            )
         return tuple(candidates)
 
     def preview(self) -> dict[str, int]:
@@ -296,6 +402,38 @@ class BackupService:
             except CloudConflictError:
                 continue
 
+    def _persist_cloud_metadata(
+        self, candidate: BackupCandidate, *, size: int, backed_up_at: datetime
+    ) -> bool:
+        if candidate.record_id is None:
+            return False
+        model = CourseFile if candidate.source == "canvas" else EmailAttachment
+        with Session(self.engine) as session, session.begin():
+            record = session.scalar(
+                select(model).where(model.id == candidate.record_id).with_for_update()
+            )
+            if record is None or record.local_path != candidate.local_path:
+                raise BackupError("文件数据库记录已变化，已保留本地文件。")
+            record.cloud_path = "/".join(candidate.remote_path)
+            record.cloud_size = size
+            record.cloud_backed_up_at = backed_up_at
+        return True
+
+    def _clear_local_reference(self, candidate: BackupCandidate) -> None:
+        if candidate.record_id is None:
+            return
+        model = CourseFile if candidate.source == "canvas" else EmailAttachment
+        with Session(self.engine) as session, session.begin():
+            record = session.scalar(
+                select(model).where(model.id == candidate.record_id).with_for_update()
+            )
+            if record is None:
+                raise BackupError("文件数据库记录已变化。")
+            if record.local_path == candidate.local_path:
+                record.local_path = None
+                if candidate.source == "canvas":
+                    record.download_status = "cloud_only"
+
     def backup(
         self,
         candidates: tuple[BackupCandidate, ...] | None = None,
@@ -313,6 +451,7 @@ class BackupService:
             "uploaded": 0,
             "skipped_existing": 0,
             "skipped_missing_local": 0,
+            "local_removed": 0,
             "failed": 0,
             "failures": [],
         }
@@ -337,36 +476,70 @@ class BackupService:
             report(current_name)
             try:
                 if not candidate.ready:
+                    if candidate.cloud_only:
+                        continue
                     result["skipped_missing_local"] += 1
                     continue
-                with open_controlled_file(candidate.local_root, candidate.local_path) as (source, size):
-                    directory = candidate.remote_path[:-1]
-                    if directory not in ensured:
-                        self._ensure_directory(directory)
-                        ensured.add(directory)
-                    exists = self.provider.exists(candidate.remote_path)
-                    overwrite = False
-                    if exists:
-                        remote = self.provider.get_info(candidate.remote_path)
-                        if not remote.is_directory and remote.size == size:
-                            result["skipped_existing"] += 1
-                            continue
-                        overwrite = True
-                    if size >= self.multipart_threshold:
-                        self.provider.multipart_upload(
-                            candidate.remote_path,
-                            source,
-                            overwrite=overwrite,
+                try:
+                    with open_controlled_file(
+                        candidate.local_root, candidate.local_path
+                    ) as (source, size):
+                        source_info = os.fstat(source.fileno())
+                        source_identity = (
+                            source_info.st_dev,
+                            source_info.st_ino,
+                            source_info.st_mtime_ns,
                         )
-                    else:
-                        self.provider.simple_upload(
-                            candidate.remote_path,
-                            source,
-                            overwrite=overwrite,
-                        )
+                        directory = candidate.remote_path[:-1]
+                        if directory not in ensured:
+                            self._ensure_directory(directory)
+                            ensured.add(directory)
+                        exists = self.provider.exists(candidate.remote_path)
+                        overwrite = False
+                        uploaded = False
+                        if exists:
+                            remote = self.provider.get_info(candidate.remote_path)
+                            if not remote.is_directory and remote.size == size:
+                                result["skipped_existing"] += 1
+                            else:
+                                overwrite = True
+                        if not exists or overwrite:
+                            if size >= self.multipart_threshold:
+                                self.provider.multipart_upload(
+                                    candidate.remote_path,
+                                    source,
+                                    overwrite=overwrite,
+                                )
+                            else:
+                                self.provider.simple_upload(
+                                    candidate.remote_path,
+                                    source,
+                                    overwrite=overwrite,
+                                )
+                            uploaded = True
+                except BackupError:
+                    result["skipped_missing_local"] += 1
+                    continue
+
+                # Never trust only an upload response or a previous exists check.
+                # Re-read authoritative metadata before committing or unlinking.
+                verified = self.provider.get_info(candidate.remote_path)
+                if verified.is_directory or verified.size != size:
+                    raise BackupError("云端文件校验失败，已保留本地文件。")
+                persisted = self._persist_cloud_metadata(
+                    candidate, size=size, backed_up_at=datetime.now(timezone.utc)
+                )
+                if uploaded:
                     result["uploaded"] += 1
-            except BackupError:
-                result["skipped_missing_local"] += 1
+                if persisted:
+                    remove_controlled_file(
+                        candidate.local_root,
+                        candidate.local_path,
+                        size,
+                        expected_identity=source_identity,
+                    )
+                    result["local_removed"] += 1
+                    self._clear_local_reference(candidate)
             except Exception:
                 # Provider exceptions may contain credentials or signed URLs. Never
                 # copy their text into a bridge DTO.
@@ -426,6 +599,7 @@ class BackupManager:
             "canvas": 0,
             "mail": 0,
             "ready": 0,
+            "cloud_only": 0,
             "missing_local": 0,
             "total": 0,
         }
@@ -520,6 +694,7 @@ class BackupManager:
             "uploaded": 0,
             "skipped_existing": 0,
             "skipped_missing_local": 0,
+            "local_removed": 0,
             "failed": failed,
             "failures": [
                 {

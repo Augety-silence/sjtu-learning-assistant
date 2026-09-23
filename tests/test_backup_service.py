@@ -10,7 +10,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from unittest.mock import patch
+
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.backup_service import (
@@ -22,7 +24,14 @@ from sjtu_learning_assistant.backup_service import (
     stable_filename,
 )
 from sjtu_learning_assistant.cloud_storage import CloudItem
-from sjtu_learning_assistant.models import Base, Course, CourseFile, Email, EmailAttachment
+from sjtu_learning_assistant.models import (
+    Base,
+    Course,
+    CourseFile,
+    CourseFolder,
+    Email,
+    EmailAttachment,
+)
 
 
 class FakeProvider:
@@ -32,6 +41,7 @@ class FakeProvider:
         self.simple: list[tuple[tuple[str, ...], bytes, bool]] = []
         self.multipart: list[tuple[tuple[str, ...], bytes, bool]] = []
         self.fail_paths: set[tuple[str, ...]] = set()
+        self.info_requests: list[tuple[str, ...]] = []
         self.closed = False
 
     def ensure_directory(self, path):
@@ -44,7 +54,9 @@ class FakeProvider:
         return tuple(path) in self.remote
 
     def get_info(self, path):
-        return self.remote[tuple(path)]
+        normalized = tuple(path)
+        self.info_requests.append(normalized)
+        return self.remote[normalized]
 
     def simple_upload(self, path, source, *, overwrite=False):
         normalized = tuple(path)
@@ -195,13 +207,89 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual("2026-09", mail.remote_path[3])
         self.assertTrue(all(part not in {".", ".."} and "/" not in part and "\\" not in part for item in candidates for part in item.remote_path))
         self.assertEqual(
-            {"canvas": 1, "mail": 1, "ready": 2, "missing_local": 0, "total": 2},
+            {
+                "canvas": 1,
+                "mail": 1,
+                "ready": 2,
+                "cloud_only": 0,
+                "missing_local": 0,
+                "total": 2,
+            },
             self._service().preview(),
         )
         serialized = json.dumps([item.dto() for item in candidates], ensure_ascii=False)
         self.assertNotIn(str(self.archive), serialized)
         self.assertNotIn(str(self.mail), serialized)
         self.assertNotIn("mail-secret-id", serialized)
+
+    def test_canvas_remote_path_matches_material_tree_placement_and_display_name(self) -> None:
+        local = self.archive / "讲义.pdf"
+        local.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(local), mail_path=None)
+        now = datetime(2026, 9, 23, 3, 4, tzinfo=timezone.utc)
+        with Session(self.engine) as session, session.begin():
+            course = session.scalar(select(Course).where(Course.source_id == "course/1"))
+            file = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            course.name = "自然语言处理"
+            course.term_name = "2026 秋"
+            root = CourseFolder(
+                source_id="folder-root",
+                course_id=course.id,
+                name="课程文件",
+                is_active=True,
+                last_seen_at=now,
+                raw_data={},
+            )
+            session.add(root)
+            session.flush()
+            assignment = CourseFolder(
+                source_id="folder-assignment",
+                course_id=course.id,
+                parent_folder_id=root.id,
+                name="作业资料",
+                is_active=True,
+                last_seen_at=now,
+                raw_data={},
+            )
+            session.add(assignment)
+            session.flush()
+            week = CourseFolder(
+                source_id="folder-week",
+                course_id=course.id,
+                parent_folder_id=assignment.id,
+                name="第 1 周",
+                is_active=True,
+                last_seen_at=now,
+                raw_data={},
+            )
+            session.add(week)
+            session.flush()
+            file.folder_id = week.id
+            file.display_name = "中文 空格#?%讲义.pdf"
+            file.filename = "%E4%B8%AD%E6%96%87.pdf"
+
+        candidate = next(
+            item for item in self._service().scan() if item.source == "canvas"
+        )
+        self.assertEqual(
+            (
+                BACKUP_ROOT,
+                "Canvas",
+                "2026 秋",
+                "自然语言处理",
+                "课程作业",
+                "作业资料",
+                "第 1 周",
+            ),
+            candidate.remote_path[:-1],
+        )
+        self.assertEqual(
+            stable_filename("中文 空格#?%讲义.pdf", "canvas-1"),
+            candidate.remote_path[-1],
+        )
+        self.assertNotIn("%E4%B8%AD", candidate.remote_path[-1])
 
     def test_missing_and_symlink_files_are_skipped_missing_local(self) -> None:
         outside = Path(self.temporary.name) / "outside.txt"
@@ -255,6 +343,175 @@ class BackupServiceTests(unittest.TestCase):
         self.assertTrue(overwrite_call[2])
         self.assertEqual(candidates[3].remote_path, provider.multipart[0][0])
         self.assertGreaterEqual(len(provider.directories), 1)
+
+    def test_verified_upload_persists_cloud_metadata_then_removes_local(self) -> None:
+        path = self.archive / "lecture.pdf"
+        path.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(path), mail_path=None)
+        provider = FakeProvider()
+        service = self._service(provider)
+        candidate = next(item for item in service.scan() if item.source == "canvas")
+
+        result = service.backup((candidate,))
+
+        self.assertEqual(1, result["uploaded"])
+        self.assertEqual([candidate.remote_path], provider.info_requests)
+        self.assertEqual(1, result["local_removed"])
+        self.assertFalse(path.exists())
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            self.assertEqual("/".join(candidate.remote_path), record.cloud_path)
+            self.assertEqual(6, record.cloud_size)
+            self.assertIsNotNone(record.cloud_backed_up_at)
+            self.assertIsNone(record.local_path)
+            self.assertEqual("cloud_only", record.download_status)
+        counts = service.preview()
+        self.assertEqual(1, counts["cloud_only"])
+        self.assertEqual(1, counts["missing_local"])
+
+    def test_verified_mail_backup_clears_attachment_local_path(self) -> None:
+        directory = self.mail / "message"
+        directory.mkdir()
+        path = directory / "附件.txt"
+        path.write_bytes(b"mail")
+        self._add_records(canvas_path=None, mail_path=str(path))
+        service = self._service(FakeProvider())
+        candidate = next(item for item in service.scan() if item.source == "mail")
+
+        result = service.backup((candidate,))
+
+        self.assertEqual(1, result["uploaded"])
+        self.assertEqual(1, result["local_removed"])
+        self.assertFalse(path.exists())
+        with Session(self.engine) as session:
+            record = session.scalar(select(EmailAttachment))
+            self.assertIsNone(record.local_path)
+            self.assertEqual("/".join(candidate.remote_path), record.cloud_path)
+            self.assertEqual(4, record.cloud_size)
+            self.assertIsNotNone(record.cloud_backed_up_at)
+
+    def test_existing_verified_remote_also_removes_local(self) -> None:
+        path = self.archive / "lecture.pdf"
+        path.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(path), mail_path=None)
+        provider = FakeProvider()
+        service = self._service(provider)
+        candidate = next(item for item in service.scan() if item.source == "canvas")
+        provider.remote[candidate.remote_path] = CloudItem(
+            candidate.remote_path[-1], candidate.remote_path, False, 6
+        )
+
+        result = service.backup((candidate,))
+
+        self.assertEqual(1, result["skipped_existing"])
+        self.assertGreaterEqual(provider.info_requests.count(candidate.remote_path), 2)
+        self.assertEqual(1, result["local_removed"])
+        self.assertFalse(path.exists())
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            self.assertEqual("cloud_only", record.download_status)
+            self.assertIsNone(record.local_path)
+
+    def test_remote_verification_or_database_failure_never_deletes_local(self) -> None:
+        initial = self.archive / "verify.pdf"
+        initial.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(initial), mail_path=None)
+        for failure in ("verify", "database"):
+            with self.subTest(failure=failure):
+                path = self.archive / f"{failure}.pdf"
+                path.write_bytes(b"canvas")
+                with Session(self.engine) as session, session.begin():
+                    record = session.scalar(
+                        select(CourseFile).where(CourseFile.source_id == "canvas-1")
+                    )
+                    record.local_path = str(path)
+                    record.download_status = "pending"
+                    record.cloud_path = None
+                    record.cloud_size = None
+                    record.cloud_backed_up_at = None
+                provider = FakeProvider()
+                service = self._service(provider)
+                candidate = next(
+                    item for item in service.scan() if item.source == "canvas"
+                )
+                if failure == "verify":
+                    original_get_info = provider.get_info
+
+                    def wrong_info(remote_path):
+                        item = original_get_info(remote_path)
+                        return CloudItem(item.name, item.path, False, (item.size or 0) + 1)
+
+                    provider.get_info = wrong_info
+                    result = service.backup((candidate,))
+                else:
+                    with patch.object(
+                        service,
+                        "_persist_cloud_metadata",
+                        side_effect=RuntimeError("database unavailable"),
+                    ):
+                        result = service.backup((candidate,))
+                self.assertEqual(1, result["failed"])
+                self.assertEqual(0, result["local_removed"])
+                self.assertTrue(path.exists())
+                with Session(self.engine) as session:
+                    record = session.scalar(
+                        select(CourseFile).where(CourseFile.source_id == "canvas-1")
+                    )
+                    self.assertEqual(str(path), record.local_path)
+                    self.assertNotEqual("cloud_only", record.download_status)
+
+    def test_delete_failure_keeps_local_path_reference(self) -> None:
+        path = self.archive / "lecture.pdf"
+        path.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(path), mail_path=None)
+        service = self._service(FakeProvider())
+        candidate = next(item for item in service.scan() if item.source == "canvas")
+        with patch(
+            "sjtu_learning_assistant.backup_service.remove_controlled_file",
+            side_effect=OSError("busy"),
+        ):
+            result = service.backup((candidate,))
+        self.assertEqual(1, result["failed"])
+        self.assertEqual(0, result["local_removed"])
+        self.assertTrue(path.exists())
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            self.assertEqual(str(path), record.local_path)
+            self.assertIsNotNone(record.cloud_path)
+
+    def test_same_size_replacement_after_upload_is_not_deleted(self) -> None:
+        path = self.archive / "lecture.pdf"
+        path.write_bytes(b"canvas")
+        replacement = self.archive / "replacement.pdf"
+        replacement.write_bytes(b"newone")
+        self._add_records(canvas_path=str(path), mail_path=None)
+        provider = FakeProvider()
+        service = self._service(provider)
+        candidate = next(item for item in service.scan() if item.source == "canvas")
+        original_get_info = provider.get_info
+
+        def replace_before_verification(remote_path):
+            os.replace(replacement, path)
+            return original_get_info(remote_path)
+
+        provider.get_info = replace_before_verification
+        result = service.backup((candidate,))
+
+        self.assertEqual(1, result["failed"])
+        self.assertEqual(0, result["local_removed"])
+        self.assertEqual(b"newone", path.read_bytes())
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            self.assertEqual(str(path), record.local_path)
+            self.assertIsNotNone(record.cloud_path)
 
     def test_single_file_failure_isolated_and_result_has_no_secrets_or_paths(self) -> None:
         first = self.archive / "first.txt"
@@ -361,6 +618,7 @@ class BackupServiceTests(unittest.TestCase):
                 "uploaded",
                 "skipped_existing",
                 "skipped_missing_local",
+                "local_removed",
                 "failed",
                 "failures",
             },
@@ -370,7 +628,8 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertEqual("started", manager.start()["status"])
         second_finished = self._wait_for_status(manager, "finished")
-        self.assertEqual(1, second_finished["last_result"]["uploaded"])
+        self.assertEqual(0, second_finished["last_result"]["uploaded"])
+        self.assertEqual(1, second_finished["counts"]["cloud_only"])
         manager.close(timeout=1)
         self.assertIn(manager.status()["status"], {"idle", "running", "finished"})
 
@@ -437,7 +696,7 @@ class BackupServiceTests(unittest.TestCase):
             status_fields,
         )
         self.assertEqual(
-            {"canvas", "mail", "ready", "missing_local", "total"},
+            {"canvas", "mail", "ready", "cloud_only", "missing_local", "total"},
             count_fields,
         )
         self.assertEqual({"done", "total", "current_name"}, progress_fields)
@@ -448,6 +707,7 @@ class BackupServiceTests(unittest.TestCase):
                 "uploaded",
                 "skipped_existing",
                 "skipped_missing_local",
+                "local_removed",
                 "failed",
                 "failures",
             },

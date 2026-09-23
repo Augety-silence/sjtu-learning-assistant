@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect
 
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
-from sjtu_learning_assistant.models import CourseFile
+from sjtu_learning_assistant.models import CourseFile, EmailAttachment
 
 
 class ArchiveSchemaTests(unittest.TestCase):
@@ -66,6 +66,27 @@ class ArchiveSchemaTests(unittest.TestCase):
 
 
 
+    def test_orm_and_0012_migration_contain_cloud_metadata(self) -> None:
+        for model in (CourseFile, EmailAttachment):
+            for name in ("cloud_path", "cloud_size", "cloud_backed_up_at"):
+                self.assertIn(name, model.__table__.columns)
+        constraints = {constraint.name: str(constraint.sqltext) for constraint in CourseFile.__table__.constraints if getattr(constraint, "name", None)}
+        self.assertIn("cloud_only", constraints["ck_course_files_download_status"])
+
+        migration_path = (
+            Path(__file__).parents[1]
+            / "migrations"
+            / "versions"
+            / "0012_add_cloud_backup_metadata.py"
+        )
+        spec = importlib.util.spec_from_file_location("migration_0012", migration_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual("0012", module.revision)
+        self.assertEqual("0011", module.down_revision)
+
     def test_sqlite_bootstrap_adds_manual_columns_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             engine = create_engine(
@@ -82,8 +103,8 @@ class ArchiveSchemaTests(unittest.TestCase):
                 with patch(
                     "sjtu_learning_assistant.desktop_database.Base.metadata.create_all"
                 ):
-                    self.assertEqual("0011", bootstrap_sqlite(engine))
-                    self.assertEqual("0011", bootstrap_sqlite(engine))
+                    self.assertEqual("0012", bootstrap_sqlite(engine))
+                    self.assertEqual("0012", bootstrap_sqlite(engine))
                 columns = tuple(
                     column["name"]
                     for column in inspect(engine).get_columns("course_files")
@@ -92,6 +113,9 @@ class ArchiveSchemaTests(unittest.TestCase):
                     "manual_category",
                     "manual_folder_id",
                     "manual_override",
+                    "cloud_path",
+                    "cloud_size",
+                    "cloud_backed_up_at",
                 ):
                     self.assertIn(name, columns)
             finally:

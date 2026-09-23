@@ -211,7 +211,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             raise CloudAuthError("尚未设置交大云盘 UserToken。")
         return self._user_token
 
-    def _send_raw(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _send_raw(self, method: str, url: str | httpx.URL, **kwargs: Any) -> httpx.Response:
         try:
             return self._client.request(method, url, **kwargs)
         except httpx.TimeoutException:
@@ -304,6 +304,21 @@ class SJTUCloudPanProvider(CloudStorageProvider):
     def refresh_credentials(self) -> SpaceCredential:
         return self.get_space_credentials(force_refresh=True)
 
+    def _pan_api_url(
+        self, kind: str, credential: SpaceCredential, path: RemotePath
+    ) -> httpx.URL:
+        encoded = _encoded_path(path)
+        suffix = f"/{encoded}" if encoded else "/"
+        base = httpx.URL(self._base_url)
+        prefix = base.raw_path.rstrip(b"/")
+        raw_path = prefix + (
+            f"/api/v1/{kind}/{quote(credential.library_id, safe='')}/"
+            f"{quote(credential.space_id, safe='')}{suffix}"
+        ).encode("ascii")
+        # Supplying raw_path is intentional: httpx must not quote the already encoded
+        # UTF-8 path a second time (notably %, spaces, # and ? in file names).
+        return base.copy_with(raw_path=raw_path, query=None)
+
     def _api_request(
         self,
         method: str,
@@ -317,9 +332,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
     ) -> Any:
         for attempt in range(2):
             credential = self.get_space_credentials(force_refresh=attempt == 1)
-            encoded = _encoded_path(path)
-            suffix = f"/{encoded}" if encoded else "/"
-            url = f"{self._base_url}/api/v1/{kind}/{quote(credential.library_id, safe='')}/{quote(credential.space_id, safe='')}{suffix}"
+            url = self._pan_api_url(kind, credential, path)
             query = dict(params or {})
             query["access_token"] = credential.access_token
             response = self._send_raw(method, url, params=query, json=json_body)
@@ -463,7 +476,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         normalized = _segments(path)
         range_headers = {"Range": f"bytes={start}-{'' if end is None else end}"} if start is not None else {}
 
-        def send_stream(url: str, *, params: Mapping[str, Any] | None = None) -> httpx.Response:
+        def send_stream(
+            url: str | httpx.URL, *, params: Mapping[str, Any] | None = None
+        ) -> httpx.Response:
             try:
                 request = self._client.build_request("GET", url, params=params, headers=range_headers)
                 return self._client.send(request, stream=True)
@@ -476,8 +491,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             response: httpx.Response | None = None
             for attempt in range(2):
                 cred = self.get_space_credentials(force_refresh=attempt == 1)
-                encoded = _encoded_path(normalized)
-                pan_url = f"{self._base_url}/api/v1/file/{quote(cred.library_id, safe='')}/{quote(cred.space_id, safe='')}/{encoded}"
+                pan_url = self._pan_api_url("file", cred, normalized)
                 response = send_stream(pan_url, params={"access_token": cred.access_token})
                 if response.status_code in (401, 403) and attempt == 0:
                     response.close()
@@ -491,7 +505,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
                     response.close()
                     if not location:
                         raise CloudRemoteApiError("下载重定向缺少 Location。")
-                    target = self._validate_object_url(urljoin(pan_url, location))
+                    target = self._validate_object_url(urljoin(str(pan_url), location))
                     # Never forward Pan query credentials; only Range is copied.
                     response = send_stream(target)
                 if response.status_code >= 400 or response.status_code in (301, 302):

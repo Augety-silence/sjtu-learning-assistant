@@ -219,6 +219,7 @@ class DesktopBridge:
             "material_move": self._material_move,
             "material_restore_auto": self._material_restore_auto,
             "material_open": lambda payload: service.open_material(_source_id(payload)),
+            "material_preview": lambda payload: service.material_preview(_source_id(payload)),
             "material_reveal": lambda payload: service.reveal_material(_source_id(payload)),
             "settings_status": self._settings_status,
             "settings_update": self._settings_update,
