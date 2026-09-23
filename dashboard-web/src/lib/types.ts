@@ -4,6 +4,7 @@ export type ViewName =
   | "messages"
   | "assignments"
   | "materials"
+  | "backup"
   | "settings";
 
 export interface Deadline {
@@ -220,4 +221,48 @@ export interface PanPage {
   total: number;
   has_more: boolean;
   items: PanItem[];
+}
+
+export interface BackupCounts {
+  canvas: number;
+  mail: number;
+  ready: number;
+  missing_local: number;
+  total: number;
+}
+
+export interface BackupProgress {
+  done: number;
+  total: number;
+  current_name: string | null;
+}
+
+export interface BackupFailure {
+  source: string;
+  name: string;
+  remote_path: string;
+  error: string;
+}
+
+export interface BackupResult {
+  started_at?: string | null;
+  finished_at?: string | null;
+  uploaded?: number;
+  skipped_existing?: number;
+  skipped_missing_local?: number;
+  failed?: number;
+  failures?: BackupFailure[];
+}
+
+export interface BackupStatus {
+  status: "idle" | "running" | "finished";
+  available: boolean;
+  availability_message: string | null;
+  counts: BackupCounts;
+  progress: BackupProgress | null;
+  last_result: BackupResult | null;
+}
+
+export interface BackupStartResult {
+  status: "started" | "already_running";
 }

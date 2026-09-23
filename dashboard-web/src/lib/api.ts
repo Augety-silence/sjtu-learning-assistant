@@ -1,4 +1,6 @@
 import type {
+  BackupStartResult,
+  BackupStatus,
   MailAttachmentActionResult,
   MaterialMoveResult,
   MessageDetail,
@@ -271,4 +273,12 @@ export function openExternalAssignment(courseId: number, assignmentId: number) {
       assignment_id: assignmentId,
     },
   );
+}
+
+export function getBackupStatus() {
+  return invoke<BackupStatus>("backup_status");
+}
+
+export function startCloudBackup() {
+  return invoke<BackupStartResult>("backup_start");
 }

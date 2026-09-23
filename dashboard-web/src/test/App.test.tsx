@@ -2,7 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
-import { getMessageDetail, getMessages, invoke } from "@/lib/api";
+import {
+  getBackupStatus,
+  getMessageDetail,
+  getMessages,
+  invoke,
+} from "@/lib/api";
 import type { MessageDetail, MessageItem, OverviewData } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
@@ -10,6 +15,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
+    getBackupStatus: vi.fn(),
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
     invoke: vi.fn(),
@@ -72,6 +78,14 @@ beforeEach(() => {
   });
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
+  vi.mocked(getBackupStatus).mockResolvedValue({
+    status: "idle",
+    available: true,
+    availability_message: null,
+    counts: { canvas: 2, mail: 1, ready: 3, missing_local: 0, total: 3 },
+    progress: null,
+    last_result: null,
+  });
 });
 
 afterEach(() => {
@@ -137,6 +151,25 @@ describe("页面标题焦点", () => {
       name: "消息",
     });
     await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+});
+
+describe("云盘备份页面导航", () => {
+  it("通过独立入口更新 hash 并渲染 BackupView", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "云盘备份" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/backup"));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "云盘备份" }),
+    ).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "Canvas 与邮件资料云端副本",
+      }),
+    ).toBeTruthy();
+    expect(getBackupStatus).toHaveBeenCalledOnce();
   });
 });
 

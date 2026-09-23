@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getBackupStatus,
   getMessageResource,
   getSettings,
   invoke,
   openExternal,
   openMailAttachment,
   revealMailAttachment,
+  startCloudBackup,
   updateSettings,
 } from "@/lib/api";
 
@@ -92,6 +94,19 @@ describe("pywebview bridge client", () => {
       source_id: "mail-1",
       attachment_id: "attachment-1",
     });
+  });
+
+  it("uses empty payloads for the fixed backup contract", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { status: "idle" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getBackupStatus();
+    expect(bridge).toHaveBeenLastCalledWith("backup_status", {});
+    await startCloudBackup();
+    expect(bridge).toHaveBeenLastCalledWith("backup_start", {});
   });
 
   it("routes external URLs through the bridge", async () => {

@@ -1,6 +1,7 @@
 import {
   CalendarDays,
   ClipboardCheck,
+  CloudUpload,
   FolderOpen,
   Home,
   type LucideIcon,
@@ -20,6 +21,7 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "messages", label: "消息", icon: Mail },
   { id: "assignments", label: "作业中心", icon: ClipboardCheck },
   { id: "materials", label: "课程资料", icon: FolderOpen },
+  { id: "backup", label: "云盘备份", icon: CloudUpload },
   { id: "settings", label: "设置", icon: Settings },
 ];
 

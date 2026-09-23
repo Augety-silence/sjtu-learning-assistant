@@ -2379,3 +2379,239 @@ a {
     display: none;
   }
 }
+
+
+/* Cloud backup center */
+.backup-page {
+  max-width: 1120px;
+  gap: 24px;
+}
+
+.backup-intro {
+  align-items: center;
+}
+
+.backup-status-card,
+.backup-result {
+  padding: 24px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--surface-page);
+}
+
+.backup-status-heading,
+.backup-status-heading > div,
+.backup-status-heading > div > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.backup-status-heading {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.backup-status-heading > div {
+  gap: 12px;
+}
+
+.backup-status-heading .status-dot {
+  flex: 0 0 8px;
+}
+
+.backup-status-heading > div > div {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-status-heading h2,
+.backup-result h2,
+.backup-failures h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+}
+
+.backup-status-heading p,
+.backup-result .section-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.backup-inline-error,
+.backup-operation {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-info);
+  color: var(--status-info);
+}
+
+.backup-inline-error {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+.backup-counts,
+.backup-result-grid {
+  margin: 24px 0 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.backup-counts > div,
+.backup-result-grid > div {
+  min-width: 0;
+  padding: 14px 16px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
+}
+
+.backup-counts > div:last-child,
+.backup-result-grid > div:last-child {
+  border-right: 0;
+}
+
+.backup-counts dt,
+.backup-result-grid dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.backup-counts dd,
+.backup-result-grid dd {
+  margin: 4px 0 0;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+}
+
+.backup-result-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.backup-progress-block {
+  margin-top: 24px;
+}
+
+.backup-progress-copy {
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.backup-progress-copy span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--border-subtle);
+}
+
+.backup-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--action-primary);
+  transition: width 200ms ease;
+}
+
+.backup-result .section-header {
+  margin-bottom: 0;
+}
+
+.backup-failures {
+  margin-top: 24px;
+}
+
+.backup-failures ul {
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.backup-failures li {
+  padding: 14px 16px;
+  border: 1px solid var(--status-danger);
+  border-radius: 8px;
+  background: var(--status-danger-bg);
+}
+
+.backup-failures li > strong {
+  overflow-wrap: anywhere;
+  color: var(--status-danger);
+}
+
+.backup-failures dl {
+  margin: 8px 0 0;
+  display: grid;
+  gap: 4px;
+}
+
+.backup-failures dl > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.backup-failures dt {
+  color: var(--text-secondary);
+}
+
+.backup-failures dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .backup-intro,
+  .backup-status-heading,
+  .backup-progress-copy {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .backup-intro > button,
+  .backup-status-heading > button {
+    align-self: flex-start;
+  }
+
+  .backup-counts,
+  .backup-result-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .backup-counts > div,
+  .backup-result-grid > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .backup-counts > div:last-child,
+  .backup-result-grid > div:last-child {
+    border-bottom: 0;
+  }
+
+  .backup-failures dl > div {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

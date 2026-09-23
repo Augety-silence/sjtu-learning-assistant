@@ -85,6 +85,22 @@ afterEach(() => {
 });
 
 describe("AppShell 移动导航", () => {
+  it("在左侧与移动导航中提供独立云盘备份入口", () => {
+    render(<Harness />);
+    const sidebar = document.querySelector(".sidebar");
+    expect(sidebar).toBeTruthy();
+    expect(
+      within(sidebar as HTMLElement).getByRole("button", { name: "云盘备份" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "菜单" }));
+    const dialog = screen.getByRole("dialog", { name: "移动导航" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "云盘备份" }));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "云盘备份" }),
+    ).toBeTruthy();
+  });
+
   it("使用 dialog 语义、聚焦当前项并圈闭首尾焦点", async () => {
     render(<Harness />);
     const menu = screen.getByRole("button", { name: "菜单" });
