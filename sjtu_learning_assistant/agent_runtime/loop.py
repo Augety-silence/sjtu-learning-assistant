@@ -120,7 +120,14 @@ class AgentLoop:
             *messages,
         ]
         reasoning_parts: list[str] = []
-        definitions = self.tools.definitions(self.preset.allowed_tools)
+        # 关键词命中时，本地预检索已经完成。此时直接让模型基于结果作答，
+        # 避免部分兼容接口重复发起同一工具调用并造成额外延迟；没有命中时
+        # 仍启用完整 tool_calls 循环处理复合或隐含意图。
+        definitions = (
+            []
+            if prefetch_messages
+            else self.tools.definitions(self.preset.allowed_tools)
+        )
         for step in range(1, self.max_steps + 1):
             if self.clock() - started > self.timeout_seconds:
                 return AgentResult("智能体执行超时，请缩小问题范围后重试。", None, "timeout", step - 1, tuple(runs))
