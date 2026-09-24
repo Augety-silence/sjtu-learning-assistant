@@ -6,7 +6,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from desktop_app import DesktopBridge, DesktopScheduler, main, run_desktop_app, safe_message
+from desktop_app import (
+    DesktopBridge,
+    DesktopScheduler,
+    _notify_database_recovery,
+    main,
+    run_desktop_app,
+    safe_message,
+)
 from sjtu_learning_assistant.cloud_storage import (
     delete_user_token as delete_cloud_user_token,
     save_user_token as save_cloud_user_token,
@@ -364,6 +371,19 @@ class DesktopBridgeTests(unittest.TestCase):
 
 
 class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_database_recovery_sends_user_notification(self):
+        sender = Mock()
+        recovery = Mock(requires_notice=True)
+        recovery.user_message.return_value = "数据库已从快照恢复。"
+        with patch("desktop_app.database_recovery_result", return_value=recovery):
+            _notify_database_recovery(Mock(), sender=sender)
+
+        sender.send.assert_called_once_with(
+            "SJTU Learning Assistant",
+            "本地数据库已自动恢复",
+            "数据库已从快照恢复。",
+        )
+
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
         engine.dialect.name = "postgresql"

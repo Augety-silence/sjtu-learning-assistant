@@ -23,8 +23,15 @@ from sjtu_learning_assistant.cloud_storage import (
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
-from sjtu_learning_assistant.database import create_database_engine
+from sjtu_learning_assistant.database import (
+    create_database_engine,
+    database_recovery_result,
+)
 from sjtu_learning_assistant.desktop_database import initialize_desktop_database
+from sjtu_learning_assistant.notifications import (
+    MacOSNotificationSender,
+    NotificationError,
+)
 from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
 from sjtu_learning_assistant.desktop_learning_service import (
     DesktopLearningService,
@@ -744,6 +751,22 @@ class DesktopScheduler:
             self._thread.join(timeout)
 
 
+def _notify_database_recovery(engine, *, sender=None) -> None:
+    recovery = database_recovery_result(engine)
+    if recovery is None or not recovery.requires_notice:
+        return
+    message = recovery.user_message()
+    print(f"警告：{message}", file=sys.stderr)
+    try:
+        (sender or MacOSNotificationSender()).send(
+            "SJTU Learning Assistant",
+            "本地数据库已自动恢复",
+            message,
+        )
+    except NotificationError:
+        pass
+
+
 def run_desktop_app() -> int:
     """Create the native window. Tests exercise components without calling this."""
     if not STATIC_INDEX.is_file():
@@ -764,6 +787,7 @@ def run_desktop_app() -> int:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
             initialize_desktop_database(engine, skip_import=True)
+            _notify_database_recovery(engine)
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
             if not result:

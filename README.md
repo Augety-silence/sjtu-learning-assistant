@@ -44,6 +44,16 @@ python3 db_manage.py status
 仅允许目标 SQLite 全新且所有业务表为空时导入；任一表非空会拒绝，任一步失败会回滚
 整个导入事务。数据库本来不保存 Canvas Token、邮箱密码或其他凭据，因此这些内容不会迁移。
 
+### SQLite 自检、快照与恢复
+
+每次打开文件型 SQLite 前会执行 `PRAGMA quick_check`。应用每天最多执行一次完整
+`integrity_check`，并通过 SQLite Backup API 维护 `app.db.backup-1` 至
+`app.db.backup-3` 三份轮转快照；数据库 schema 发生升级前还会强制创建快照。
+
+若启动时确认数据库损坏，程序会保留带 UTC 时间戳的 `app.db.corrupt.*` 隔离副本，
+再依次验证并恢复最近可用快照。没有有效快照时会新建空库并提示重新同步，绝不会静默
+删除损坏文件。数据库忙、权限异常等临时故障不会被当作损坏处理。
+
 ### PostgreSQL 兼容与回滚
 
 ```bash

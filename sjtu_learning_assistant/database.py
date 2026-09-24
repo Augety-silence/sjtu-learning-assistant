@@ -5,10 +5,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
+
+from sjtu_learning_assistant.sqlite_recovery import (
+    SQLiteRecoveryResult,
+    prepare_sqlite_database,
+)
 
 DATABASE_URL_ENV = "SJTU_DATABASE_URL"
 KEYCHAIN_SERVICE = "SJTU Learning Assistant - PostgreSQL"
@@ -16,6 +23,9 @@ KEYCHAIN_ACCOUNT = "database-url"
 APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "SJTU Learning Assistant"
 DEFAULT_SQLITE_PATH = APP_SUPPORT_DIR / "data" / "app.db"
 SQLITE_BUSY_TIMEOUT_MS = 5000
+
+_ENGINE_RECOVERY_RESULTS: WeakKeyDictionary[Engine, SQLiteRecoveryResult] = WeakKeyDictionary()
+_ENGINE_RECOVERY_LOCK = Lock()
 
 
 class DatabaseConfigError(RuntimeError):
@@ -164,6 +174,11 @@ def sqlite_database_path(database_url: str) -> Path | None:
     return Path(parsed.database).expanduser()
 
 
+def database_recovery_result(engine: Engine) -> SQLiteRecoveryResult | None:
+    with _ENGINE_RECOVERY_LOCK:
+        return _ENGINE_RECOVERY_RESULTS.get(engine)
+
+
 def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
     try:
@@ -179,14 +194,17 @@ def create_database_engine(database_url: str | None = None) -> Engine:
     parsed = make_url(url)
     if parsed.get_backend_name() == "sqlite":
         path = sqlite_database_path(url)
+        recovery_result = None
         if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(path.parent, 0o700)
+            recovery_result = prepare_sqlite_database(path)
         engine = create_engine(
             url,
             connect_args={"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000, "check_same_thread": False},
         )
         event.listen(engine, "connect", _configure_sqlite_connection)
+        if recovery_result is not None:
+            with _ENGINE_RECOVERY_LOCK:
+                _ENGINE_RECOVERY_RESULTS[engine] = recovery_result
         return engine
 
     return create_engine(

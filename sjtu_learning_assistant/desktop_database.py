@@ -31,8 +31,15 @@ from sjtu_learning_assistant.database import (
     DatabaseConfigError,
     create_database_engine,
     get_postgres_database_url,
+    sqlite_database_path,
 )
 from sjtu_learning_assistant.models import Base
+from sjtu_learning_assistant.sqlite_recovery import (
+    create_sqlite_backup,
+    maintain_sqlite_database,
+    read_sqlite_schema_version,
+    restore_latest_sqlite_backup,
+)
 
 SCHEMA_VERSION = "0016"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
@@ -340,7 +347,31 @@ def initialize_desktop_database(
     postgres_url: str | None = None,
 ) -> DesktopInitialization:
     """Bootstrap SQLite and, when available, perform its one-time safe import."""
-    version = bootstrap_sqlite(engine)
+    _require_sqlite(engine)
+    database_path = sqlite_database_path(str(engine.url))
+    migration_snapshot_created = False
+    if (
+        database_path is not None
+        and database_path.exists()
+        and read_sqlite_schema_version(database_path) != SCHEMA_VERSION
+    ):
+        migration_snapshot_created = create_sqlite_backup(database_path) is not None
+
+    try:
+        version = bootstrap_sqlite(engine)
+    except Exception as exc:
+        engine.dispose()
+        if (
+            migration_snapshot_created
+            and database_path is not None
+            and restore_latest_sqlite_backup(database_path) is not None
+        ):
+            raise DesktopDatabaseError(
+                "本地数据库升级失败，已自动恢复迁移前快照；请更新应用后重试。"
+            ) from exc
+        raise
+    if database_path is not None:
+        maintain_sqlite_database(database_path)
     if skip_import:
         return DesktopInitialization(schema_version=version)
 
