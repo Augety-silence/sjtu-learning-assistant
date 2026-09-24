@@ -220,7 +220,7 @@ def _rotate_backups(database_path: Path, temporary_path: Path, *, keep: int) -> 
     for index in range(len(backups) - 1, 0, -1):
         previous = backups[index - 1]
         if previous.exists():
-            _replace_file(previous, backus[index])
+            _replace_file(previous, backups[index])
     _replace_file(temporary_path, backups[0])
     os.chmod(backups[0], 0o600)
     return backups[0]
