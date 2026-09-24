@@ -2,8 +2,18 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
+const aiSectionMarker = "/* AI Chat workspace */";
+const aiSection = css.slice(css.indexOf(aiSectionMarker));
 const tailwindConfig = readFileSync(
   new URL("../../tailwind.config.js", import.meta.url),
+  "utf8",
+);
+const buttonSource = readFileSync(
+  new URL("../components/ui/Button.tsx", import.meta.url),
+  "utf8",
+);
+const tabsSource = readFileSync(
+  new URL("../components/ui/Tabs.tsx", import.meta.url),
   "utf8",
 );
 
@@ -26,6 +36,14 @@ describe("CSS semantic tokens", () => {
     expect(css).toContain("--text-tertiary: #6b737d");
     expect(tailwindConfig).toContain('muted: "var(--text-tertiary)"');
     expect(tailwindConfig).not.toContain('muted: "#8f959e"');
+  });
+
+  it("AI 工作区及关联配置不再包含硬编码颜色", () => {
+    expect(aiSection).toMatch(/^\/\* AI Chat workspace \*\//);
+    expect(aiSection).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    expect(tailwindConfig).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    expect(buttonSource).not.toContain("bg-white");
+    expect(tabsSource).not.toContain("bg-white");
   });
 
   it("消息正文显式允许文本选择复制", () => {
