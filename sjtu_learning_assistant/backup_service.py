@@ -475,9 +475,12 @@ class BackupService:
         self,
         candidates: tuple[BackupCandidate, ...] | None = None,
         *,
+        remove_local: bool = False,
         cancel_event: threading.Event | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
+        if type(remove_local) is not bool:
+            raise BackupError("释放本地空间选项无效。")
         if self.provider is None:
             raise BackupError("交大云盘备份服务未配置。")
         selected = candidates if candidates is not None else self.scan()
@@ -575,22 +578,24 @@ class BackupService:
                                 digest.update(chunk)
                     if downloaded_size != size or digest.hexdigest() != candidate.sha256:
                         raise BackupError("云端附件哈希校验失败，已保留受控副本。")
-                    self.ai_file_service.mark_cloud_only(
+                    self.ai_file_service.record_cloud_backup(
                         candidate.record_id,
                         cloud_path="/".join(candidate.remote_path),
                         cloud_size=size,
                         cloud_sha256=digest.hexdigest(),
                         cloud_remote_id=getattr(verified, "etag", None),
+                        remove_local=remove_local,
                     )
                     persisted = False
-                    result["local_removed"] += 1
+                    if remove_local:
+                        result["local_removed"] += 1
                 else:
                     persisted = self._persist_cloud_metadata(
                         candidate, size=size, backed_up_at=datetime.now(timezone.utc)
                     )
                 if uploaded:
                     result["uploaded"] += 1
-                if persisted:
+                if persisted and remove_local:
                     remove_controlled_file(
                         candidate.local_root,
                         candidate.local_path,
@@ -714,7 +719,9 @@ class BackupManager:
                 "last_result": copy.deepcopy(self._last_result),
             }
 
-    def start(self) -> dict[str, str]:
+    def start(self, *, remove_local: bool = False) -> dict[str, str]:
+        if type(remove_local) is not bool:
+            raise BackupError("释放本地空间选项无效。")
         with self._lock:
             if self._closed:
                 raise BackupError("备份服务已关闭。")
@@ -729,6 +736,7 @@ class BackupManager:
             }
             self._thread = threading.Thread(
                 target=self._run,
+                kwargs={"remove_local": remove_local},
                 name="sjtu-cloud-backup",
                 daemon=True,
             )
@@ -770,7 +778,7 @@ class BackupManager:
             ],
         }
 
-    def _run(self) -> None:
+    def _run(self, *, remove_local: bool) -> None:
         provider: CloudStorageProvider | None = None
         started_at = datetime.now(timezone.utc).isoformat()
         result: dict[str, Any] | None = None
@@ -784,6 +792,7 @@ class BackupManager:
                 self._progress = {"done": 0, "total": len(candidates), "current_name": None}
             result = service.backup(
                 candidates,
+                remove_local=remove_local,
                 cancel_event=self._cancel,
                 progress_callback=self._update_progress,
             )

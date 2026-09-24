@@ -149,7 +149,7 @@ describe("pywebview bridge client", () => {
     });
   });
 
-  it("uses empty payloads for the fixed backup contract", async () => {
+  it("sends an explicit local-retention choice for the backup contract", async () => {
     const bridge = vi.fn().mockResolvedValue({
       ok: true,
       data: { status: "idle" },
@@ -158,8 +158,10 @@ describe("pywebview bridge client", () => {
 
     await getBackupStatus();
     expect(bridge).toHaveBeenLastCalledWith("backup_status", {});
-    await startCloudBackup();
-    expect(bridge).toHaveBeenLastCalledWith("backup_start", {});
+    await startCloudBackup(false);
+    expect(bridge).toHaveBeenLastCalledWith("backup_start", {
+      remove_local: false,
+    });
   });
 
   it("sends the token only to Keychain save and uses an empty delete payload", async () => {

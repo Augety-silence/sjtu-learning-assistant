@@ -2435,6 +2435,52 @@ a {
   align-items: center;
 }
 
+.backup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+}
+
+.backup-remove-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 300px;
+  cursor: pointer;
+}
+
+.backup-remove-option input {
+  margin-top: 3px;
+  accent-color: var(--action-primary);
+}
+
+.backup-remove-option input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.backup-remove-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-remove-option strong {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.backup-remove-option small {
+  color: var(--text-secondary);
+  line-height: 18px;
+}
+
+.backup-remove-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .backup-status-card,
 .backup-result {
   padding: 24px;
@@ -2671,6 +2717,7 @@ a {
 
 @media (max-width: 760px) {
   .backup-intro,
+  .backup-actions,
   .backup-status-heading,
   .backup-progress-copy,
   .backup-credentials,
@@ -2683,7 +2730,11 @@ a {
     width: 100%;
   }
 
-  .backup-intro > button,
+  .backup-actions {
+    width: 100%;
+  }
+
+  .backup-actions > button,
   .backup-status-heading > button {
     align-self: flex-start;
   }

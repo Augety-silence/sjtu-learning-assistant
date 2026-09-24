@@ -120,6 +120,7 @@ class FakeLearningService:
 class FakeBackupManager:
     def __init__(self):
         self.starts = 0
+        self.remove_local_values = []
 
     def status(self):
         return {
@@ -137,8 +138,9 @@ class FakeBackupManager:
             "last_result": None,
         }
 
-    def start(self):
+    def start(self, *, remove_local):
         self.starts += 1
+        self.remove_local_values.append(remove_local)
         return {"status": "started" if self.starts == 1 else "already_running"}
 
 
@@ -215,7 +217,7 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("operation_failed", self.bridge.invoke("assignments_list", {})["error"]["code"])
         self.assertEqual("ok", self.bridge.invoke("health")["data"]["status"])
 
-    def test_backup_actions_are_allowlisted_require_empty_payload_and_report_start_state(self):
+    def test_backup_actions_require_explicit_local_retention_choice(self):
         manager = FakeBackupManager()
         bridge = DesktopBridge(FakeService(), backup_manager=manager)
         self.assertEqual(
@@ -241,13 +243,30 @@ class DesktopBridgeTests(unittest.TestCase):
             },
             set(status["data"]),
         )
-        self.assertEqual("started", bridge.invoke("backup_start")["data"]["status"])
-        self.assertEqual("already_running", bridge.invoke("backup_start", {})["data"]["status"])
-        for action in ("backup_status", "backup_start"):
-            self.assertEqual(
-                "operation_failed",
-                bridge.invoke(action, {"unexpected": True})["error"]["code"],
-            )
+        self.assertEqual(
+            "started",
+            bridge.invoke("backup_start", {"remove_local": False})["data"]["status"],
+        )
+        self.assertEqual(
+            "already_running",
+            bridge.invoke("backup_start", {"remove_local": True})["data"]["status"],
+        )
+        self.assertEqual([False, True], manager.remove_local_values)
+        self.assertEqual(
+            "operation_failed",
+            bridge.invoke("backup_status", {"unexpected": True})["error"]["code"],
+        )
+        for payload in (
+            {},
+            {"remove_local": 1},
+            {"remove_local": "false"},
+            {"remove_local": False, "unexpected": True},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    "operation_failed",
+                    bridge.invoke("backup_start", payload)["error"]["code"],
+                )
         self.assertEqual("operation_failed", self.bridge.invoke("backup_status")["error"]["code"])
 
     def test_backup_token_actions_use_keychain_without_echoing_secret(self):

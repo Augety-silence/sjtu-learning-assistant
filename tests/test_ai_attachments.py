@@ -170,7 +170,7 @@ class AIManagedFileServiceTests(unittest.TestCase):
         self.assertTrue(service.resolve_controlled_copy(item["id"]).exists())
         self.assertNotIn(str(self.root), json.dumps(revealed, ensure_ascii=False))
 
-    def test_backup_verifies_download_and_only_removes_controlled_copy(self) -> None:
+    def test_backup_keeps_controlled_copy_by_default(self) -> None:
         source = self.root / "source-owned.txt"
         payload = b"backup me safely"
         source.write_bytes(payload)
@@ -186,6 +186,31 @@ class AIManagedFileServiceTests(unittest.TestCase):
         )
 
         result = backup.backup()
+
+        self.assertEqual(1, result["uploaded"])
+        self.assertEqual(0, result["local_removed"])
+        self.assertTrue(controlled.exists())
+        self.assertTrue(source.exists())
+        stored = self.service.get(item["id"])
+        self.assertEqual("local", stored["status"])
+        self.assertTrue(stored["cloud_ready"])
+
+    def test_backup_verifies_download_and_only_removes_controlled_copy(self) -> None:
+        source = self.root / "source-owned.txt"
+        payload = b"backup me safely"
+        source.write_bytes(payload)
+        item = self.service.ingest(source)
+        controlled = self.service.resolve_controlled_copy(item["id"])
+        provider = MemoryCloudProvider(self.root / "downloads")
+        backup = BackupService(
+            self.engine,
+            provider,
+            archive_root=self.archive,
+            mail_attachments_root=self.root / "mail",
+            ai_file_service=self.service,
+        )
+
+        result = backup.backup(remove_local=True)
 
         self.assertEqual(1, result["uploaded"])
         self.assertEqual(1, result["local_removed"])

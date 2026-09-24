@@ -486,8 +486,10 @@ class DesktopBridge:
         return self._backup().status()
 
     def _backup_start(self, payload: Mapping[str, Any]) -> dict[str, str]:
-        _empty_payload(payload)
-        return self._backup().start()
+        _only_keys(payload, {"remove_local"})
+        if "remove_local" not in payload or type(payload["remove_local"]) is not bool:
+            raise DashboardError("必须明确选择是否释放本地空间。")
+        return self._backup().start(remove_local=payload["remove_local"])
 
     @staticmethod
     def _backup_token_save(payload: Mapping[str, Any]) -> dict[str, bool]:
