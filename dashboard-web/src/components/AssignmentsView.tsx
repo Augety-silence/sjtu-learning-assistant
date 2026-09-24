@@ -50,6 +50,33 @@ type PendingSubmission = {
   run: () => Promise<SubmissionResult>;
 };
 
+function withVerifiedSubmission(
+  item: AssignmentItem,
+  result: SubmissionResult,
+): AssignmentItem {
+  const workflowState = result.workflow_state || "submitted";
+  return {
+    ...item,
+    submission: {
+      id: result.submission_id,
+      workflow_state: workflowState,
+      submission_type: result.submission_type,
+      submitted_at: result.submitted_at,
+      attempt: result.attempt,
+      missing: false,
+      late: item.submission?.late ?? false,
+      score: item.submission?.score ?? null,
+      grade: item.submission?.grade ?? null,
+      attachments: result.attachments,
+    },
+    can_submit: false,
+  };
+}
+
+function sameAssignment(left: AssignmentItem, right: AssignmentItem) {
+  return left.course_id === right.course_id && left.id === right.id;
+}
+
 function VerificationDetails({ result }: { result: SubmissionResult }) {
   return (
     <div className="submission-success" role="status">
@@ -139,6 +166,8 @@ export function AssignmentsView() {
   const [pending, setPending] = useState<PendingSubmission | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SubmissionResult | null>(null);
+  const categoryRef = useRef(category);
+  categoryRef.current = category;
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
@@ -174,7 +203,9 @@ export function AssignmentsView() {
   };
 
   const submit = async () => {
-    if (!pending) return;
+    if (!pending || !selected) return;
+    const submittedAssignment = selected;
+    const submittedCategory = category;
     setSubmitting(true);
     setResult(null);
     try {
@@ -184,9 +215,46 @@ export function AssignmentsView() {
           next.message || "Canvas 尚未验证本次提交，不能标记为成功。",
         );
       }
+      const optimistic = withVerifiedSubmission(submittedAssignment, next);
       setResult(next);
       setPending(null);
+      setSelected((current) =>
+        current && sameAssignment(current, submittedAssignment)
+          ? optimistic
+          : current,
+      );
+      setItems(
+        (current) =>
+          current?.map((item) =>
+            sameAssignment(item, submittedAssignment) ? optimistic : item,
+          ) ?? current,
+      );
+      setText("");
+      setUrl("");
+      setLocalFile(null);
+      setShowPan(false);
       showToast({ kind: "success", message: "Canvas 已验证提交成功。" });
+      void Promise.allSettled([
+        getAssignmentDetail(
+          Number(submittedAssignment.course_id),
+          Number(submittedAssignment.id),
+        ),
+        getAssignments(submittedCategory),
+      ]).then(([detail, list]) => {
+        if (detail.status === "fulfilled") {
+          setSelected((current) =>
+            current && sameAssignment(current, submittedAssignment)
+              ? detail.value
+              : current,
+          );
+        }
+        if (
+          list.status === "fulfilled" &&
+          categoryRef.current === submittedCategory
+        ) {
+          setItems(list.value.items);
+        }
+      });
     } catch (reason) {
       showToast({
         kind: "error",

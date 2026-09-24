@@ -48,6 +48,20 @@ const assignment: AssignmentItem = {
   categories: ["today", "unsubmitted"],
 };
 
+const submittedAssignment: AssignmentItem = {
+  ...assignment,
+  submission: {
+    ...assignment.submission!,
+    id: 99,
+    workflow_state: "submitted",
+    submission_type: "online_text_entry",
+    submitted_at: "2026-09-23T03:00:00Z",
+    attempt: 1,
+  },
+  can_submit: false,
+  categories: ["today", "submitted"],
+};
+
 afterEach(cleanup);
 
 beforeEach(() => {
@@ -114,7 +128,16 @@ describe("AssignmentsView", () => {
     );
   });
 
-  it("requires confirmation and only displays verified success", async () => {
+  it("requires confirmation and closes submission state after verified success", async () => {
+    vi.mocked(api.getAssignments)
+      .mockResolvedValueOnce({ category: "today", items: [assignment] })
+      .mockResolvedValueOnce({
+        category: "today",
+        items: [submittedAssignment],
+      });
+    vi.mocked(api.getAssignmentDetail)
+      .mockResolvedValueOnce(assignment)
+      .mockResolvedValueOnce(submittedAssignment);
     vi.mocked(api.submitAssignmentText).mockResolvedValue({
       verified: true,
       status: "verified",
@@ -137,6 +160,12 @@ describe("AssignmentsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
     expect(await screen.findByText("提交已由 Canvas 验证")).toBeTruthy();
     expect(screen.getByText("提交 ID：99")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("submitted")).toBeTruthy();
+      expect(api.getAssignmentDetail).toHaveBeenCalledTimes(2);
+      expect(api.getAssignments).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByLabelText("文本内容")).toBeNull();
   });
 
   it("requires confirmation for URL, local file, and Pan file", async () => {
