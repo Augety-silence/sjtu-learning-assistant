@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import * as api from "@/lib/api";
-import type { AssignmentItem } from "@/lib/types";
+import type { AssignmentItem, SubmissionResult } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
@@ -166,6 +166,41 @@ describe("AssignmentsView", () => {
       expect(api.getAssignments).toHaveBeenCalledTimes(2);
     });
     expect(screen.queryByLabelText("文本内容")).toBeNull();
+  });
+
+  it("提交请求进行中时 Escape 不会关闭确认弹窗", async () => {
+    let resolveSubmission!: (value: SubmissionResult) => void;
+    vi.mocked(api.submitAssignmentText).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSubmission = resolve;
+      }),
+    );
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+    fireEvent.change(await screen.findByLabelText("文本内容"), {
+      target: { value: "我的答案" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "准备提交文本" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
+
+    expect(
+      await screen.findByRole("button", { name: "提交并验证中…" }),
+    ).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+
+    resolveSubmission({
+      verified: true,
+      status: "verified",
+      message: null,
+      submission_type: "online_text_entry",
+      submission_id: 99,
+      submitted_at: "2026-09-23T03:00:00Z",
+      attempt: 1,
+      attachments: [],
+      workflow_state: "submitted",
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 
   it("requires confirmation for URL, local file, and Pan file", async () => {

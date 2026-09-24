@@ -108,7 +108,10 @@ function SubmissionConfirmDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useModalFocus(dialogRef, onCancel, { initialFocusRef: cancelRef });
+  useModalFocus(dialogRef, onCancel, {
+    initialFocusRef: cancelRef,
+    dismissible: !submitting,
+  });
 
   return (
     <div className="confirm-layer" data-modal-layer>
