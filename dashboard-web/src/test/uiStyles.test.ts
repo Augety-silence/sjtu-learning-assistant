@@ -22,6 +22,22 @@ describe("responsive and motion regression rules", () => {
     expect(css.match(/\.workspace \{[^}]*\}/)?.[0]).not.toContain("max-width");
   });
 
+  it("keeps the compact sidebar through 1199px", () => {
+    expect(css).toMatch(
+      /@media \(max-width: 1199px\) and \(min-width: 600px\)[\s\S]*?\.sidebar \{[^}]*width: 72px[^}]*flex-basis: 72px/,
+    );
+    expect(css).not.toContain(
+      "@media (max-width: 1023px) and (min-width: 600px)",
+    );
+  });
+
+  it("keeps the page header usable at 320px", () => {
+    expect(css).toMatch(/\.page-heading > div \{[^}]*min-width: 0/);
+    expect(css).toMatch(
+      /@media \(max-width: 380px\)[\s\S]*?\.page-header \{[^}]*gap: 8px[\s\S]*?\.page-heading \{[^}]*gap: 8px[\s\S]*?\.page-heading p \{[^}]*display: none[\s\S]*?\.page-header > button \{[^}]*padding-inline: 10px/,
+    );
+  });
+
   it("keeps narrow deadline tables reachable and the summary strip compact", () => {
     expect(css).toMatch(/\.table-surface \{[^}]*overflow-x: auto/);
     expect(css).toMatch(/\.table-surface table \{[^}]*min-width: 760px/);

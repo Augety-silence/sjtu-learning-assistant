@@ -9,9 +9,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-white hover:bg-primary-hover active:bg-primary-pressed",
+          "bg-primary text-inverse hover:bg-primary-hover active:bg-primary-pressed",
         outline:
-          "border border-component bg-white text-ink hover:bg-surface-hover",
+          "border border-component bg-surface-elevated text-ink hover:bg-surface-hover",
         ghost:
           "bg-transparent text-caption hover:bg-neutral-hover hover:text-ink",
         link: "min-h-9 px-2 text-primary hover:text-primary-hover",

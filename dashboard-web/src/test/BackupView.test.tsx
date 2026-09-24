@@ -44,6 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("BackupView", () => {
@@ -51,9 +52,9 @@ describe("BackupView", () => {
     render(<BackupView />);
 
     expect(
-      await screen.findByRole("heading", { name: "等待备份" }),
+      await screen.findByRole("heading", { name: "等待归档" }),
     ).toBeTruthy();
-    expect(screen.getByText("Canvas 与邮件资料云端副本")).toBeTruthy();
+    expect(screen.getByText("Canvas、邮件与 AI 附件云端归档")).toBeTruthy();
     expect(screen.getByText("全部候选").parentElement?.textContent).toContain(
       "17",
     );
@@ -73,9 +74,44 @@ describe("BackupView", () => {
       "3",
     );
     expect(
-      screen.getByRole("button", { name: "立即备份" }).hasAttribute("disabled"),
+      screen
+        .getByRole("button", { name: "归档至云端" })
+        .hasAttribute("disabled"),
     ).toBe(false);
     expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("默认保留本地副本并显式传递安全选项", async () => {
+    render(<BackupView />);
+
+    const start = await screen.findByRole("button", { name: "归档至云端" });
+    fireEvent.click(start);
+
+    await waitFor(() => expect(startCloudBackup).toHaveBeenCalledWith(false));
+    expect(
+      await screen.findByText("归档请求已接受；本地副本将继续保留。"),
+    ).toBeTruthy();
+  });
+
+  it("释放本地空间必须勾选并通过二次确认", async () => {
+    const confirm = vi
+      .spyOn(window, "confirm")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    render(<BackupView />);
+
+    const option = await screen.findByRole("checkbox", {
+      name: /归档后释放本地空间/,
+    });
+    fireEvent.click(option);
+    const start = screen.getByRole("button", { name: "归档至云端" });
+    fireEvent.click(start);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(startCloudBackup).not.toHaveBeenCalled();
+
+    fireEvent.click(start);
+    await waitFor(() => expect(startCloudBackup).toHaveBeenCalledWith(true));
+    expect(confirm).toHaveBeenCalledTimes(2);
   });
 
   it("运行时约每秒轮询，并在 finished 后展示完整结果", async () => {
@@ -106,7 +142,7 @@ describe("BackupView", () => {
 
     render(<BackupView />);
     await act(async () => Promise.resolve());
-    const progress = screen.getByRole("progressbar", { name: "云盘备份进度" });
+    const progress = screen.getByRole("progressbar", { name: "云端归档进度" });
     expect(progress.getAttribute("aria-valuenow")).toBe("4");
     expect(progress.getAttribute("aria-valuemax")).toBe("14");
     expect(screen.getByText("week-4.pdf")).toBeTruthy();
@@ -116,7 +152,7 @@ describe("BackupView", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("heading", { name: "备份已完成" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "归档已完成" })).toBeTruthy();
     expect(screen.getByText("已上传").parentElement?.textContent).toContain(
       "9",
     );
@@ -147,16 +183,17 @@ describe("BackupView", () => {
     });
     render(<BackupView />);
 
-    const start = await screen.findByRole("button", { name: "立即备份" });
+    const start = await screen.findByRole("button", { name: "归档至云端" });
     fireEvent.click(start);
 
     expect(
-      await screen.findByText("已有云盘备份任务正在运行，已继续跟踪进度。"),
+      await screen.findByText("已有云端归档任务正在运行，已继续跟踪进度。"),
     ).toBeTruthy();
     expect(startCloudBackup).toHaveBeenCalledOnce();
+    expect(startCloudBackup).toHaveBeenCalledWith(false);
     expect(
       screen
-        .getByRole("button", { name: "备份进行中" })
+        .getByRole("button", { name: "归档进行中" })
         .hasAttribute("disabled"),
     ).toBe(true);
     expect(screen.getByRole("progressbar")).toBeTruthy();
@@ -175,9 +212,11 @@ describe("BackupView", () => {
       screen.getByText(/已统一移至“系统设置 → 交大云盘”管理/),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "立即备份" }).hasAttribute("disabled"),
+      screen
+        .getByRole("button", { name: "归档至云端" })
+        .hasAttribute("disabled"),
     ).toBe(true);
-    const refresh = screen.getByRole("button", { name: "刷新备份状态" });
+    const refresh = screen.getByRole("button", { name: "刷新归档状态" });
     expect(refresh.hasAttribute("disabled")).toBe(false);
     fireEvent.click(refresh);
     await waitFor(() => expect(getBackupStatus).toHaveBeenCalledTimes(2));

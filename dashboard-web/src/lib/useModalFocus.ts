@@ -13,6 +13,7 @@ export interface ModalFocusOptions {
   initialFocusRef?: RefObject<HTMLElement | null>;
   triggerRef?: RefObject<HTMLElement | null>;
   shouldRestoreFocus?: () => boolean;
+  dismissible?: boolean;
 }
 
 type BackgroundState = {
@@ -100,7 +101,7 @@ export function useModalFocus(
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        dismissRef.current();
+        if (optionsRef.current.dismissible !== false) dismissRef.current();
         return;
       }
       if (event.key !== "Tab") return;

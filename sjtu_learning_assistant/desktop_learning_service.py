@@ -14,9 +14,11 @@ from sqlalchemy import Engine
 from sjtu_learning_assistant.assignment_service import AssignmentService, SubmissionResult
 from sjtu_learning_assistant.canvas_client import CanvasClient, DEFAULT_BASE_URL
 from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
-from test_canvas import KEYCHAIN_ACCOUNT as CANVAS_KEYCHAIN_ACCOUNT
-from test_canvas import KEYCHAIN_SERVICE as CANVAS_KEYCHAIN_SERVICE
-from test_canvas import load_keyring_module
+from sjtu_learning_assistant.canvas_sync import (
+    KEYCHAIN_ACCOUNT as CANVAS_KEYCHAIN_ACCOUNT,
+    KEYCHAIN_SERVICE as CANVAS_KEYCHAIN_SERVICE,
+    load_keyring_module,
+)
 
 
 class LearningServiceError(RuntimeError):

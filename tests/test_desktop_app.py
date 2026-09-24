@@ -6,7 +6,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from desktop_app import DesktopBridge, DesktopScheduler, main, run_desktop_app, safe_message
+from desktop_app import (
+    DesktopBridge,
+    DesktopScheduler,
+    _notify_database_recovery,
+    main,
+    run_desktop_app,
+    safe_message,
+)
 from sjtu_learning_assistant.cloud_storage import (
     delete_user_token as delete_cloud_user_token,
     save_user_token as save_cloud_user_token,
@@ -113,6 +120,7 @@ class FakeLearningService:
 class FakeBackupManager:
     def __init__(self):
         self.starts = 0
+        self.remove_local_values = []
 
     def status(self):
         return {
@@ -130,8 +138,9 @@ class FakeBackupManager:
             "last_result": None,
         }
 
-    def start(self):
+    def start(self, *, remove_local):
         self.starts += 1
+        self.remove_local_values.append(remove_local)
         return {"status": "started" if self.starts == 1 else "already_running"}
 
 
@@ -208,7 +217,7 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("operation_failed", self.bridge.invoke("assignments_list", {})["error"]["code"])
         self.assertEqual("ok", self.bridge.invoke("health")["data"]["status"])
 
-    def test_backup_actions_are_allowlisted_require_empty_payload_and_report_start_state(self):
+    def test_backup_actions_require_explicit_local_retention_choice(self):
         manager = FakeBackupManager()
         bridge = DesktopBridge(FakeService(), backup_manager=manager)
         self.assertEqual(
@@ -234,13 +243,30 @@ class DesktopBridgeTests(unittest.TestCase):
             },
             set(status["data"]),
         )
-        self.assertEqual("started", bridge.invoke("backup_start")["data"]["status"])
-        self.assertEqual("already_running", bridge.invoke("backup_start", {})["data"]["status"])
-        for action in ("backup_status", "backup_start"):
-            self.assertEqual(
-                "operation_failed",
-                bridge.invoke(action, {"unexpected": True})["error"]["code"],
-            )
+        self.assertEqual(
+            "started",
+            bridge.invoke("backup_start", {"remove_local": False})["data"]["status"],
+        )
+        self.assertEqual(
+            "already_running",
+            bridge.invoke("backup_start", {"remove_local": True})["data"]["status"],
+        )
+        self.assertEqual([False, True], manager.remove_local_values)
+        self.assertEqual(
+            "operation_failed",
+            bridge.invoke("backup_status", {"unexpected": True})["error"]["code"],
+        )
+        for payload in (
+            {},
+            {"remove_local": 1},
+            {"remove_local": "false"},
+            {"remove_local": False, "unexpected": True},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    "operation_failed",
+                    bridge.invoke("backup_start", payload)["error"]["code"],
+                )
         self.assertEqual("operation_failed", self.bridge.invoke("backup_status")["error"]["code"])
 
     def test_backup_token_actions_use_keychain_without_echoing_secret(self):
@@ -364,6 +390,19 @@ class DesktopBridgeTests(unittest.TestCase):
 
 
 class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_database_recovery_sends_user_notification(self):
+        sender = Mock()
+        recovery = Mock(requires_notice=True)
+        recovery.user_message.return_value = "数据库已从快照恢复。"
+        with patch("desktop_app.database_recovery_result", return_value=recovery):
+            _notify_database_recovery(Mock(), sender=sender)
+
+        sender.send.assert_called_once_with(
+            "SJTU Learning Assistant",
+            "本地数据库已自动恢复",
+            "数据库已从快照恢复。",
+        )
+
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
         engine.dialect.name = "postgresql"

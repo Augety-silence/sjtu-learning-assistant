@@ -344,6 +344,28 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual(candidates[3].remote_path, provider.multipart[0][0])
         self.assertGreaterEqual(len(provider.directories), 1)
 
+    def test_verified_upload_keeps_local_file_by_default(self) -> None:
+        path = self.archive / "lecture.pdf"
+        path.write_bytes(b"canvas")
+        self._add_records(canvas_path=str(path), mail_path=None)
+        service = self._service(FakeProvider())
+        candidate = next(item for item in service.scan() if item.source == "canvas")
+
+        result = service.backup((candidate,))
+
+        self.assertEqual(1, result["uploaded"])
+        self.assertEqual(0, result["local_removed"])
+        self.assertTrue(path.exists())
+        with Session(self.engine) as session:
+            record = session.scalar(
+                select(CourseFile).where(CourseFile.source_id == "canvas-1")
+            )
+            self.assertEqual(str(path), record.local_path)
+            self.assertNotEqual("cloud_only", record.download_status)
+            self.assertEqual("/".join(candidate.remote_path), record.cloud_path)
+            self.assertEqual(6, record.cloud_size)
+            self.assertIsNotNone(record.cloud_backed_up_at)
+
     def test_verified_upload_persists_cloud_metadata_then_removes_local(self) -> None:
         path = self.archive / "lecture.pdf"
         path.write_bytes(b"canvas")
@@ -352,7 +374,7 @@ class BackupServiceTests(unittest.TestCase):
         service = self._service(provider)
         candidate = next(item for item in service.scan() if item.source == "canvas")
 
-        result = service.backup((candidate,))
+        result = service.backup((candidate,), remove_local=True)
 
         self.assertEqual(1, result["uploaded"])
         self.assertEqual([candidate.remote_path], provider.info_requests)
@@ -380,7 +402,7 @@ class BackupServiceTests(unittest.TestCase):
         service = self._service(FakeProvider())
         candidate = next(item for item in service.scan() if item.source == "mail")
 
-        result = service.backup((candidate,))
+        result = service.backup((candidate,), remove_local=True)
 
         self.assertEqual(1, result["uploaded"])
         self.assertEqual(1, result["local_removed"])
@@ -403,7 +425,7 @@ class BackupServiceTests(unittest.TestCase):
             candidate.remote_path[-1], candidate.remote_path, False, 6
         )
 
-        result = service.backup((candidate,))
+        result = service.backup((candidate,), remove_local=True)
 
         self.assertEqual(1, result["skipped_existing"])
         self.assertGreaterEqual(provider.info_requests.count(candidate.remote_path), 2)
@@ -446,14 +468,14 @@ class BackupServiceTests(unittest.TestCase):
                         return CloudItem(item.name, item.path, False, (item.size or 0) + 1)
 
                     provider.get_info = wrong_info
-                    result = service.backup((candidate,))
+                    result = service.backup((candidate,), remove_local=True)
                 else:
                     with patch.object(
                         service,
                         "_persist_cloud_metadata",
                         side_effect=RuntimeError("database unavailable"),
                     ):
-                        result = service.backup((candidate,))
+                        result = service.backup((candidate,), remove_local=True)
                 self.assertEqual(1, result["failed"])
                 self.assertEqual(0, result["local_removed"])
                 self.assertTrue(path.exists())
@@ -474,7 +496,7 @@ class BackupServiceTests(unittest.TestCase):
             "sjtu_learning_assistant.backup_service.remove_controlled_file",
             side_effect=OSError("busy"),
         ):
-            result = service.backup((candidate,))
+            result = service.backup((candidate,), remove_local=True)
         self.assertEqual(1, result["failed"])
         self.assertEqual(0, result["local_removed"])
         self.assertTrue(path.exists())
@@ -501,7 +523,7 @@ class BackupServiceTests(unittest.TestCase):
             return original_get_info(remote_path)
 
         provider.get_info = replace_before_verification
-        result = service.backup((candidate,))
+        result = service.backup((candidate,), remove_local=True)
 
         self.assertEqual(1, result["failed"])
         self.assertEqual(0, result["local_removed"])
@@ -597,9 +619,9 @@ class BackupServiceTests(unittest.TestCase):
         self.assertIsNone(idle["progress"])
         self.assertNotIn("configured-but-never-returned", json.dumps(idle, ensure_ascii=False))
 
-        self.assertEqual("started", manager.start()["status"])
+        self.assertEqual("started", manager.start(remove_local=True)["status"])
         self.assertTrue(first_provider.upload_entered.wait(1))
-        self.assertEqual("already_running", manager.start()["status"])
+        self.assertEqual("already_running", manager.start(remove_local=False)["status"])
         running = manager.status()
         self.assertEqual("running", running["status"])
         self.assertEqual(0, running["progress"]["done"])

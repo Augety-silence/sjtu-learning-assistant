@@ -35,6 +35,7 @@ datas = [
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),
     (str(ROOT / "agent_presets"), "agent_presets"),
+    (str(ROOT / "migrations"), "migrations"),
 ]
 
 hiddenimports = [

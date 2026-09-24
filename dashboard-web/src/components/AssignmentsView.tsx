@@ -44,18 +44,75 @@ const typeLabels: Record<string, string> = {
   none: "无在线提交",
 };
 
+type AssignmentTone = "danger" | "warning" | "success" | "info" | "neutral";
+
+type AssignmentStatusMeta = {
+  label: string;
+  tone: AssignmentTone;
+};
+
+const workflowMeta: Record<string, AssignmentStatusMeta> = {
+  submitted: { label: "已提交", tone: "success" },
+  pending_review: { label: "待批改", tone: "info" },
+  graded: { label: "已评分", tone: "info" },
+  unsubmitted: { label: "未提交", tone: "neutral" },
+};
+
+function getWorkflowMeta(
+  workflowState: string | null | undefined,
+): AssignmentStatusMeta {
+  const state = workflowState || "unsubmitted";
+  return workflowMeta[state] ?? { label: state, tone: "neutral" };
+}
+
+function getAssignmentStatus(item: AssignmentItem): AssignmentStatusMeta {
+  if (item.submission?.missing) return { label: "缺交", tone: "danger" };
+  if (item.submission?.late) return { label: "已逾期", tone: "danger" };
+  if (item.categories.includes("today")) {
+    return { label: "今天截止", tone: "warning" };
+  }
+  return getWorkflowMeta(item.submission?.workflow_state);
+}
+
 type PendingSubmission = {
   type: NativeSubmissionType;
   label: string;
   run: () => Promise<SubmissionResult>;
 };
 
+function withVerifiedSubmission(
+  item: AssignmentItem,
+  result: SubmissionResult,
+): AssignmentItem {
+  const workflowState = result.workflow_state || "submitted";
+  return {
+    ...item,
+    submission: {
+      id: result.submission_id,
+      workflow_state: workflowState,
+      submission_type: result.submission_type,
+      submitted_at: result.submitted_at,
+      attempt: result.attempt,
+      missing: false,
+      late: item.submission?.late ?? false,
+      score: item.submission?.score ?? null,
+      grade: item.submission?.grade ?? null,
+      attachments: result.attachments,
+    },
+    can_submit: false,
+  };
+}
+
+function sameAssignment(left: AssignmentItem, right: AssignmentItem) {
+  return left.course_id === right.course_id && left.id === right.id;
+}
+
 function VerificationDetails({ result }: { result: SubmissionResult }) {
   return (
     <div className="submission-success" role="status">
       <strong>提交已由 Canvas 验证</strong>
       <span>提交 ID：{result.submission_id ?? "—"}</span>
-      <span>状态：{result.workflow_state ?? "—"}</span>
+      <span>状态：{getWorkflowMeta(result.workflow_state).label}</span>
       <span>时间：{formatDateTime(result.submitted_at)}</span>
       <span>尝试次数：{result.attempt ?? "—"}</span>
       {result.attachments.map((item) => (
@@ -69,19 +126,24 @@ function SubmissionConfirmDialog({
   assignment,
   pending,
   submitting,
+  submissionError,
   onCancel,
   onConfirm,
 }: {
   assignment: AssignmentItem;
   pending: PendingSubmission;
   submitting: boolean;
+  submissionError: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useModalFocus(dialogRef, onCancel, { initialFocusRef: cancelRef });
+  useModalFocus(dialogRef, onCancel, {
+    initialFocusRef: cancelRef,
+    dismissible: !submitting,
+  });
 
   return (
     <div className="confirm-layer" data-modal-layer>
@@ -98,7 +160,12 @@ function SubmissionConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
-        aria-describedby="confirm-description"
+        aria-describedby={
+          submissionError
+            ? "confirm-description confirm-error"
+            : "confirm-description"
+        }
+        aria-busy={submitting}
         tabIndex={-1}
       >
         <h3 id="confirm-title">确认提交作业？</h3>
@@ -108,6 +175,11 @@ function SubmissionConfirmDialog({
           <p>类型：{typeLabels[pending.type]}</p>
           <p>内容 / 文件：{pending.label}</p>
         </div>
+        {submissionError && (
+          <p id="confirm-error" className="submission-error" role="alert">
+            {submissionError}
+          </p>
+        )}
         <div className="confirm-actions">
           <Button
             ref={cancelRef}
@@ -119,7 +191,11 @@ function SubmissionConfirmDialog({
             取消
           </Button>
           <Button type="button" disabled={submitting} onClick={onConfirm}>
-            {submitting ? "提交并验证中…" : "确认提交"}
+            {submitting
+              ? "提交并验证中…"
+              : submissionError
+                ? "重新提交"
+                : "确认提交"}
           </Button>
         </div>
       </section>
@@ -138,7 +214,10 @@ export function AssignmentsView() {
   const [showPan, setShowPan] = useState(false);
   const [pending, setPending] = useState<PendingSubmission | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState("");
   const [result, setResult] = useState<SubmissionResult | null>(null);
+  const categoryRef = useRef(category);
+  categoryRef.current = category;
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
@@ -170,12 +249,16 @@ export function AssignmentsView() {
     label: string,
     run: () => Promise<SubmissionResult>,
   ) => {
+    setSubmissionError("");
     setPending({ type, label, run });
   };
 
   const submit = async () => {
-    if (!pending) return;
+    if (!pending || !selected) return;
+    const submittedAssignment = selected;
+    const submittedCategory = category;
     setSubmitting(true);
+    setSubmissionError("");
     setResult(null);
     try {
       const next = await pending.run();
@@ -184,13 +267,52 @@ export function AssignmentsView() {
           next.message || "Canvas 尚未验证本次提交，不能标记为成功。",
         );
       }
+      const optimistic = withVerifiedSubmission(submittedAssignment, next);
       setResult(next);
       setPending(null);
+      setSelected((current) =>
+        current && sameAssignment(current, submittedAssignment)
+          ? optimistic
+          : current,
+      );
+      setItems(
+        (current) =>
+          current?.map((item) =>
+            sameAssignment(item, submittedAssignment) ? optimistic : item,
+          ) ?? current,
+      );
+      setText("");
+      setUrl("");
+      setLocalFile(null);
+      setShowPan(false);
       showToast({ kind: "success", message: "Canvas 已验证提交成功。" });
+      void Promise.allSettled([
+        getAssignmentDetail(
+          Number(submittedAssignment.course_id),
+          Number(submittedAssignment.id),
+        ),
+        getAssignments(submittedCategory),
+      ]).then(([detail, list]) => {
+        if (detail.status === "fulfilled") {
+          setSelected((current) =>
+            current && sameAssignment(current, submittedAssignment)
+              ? detail.value
+              : current,
+          );
+        }
+        if (
+          list.status === "fulfilled" &&
+          categoryRef.current === submittedCategory
+        ) {
+          setItems(list.value.items);
+        }
+      });
     } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "提交失败";
+      setSubmissionError(message);
       showToast({
         kind: "error",
-        message: reason instanceof Error ? reason.message : "提交失败",
+        message,
       });
     } finally {
       setSubmitting(false);
@@ -265,22 +387,33 @@ export function AssignmentsView() {
       ) : (
         <div className="assignment-layout">
           <div className="assignment-list" aria-label="作业列表">
-            {items.map((item) => (
-              <button
-                key={`${item.course_id}:${item.id}`}
-                type="button"
-                className={
-                  selected?.id === item.id
-                    ? "assignment-card assignment-card-active"
-                    : "assignment-card"
-                }
-                onClick={() => void selectAssignment(item)}
-              >
-                <strong>{item.name}</strong>
-                <span>{item.course_name}</span>
-                <small>{formatDateTime(item.due_at)}</small>
-              </button>
-            ))}
+            {items.map((item) => {
+              const status = getAssignmentStatus(item);
+              return (
+                <button
+                  key={`${item.course_id}:${item.id}`}
+                  type="button"
+                  className={
+                    selected?.id === item.id
+                      ? "assignment-card assignment-card-active"
+                      : "assignment-card"
+                  }
+                  data-tone={status.tone}
+                  onClick={() => void selectAssignment(item)}
+                >
+                  <strong>{item.name}</strong>
+                  <span>{item.course_name}</span>
+                  <span className="assignment-card-footer">
+                    <small>{formatDateTime(item.due_at)}</small>
+                    <span
+                      className={`assignment-status assignment-status-${status.tone}`}
+                    >
+                      {status.label}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
           <section className="assignment-detail" aria-live="polite">
             {!selected ? (
@@ -306,8 +439,13 @@ export function AssignmentsView() {
                     <dd>{formatDateTime(selected.due_at)}</dd>
                   </div>
                   <div>
-                    <dt>状态</dt>
-                    <dd>{selected.submission?.workflow_state || "未提交"}</dd>
+                    <dt>提交状态</dt>
+                    <dd>
+                      {
+                        getWorkflowMeta(selected.submission?.workflow_state)
+                          .label
+                      }
+                    </dd>
                   </div>
                   <div>
                     <dt>提交类型</dt>
@@ -458,7 +596,11 @@ export function AssignmentsView() {
           assignment={selected}
           pending={pending}
           submitting={submitting}
-          onCancel={() => setPending(null)}
+          submissionError={submissionError}
+          onCancel={() => {
+            setSubmissionError("");
+            setPending(null);
+          }}
           onConfirm={() => void submit()}
         />
       )}

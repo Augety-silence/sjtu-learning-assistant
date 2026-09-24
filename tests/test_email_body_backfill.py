@@ -25,7 +25,7 @@ from sjtu_learning_assistant.repository import (
     persist_emails,
 )
 from sync_data_to_db import sync_mail
-from test_mail import MailCheckError
+from sjtu_learning_assistant.mail_sync import MailCheckError
 
 
 @dataclass(frozen=True)

@@ -7,9 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import test_canvas
-import test_mail
-from sjtu_learning_assistant import ai_keychain
+from sjtu_learning_assistant import (
+    ai_keychain,
+    canvas_sync,
+    credential_store,
+    mail_sync,
+)
 from sjtu_learning_assistant.dashboard_service import DashboardService
 
 
@@ -39,93 +42,93 @@ class FakeKeyring:
 
 class CanvasCredentialCacheTests(unittest.TestCase):
     def setUp(self):
-        test_canvas.clear_canvas_credential_cache()
+        canvas_sync.clear_canvas_credential_cache()
 
     def tearDown(self):
-        test_canvas.clear_canvas_credential_cache()
+        canvas_sync.clear_canvas_credential_cache()
 
     def test_default_reads_once_in_process_and_is_thread_safe(self):
-        location = (test_canvas.KEYCHAIN_SERVICE, test_canvas.KEYCHAIN_ACCOUNT)
+        location = (canvas_sync.KEYCHAIN_SERVICE, canvas_sync.KEYCHAIN_ACCOUNT)
         keyring = FakeKeyring(((location, "canvas-token"),))
         with patch.object(
-            test_canvas,
+            canvas_sync,
             "load_keyring_module",
             return_value=(keyring, FakeKeyringError),
         ):
             with ThreadPoolExecutor(max_workers=8) as executor:
                 results = tuple(
-                    executor.map(lambda _index: test_canvas.get_token(True), range(16))
+                    executor.map(lambda _index: canvas_sync.get_token(True), range(16))
                 )
         self.assertEqual(tuple(("canvas-token", True) for _index in range(16)), results)
         self.assertEqual((location,), tuple(keyring.get_calls))
 
     def test_save_updates_delete_invalidates_and_input_waits_for_save(self):
-        location = (test_canvas.KEYCHAIN_SERVICE, test_canvas.KEYCHAIN_ACCOUNT)
+        location = (canvas_sync.KEYCHAIN_SERVICE, canvas_sync.KEYCHAIN_ACCOUNT)
         keyring = FakeKeyring()
         with (
             patch.object(
-                test_canvas,
+                canvas_sync,
                 "load_keyring_module",
                 return_value=(keyring, FakeKeyringError),
             ),
-            patch.object(test_canvas.getpass, "getpass", side_effect=("first", "second")),
+            patch.object(canvas_sync.getpass, "getpass", side_effect=("first", "second")),
         ):
-            self.assertEqual(("first", False), test_canvas.get_token(True))
-            self.assertEqual(("second", False), test_canvas.get_token(True))
-            test_canvas.save_token("second")
-            self.assertEqual(("second", True), test_canvas.get_token(True))
-            test_canvas.delete_token()
+            self.assertEqual(("first", False), canvas_sync.get_token(True))
+            self.assertEqual(("second", False), canvas_sync.get_token(True))
+            canvas_sync.save_token("second")
+            self.assertEqual(("second", True), canvas_sync.get_token(True))
+            canvas_sync.delete_token()
             keyring.values.update(((location, "replacement"),))
-            self.assertEqual(("replacement", True), test_canvas.get_token(True))
+            self.assertEqual(("replacement", True), canvas_sync.get_token(True))
         self.assertEqual(4, len(keyring.get_calls))
 
 
 class MailCredentialCacheTests(unittest.TestCase):
     def setUp(self):
-        test_mail.clear_mail_credential_cache()
+        mail_sync.clear_mail_credential_cache()
 
     def tearDown(self):
-        test_mail.clear_mail_credential_cache()
+        mail_sync.clear_mail_credential_cache()
 
     def test_default_reads_once_and_accounts_are_isolated(self):
         first = "student-one"
         second = "student-two"
-        service = test_mail.KEYCHAIN_SERVICE
+        service = mail_sync.KEYCHAIN_SERVICE
         keyring = FakeKeyring(
             (((service, first), "first-password"), ((service, second), "second-password"))
         )
         with patch.object(
-            test_mail,
+            mail_sync,
             "load_keyring_module",
             return_value=(keyring, FakeKeyringError),
         ):
-            self.assertEqual(("first-password", True), test_mail.get_password(first, True))
-            self.assertEqual(("first-password", True), test_mail.get_password(first, True))
-            self.assertEqual(("second-password", True), test_mail.get_password(second, True))
-            self.assertEqual(("second-password", True), test_mail.get_password(second, True))
+            self.assertEqual(("first-password", True), mail_sync.get_password(first, True))
+            self.assertEqual(("first-password", True), mail_sync.get_password(first, True))
+            self.assertEqual(("second-password", True), mail_sync.get_password(second, True))
+            self.assertEqual(("second-password", True), mail_sync.get_password(second, True))
         self.assertEqual(((service, first), (service, second)), tuple(keyring.get_calls))
 
     def test_save_updates_only_account_and_delete_invalidates_it(self):
         first = "student-one"
         second = "student-two"
-        service = test_mail.KEYCHAIN_SERVICE
+        service = mail_sync.KEYCHAIN_SERVICE
         keyring = FakeKeyring(
             (((service, first), "first-old"), ((service, second), "second-password"))
         )
         with patch.object(
-            test_mail,
+            mail_sync,
             "load_keyring_module",
             return_value=(keyring, FakeKeyringError),
         ):
-            test_mail.get_password(first, True)
-            test_mail.get_password(second, True)
-            test_mail.save_password(first, "first-new")
-            self.assertEqual(("first-new", True), test_mail.get_password(first, True))
-            self.assertEqual(("second-password", True), test_mail.get_password(second, True))
-            test_mail.delete_password(first)
+            mail_sync.get_password(first, True)
+            mail_sync.get_password(second, True)
+            mail_sync.save_password(first, "first-new")
+            self.assertEqual(("first-new", True), mail_sync.get_password(first, True))
+            self.assertEqual(("second-password", True), mail_sync.get_password(second, True))
+            mail_sync.delete_password(first)
             keyring.values.update((((service, first), "first-replacement"),))
-            self.assertEqual(("first-replacement", True), test_mail.get_password(first, True))
-            self.assertEqual(("second-password", True), test_mail.get_password(second, True))
+            self.assertEqual(("first-replacement", True), mail_sync.get_password(first, True))
+            self.assertEqual(("second-password", True), mail_sync.get_password(second, True))
         self.assertEqual(4, len(keyring.get_calls))
 
 
@@ -168,6 +171,39 @@ class AICredentialCacheTests(unittest.TestCase):
         self.assertEqual((location,), tuple(injected.get_calls))
 
 
+class CredentialStoreCacheInvalidationTests(unittest.TestCase):
+    def test_canvas_writes_clear_runtime_cache(self):
+        keyring = FakeKeyring(
+            (
+                (
+                    (
+                        credential_store.CANVAS_SERVICE,
+                        credential_store.CANVAS_ACCOUNT,
+                    ),
+                    "old-token",
+                ),
+            )
+        )
+        with (
+            patch.object(credential_store, "_keyring", return_value=keyring),
+            patch.object(canvas_sync, "clear_canvas_credential_cache") as clear_cache,
+        ):
+            credential_store.save_canvas_token("new-token")
+            credential_store.delete_canvas_token()
+        self.assertEqual(2, clear_cache.call_count)
+
+    def test_mail_writes_clear_runtime_cache(self):
+        account = "student@example.com"
+        keyring = FakeKeyring({(credential_store.MAIL_SERVICE, account): "old-password"})
+        with (
+            patch.object(credential_store, "_keyring", return_value=keyring),
+            patch.object(mail_sync, "clear_mail_credential_cache") as clear_cache,
+        ):
+            credential_store.save_mail_password(account, "new-password")
+            credential_store.delete_mail_password(account)
+        self.assertEqual(2, clear_cache.call_count)
+
+
 class CredentialStatusTests(unittest.TestCase):
     def test_settings_status_does_not_read_credentials(self):
         def fail_ai_read():
@@ -180,8 +216,8 @@ class CredentialStatusTests(unittest.TestCase):
                 SimpleNamespace(), archive_root=root, ai_key_loader=fail_ai_read
             )
             with (
-                patch("test_canvas.load_keyring_module") as canvas_keyring,
-                patch("test_mail.load_keyring_module") as mail_keyring,
+                patch("sjtu_learning_assistant.canvas_sync.load_keyring_module") as canvas_keyring,
+                patch("sjtu_learning_assistant.mail_sync.load_keyring_module") as mail_keyring,
             ):
                 service.settings_status()
         canvas_keyring.assert_not_called()

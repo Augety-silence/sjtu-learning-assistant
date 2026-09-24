@@ -8,8 +8,9 @@
 ~/Library/Application Support/SJTU Learning Assistant/data/app.db
 ```
 
-首次打开 SQLite 时通过 SQLAlchemy metadata 创建当前 schema，并在
-`desktop_schema_version` 记录版本 `0016`。每条 SQLite 连接都会启用
+首次打开 SQLite 时会建立当前 ORM schema，并将既有桌面数据库安全采用为 Alembic
+`0016` 基线，再受控升级到当前版本 `0017`。`alembic_version` 是 schema 版本的唯一权威，
+`desktop_schema_version` 仅为旧版本兼容和 PostgreSQL 导入标记保留。每条 SQLite 连接都会启用
 `foreign_keys=ON`、WAL 和 5000 ms `busy_timeout`。`sync_data_to_db.py`、
 `sync_runner.py`、LaunchAgent 与 Dashboard 都通过同一个默认 URL 写入这个文件；
 LaunchAgent 无需数据库参数，也不会保存秘密。
@@ -21,8 +22,9 @@ LaunchAgent 无需数据库参数，也不会保存秘密。
 - 使用 `import-postgres` 将旧数据一次性导入 SQLite。
 
 PostgreSQL URL 仍只保存在 macOS Keychain（或由进程环境显式注入），不会写入
-SQLite、plist 或日志。SQLite 采用 metadata bootstrap，历史 Alembic `0001`–`0016`
-保持不变且只继续用于 PostgreSQL。
+SQLite、plist 或日志。SQLite 与 PostgreSQL 现在统一由 Alembic 管理后续 schema 演进；
+已发布 SQLite 会在迁移锁和升级前快照保护下采用 `0016` 基线，不重放仅适用于历史
+PostgreSQL 的建库迁移。
 
 ### 初始化与安全导入
 
@@ -43,6 +45,16 @@ python3 db_manage.py status
 导入按外键依赖顺序复制全部业务表，保留 ID、时间与 JSON，并输出每张表的精确行数。
 仅允许目标 SQLite 全新且所有业务表为空时导入；任一表非空会拒绝，任一步失败会回滚
 整个导入事务。数据库本来不保存 Canvas Token、邮箱密码或其他凭据，因此这些内容不会迁移。
+
+### SQLite 自检、快照与恢复
+
+每次打开文件型 SQLite 前会执行 `PRAGMA quick_check`。应用每天最多执行一次完整
+`integrity_check`，并通过 SQLite Backup API 维护 `app.db.backup-1` 至
+`app.db.backup-3` 三份轮转快照；数据库 schema 发生升级前还会强制创建快照。
+
+若启动时确认数据库损坏，程序会保留带 UTC 时间戳的 `app.db.corrupt.*` 隔离副本，
+再依次验证并恢复最近可用快照。没有有效快照时会新建空库并提示重新同步，绝不会静默
+删除损坏文件。数据库忙、权限异常等临时故障不会被当作损坏处理。
 
 ### PostgreSQL 兼容与回滚
 
@@ -162,7 +174,7 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-Phase 4A 不新增 Python 依赖。更新已有数据库后先运行 `python3 db_manage.py upgrade`；SQLite 使用 metadata bootstrap，显式 PostgreSQL 使用 Alembic `0006`。
+Phase 4A 不新增 Python 依赖。更新已有数据库后先运行 `python3 db_manage.py upgrade`；SQLite 与 PostgreSQL 的后续 schema 变更均由 Alembic 管理。
 
 ## 数据库管理
 
@@ -471,13 +483,15 @@ Bridge DTO 和 Agent 工具结果不包含本机绝对路径。
 
 Agent 默认先检索附件名称、摘要和标签，只在需要细节时通过附件 ID 调用
 `read_ai_attachment_text`；单次读取最多 12000 字符，本轮消息的工具实例只能读取本轮
-附件。云备份会在上传后重新获取远端元数据，并临时下载计算 SHA-256；只有大小和哈希
-均匹配后，才删除 `.ai_attachments` 内的应用受控副本并标记 `cloud_only`。用户原始文件
-不参与删除。读取云端正文时同样临时下载并校验；显式“在 Finder 中显示”会先恢复到
+附件。云端归档会在上传后重新获取远端元数据，并临时下载计算 SHA-256；大小和哈希
+均匹配后才记录云端副本。默认保留 `.ai_attachments` 内的应用受控副本；只有用户勾选
+“归档后释放本地空间”并完成二次确认时，才删除受控副本并标记 `cloud_only`。用户原始
+文件不参与删除。读取云端正文时同样临时下载并校验；显式“在 Finder 中显示”会先恢复到
 受控目录，再以固定参数 `/usr/bin/open -R` 显示。
 
-对应 PostgreSQL 迁移为 `0015_add_ai_managed_files.py` 与
-`0016_link_ai_chat_attachments.py`；已有迁移文件不应改写语义。
+对应 schema 迁移为 `0015_add_ai_managed_files.py` 与
+`0016_link_ai_chat_attachments.py`；`0017_adopt_sqlite_alembic.py` 建立 SQLite 的
+Alembic 采用基线，后续迁移必须同时兼容 SQLite 与 PostgreSQL。已有迁移文件不应改写语义。
 
 ### Phase 5A 验证
 
@@ -578,6 +592,8 @@ dist/SJTU-Learning-Assistant-<version>-macOS-<arch>.dmg.sha256
 Bundle identifier 为 `io.github.sjtu-learning-assistant`，版本来自 `sjtu_learning_assistant.__version__`。打包只包含本地前端、许可证和默认运行依赖，不包含 `psycopg`，也不包含 FastAPI/Uvicorn 或监听端口的服务。`MACOS_CODESIGN_IDENTITY` 与 `MACOS_NOTARY_PROFILE` 仅预留给未来经审核的发布流程；当前脚本即使检测到变量也不会执行 `codesign` 或 `notarytool`。
 
 当前产物**未签名、未公证**。首次打开时 Gatekeeper 可能阻止运行。请仅对自己从可信源码构建、并已核对校验和的产物，在 Finder 中按住 Control 点击应用并选择“打开”，再确认；不要建议用户全局关闭 Gatekeeper。正式公开分发前应增加 Developer ID 签名、公证和 stapling 流程。
+
+推送与 `sjtu_learning_assistant.__version__` 完全一致的 `v*.*.*` tag 会触发 Release workflow，在 Apple Silicon runner 上重新执行测试与检查、构建并验证 DMG 和 SHA-256，然后创建 GitHub Pre-release。该自动化当前只发布未签名、未公证的 arm64 产物；完成 Developer ID 签名与公证后再移除 Pre-release 标记。
 
 ### 数据迁移与回滚
 

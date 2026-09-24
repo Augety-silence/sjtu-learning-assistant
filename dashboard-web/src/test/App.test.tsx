@@ -173,7 +173,7 @@ describe("云盘备份页面导航", () => {
     expect(
       await screen.findByRole("heading", {
         level: 2,
-        name: "Canvas 与邮件资料云端副本",
+        name: "Canvas、邮件与 AI 附件云端归档",
       }),
     ).toBeTruthy();
     expect(getBackupStatus).toHaveBeenCalledOnce();

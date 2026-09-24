@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import * as api from "@/lib/api";
-import type { AssignmentItem } from "@/lib/types";
+import type { AssignmentItem, SubmissionResult } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
@@ -48,6 +48,20 @@ const assignment: AssignmentItem = {
   categories: ["today", "unsubmitted"],
 };
 
+const submittedAssignment: AssignmentItem = {
+  ...assignment,
+  submission: {
+    ...assignment.submission!,
+    id: 99,
+    workflow_state: "submitted",
+    submission_type: "online_text_entry",
+    submitted_at: "2026-09-23T03:00:00Z",
+    attempt: 1,
+  },
+  can_submit: false,
+  categories: ["today", "submitted"],
+};
+
 afterEach(cleanup);
 
 beforeEach(() => {
@@ -77,6 +91,71 @@ describe("AssignmentsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "已评分" }));
     await waitFor(() =>
       expect(api.getAssignments).toHaveBeenLastCalledWith("graded"),
+    );
+  });
+
+  it("shows localized deadline and submission status badges", async () => {
+    const variants: AssignmentItem[] = [
+      {
+        ...assignment,
+        id: "missing",
+        name: "缺交作业",
+        categories: ["missing"],
+        submission: { ...assignment.submission!, missing: true },
+      },
+      {
+        ...assignment,
+        id: "late",
+        name: "逾期作业",
+        categories: ["overdue"],
+        submission: { ...assignment.submission!, late: true },
+      },
+      { ...assignment, id: "today", name: "今日作业" },
+      {
+        ...submittedAssignment,
+        id: "submitted",
+        name: "已交作业",
+        categories: ["submitted"],
+      },
+      {
+        ...submittedAssignment,
+        id: "graded",
+        name: "已评分作业",
+        categories: ["graded"],
+        submission: {
+          ...submittedAssignment.submission!,
+          workflow_state: "graded",
+        },
+      },
+    ];
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: variants,
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(variants[4]);
+
+    render(<AssignmentsView />);
+
+    const expected = [
+      ["缺交作业", "danger", "缺交"],
+      ["逾期作业", "danger", "已逾期"],
+      ["今日作业", "warning", "今天截止"],
+      ["已交作业", "success", "已提交"],
+      ["已评分作业", "info", "已评分"],
+    ];
+    for (const [name, tone, label] of expected) {
+      const card = await screen.findByRole("button", {
+        name: new RegExp(name),
+      });
+      expect(card.getAttribute("data-tone")).toBe(tone);
+      expect(card.textContent).toContain(label);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: /已评分作业/ }));
+    await waitFor(() =>
+      expect(screen.getByText("提交状态").parentElement?.textContent).toContain(
+        "已评分",
+      ),
     );
   });
 
@@ -114,7 +193,16 @@ describe("AssignmentsView", () => {
     );
   });
 
-  it("requires confirmation and only displays verified success", async () => {
+  it("requires confirmation and closes submission state after verified success", async () => {
+    vi.mocked(api.getAssignments)
+      .mockResolvedValueOnce({ category: "today", items: [assignment] })
+      .mockResolvedValueOnce({
+        category: "today",
+        items: [submittedAssignment],
+      });
+    vi.mocked(api.getAssignmentDetail)
+      .mockResolvedValueOnce(assignment)
+      .mockResolvedValueOnce(submittedAssignment);
     vi.mocked(api.submitAssignmentText).mockResolvedValue({
       verified: true,
       status: "verified",
@@ -137,6 +225,50 @@ describe("AssignmentsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
     expect(await screen.findByText("提交已由 Canvas 验证")).toBeTruthy();
     expect(screen.getByText("提交 ID：99")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getAllByText("已提交").length).toBeGreaterThan(0);
+      expect(api.getAssignmentDetail).toHaveBeenCalledTimes(2);
+      expect(api.getAssignments).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.queryByLabelText("文本内容")).toBeNull();
+  });
+
+  it("提交请求进行中时 Escape 不会关闭确认弹窗", async () => {
+    let resolveSubmission!: (value: SubmissionResult) => void;
+    vi.mocked(api.submitAssignmentText).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSubmission = resolve;
+      }),
+    );
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+    fireEvent.change(await screen.findByLabelText("文本内容"), {
+      target: { value: "我的答案" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "准备提交文本" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
+
+    expect(
+      await screen.findByRole("button", { name: "提交并验证中…" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("alertdialog").getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+
+    resolveSubmission({
+      verified: true,
+      status: "verified",
+      message: null,
+      submission_type: "online_text_entry",
+      submission_id: 99,
+      submitted_at: "2026-09-23T03:00:00Z",
+      attempt: 1,
+      attachments: [],
+      workflow_state: "submitted",
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   });
 
   it("requires confirmation for URL, local file, and Pan file", async () => {
@@ -220,6 +352,12 @@ describe("AssignmentsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "准备提交文本" }));
     fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
     await waitFor(() => expect(api.submitAssignmentText).toHaveBeenCalled());
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("false");
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "验证失败",
+    );
+    expect(screen.getByRole("button", { name: "重新提交" })).toBeTruthy();
     expect(screen.queryByText("提交已由 Canvas 验证")).toBeNull();
   });
 });

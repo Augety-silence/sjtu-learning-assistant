@@ -20,9 +20,9 @@ function safeText(value: string | null | undefined, fallback = "—") {
 }
 
 function statusLabel(status: BackupStatus["status"]) {
-  if (status === "running") return "备份运行中";
-  if (status === "finished") return "备份已完成";
-  return "等待备份";
+  if (status === "running") return "归档运行中";
+  if (status === "finished") return "归档已完成";
+  return "等待归档";
 }
 
 function ResultSummary({ result }: { result: BackupResult }) {
@@ -99,6 +99,7 @@ export function BackupView() {
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [watching, setWatching] = useState(false);
+  const [removeLocal, setRemoveLocal] = useState(false);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -129,23 +130,32 @@ export function BackupView() {
 
   const start = async () => {
     if (!backup?.available || backup.status === "running" || starting) return;
+    if (
+      removeLocal &&
+      !window.confirm(
+        "确认归档后删除已验证上传的本地副本？原始文件将从本机受控目录移除，需要时可从 SJTU Pan 恢复。",
+      )
+    )
+      return;
     setStarting(true);
     setOperationFailed(false);
-    setOperationMessage("正在提交云盘备份请求…");
+    setOperationMessage("正在提交云端归档请求…");
     try {
-      const result = await startCloudBackup();
+      const result = await startCloudBackup(removeLocal);
       setWatching(true);
       setOperationMessage(
         result.status === "already_running"
-          ? "已有云盘备份任务正在运行，已继续跟踪进度。"
-          : "备份请求已接受，正在上传到 SJTU Pan。",
+          ? "已有云端归档任务正在运行，已继续跟踪进度。"
+          : removeLocal
+            ? "归档请求已接受；上传校验成功后将释放本地空间。"
+            : "归档请求已接受；本地副本将继续保留。",
       );
       await load();
     } catch (reason) {
       setWatching(false);
       setOperationFailed(true);
       setOperationMessage(
-        reason instanceof Error ? reason.message : "云盘备份启动失败",
+        reason instanceof Error ? reason.message : "云端归档启动失败",
       );
     } finally {
       setStarting(false);
@@ -154,7 +164,7 @@ export function BackupView() {
 
   if (!backup && loadError)
     return <ErrorState message={loadError} retry={load} />;
-  if (!backup) return <LoadingState label="正在读取云盘备份状态…" />;
+  if (!backup) return <LoadingState label="正在读取云端归档状态…" />;
 
   const running = backup.status === "running" || watching;
   const progress = backup.progress;
@@ -165,19 +175,33 @@ export function BackupView() {
     <div className="section-stack backup-page">
       <div className="view-intro backup-intro">
         <div>
-          <h2>Canvas 与邮件资料云端副本</h2>
-          <p>备份范围仅包含已下载的 Canvas 文件和邮件附件，目标为 SJTU Pan。</p>
+          <h2>Canvas、邮件与 AI 附件云端归档</h2>
+          <p>将已下载资料归档到 SJTU Pan；默认保留本地副本。</p>
         </div>
-        <Button
-          type="button"
-          disabled={!backup.available || running || starting}
-          loading={starting}
-          loadingLabel="正在启动…"
-          onClick={() => void start()}
-        >
-          <CloudUpload aria-hidden="true" />
-          {running ? "备份进行中" : "立即备份"}
-        </Button>
+        <div className="backup-actions">
+          <label className="backup-remove-option">
+            <input
+              type="checkbox"
+              checked={removeLocal}
+              disabled={!backup.available || running || starting}
+              onChange={(event) => setRemoveLocal(event.target.checked)}
+            />
+            <span>
+              <strong>归档后释放本地空间</strong>
+              <small>仅删除已完成上传并通过校验的本地受控副本。</small>
+            </span>
+          </label>
+          <Button
+            type="button"
+            disabled={!backup.available || running || starting}
+            loading={starting}
+            loadingLabel="正在启动…"
+            onClick={() => void start()}
+          >
+            <CloudUpload aria-hidden="true" />
+            {running ? "归档进行中" : "归档至云端"}
+          </Button>
+        </div>
       </div>
 
       <section
@@ -209,7 +233,7 @@ export function BackupView() {
             variant="outline"
             size="sm"
             disabled={refreshing}
-            aria-label="刷新备份状态"
+            aria-label="刷新归档状态"
             onClick={() => void load()}
           >
             <RefreshCw
@@ -241,7 +265,7 @@ export function BackupView() {
           </div>
         </div>
 
-        <dl className="backup-counts" aria-label="备份候选统计">
+        <dl className="backup-counts" aria-label="归档候选统计">
           <div>
             <dt>全部候选</dt>
             <dd>{backup.counts.total}</dd>
@@ -281,7 +305,7 @@ export function BackupView() {
             <div
               className="backup-progress"
               role="progressbar"
-              aria-label="云盘备份进度"
+              aria-label="云端归档进度"
               aria-valuemin={0}
               aria-valuemax={progressTotal}
               aria-valuenow={progressDone}

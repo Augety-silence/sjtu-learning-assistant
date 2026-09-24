@@ -13,7 +13,14 @@ import {
   updateSettings,
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getSettings: vi.fn(),
@@ -90,6 +97,37 @@ describe("SettingsView", () => {
     fireEvent.click(buttons[0]);
     expect(screen.getByRole("dialog", { name: "Canvas 配置" })).toBeTruthy();
     expect(screen.getByLabelText("Canvas Access Token")).toBeTruthy();
+  });
+
+  it("traps focus, closes with Escape, and restores the edit trigger", async () => {
+    render(<SettingsView />);
+    const trigger = (
+      await screen.findAllByRole("button", {
+        name: "修改配置",
+      })
+    )[0];
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog", { name: "Canvas 配置" });
+    const close = within(dialog).getByRole("button", {
+      name: "关闭配置窗口",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(close));
+
+    fireEvent.change(within(dialog).getByLabelText("Canvas Access Token"), {
+      target: { value: "test-token" },
+    });
+    const save = within(dialog).getByRole("button", { name: "保存配置" });
+    save.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(save);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Canvas 配置" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("saves a mail account and password without echoing existing secrets", async () => {

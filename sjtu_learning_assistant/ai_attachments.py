@@ -552,7 +552,7 @@ class AIManagedFileService:
                 for attachment_id in ids
             ]
 
-    def mark_cloud_only(
+    def record_cloud_backup(
         self,
         attachment_id: int,
         *,
@@ -561,7 +561,10 @@ class AIManagedFileService:
         cloud_sha256: str,
         cloud_remote_id: str | None = None,
         cloud_provider: str = "sjtu-pan",
+        remove_local: bool = False,
     ) -> dict[str, Any]:
+        if type(remove_local) is not bool:
+            raise AIFileError("释放本地空间选项无效。")
         if type(cloud_size) is not int or cloud_size < 0:
             raise AIFileError("云端附件大小无效。")
         if type(cloud_sha256) is not str or not re.fullmatch(r"[0-9a-f]{64}", cloud_sha256):
@@ -573,7 +576,7 @@ class AIManagedFileService:
         path = self.resolve_controlled_copy(attachment_id)
         local_size, local_sha = self._hash_path(path)
         if local_size != row.size or local_sha != row.sha256:
-            raise AIFileError("受控副本在删除前校验失败，已保留。")
+            raise AIFileError("受控副本校验失败，已保留。")
         before = path.lstat()
         with Session(self.engine) as session, session.begin():
             current = session.get(AIManagedFile, attachment_id)
@@ -585,6 +588,8 @@ class AIManagedFileService:
             current.cloud_size = cloud_size
             current.cloud_sha256 = cloud_sha256
             current.cloud_uploaded_at = datetime.now(timezone.utc)
+        if not remove_local:
+            return self.get(attachment_id)
         try:
             current_stat = path.lstat()
             if (
@@ -607,6 +612,26 @@ class AIManagedFileService:
             current.controlled_relpath = None
             current.updated_at = datetime.now(timezone.utc)
         return self.get(attachment_id)
+
+    def mark_cloud_only(
+        self,
+        attachment_id: int,
+        *,
+        cloud_path: str,
+        cloud_size: int,
+        cloud_sha256: str,
+        cloud_remote_id: str | None = None,
+        cloud_provider: str = "sjtu-pan",
+    ) -> dict[str, Any]:
+        return self.record_cloud_backup(
+            attachment_id,
+            cloud_path=cloud_path,
+            cloud_size=cloud_size,
+            cloud_sha256=cloud_sha256,
+            cloud_remote_id=cloud_remote_id,
+            cloud_provider=cloud_provider,
+            remove_local=True,
+        )
 
     def restore(self, attachment_id: int) -> dict[str, Any]:
         row = self._get_row(attachment_id)

@@ -39,7 +39,7 @@ from sjtu_learning_assistant.material_classifier import (
     safe_folder_chain,
 )
 from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder, SyncState
-from test_canvas import ensure_same_origin
+from sjtu_learning_assistant.canvas_sync import ensure_same_origin
 
 DEFAULT_ARCHIVE_ROOT = Path.home() / "Documents" / "SJTU Study"
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024

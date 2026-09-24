@@ -17,7 +17,7 @@ from sjtu_learning_assistant.desktop_database import (
     initialize_desktop_database,
 )
 from sjtu_learning_assistant.repository import upsert_courses
-from test_canvas import (
+from sjtu_learning_assistant.canvas_sync import (
     CanvasCheckError,
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_SECONDS,

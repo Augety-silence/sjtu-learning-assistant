@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Mapping
 
+from alembic import command
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from sqlalchemy import (
     Column,
     DateTime,
@@ -23,18 +30,22 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-
 from sjtu_learning_assistant.database import (
     DATABASE_URL_ENV,
     DatabaseConfigError,
     create_database_engine,
     get_postgres_database_url,
+    sqlite_database_path,
 )
 from sjtu_learning_assistant.models import Base
+from sjtu_learning_assistant.sqlite_recovery import (
+    maintain_sqlite_database,
+    restore_latest_sqlite_backup,
+    sqlite_migration_guard,
+)
 
-SCHEMA_VERSION = "0016"
+SCHEMA_VERSION = "0017"
+LEGACY_SQLITE_BASELINE = "0016"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
     "courses",
@@ -99,8 +110,8 @@ def _require_sqlite(engine: Engine) -> None:
         raise DesktopDatabaseError("桌面数据库操作仅支持 SQLite 目标库。")
 
 
-def bootstrap_sqlite(engine: Engine) -> str:
-    """Create the current metadata schema and persist its bootstrap version."""
+def _adopt_legacy_sqlite_schema(engine: Engine) -> str:
+    """Normalize a pre-Alembic desktop database to the released 0016 schema."""
     _require_sqlite(engine)
     Base.metadata.create_all(engine)
     metadata.create_all(engine)
@@ -204,7 +215,7 @@ def bootstrap_sqlite(engine: Engine) -> str:
             connection.execute(
                 insert(schema_version).values(
                     id=1,
-                    version=SCHEMA_VERSION,
+                    version=LEGACY_SQLITE_BASELINE,
                     installed_at=now,
                     postgres_imported_at=None,
                 )
@@ -213,13 +224,130 @@ def bootstrap_sqlite(engine: Engine) -> str:
             connection.execute(
                 update(schema_version)
                 .where(schema_version.c.id == 1)
-                .values(version=SCHEMA_VERSION)
+                .values(version=LEGACY_SQLITE_BASELINE)
             )
-    return SCHEMA_VERSION
+    return LEGACY_SQLITE_BASELINE
+
+
+def _migration_root() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root) / "migrations"
+    return Path(__file__).resolve().parent.parent / "migrations"
+
+
+def _alembic_config(engine: Engine) -> Config:
+    config = Config()
+    config.set_main_option("script_location", str(_migration_root()))
+    config.set_main_option("sqlalchemy.url", str(engine.url).replace("%", "%%"))
+    return config
+
+
+def _known_sqlite_revisions(engine: Engine) -> set[str]:
+    script = ScriptDirectory.from_config(_alembic_config(engine))
+    revisions = {
+        item.revision
+        for item in script.iterate_revisions(SCHEMA_VERSION, LEGACY_SQLITE_BASELINE)
+    }
+    revisions.add(LEGACY_SQLITE_BASELINE)
+    return revisions
+
+
+def _current_alembic_revision(engine: Engine) -> str | None:
+    with engine.connect() as connection:
+        return MigrationContext.configure(connection).get_current_revision()
+
+
+def _run_alembic(engine: Engine, operation: Callable[[Config], None]) -> None:
+    config = _alembic_config(engine)
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        operation(config)
+
+
+def _write_schema_marker(engine: Engine, version: str) -> None:
+    metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        existing = connection.scalar(
+            select(schema_version.c.id).where(schema_version.c.id == 1)
+        )
+        if existing is None:
+            connection.execute(
+                insert(schema_version).values(
+                    id=1,
+                    version=version,
+                    installed_at=now,
+                    postgres_imported_at=None,
+                )
+            )
+        else:
+            connection.execute(
+                update(schema_version)
+                .where(schema_version.c.id == 1)
+                .values(version=version)
+            )
+
+
+def _upgrade_sqlite_with_alembic(engine: Engine) -> str:
+    revision = _current_alembic_revision(engine)
+    if revision is None:
+        inspector = inspect(engine)
+        is_fresh_database = not any(
+            inspector.has_table(table_name) for table_name in BUSINESS_TABLES
+        )
+        _adopt_legacy_sqlite_schema(engine)
+        baseline = SCHEMA_VERSION if is_fresh_database else LEGACY_SQLITE_BASELINE
+        _run_alembic(
+            engine,
+            lambda config: command.stamp(config, baseline),
+        )
+    elif revision not in _known_sqlite_revisions(engine):
+        raise DesktopDatabaseError(
+            f"无法识别 SQLite Alembic 版本 {revision}，已停止自动升级。"
+        )
+
+    _run_alembic(engine, lambda config: command.upgrade(config, "head"))
+    revision = _current_alembic_revision(engine)
+    if revision != SCHEMA_VERSION:
+        raise DesktopDatabaseError("SQLite Alembic 迁移未到达预期版本。")
+    _write_schema_marker(engine, revision)
+    return revision
+
+
+def bootstrap_sqlite(engine: Engine) -> str:
+    """Upgrade SQLite through the single Alembic migration path."""
+    _require_sqlite(engine)
+    database_path = sqlite_database_path(str(engine.url))
+    snapshot_created = False
+    try:
+        if database_path is None:
+            return _upgrade_sqlite_with_alembic(engine)
+        with sqlite_migration_guard(database_path) as create_backup:
+            if _current_alembic_revision(engine) != SCHEMA_VERSION:
+                snapshot_created = create_backup()
+            return _upgrade_sqlite_with_alembic(engine)
+    except Exception as exc:
+        engine.dispose()
+        if (
+            snapshot_created
+            and database_path is not None
+            and restore_latest_sqlite_backup(database_path) is not None
+        ):
+            raise DesktopDatabaseError(
+                "本地数据库升级失败，已自动恢复迁移前快照；请更新应用后重试。"
+            ) from exc
+        if isinstance(exc, DesktopDatabaseError):
+            raise
+        raise DesktopDatabaseError("本地数据库升级失败，请更新应用后重试。") from exc
 
 
 def get_schema_version(engine: Engine) -> str | None:
+    """Return the authoritative Alembic revision, with a legacy marker fallback."""
     _require_sqlite(engine)
+    revision = _current_alembic_revision(engine)
+    if revision is not None:
+        return revision
     if not inspect(engine).has_table(SCHEMA_VERSION_TABLE):
         return None
     with engine.connect() as connection:
@@ -340,7 +468,11 @@ def initialize_desktop_database(
     postgres_url: str | None = None,
 ) -> DesktopInitialization:
     """Bootstrap SQLite and, when available, perform its one-time safe import."""
+    _require_sqlite(engine)
+    database_path = sqlite_database_path(str(engine.url))
     version = bootstrap_sqlite(engine)
+    if database_path is not None:
+        maintain_sqlite_database(database_path)
     if skip_import:
         return DesktopInitialization(schema_version=version)
 

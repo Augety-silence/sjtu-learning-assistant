@@ -21,7 +21,7 @@ from sjtu_learning_assistant.text_content import (
     sanitize_html,
 )
 
-from test_mail import (
+from sjtu_learning_assistant.mail_sync import (
     DEFAULT_TIMEOUT_SECONDS,
     IMAP_HOST,
     IMAP_PORT,

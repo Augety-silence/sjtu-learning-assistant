@@ -4,7 +4,8 @@ import unittest
 
 import httpx
 
-from test_canvas import (
+from sjtu_learning_assistant import canvas_sync
+from sjtu_learning_assistant.canvas_sync import (
     CanvasCheckError,
     connect_and_fetch_all,
     fetch_active_courses,
@@ -202,12 +203,12 @@ class CanvasClientTests(unittest.TestCase):
             )
 
         transport = httpx.MockTransport(handler)
-        original_builder = __import__("test_canvas").build_http_client
+        original_builder = canvas_sync.build_http_client
 
         def mock_builder(base_url: str, token: str, timeout: float) -> httpx.Client:
             return httpx.Client(base_url=base_url, transport=transport)
 
-        module = __import__("test_canvas")
+        module = canvas_sync
         module.build_http_client = mock_builder
         try:
             contents = connect_and_fetch_all(

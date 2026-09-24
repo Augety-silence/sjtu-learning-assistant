@@ -16,7 +16,11 @@ from sjtu_learning_assistant.ai_classifier import AIClassificationError, Classif
 from sjtu_learning_assistant.ai_keychain import AI_KEYCHAIN_ACCOUNT, AI_KEYCHAIN_SERVICE, get_ai_api_key, save_ai_api_key
 from sjtu_learning_assistant.archive_service import ArchiveFileContext, ArchiveService
 from sjtu_learning_assistant.dashboard_service import DashboardService
-from sjtu_learning_assistant.desktop_database import bootstrap_sqlite, get_schema_version
+from sjtu_learning_assistant.desktop_database import (
+    SCHEMA_VERSION,
+    bootstrap_sqlite,
+    get_schema_version,
+)
 from sjtu_learning_assistant.local_settings import SettingsError, SettingsStore, validate_ai_base_url
 from sjtu_learning_assistant.models import Base, Course, CourseFile
 
@@ -180,12 +184,12 @@ class CacheAndMigrationTests(unittest.TestCase):
                 connection.exec_driver_sql(f"ALTER TABLE course_files DROP COLUMN {column}")
             connection.exec_driver_sql("CREATE TABLE desktop_schema_version (id INTEGER PRIMARY KEY, version VARCHAR(16), updated_at DATETIME)")
             connection.exec_driver_sql("INSERT INTO desktop_schema_version VALUES (1, '0007', CURRENT_TIMESTAMP)")
-        self.assertEqual("0016", bootstrap_sqlite(self.engine))
-        self.assertEqual("0016", bootstrap_sqlite(self.engine))
+        self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(self.engine))
+        self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(self.engine))
         columns = {column["name"] for column in inspect(self.engine).get_columns("course_files")}
         self.assertTrue({"ai_category", "ai_fingerprint", "ai_model", "ai_classified_at"}.issubset(columns))
         self.assertTrue({"manual_category", "manual_folder_id", "manual_override"}.issubset(columns))
-        self.assertEqual("0016", get_schema_version(self.engine))
+        self.assertEqual(SCHEMA_VERSION, get_schema_version(self.engine))
 
 
 if __name__ == "__main__":

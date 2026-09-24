@@ -406,8 +406,10 @@ export function getBackupStatus() {
   return invoke<BackupStatus>("backup_status");
 }
 
-export function startCloudBackup() {
-  return invoke<BackupStartResult>("backup_start");
+export function startCloudBackup(removeLocal: boolean) {
+  return invoke<BackupStartResult>("backup_start", {
+    remove_local: removeLocal,
+  });
 }
 
 export function saveBackupToken(token: string) {

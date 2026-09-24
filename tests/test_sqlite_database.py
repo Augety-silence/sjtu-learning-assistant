@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -11,9 +13,14 @@ from sqlalchemy import func, insert, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
+from sjtu_learning_assistant.database import (
+    create_database_engine,
+    database_recovery_result,
+    default_sqlite_url,
+)
 from sjtu_learning_assistant.desktop_database import (
     BUSINESS_TABLES,
+    DesktopDatabaseError,
     NonEmptyDatabaseError,
     SCHEMA_VERSION,
     _copy_table,
@@ -42,6 +49,14 @@ from sjtu_learning_assistant.notifications import (
     SqlNotificationEventStore,
 )
 from sjtu_learning_assistant.repository import persist_canvas_data, persist_emails
+from sjtu_learning_assistant.sqlite_recovery import (
+    SQLiteRecoveryError,
+    check_sqlite_integrity,
+    create_sqlite_backup,
+    prepare_sqlite_database,
+    read_sqlite_schema_version,
+    sqlite_backup_paths,
+)
 
 
 COURSE = {
@@ -94,6 +109,17 @@ EMAIL = EmailRecord(
 )
 
 
+def read_alembic_revision(path: Path) -> str | None:
+    with sqlite3.connect(path) as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+        ).fetchone()
+        if table is None:
+            return None
+        row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def seed_all(engine) -> None:
     persist_canvas_data(
         engine,
@@ -109,6 +135,169 @@ def seed_all(engine) -> None:
         file_cursors={"95040": "file-etag"},
     )
     persist_emails(engine, [EMAIL], cursor='{"last_uid":456}')
+
+
+class SQLiteRecoveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.path = Path(self.temporary.name) / "app.db"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _write_value(self, value: str) -> None:
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "CREATE TABLE IF NOT EXISTS recovery_probe (value TEXT NOT NULL)"
+                )
+                connection.exec_driver_sql("DELETE FROM recovery_probe")
+                connection.exec_driver_sql(
+                    "INSERT INTO recovery_probe (value) VALUES (?)", (value,)
+                )
+        finally:
+            engine.dispose()
+
+    def _read_value(self, path: Path) -> str:
+        engine = create_database_engine(default_sqlite_url(path))
+        try:
+            with engine.connect() as connection:
+                return str(
+                    connection.exec_driver_sql(
+                        "SELECT value FROM recovery_probe"
+                    ).scalar_one()
+                )
+        finally:
+            engine.dispose()
+
+    def test_quick_check_rejects_non_database_file(self) -> None:
+        self.path.write_bytes(b"not a sqlite database")
+        self.assertFalse(check_sqlite_integrity(self.path))
+
+    def test_transient_database_errors_do_not_trigger_quarantine(self) -> None:
+        self._write_value("healthy")
+        transient = sqlite3.OperationalError("database is locked")
+        transient.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        with patch(
+            "sjtu_learning_assistant.sqlite_recovery.sqlite3.connect",
+            side_effect=transient,
+        ), self.assertRaisesRegex(SQLiteRecoveryError, "暂时无法检查"):
+            prepare_sqlite_database(self.path)
+
+        self.assertTrue(self.path.exists())
+        self.assertFalse(tuple(self.path.parent.glob("app.db.corrupt.*")))
+
+    def test_backup_rotation_keeps_three_verified_snapshots(self) -> None:
+        for value in ("one", "two", "three", "four"):
+            self._write_value(value)
+            create_sqlite_backup(self.path)
+
+        backups = sqlite_backup_paths(self.path)
+        self.assertEqual(["four", "three", "two"], [self._read_value(path) for path in backups])
+        self.assertTrue(all(check_sqlite_integrity(path, full=True) for path in backups))
+
+    def test_corrupt_database_is_quarantined_and_latest_backup_restored(self) -> None:
+        self._write_value("recoverable")
+        create_sqlite_backup(self.path)
+        self.path.write_bytes(b"corrupt")
+
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            result = database_recovery_result(engine)
+            self.assertIsNotNone(result)
+            self.assertEqual("restored", result.status)
+            self.assertEqual(1, result.backup_index)
+            with engine.connect() as connection:
+                self.assertEqual(
+                    "recoverable",
+                    connection.exec_driver_sql(
+                        "SELECT value FROM recovery_probe"
+                    ).scalar_one(),
+                )
+        finally:
+            engine.dispose()
+        self.assertEqual(1, len(tuple(self.path.parent.glob("app.db.corrupt.*"))))
+
+    def test_corrupt_database_without_backup_is_quarantined_for_rebuild(self) -> None:
+        self.path.write_bytes(b"corrupt")
+        result = prepare_sqlite_database(self.path)
+
+        self.assertEqual("rebuilt", result.status)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(1, len(tuple(self.path.parent.glob("app.db.corrupt.*"))))
+
+    def test_initialize_snapshots_database_before_schema_upgrade(self) -> None:
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            bootstrap_sqlite(engine)
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+                connection.exec_driver_sql(
+                    "UPDATE desktop_schema_version SET version='legacy' WHERE id=1"
+                )
+            initialize_desktop_database(engine, skip_import=True)
+        finally:
+            engine.dispose()
+
+        backup = sqlite_backup_paths(self.path)[0]
+        self.assertEqual("legacy", read_sqlite_schema_version(backup))
+        self.assertEqual(SCHEMA_VERSION, read_sqlite_schema_version(self.path))
+
+    def test_concurrent_startup_serializes_single_alembic_upgrade(self) -> None:
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            bootstrap_sqlite(engine)
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+        finally:
+            engine.dispose()
+
+        def initialize_once(_index: int) -> str:
+            local_engine = create_database_engine(default_sqlite_url(self.path))
+            try:
+                return initialize_desktop_database(
+                    local_engine, skip_import=True
+                ).schema_version
+            finally:
+                local_engine.dispose()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            versions = tuple(executor.map(initialize_once, range(2)))
+
+        self.assertEqual((SCHEMA_VERSION, SCHEMA_VERSION), versions)
+        self.assertEqual(SCHEMA_VERSION, read_alembic_revision(self.path))
+
+    def test_failed_schema_upgrade_restores_pre_migration_snapshot(self) -> None:
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            bootstrap_sqlite(engine)
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+                connection.exec_driver_sql(
+                    "UPDATE desktop_schema_version SET version='legacy' WHERE id=1"
+                )
+            with patch(
+                "sjtu_learning_assistant.desktop_database.command.upgrade",
+                side_effect=RuntimeError("simulated migration failure"),
+            ), self.assertRaisesRegex(DesktopDatabaseError, "已自动恢复"):
+                initialize_desktop_database(engine, skip_import=True)
+        finally:
+            engine.dispose()
+
+        self.assertEqual("legacy", read_sqlite_schema_version(self.path))
+        with sqlite3.connect(self.path) as connection:
+            revision = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0]
+        self.assertEqual("0016", revision)
+        self.assertTrue(check_sqlite_integrity(self.path, full=True))
 
 
 class SQLiteIntegrationTests(unittest.TestCase):
@@ -141,6 +330,23 @@ class SQLiteIntegrationTests(unittest.TestCase):
                 columns = inspect(self.engine).get_columns(table_name)
                 primary_key = next(column for column in columns if column.get("name") == "id")
                 self.assertEqual("INTEGER", str(primary_key.get("type")))
+
+    def test_alembic_revision_is_authoritative_and_matches_orm_schema(self) -> None:
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE desktop_schema_version SET version='stale' WHERE id=1"
+            )
+        self.assertEqual(SCHEMA_VERSION, get_schema_version(self.engine))
+        self.assertEqual(SCHEMA_VERSION, read_alembic_revision(self.path))
+
+        inspector = inspect(self.engine)
+        for table in Base.metadata.sorted_tables:
+            with self.subTest(table=table.name):
+                actual = {
+                    str(column["name"])
+                    for column in inspector.get_columns(table.name)
+                }
+                self.assertEqual(set(table.columns.keys()), actual)
 
     def test_bootstrap_is_idempotent(self) -> None:
         self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(self.engine))

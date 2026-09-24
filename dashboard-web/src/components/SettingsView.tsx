@@ -9,7 +9,14 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -24,6 +31,7 @@ import {
   updateSettings,
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
+import { useModalFocus } from "@/lib/useModalFocus";
 
 const AI_MODELS = [
   "deepseek-chat",
@@ -81,6 +89,7 @@ export function SettingsView({
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModel, setAiModel] = useState("");
   const [secret, setSecret] = useState("");
+  const configTriggerRef = useRef<HTMLButtonElement>(null);
   const { showToast } = useToast();
 
   const applyStatus = useCallback((next: SettingsStatus) => {
@@ -352,7 +361,8 @@ export function SettingsView({
                   variant="outline"
                   size="sm"
                   className="configuration-edit-button"
-                  onClick={() => {
+                  onClick={(event) => {
+                    configTriggerRef.current = event.currentTarget;
                     setSecret("");
                     setEditing(kind);
                   }}
@@ -440,6 +450,7 @@ export function SettingsView({
           aiBaseUrl={aiBaseUrl}
           aiModel={aiModel}
           secret={secret}
+          triggerRef={configTriggerRef}
           onMailAccount={setMailAccount}
           onAiBaseUrl={setAiBaseUrl}
           onAiModel={setAiModel}
@@ -464,6 +475,7 @@ function ConfigDialog({
   aiBaseUrl,
   aiModel,
   secret,
+  triggerRef,
   onMailAccount,
   onAiBaseUrl,
   onAiModel,
@@ -480,6 +492,7 @@ function ConfigDialog({
   aiBaseUrl: string;
   aiModel: string;
   secret: string;
+  triggerRef: RefObject<HTMLButtonElement | null>;
   onMailAccount: (value: string) => void;
   onAiBaseUrl: (value: string) => void;
   onAiModel: (value: string) => void;
@@ -489,23 +502,35 @@ function ConfigDialog({
   onDelete: () => void;
   onTestAI: () => void;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const meta = configMeta[kind];
   const canSave =
     (kind === "mail" ? Boolean(mailAccount.trim()) : true) &&
     (kind === "ai" || kind === "mail" ? true : Boolean(secret.trim()));
+
+  useModalFocus(dialogRef, onClose, {
+    initialFocusRef: closeButtonRef,
+    triggerRef,
+    dismissible: !busy,
+  });
+
   return (
     <div
       className="config-dialog-layer"
+      data-modal-layer
       role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
       <section
+        ref={dialogRef}
         className="config-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-dialog-title"
+        tabIndex={-1}
       >
         <header>
           <div>
@@ -513,6 +538,7 @@ function ConfigDialog({
             <p>{meta.description}</p>
           </div>
           <Button
+            ref={closeButtonRef}
             variant="ghost"
             size="icon"
             aria-label="关闭配置窗口"
