@@ -264,7 +264,8 @@ class SettingsStore:
         )
         temporary_path = Path(temporary_name)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
             payload = (
                 json.dumps(validated.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n"

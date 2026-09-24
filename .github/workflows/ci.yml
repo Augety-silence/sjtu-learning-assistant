@@ -110,3 +110,38 @@ jobs:
           name: SJTU-Learning-Assistant-macOS-unsigned
           path: dist/SJTU-Learning-Assistant-macOS-unsigned.zip
           if-no-files-found: error
+
+
+  windows-app:
+    runs-on: windows-latest
+    needs: [python-tests, frontend, licenses, secret-scan]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: dashboard-web/package-lock.json
+      - name: 校验 Node/npm 工具链
+        shell: bash
+        run: |
+          test "$(node --version)" = "v22.22.0"
+          test "$(npm --version)" = "10.9.4"
+      - name: 安装 Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: 构建 Windows portable 与安装器
+        shell: pwsh
+        run: scripts/build_windows_app.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SJTU-Learning-Assistant-Windows-x64
+          path: |
+            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip
+            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip.sha256
+            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe
+            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe.sha256
+          if-no-files-found: error

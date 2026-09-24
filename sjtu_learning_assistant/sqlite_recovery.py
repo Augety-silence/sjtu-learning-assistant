@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import sqlite3
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -71,11 +75,22 @@ def sqlite_maintenance_lock(database_path: Path) -> Iterator[None]:
     os.chmod(lock_path.parent, 0o700)
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        if os.name == "nt":
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if os.name == "nt":
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
 
 

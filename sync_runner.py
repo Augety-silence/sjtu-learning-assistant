@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
 import os
 import signal
@@ -18,7 +17,19 @@ from pathlib import Path
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
-APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "sjtu-learning-assistant"
+from platformdirs import user_data_path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    import msvcrt
+
+APP_SUPPORT_DIR = (
+    user_data_path("sjtu-learning-assistant", appauthor=False)
+    if sys.platform == "win32"
+    else Path.home() / "Library" / "Application Support" / "sjtu-learning-assistant"
+)
 DEFAULT_RUNTIME_DIR = APP_SUPPORT_DIR / "run"
 DEFAULT_LOG_DIR = APP_SUPPORT_DIR / "logs"
 DEFAULT_LOCK_PATH = DEFAULT_RUNTIME_DIR / "sync.lock"
@@ -58,7 +69,8 @@ class JsonlEventLogger:
         payload = (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
             if os.write(fd, payload) != len(payload):
                 raise OSError("JSONL 日志未完整写入")
         finally:
@@ -97,11 +109,18 @@ class SyncRunner:
         os.chmod(self.lock_path.parent, 0o700)
         fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            os.fchmod(fd, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         except OSError as exc:
             os.close(fd)
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                 return None
             raise
         os.ftruncate(fd, 0)
@@ -111,7 +130,11 @@ class SyncRunner:
     @staticmethod
     def _release_lock(fd: int) -> None:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         finally:
             os.close(fd)
 

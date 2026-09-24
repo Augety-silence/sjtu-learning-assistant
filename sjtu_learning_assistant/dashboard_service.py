@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import fcntl
 import json
 import os
 import re
@@ -20,6 +19,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -166,6 +170,21 @@ def _sender_name(value: str | None) -> str:
     if "@" in clean or "<" in clean or ">" in clean:
         return "邮件发件人"
     return clean[:80]
+
+
+def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[str]:
+    value = str(target)
+    if sys.platform == "win32":
+        if reveal:
+            return ["explorer.exe", f"/select,{value}"]
+        if isinstance(target, Path):
+            return ["explorer.exe", value]
+        return ["rundll32.exe", "url.dll,FileProtocolHandler", value]
+    command = ["/usr/bin/open"]
+    if reveal:
+        command.append("-R")
+    command.append(value)
+    return command
 
 
 class DashboardService:
@@ -696,13 +715,10 @@ class DashboardService:
     ) -> dict[str, str]:
         attachment = self._email_attachment(source_id, attachment_id)
         path = self._resolve_controlled_mail_file(attachment.local_path)
-        command = ["/usr/bin/open"]
-        if reveal:
-            command.append("-R")
-        command.append(str(path))
+        command = _desktop_open_command(path, reveal=reveal)
         completed = self.command_runner(command, check=False)
         if getattr(completed, "returncode", 0) != 0:
-            raise DashboardError("无法通过 macOS 操作邮件附件。")
+            raise DashboardError("无法通过系统操作邮件附件。")
         return {
             "source_id": source_id,
             "attachment_id": attachment_id,
@@ -1340,23 +1356,23 @@ class DashboardService:
             except Exception:
                 destination.unlink(missing_ok=True)
                 raise DashboardError("云端文件下载失败，请检查网络后重试。") from None
-        completed = self.command_runner(["/usr/bin/open", str(path)], check=False)
+        completed = self.command_runner(_desktop_open_command(path), check=False)
         if getattr(completed, "returncode", 0) != 0:
-            raise DashboardError("无法通过 macOS 打开文件。")
+            raise DashboardError("无法通过系统打开文件。")
         return {"source_id": source_id, "status": "opened"}
 
     def reveal_material(self, source_id: str) -> dict[str, str]:
         path = self._resolve_local_file(source_id)
-        completed = self.command_runner(["/usr/bin/open", "-R", str(path)], check=False)
+        completed = self.command_runner(_desktop_open_command(path, reveal=True), check=False)
         if getattr(completed, "returncode", 0) != 0:
-            raise DashboardError("无法在 Finder 中显示本地文件。")
+            raise DashboardError("无法在文件管理器中显示本地文件。")
         return {"source_id": source_id, "status": "revealed"}
 
     def open_external(self, url: str) -> dict[str, str]:
         parsed = urlparse(url.strip())
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise DashboardError("只允许打开安全的 HTTPS 链接。")
-        completed = self.command_runner(["/usr/bin/open", url.strip()], check=False)
+        completed = self.command_runner(_desktop_open_command(url.strip()), check=False)
         if getattr(completed, "returncode", 0) != 0:
             raise DashboardError("无法打开外部链接。")
         return {"status": "opened"}
@@ -2079,7 +2095,7 @@ class DashboardService:
     def sync_status(self) -> dict[str, Any]:
         running = self._sync_lock.locked()
         lock = Path(DEFAULT_LOCK_PATH)
-        if lock.exists():
+        if lock.exists() and fcntl is not None:
             fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
             try:
                 try:
