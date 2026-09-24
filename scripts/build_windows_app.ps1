@@ -18,7 +18,8 @@ if (-not (Test-Path $Python)) {
 & $Python -m pip install -r requirements-windows.txt
 & $Python scripts/generate_windows_icon.py
 
-npm --prefix dashboard-web ci --ignore-scripts --no-audit --no-fund
+corepack enable
+pnpm --dir dashboard-web install --frozen-lockfile --ignore-scripts
 npm --prefix dashboard-web run test -- --pool=forks --maxWorkers=1
 npm --prefix dashboard-web run lint
 npm --prefix dashboard-web run build

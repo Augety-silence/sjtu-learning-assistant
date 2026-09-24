@@ -37,7 +37,8 @@ clean_packaging_xattrs() {
 "$PYTHON_BIN" -m pip install -r requirements-dev.txt
 
 "$PYTHON_BIN" scripts/generate_macos_icon.py
-npm --prefix dashboard-web ci --ignore-scripts --no-audit --no-fund
+corepack enable
+pnpm --dir dashboard-web install --frozen-lockfile --ignore-scripts
 npm --prefix dashboard-web run test
 npm --prefix dashboard-web run lint
 npm --prefix dashboard-web run build
