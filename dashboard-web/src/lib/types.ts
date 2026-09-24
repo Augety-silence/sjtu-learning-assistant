@@ -235,6 +235,7 @@ export interface SyncStatus {
 export interface SettingsStatus {
   archive_root_ready: boolean;
   archive_root: string;
+  credential_storage_name: string;
   auto_download_current_term: boolean;
   organize_by_category: boolean;
   mail_account: string;

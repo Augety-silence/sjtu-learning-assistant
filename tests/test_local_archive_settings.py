@@ -17,7 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.archive_service import ArchiveError, ArchiveFileContext, ArchiveService
-from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError, SettingsStore, validate_archive_root
+from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError, SettingsStore, _fsync_parent_directory, validate_archive_root
 from sjtu_learning_assistant.models import Base, Course, SyncState
 
 NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
@@ -64,6 +64,11 @@ class LocalSettingsTests(unittest.TestCase):
             },
             set(payload),
         )
+
+    def test_windows_skips_unsupported_directory_fsync(self) -> None:
+        with patch("sjtu_learning_assistant.local_settings.os.open") as open_directory:
+            _fsync_parent_directory(self.store.path.parent, platform="nt")
+        open_directory.assert_not_called()
 
     def test_payload_type_unknown_and_sensitive_keys_are_rejected(self) -> None:
         for payload in (
