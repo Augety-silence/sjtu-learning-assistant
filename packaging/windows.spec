@@ -9,6 +9,7 @@ ICON = ROOT / "packaging" / "app.ico"
 
 datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
+    (str(ROOT / "migrations"), "migrations"),
     (str(ROOT / "LICENSE"), "licenses"),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),
@@ -16,6 +17,7 @@ datas = [
 ]
 
 hiddenimports = [
+    "logging.config",
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.Windows",
