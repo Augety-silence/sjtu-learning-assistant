@@ -1765,7 +1765,7 @@ a {
   height: 16px;
 }
 
-@media (max-width: 1023px) and (min-width: 600px) {
+@media (max-width: 1199px) and (min-width: 600px) {
   :root {
     --page-x: 24px;
   }
