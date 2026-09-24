@@ -94,6 +94,71 @@ describe("AssignmentsView", () => {
     );
   });
 
+  it("shows localized deadline and submission status badges", async () => {
+    const variants: AssignmentItem[] = [
+      {
+        ...assignment,
+        id: "missing",
+        name: "缺交作业",
+        categories: ["missing"],
+        submission: { ...assignment.submission!, missing: true },
+      },
+      {
+        ...assignment,
+        id: "late",
+        name: "逾期作业",
+        categories: ["overdue"],
+        submission: { ...assignment.submission!, late: true },
+      },
+      { ...assignment, id: "today", name: "今日作业" },
+      {
+        ...submittedAssignment,
+        id: "submitted",
+        name: "已交作业",
+        categories: ["submitted"],
+      },
+      {
+        ...submittedAssignment,
+        id: "graded",
+        name: "已评分作业",
+        categories: ["graded"],
+        submission: {
+          ...submittedAssignment.submission!,
+          workflow_state: "graded",
+        },
+      },
+    ];
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: variants,
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(variants[4]);
+
+    render(<AssignmentsView />);
+
+    const expected = [
+      ["缺交作业", "danger", "缺交"],
+      ["逾期作业", "danger", "已逾期"],
+      ["今日作业", "warning", "今天截止"],
+      ["已交作业", "success", "已提交"],
+      ["已评分作业", "info", "已评分"],
+    ];
+    for (const [name, tone, label] of expected) {
+      const card = await screen.findByRole("button", {
+        name: new RegExp(name),
+      });
+      expect(card.getAttribute("data-tone")).toBe(tone);
+      expect(card.textContent).toContain(label);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: /已评分作业/ }));
+    await waitFor(() =>
+      expect(screen.getByText("提交状态").parentElement?.textContent).toContain(
+        "已评分",
+      ),
+    );
+  });
+
   it("shows external submissions and opens the Canvas assignment", async () => {
     const external = {
       ...assignment,
@@ -161,7 +226,7 @@ describe("AssignmentsView", () => {
     expect(await screen.findByText("提交已由 Canvas 验证")).toBeTruthy();
     expect(screen.getByText("提交 ID：99")).toBeTruthy();
     await waitFor(() => {
-      expect(screen.getByText("submitted")).toBeTruthy();
+      expect(screen.getAllByText("已提交").length).toBeGreaterThan(0);
       expect(api.getAssignmentDetail).toHaveBeenCalledTimes(2);
       expect(api.getAssignments).toHaveBeenCalledTimes(2);
     });

@@ -44,6 +44,36 @@ const typeLabels: Record<string, string> = {
   none: "无在线提交",
 };
 
+type AssignmentTone = "danger" | "warning" | "success" | "info" | "neutral";
+
+type AssignmentStatusMeta = {
+  label: string;
+  tone: AssignmentTone;
+};
+
+const workflowMeta: Record<string, AssignmentStatusMeta> = {
+  submitted: { label: "已提交", tone: "success" },
+  pending_review: { label: "待批改", tone: "info" },
+  graded: { label: "已评分", tone: "info" },
+  unsubmitted: { label: "未提交", tone: "neutral" },
+};
+
+function getWorkflowMeta(
+  workflowState: string | null | undefined,
+): AssignmentStatusMeta {
+  const state = workflowState || "unsubmitted";
+  return workflowMeta[state] ?? { label: state, tone: "neutral" };
+}
+
+function getAssignmentStatus(item: AssignmentItem): AssignmentStatusMeta {
+  if (item.submission?.missing) return { label: "缺交", tone: "danger" };
+  if (item.submission?.late) return { label: "已逾期", tone: "danger" };
+  if (item.categories.includes("today")) {
+    return { label: "今天截止", tone: "warning" };
+  }
+  return getWorkflowMeta(item.submission?.workflow_state);
+}
+
 type PendingSubmission = {
   type: NativeSubmissionType;
   label: string;
@@ -82,7 +112,7 @@ function VerificationDetails({ result }: { result: SubmissionResult }) {
     <div className="submission-success" role="status">
       <strong>提交已由 Canvas 验证</strong>
       <span>提交 ID：{result.submission_id ?? "—"}</span>
-      <span>状态：{result.workflow_state ?? "—"}</span>
+      <span>状态：{getWorkflowMeta(result.workflow_state).label}</span>
       <span>时间：{formatDateTime(result.submitted_at)}</span>
       <span>尝试次数：{result.attempt ?? "—"}</span>
       {result.attachments.map((item) => (
@@ -357,22 +387,33 @@ export function AssignmentsView() {
       ) : (
         <div className="assignment-layout">
           <div className="assignment-list" aria-label="作业列表">
-            {items.map((item) => (
-              <button
-                key={`${item.course_id}:${item.id}`}
-                type="button"
-                className={
-                  selected?.id === item.id
-                    ? "assignment-card assignment-card-active"
-                    : "assignment-card"
-                }
-                onClick={() => void selectAssignment(item)}
-              >
-                <strong>{item.name}</strong>
-                <span>{item.course_name}</span>
-                <small>{formatDateTime(item.due_at)}</small>
-              </button>
-            ))}
+            {items.map((item) => {
+              const status = getAssignmentStatus(item);
+              return (
+                <button
+                  key={`${item.course_id}:${item.id}`}
+                  type="button"
+                  className={
+                    selected?.id === item.id
+                      ? "assignment-card assignment-card-active"
+                      : "assignment-card"
+                  }
+                  data-tone={status.tone}
+                  onClick={() => void selectAssignment(item)}
+                >
+                  <strong>{item.name}</strong>
+                  <span>{item.course_name}</span>
+                  <span className="assignment-card-footer">
+                    <small>{formatDateTime(item.due_at)}</small>
+                    <span
+                      className={`assignment-status assignment-status-${status.tone}`}
+                    >
+                      {status.label}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
           <section className="assignment-detail" aria-live="polite">
             {!selected ? (
@@ -398,8 +439,13 @@ export function AssignmentsView() {
                     <dd>{formatDateTime(selected.due_at)}</dd>
                   </div>
                   <div>
-                    <dt>状态</dt>
-                    <dd>{selected.submission?.workflow_state || "未提交"}</dd>
+                    <dt>提交状态</dt>
+                    <dd>
+                      {
+                        getWorkflowMeta(selected.submission?.workflow_state)
+                          .label
+                      }
+                    </dd>
                   </div>
                   <div>
                     <dt>提交类型</dt>

@@ -2176,6 +2176,56 @@ a {
   color: var(--text-secondary);
 }
 
+.assignment-card-footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.assignment-card-footer small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignment-status {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  font-size: 11px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.assignment-card .assignment-status-danger {
+  border-color: var(--status-danger);
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+.assignment-card .assignment-status-warning {
+  border-color: var(--status-warning);
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+}
+
+.assignment-card .assignment-status-success {
+  border-color: var(--status-success);
+  background: var(--status-success-bg);
+  color: var(--status-success);
+}
+
+.assignment-card .assignment-status-info {
+  border-color: var(--status-info);
+  background: var(--status-info-bg);
+  color: var(--status-info);
+}
+
 .assignment-card-active,
 .assignment-card-active:hover {
   background: var(--surface-selected);
