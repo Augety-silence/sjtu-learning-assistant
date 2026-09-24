@@ -37,8 +37,7 @@ clean_packaging_xattrs() {
 "$PYTHON_BIN" -m pip install -r requirements-dev.txt
 
 "$PYTHON_BIN" scripts/generate_macos_icon.py
-npm --prefix dashboard-web ci --no-audit --no-fund || \
-  npm --prefix dashboard-web install --no-audit --no-fund
+npm --prefix dashboard-web ci --no-audit --no-fund
 npm --prefix dashboard-web run test
 npm --prefix dashboard-web run lint
 npm --prefix dashboard-web run build

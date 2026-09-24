@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos-release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: dashboard-web/package-lock.json
+      - name: 校验版本与依赖工具链
+        run: |
+          test "$(node --version)" = "v22.22.0"
+          test "$(npm --version)" = "10.9.4"
+          test "$GITHUB_REF_NAME" = "v$(python -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
+          if grep -n '"resolved": "https://' dashboard-web/package-lock.json | grep -v 'https://registry.npmjs.org/'; then
+            echo "package-lock.json 包含非官方 registry 地址" >&2
+            exit 1
+          fi
+      - name: 构建并验证 macOS 应用
+        run: scripts/build_macos_app.sh
+      - name: 构建并验证 DMG
+        run: |
+          scripts/build_macos_dmg.sh
+          hdiutil verify dist/*.dmg
+          (cd dist && shasum -a 256 -c *.dmg.sha256)
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SJTU-Learning-Assistant-${{ github.ref_name }}-macOS-arm64
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          if-no-files-found: error
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.dmg \
+            dist/*.dmg.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --prerelease \
+            --title "SJTU Learning Assistant $GITHUB_REF_NAME"
