@@ -579,6 +579,8 @@ Bundle identifier 为 `io.github.sjtu-learning-assistant`，版本来自 `sjtu_l
 
 当前产物**未签名、未公证**。首次打开时 Gatekeeper 可能阻止运行。请仅对自己从可信源码构建、并已核对校验和的产物，在 Finder 中按住 Control 点击应用并选择“打开”，再确认；不要建议用户全局关闭 Gatekeeper。正式公开分发前应增加 Developer ID 签名、公证和 stapling 流程。
 
+推送与 `sjtu_learning_assistant.__version__` 完全一致的 `v*.*.*` tag 会触发 Release workflow，在 Apple Silicon runner 上重新执行测试与检查、构建并验证 DMG 和 SHA-256，然后创建 GitHub Pre-release。该自动化当前只发布未签名、未公证的 arm64 产物；完成 Developer ID 签名与公证后再移除 Pre-release 标记。
+
 ### 构建 Windows 应用与安装器
 
 Windows 构建必须在 Windows 10/11 或 `windows-latest` runner 上执行（PyInstaller 不支持从 macOS/Linux 交叉生成 Windows 可执行文件）：
@@ -587,7 +589,7 @@ Windows 构建必须在 Windows 10/11 或 `windows-latest` runner 上执行（Py
 powershell -ExecutionPolicy Bypass -File scripts/build_windows_app.ps1
 ```
 
-脚本会安装 Python 依赖、生成 `.ico`，再执行前端测试/Lint/构建、Python 单测、许可证与秘密扫描，最后用 `packaging/windows.spec` 构建 one-folder 应用。若机器已安装 Inno Setup 6，还会继续生成安装器：
+脚本会安装 Python 与 npm 依赖、生成 `.ico`，再执行前端测试/构建、Windows 专项 Python 单测、许可证与秘密扫描，最后用 `packaging/windows.spec` 构建 one-folder 应用。若机器已安装 Inno Setup 6，还会继续生成安装器：
 
 ```text
 dist/SJTU-Learning-Assistant-<version>-Windows-x64-portable.zip
@@ -596,7 +598,7 @@ dist/SJTU-Learning-Assistant-<version>-Windows-x64-Setup.exe
 dist/SJTU-Learning-Assistant-<version>-Windows-x64-Setup.exe.sha256
 ```
 
-`.github/workflows/ci.yml` 的 `windows-app` job 会在 GitHub Windows runner 上安装 Inno Setup、执行同一脚本并上传上述产物。Windows 用户数据位于 `%LOCALAPPDATA%\\SJTU Learning Assistant`，凭据由系统 Credential Locker 保存；文件打开/定位使用 Explorer，系统提醒使用 Windows Toast。当前 Windows 产物未做 Authenticode 签名，正式公开分发前应增加受保护的证书签名与时间戳步骤。
+`.github/workflows/ci.yml` 的 `windows-app` job 会在 GitHub Windows runner 上安装 Inno Setup、执行同一脚本并上传上述产物。跨平台前端 Lint 由前置 `frontend` job 统一执行，避免 Windows 换行差异影响原生打包。Windows 用户数据位于 `%LOCALAPPDATA%\\SJTU Learning Assistant`，凭据由系统 Credential Locker 保存；文件打开/定位使用 Explorer，系统提醒使用 Windows Toast。当前 Windows 产物未做 Authenticode 签名，正式公开分发前应增加受保护的证书签名与时间戳步骤。
 
 ### 数据迁移与回滚
 

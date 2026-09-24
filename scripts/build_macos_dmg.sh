@@ -41,6 +41,9 @@ rm -f "$DMG_PATH"
   -format UDZO \
   "$DMG_PATH"
 
-/usr/bin/shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(
+  cd "$ROOT_DIR/dist"
+  /usr/bin/shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+)
 printf '%s\n' "已生成 DMG：$DMG_PATH"
 printf '%s\n' "SHA-256：$(/usr/bin/shasum -a 256 "$DMG_PATH" | /usr/bin/cut -d ' ' -f 1)"

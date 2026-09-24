@@ -112,6 +112,12 @@ def main() -> int:
     optional = requirement_names(OPTIONAL_FILE)
     dev = requirement_names(DEV_FILE) - runtime
     windows = requirement_names(WINDOWS_FILE) - runtime
+    installed_windows = {
+        name
+        for name in windows
+        if importlib.metadata.packages_distributions().get(name.replace("-", "_"))
+        or importlib.metadata.packages_distributions().get(name)
+    }
     if "psycopg" in runtime or "psycopg-binary" in runtime:
         print("错误：psycopg 只能位于 requirements-postgres.txt", file=sys.stderr)
         return 1
@@ -119,7 +125,7 @@ def main() -> int:
         print("错误：requirements-postgres.txt 只能声明 psycopg 可选迁移依赖", file=sys.stderr)
         return 1
     errors = check_group("runtime", runtime, allow_pyinstaller=False)
-    errors.extend(check_group("windows", windows, allow_pyinstaller=False))
+    errors.extend(check_group("windows", installed_windows, allow_pyinstaller=False))
     errors.extend(check_group("dev", dev, allow_pyinstaller=True))
     for error in errors:
         print(f"错误：{error}", file=sys.stderr)

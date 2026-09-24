@@ -21,10 +21,9 @@ if (-not (Test-Path $Python)) {
 & $Python -m pip install -r requirements-windows.txt
 & $Python scripts/generate_windows_icon.py
 
-pnpm --dir dashboard-web install --frozen-lockfile --ignore-scripts
-pnpm --dir dashboard-web run test -- --pool=forks --maxWorkers=1
-pnpm --dir dashboard-web run lint
-pnpm --dir dashboard-web run build
+npm --prefix dashboard-web ci --no-audit --no-fund
+npm --prefix dashboard-web run test -- --pool=forks --maxWorkers=1
+npm --prefix dashboard-web run build
 & $Python -m unittest `
     tests.test_dashboard_desktop_actions.DesktopActionSafetyTests.test_windows_commands_use_shell_free_system_handlers `
     tests.test_notifications.WindowsNotificationSenderTests -v
