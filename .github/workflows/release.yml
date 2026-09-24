@@ -42,7 +42,7 @@ jobs:
           scripts/build_macos_dmg.sh
           hdiutil verify dist/*.dmg
           (cd dist && shasum -a 256 -c *.dmg.sha256)
-      - name: 上传构建产物
+      - name: 上传 macOS 构建产物
         uses: actions/upload-artifact@v4
         with:
           name: SJTU-Learning-Assistant-${{ github.ref_name }}-macOS-arm64
@@ -50,13 +50,66 @@ jobs:
             dist/*.dmg
             dist/*.dmg.sha256
           if-no-files-found: error
-      - name: 创建 GitHub Release
+
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: dashboard-web/package-lock.json
+      - name: 校验版本与依赖工具链
+        shell: pwsh
+        run: |
+          if ((node --version) -ne "v22.22.0") { throw "Node 版本不匹配" }
+          if ((npm --version) -ne "10.9.4") { throw "npm 版本不匹配" }
+          $Version = (& python -c "from sjtu_learning_assistant import __version__; print(__version__)").Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$Version") { throw "Tag 与项目版本不匹配" }
+      - name: 安装 Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: 构建 Windows portable 与安装器
+        shell: pwsh
+        run: scripts/build_windows_app.ps1
+      - name: 验证 Windows SHA-256
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.sha256 | ForEach-Object {
+            $Parts = (Get-Content $_.FullName).Trim() -split "\s+", 2
+            $Artifact = Join-Path $_.DirectoryName $Parts[1]
+            $Actual = (Get-FileHash $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($Actual -ne $Parts[0]) { throw "SHA-256 校验失败：$Artifact" }
+          }
+      - name: 上传 Windows 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SJTU-Learning-Assistant-${{ github.ref_name }}-Windows-x64
+          path: |
+            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip
+            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip.sha256
+            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe
+            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe.sha256
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [macos-release, windows-release]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 创建 GitHub Pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/*.dmg \
-            dist/*.dmg.sha256 \
+            dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
