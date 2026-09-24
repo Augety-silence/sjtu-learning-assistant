@@ -20,6 +20,7 @@ export type AIThinkingDepth = "quick" | "standard" | "deep";
 export type AIChatSendShortcut = "enter" | "cmd_enter";
 export type AIReplyLanguage = "auto" | "zh" | "en";
 export type AIAttachmentContextBudget = "economy" | "balanced" | "deep";
+export type ThemeMode = "light" | "dark" | "system";
 
 export interface AIChatPreferences {
   ai_chat_send_shortcut: AIChatSendShortcut;
@@ -250,6 +251,7 @@ export interface SettingsStatus {
   ai_attachment_context_budget: AIAttachmentContextBudget;
   ai_auto_open_activity: boolean;
   ai_code_line_numbers: boolean;
+  theme_mode: ThemeMode;
 }
 
 export interface MaterialMoveResult {

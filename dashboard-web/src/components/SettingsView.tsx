@@ -5,10 +5,14 @@ import {
   Database,
   ExternalLink,
   Mail,
+  Monitor,
+  Moon,
   Pencil,
   ShieldCheck,
+  Sun,
   X,
 } from "lucide-react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   type FormEvent,
   type RefObject,
@@ -17,6 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -30,7 +35,7 @@ import {
   testAiConnection,
   updateSettings,
 } from "@/lib/api";
-import type { SettingsStatus } from "@/lib/types";
+import type { SettingsStatus, ThemeMode } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
 const AI_MODELS = [
@@ -44,6 +49,17 @@ const AI_MODELS = [
 const CONFIGURATION_GUIDE_URL =
   "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f";
 type ConfigKind = "canvas" | "mail" | "cloud" | "ai";
+
+const themeOptions = [
+  {
+    mode: "system",
+    label: "跟随系统",
+    description: "自动匹配 macOS 外观",
+    icon: Monitor,
+  },
+  { mode: "light", label: "浅色", description: "始终使用浅色外观", icon: Sun },
+  { mode: "dark", label: "深色", description: "始终使用深色外观", icon: Moon },
+] as const;
 
 const configMeta = {
   canvas: {
@@ -78,8 +94,10 @@ const configMeta = {
 
 export function SettingsView({
   onArchiveChanged,
+  onThemeModeChange,
 }: {
   onArchiveChanged?: () => void;
+  onThemeModeChange?: (mode: ThemeMode) => void;
 }) {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [error, setError] = useState("");
@@ -92,12 +110,16 @@ export function SettingsView({
   const configTriggerRef = useRef<HTMLButtonElement>(null);
   const { showToast } = useToast();
 
-  const applyStatus = useCallback((next: SettingsStatus) => {
-    setStatus(next);
-    setMailAccount(next.mail_account);
-    setAiBaseUrl(next.ai_base_url);
-    setAiModel(next.ai_model);
-  }, []);
+  const applyStatus = useCallback(
+    (next: SettingsStatus) => {
+      setStatus(next);
+      setMailAccount(next.mail_account);
+      setAiBaseUrl(next.ai_base_url);
+      setAiModel(next.ai_model);
+      onThemeModeChange?.(next.theme_mode);
+    },
+    [onThemeModeChange],
+  );
 
   const load = useCallback(async () => {
     setError("");
@@ -122,6 +144,7 @@ export function SettingsView({
         | "ai_enabled"
         | "ai_base_url"
         | "ai_model"
+        | "theme_mode"
       >
     >,
   ) => {
@@ -315,6 +338,47 @@ export function SettingsView({
         </p>
       )}
 
+      <section className="settings-panel" aria-labelledby="appearance-title">
+        <div className="section-header">
+          <div>
+            <h3 id="appearance-title">外观</h3>
+            <p>选择界面主题；跟随系统会实时响应 macOS 外观变化。</p>
+          </div>
+        </div>
+        <div
+          className="theme-options"
+          role="radiogroup"
+          aria-labelledby="appearance-title"
+        >
+          {themeOptions.map(({ mode, label, description, icon: Icon }) => {
+            const selected = status.theme_mode === mode;
+            return (
+              <label
+                key={mode}
+                className={
+                  selected ? "theme-option is-selected" : "theme-option"
+                }
+              >
+                <input
+                  className="sr-only"
+                  type="radio"
+                  name="theme-mode"
+                  value={mode}
+                  checked={selected}
+                  disabled={Boolean(busy)}
+                  onChange={() => void update({ theme_mode: mode })}
+                />
+                <Icon aria-hidden="true" />
+                <span>
+                  <strong>{label}</strong>
+                  <small>{description}</small>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </section>
+
       <section
         className="configuration-section"
         aria-labelledby="configuration-title"
@@ -441,28 +505,30 @@ export function SettingsView({
         </div>
       </section>
 
-      {editing && (
-        <ConfigDialog
-          kind={editing}
-          saved={savedByKind[editing]}
-          busy={Boolean(busy)}
-          mailAccount={mailAccount}
-          aiBaseUrl={aiBaseUrl}
-          aiModel={aiModel}
-          secret={secret}
-          triggerRef={configTriggerRef}
-          onMailAccount={setMailAccount}
-          onAiBaseUrl={setAiBaseUrl}
-          onAiModel={setAiModel}
-          onSecret={setSecret}
-          onClose={() => {
-            if (!busy) setEditing(null);
-          }}
-          onSave={saveConfig}
-          onDelete={() => void removeCredential()}
-          onTestAI={() => void testAI()}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {editing && (
+          <ConfigDialog
+            kind={editing}
+            saved={savedByKind[editing]}
+            busy={Boolean(busy)}
+            mailAccount={mailAccount}
+            aiBaseUrl={aiBaseUrl}
+            aiModel={aiModel}
+            secret={secret}
+            triggerRef={configTriggerRef}
+            onMailAccount={setMailAccount}
+            onAiBaseUrl={setAiBaseUrl}
+            onAiModel={setAiModel}
+            onSecret={setSecret}
+            onClose={() => {
+              if (!busy) setEditing(null);
+            }}
+            onSave={saveConfig}
+            onDelete={() => void removeCredential()}
+            onTestAI={() => void testAI()}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -504,6 +570,7 @@ function ConfigDialog({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const isPresent = useIsPresent();
   const meta = configMeta[kind];
   const canSave =
     (kind === "mail" ? Boolean(mailAccount.trim()) : true) &&
@@ -513,24 +580,40 @@ function ConfigDialog({
     initialFocusRef: closeButtonRef,
     triggerRef,
     dismissible: !busy,
+    active: isPresent,
   });
 
-  return (
-    <div
+  return createPortal(
+    <motion.div
       className="config-dialog-layer"
       data-modal-layer
+      data-motion-layer="modal"
       role="presentation"
+      aria-hidden={isPresent ? undefined : true}
+      initial={{ opacity: 0.01 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: isPresent ? 0.14 : 0.12 }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section
+      <motion.section
         ref={dialogRef}
         className="config-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-dialog-title"
+        aria-hidden={isPresent ? undefined : true}
+        data-motion-surface="modal"
         tabIndex={-1}
+        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        transition={{
+          duration: isPresent ? 0.18 : 0.14,
+          ease: [0.16, 1, 0.3, 1],
+        }}
       >
         <header>
           <div>
@@ -627,7 +710,7 @@ function ConfigDialog({
             <span />
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               disabled={busy}
               onClick={onClose}
             >
@@ -638,8 +721,9 @@ function ConfigDialog({
             </Button>
           </footer>
         </form>
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>,
+    document.body,
   );
 }
 

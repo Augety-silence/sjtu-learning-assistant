@@ -17,6 +17,7 @@ from .sjtu_pan import (
     delete_user_token,
     load_user_token,
     save_user_token,
+    user_token_saved,
     validate_user_token_value,
 )
 
@@ -26,5 +27,5 @@ __all__ = [
     "CloudRemoteApiError", "CloudStorageError", "CloudStorageProvider",
     "CloudTimeoutError", "RemotePath", "SJTUCloudPanProvider", "SpaceCredential",
     "SpaceInfo", "TemporaryDownload", "UploadSession", "delete_user_token",
-    "load_user_token", "save_user_token", "validate_user_token_value",
+    "load_user_token", "save_user_token", "user_token_saved", "validate_user_token_value",
 ]

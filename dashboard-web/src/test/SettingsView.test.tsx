@@ -52,6 +52,7 @@ const status: SettingsStatus = {
   ai_attachment_context_budget: "balanced",
   ai_auto_open_activity: true,
   ai_code_line_numbers: false,
+  theme_mode: "system",
 };
 
 describe("SettingsView", () => {
@@ -60,7 +61,10 @@ describe("SettingsView", () => {
     vi.clearAllMocks();
     vi.mocked(getSettings).mockResolvedValue(status);
     vi.mocked(openExternal).mockResolvedValue({ status: "opened" });
-    vi.mocked(updateSettings).mockResolvedValue(status);
+    vi.mocked(updateSettings).mockImplementation(async (changes) => ({
+      ...status,
+      ...changes,
+    }));
     vi.mocked(saveCredential).mockResolvedValue(status);
     vi.mocked(deleteCredential).mockResolvedValue(status);
     vi.mocked(testAiConnection).mockResolvedValue({
@@ -80,6 +84,20 @@ describe("SettingsView", () => {
       unchanged: 1,
       failed: 0,
     });
+  });
+
+  it("shows all theme modes and applies a saved selection", async () => {
+    const onThemeModeChange = vi.fn();
+    render(<SettingsView onThemeModeChange={onThemeModeChange} />);
+
+    const system = await screen.findByRole("radio", { name: /跟随系统/ });
+    expect((system as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: /深色/ }));
+
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith({ theme_mode: "dark" }),
+    );
+    expect(onThemeModeChange).toHaveBeenLastCalledWith("dark");
   });
 
   it("groups all connection configuration and opens an edit dialog", async () => {
@@ -110,6 +128,14 @@ describe("SettingsView", () => {
     fireEvent.click(trigger);
 
     const dialog = screen.getByRole("dialog", { name: "Canvas 配置" });
+    expect(dialog.getAttribute("data-motion-surface")).toBe("modal");
+    expect(dialog.parentElement?.getAttribute("data-motion-layer")).toBe(
+      "modal",
+    );
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    expect(
+      within(dialog).getByRole("button", { name: "取消" }).className,
+    ).toContain("bg-transparent");
     const close = within(dialog).getByRole("button", {
       name: "关闭配置窗口",
     });

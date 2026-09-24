@@ -1,3 +1,4 @@
+import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import {
@@ -219,14 +220,16 @@ export function OverviewView({
           )}
         </div>
       </Section>
-      {detailItem && (
-        <MessageDetailDialog
-          item={detailItem}
-          onClose={() => setDetailItem(null)}
-          onMarkedRead={markMessageRead}
-          triggerRef={detailTriggerRef}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {detailItem && (
+          <MessageDetailDialog
+            item={detailItem}
+            onClose={() => setDetailItem(null)}
+            onMarkedRead={markMessageRead}
+            triggerRef={detailTriggerRef}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

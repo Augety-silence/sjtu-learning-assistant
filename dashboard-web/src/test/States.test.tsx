@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EmptyState, ErrorState } from "@/components/States";
+import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
@@ -11,6 +11,17 @@ afterEach(() => {
 });
 
 describe("shared states", () => {
+  it.each([
+    ["loading", <LoadingState label="读取中" />],
+    ["empty", <EmptyState title="暂无内容" description="稍后再试" />],
+    ["error", <ErrorState message="请求失败" />],
+  ])("%s 使用克制的状态入场标记", (_name, state) => {
+    const { container } = render(state);
+    expect(
+      container.querySelector('[data-motion-surface="state"]'),
+    ).toBeTruthy();
+  });
+
   it("EmptyState 呈现场景 action", () => {
     const clear = vi.fn();
     render(

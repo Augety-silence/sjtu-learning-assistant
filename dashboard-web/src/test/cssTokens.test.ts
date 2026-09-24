@@ -32,6 +32,33 @@ describe("CSS semantic tokens", () => {
     expect(css).not.toContain("0.5px");
   });
 
+  it("为深色主题覆盖核心界面与 AI 工作区语义色", () => {
+    expect(css).toContain(':root[data-theme="dark"]');
+    const darkTheme = css.slice(css.indexOf(':root[data-theme="dark"]'));
+    for (const token of [
+      "--surface-page: #17191d",
+      "--text-primary: #f0f2f5",
+      "--border-default: #59616d",
+      "--action-primary: #6f9fff",
+      "--surface-ai-elevated: #20242a",
+      "--text-ai-content: #e3e7ed",
+    ]) {
+      expect(darkTheme).toContain(token);
+    }
+    expect(darkTheme).toContain("color-scheme: dark");
+  });
+
+  it("通知在浅色与深色主题中使用对应的表面和文字色", () => {
+    const lightTheme = css.slice(0, css.indexOf(':root[data-theme="dark"]'));
+    const darkTheme = css.slice(css.indexOf(':root[data-theme="dark"]'));
+    expect(lightTheme).toContain("--surface-toast: #ffffff");
+    expect(lightTheme).toContain("--text-toast: #1f2329");
+    expect(darkTheme).toContain("--surface-toast: #25272b");
+    expect(darkTheme).toContain("--text-toast: #f5f6f7");
+    expect(css).toContain("background: var(--surface-toast)");
+    expect(css).toContain("color: var(--text-toast)");
+  });
+
   it("将 Tailwind 弱化文本映射到可访问语义色", () => {
     expect(css).toContain("--text-tertiary: #6b737d");
     expect(tailwindConfig).toContain('muted: "var(--text-tertiary)"');

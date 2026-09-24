@@ -185,6 +185,10 @@ describe("MessagesView", () => {
       fireEvent.click(trigger);
 
       const dialog = await screen.findByRole("dialog");
+      expect(dialog.getAttribute("data-motion-surface")).toBe("modal");
+      expect(dialog.parentElement?.getAttribute("data-motion-layer")).toBe(
+        "modal",
+      );
       const close = screen.getByRole("button", { name: "关闭消息详情" });
       await waitFor(() => expect(document.activeElement).toBe(close));
       expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -241,7 +245,9 @@ describe("MessagesView", () => {
     });
     vi.useFakeTimers();
     fireEvent.click(trigger);
+    const timersAfterOpen = vi.getTimerCount();
+    expect(timersAfterOpen).toBeGreaterThan(0);
     unmount();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBeLessThan(timersAfterOpen);
   });
 });

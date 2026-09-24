@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 from typing import Any
 
@@ -50,10 +52,41 @@ def normalize_mail_account(value: object) -> str:
     return account
 
 
+def keychain_item_exists(service: str, account: str) -> bool:
+    if sys.platform != "darwin":
+        try:
+            return _keyring().get_password(service, account) is not None
+        except Exception:
+            raise CredentialStoreError("无法查询系统凭据状态。") from None
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                service,
+                "-a",
+                account,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise CredentialStoreError("无法查询 macOS Keychain 配置状态。") from None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 44:
+        return False
+    raise CredentialStoreError("无法查询 macOS Keychain 配置状态。")
+
+
 def _exists(service: str, account: str) -> bool:
     try:
         with _lock:
-            return bool(_keyring().get_password(service, account))
+            return keychain_item_exists(service, account)
     except Exception:
         raise CredentialStoreError("无法读取 macOS Keychain 中的配置状态。") from None
 

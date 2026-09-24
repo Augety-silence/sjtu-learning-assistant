@@ -6,9 +6,16 @@ import {
   getBackupStatus,
   getMessageDetail,
   getMessages,
+  getSettings,
   invoke,
 } from "@/lib/api";
-import type { MessageDetail, MessageItem, OverviewData } from "@/lib/types";
+import { applyThemeMode } from "@/lib/theme";
+import type {
+  MessageDetail,
+  MessageItem,
+  OverviewData,
+  ThemeMode,
+} from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -18,6 +25,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getBackupStatus: vi.fn(),
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
+    getSettings: vi.fn(),
     invoke: vi.fn(),
   };
 });
@@ -33,6 +41,7 @@ const targetMessage: MessageItem = {
 };
 
 let syncTriggered = false;
+let settingsTheme: ThemeMode = "system";
 
 const overview: OverviewData = {
   courses: 1,
@@ -60,8 +69,25 @@ beforeEach(() => {
   window.location.hash = "#/overview";
   vi.clearAllMocks();
   syncTriggered = false;
+  settingsTheme = "system";
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  );
   vi.mocked(invoke).mockImplementation(async (action) => {
     if (action === "overview") return overview as never;
+    if (action === "settings_status") {
+      return { theme_mode: settingsTheme } as never;
+    }
     if (action === "sync_status") {
       return {
         status: syncTriggered ? "syncing" : "idle",
@@ -76,6 +102,9 @@ beforeEach(() => {
     }
     throw new Error(`Unexpected action: ${action}`);
   });
+  vi.mocked(getSettings).mockImplementation(
+    async () => ({ theme_mode: settingsTheme }) as never,
+  );
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
   vi.mocked(getBackupStatus).mockResolvedValue({
@@ -99,7 +128,56 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-theme-mode");
+  document.documentElement.style.removeProperty("color-scheme");
   window.location.hash = "";
+});
+
+describe("application theme", () => {
+  it("applies the saved dark theme to the document root", async () => {
+    settingsTheme = "dark";
+    const { container } = render(<App />);
+
+    expect(container.querySelector(".view-transition")).toBeTruthy();
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(document.documentElement.dataset.themeMode).toBe("dark");
+      expect(document.documentElement.style.colorScheme).toBe("dark");
+    });
+  });
+
+  it("tracks system appearance while system mode is active", () => {
+    let listener: (() => void) | undefined;
+    const mediaQuery = {
+      matches: true,
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addEventListener: vi.fn((_event: string, next: () => void) => {
+        listener = next;
+      }),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQuery),
+    );
+
+    const cleanupTheme = applyThemeMode("system");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    mediaQuery.matches = false;
+    listener?.();
+    expect(document.documentElement.dataset.theme).toBe("light");
+    cleanupTheme();
+    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      listener,
+    );
+  });
 });
 
 describe("overview message detail", () => {

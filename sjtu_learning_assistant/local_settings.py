@@ -23,6 +23,7 @@ SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
 AI_CHAT_SEND_SHORTCUTS = frozenset({"enter", "cmd_enter"})
 AI_REPLY_LANGUAGES = frozenset({"auto", "zh", "en"})
 AI_ATTACHMENT_CONTEXT_BUDGETS = frozenset({"economy", "balanced", "deep"})
+THEME_MODES = frozenset({"light", "dark", "system"})
 PRE_PERSONALIZATION_KEYS = frozenset(
     {
         "archive_root",
@@ -42,9 +43,11 @@ PERSONALIZATION_KEYS = frozenset(
         "ai_attachment_context_budget",
         "ai_auto_open_activity",
         "ai_code_line_numbers",
+        "theme_mode",
     }
 )
 ALLOWED_KEYS = PRE_PERSONALIZATION_KEYS | PERSONALIZATION_KEYS
+PRE_THEME_KEYS = ALLOWED_KEYS - {"theme_mode"}
 PRE_AI_KEYS = PRE_PERSONALIZATION_KEYS - {
     "ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"
 }
@@ -71,6 +74,7 @@ class LocalSettings:
     ai_attachment_context_budget: str = "balanced"
     ai_auto_open_activity: bool = True
     ai_code_line_numbers: bool = False
+    theme_mode: str = "system"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -179,6 +183,10 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         result["ai_base_url"] = validate_ai_base_url(payload["ai_base_url"])
     if "ai_model" in payload:
         result["ai_model"] = validate_ai_model(payload["ai_model"])
+    if "theme_mode" in payload:
+        result["theme_mode"] = _validate_choice(
+            payload["theme_mode"], THEME_MODES, "显示主题"
+        )
     if "ai_chat_send_shortcut" in payload:
         result["ai_chat_send_shortcut"] = _validate_choice(
             payload["ai_chat_send_shortcut"], AI_CHAT_SEND_SHORTCUTS, "发送快捷键"
@@ -242,6 +250,8 @@ class SettingsStore:
                 "ai_model": DEFAULT_AI_MODEL,
                 "ai_key_saved": False,
             }
+        if isinstance(payload, dict) and set(payload) == PRE_THEME_KEYS:
+            payload = {**payload, "theme_mode": LocalSettings().theme_mode}
         if isinstance(payload, dict) and set(payload) == PRE_PERSONALIZATION_KEYS:
             defaults = LocalSettings()
             payload = {

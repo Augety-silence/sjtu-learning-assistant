@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
 import { AssignmentsView } from "@/components/AssignmentsView";
@@ -9,8 +10,9 @@ import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { useToast } from "@/components/Toast";
-import { invoke } from "@/lib/api";
-import type { SyncStatus, ViewName } from "@/lib/types";
+import { getSettings, invoke } from "@/lib/api";
+import { applyThemeMode } from "@/lib/theme";
+import type { SyncStatus, ThemeMode, ViewName } from "@/lib/types";
 
 const views: ViewName[] = [
   "overview",
@@ -34,12 +36,28 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncRequested, setSyncRequested] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
+  const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const { showToast } = useToast();
+  const shouldReduceMotion = useReducedMotion();
 
   const setView = (next: ViewName) => {
     window.location.hash = `/${next}`;
     setViewState(next);
   };
+  useLayoutEffect(() => applyThemeMode(themeMode), [themeMode]);
+
+  useEffect(() => {
+    let active = true;
+    void getSettings()
+      .then((settings) => {
+        if (active) setThemeMode(settings.theme_mode);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     const onHash = () => setViewState(initialView());
     window.addEventListener("hashchange", onHash);
@@ -119,7 +137,18 @@ export default function App() {
       syncing={syncing}
       onSync={() => void triggerSync()}
     >
-      <div>
+      <motion.div
+        key={view}
+        className="view-transition"
+        initial={
+          shouldReduceMotion ? { opacity: 0.01 } : { opacity: 0.01, y: 4 }
+        }
+        animate={{ opacity: 1, y: 0 }}
+        transition={{
+          duration: shouldReduceMotion ? 0.08 : 0.18,
+          ease: [0.16, 1, 0.3, 1],
+        }}
+      >
         {view === "overview" && (
           <OverviewView key={dataVersion} navigate={setView} />
         )}
@@ -131,9 +160,10 @@ export default function App() {
         {view === "settings" && (
           <SettingsView
             onArchiveChanged={() => setDataVersion((value) => value + 1)}
+            onThemeModeChange={setThemeMode}
           />
         )}
-      </div>
+      </motion.div>
     </AppShell>
   );
 }

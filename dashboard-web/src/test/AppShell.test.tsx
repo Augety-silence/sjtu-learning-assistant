@@ -144,6 +144,10 @@ describe("AppShell 移动导航", () => {
 
     const dialog = screen.getByRole("dialog", { name: "移动导航" });
     expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("data-motion-surface")).toBe("drawer");
+    expect(dialog.parentElement?.getAttribute("data-motion-layer")).toBe(
+      "drawer",
+    );
     const current = within(dialog).getByRole("button", { name: "概览" });
     const close = within(dialog).getByRole("button", { name: "关闭" });
     await waitFor(() => expect(document.activeElement).toBe(current));

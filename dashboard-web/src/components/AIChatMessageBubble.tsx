@@ -1,4 +1,5 @@
 import { Activity, Check, Copy, FileText } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import { Children, isValidElement, type ReactNode, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
@@ -33,13 +34,16 @@ export function AIChatMessageBubble({
   onOpenActivity,
   onRevealAttachment,
   showCodeLineNumbers,
+  animateEntry = false,
 }: {
   message: AIChatMessage;
   onOpenActivity: () => void;
   onRevealAttachment: (id: number) => void;
   showCodeLineNumbers: boolean;
+  animateEntry?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const shouldReduceMotion = useReducedMotion();
   const copy = async () => {
     await navigator.clipboard.writeText(message.content);
     setCopied(true);
@@ -47,7 +51,22 @@ export function AIChatMessageBubble({
   };
 
   return (
-    <article className={`ai-message ai-message-${message.role}`}>
+    <motion.article
+      className={`ai-message ai-message-${message.role}`}
+      initial={
+        animateEntry
+          ? shouldReduceMotion
+            ? { opacity: 0.01 }
+            : { opacity: 0.01, y: message.role === "user" ? 4 : 6 }
+          : false
+      }
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        duration: message.role === "user" ? 0.16 : 0.2,
+        ease: [0.16, 1, 0.3, 1],
+      }}
+      data-motion-entry={animateEntry ? message.role : undefined}
+    >
       <header>
         <span className="ai-message-avatar">
           {message.role === "user" ? (
@@ -136,6 +155,6 @@ export function AIChatMessageBubble({
           </button>
         </footer>
       </div>
-    </article>
+    </motion.article>
   );
 }

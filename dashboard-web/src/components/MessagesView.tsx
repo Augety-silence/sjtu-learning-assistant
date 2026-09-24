@@ -1,3 +1,4 @@
+import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
@@ -372,14 +373,16 @@ export function MessagesView() {
         </div>
       )}
 
-      {detailItem && (
-        <MessageDetailDialog
-          item={detailItem}
-          onClose={closeDetail}
-          onMarkedRead={applyRead}
-          triggerRef={detailTriggerRef}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {detailItem && (
+          <MessageDetailDialog
+            item={detailItem}
+            onClose={closeDetail}
+            onMarkedRead={applyRead}
+            triggerRef={detailTriggerRef}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
