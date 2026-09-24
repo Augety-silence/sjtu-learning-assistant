@@ -38,7 +38,7 @@ from sjtu_learning_assistant.desktop_learning_service import (
     LearningServiceError,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC_INDEX = PROJECT_ROOT / "dashboard-web" / "dist" / "index.html"
 SYNC_INTERVAL_SECONDS = 15 * 60
 

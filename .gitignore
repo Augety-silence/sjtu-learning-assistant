@@ -17,6 +17,7 @@ dist/
 build/
 *.app/
 *.dmg
+packaging/app.ico
 *.spec.work/
 *.spec.tmp
 

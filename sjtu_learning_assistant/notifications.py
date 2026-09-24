@@ -39,6 +39,19 @@ on run argv
 end run
 """.strip()
 
+WINDOWS_NOTIFICATION_SCRIPT = r"""
+param([string]$Title, [string]$Subtitle, [string]$Body)
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+$template = [Windows.UI.Notifications.ToastTemplateType]::ToastText04
+$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+$text = $xml.GetElementsByTagName('text')
+$text.Item(0).AppendChild($xml.CreateTextNode($Title)) > $null
+$text.Item(1).AppendChild($xml.CreateTextNode($Subtitle)) > $null
+$text.Item(2).AppendChild($xml.CreateTextNode($Body)) > $null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('SJTU Learning Assistant').Show($toast)
+""".strip()
+
 CATEGORY_LABELS = {
     "new_announcement": "新公告",
     "new_assignment": "新作业",
@@ -152,6 +165,51 @@ class MacOSNotificationSender:
                 f"osascript 退出码 {completed.returncode}"
                 + (f"：{detail}" if detail else "")
             )
+
+
+class WindowsNotificationSender:
+    def __init__(self, *, runner=subprocess.run, platform: str | None = None) -> None:
+        self.runner = runner
+        self.platform = platform or sys.platform
+
+    def send(self, title: str, subtitle: str, body: str) -> None:
+        if self.platform != "win32":
+            raise NotificationError("Windows 系统通知只能在 Windows 上发送。")
+        arguments = [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            WINDOWS_NOTIFICATION_SCRIPT,
+            sanitize_notification_text(title) or "SJTU Learning Assistant",
+            sanitize_notification_text(subtitle),
+            sanitize_notification_text(body) or "同步完成。",
+        ]
+        try:
+            completed = self.runner(
+                arguments,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise NotificationError(f"无法执行 Windows 通知：{exc}") from exc
+        if completed.returncode != 0:
+            detail = sanitize_notification_text(completed.stderr, limit=200)
+            raise NotificationError(
+                f"PowerShell 退出码 {completed.returncode}"
+                + (f"：{detail}" if detail else "")
+            )
+
+
+def default_notification_sender() -> NotificationSender:
+    if sys.platform == "win32":
+        return WindowsNotificationSender()
+    return MacOSNotificationSender()
 
 
 class SqlNotificationEventStore:
@@ -334,7 +392,7 @@ class NotificationService:
         now: datetime | None = None,
     ) -> None:
         self.engine = engine
-        self.sender = sender or MacOSNotificationSender()
+        self.sender = sender or default_notification_sender()
         self.store = store or SqlNotificationEventStore(engine)
         current = now or datetime.now(timezone.utc)
         self.now = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
@@ -524,7 +582,7 @@ class NotificationService:
 
 
 def send_test_notification(sender: NotificationSender | None = None) -> None:
-    (sender or MacOSNotificationSender()).send(
+    (sender or default_notification_sender()).send(
         "SJTU Learning Assistant",
         "通知测试",
         "系统通知工作正常。",

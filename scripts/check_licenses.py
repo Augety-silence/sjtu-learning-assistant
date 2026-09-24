@@ -14,8 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_FILE = ROOT / "requirements.txt"
 OPTIONAL_FILE = ROOT / "requirements-postgres.txt"
 DEV_FILE = ROOT / "requirements-dev.txt"
+WINDOWS_FILE = ROOT / "requirements-windows.txt"
 STRONG_COPYLEFT = re.compile(r"(?:^|[^l])(?:a?gpl)(?:[- v]|$)", re.IGNORECASE)
 PERMISSIVE_ALTERNATIVES = ("apache", "bsd", "isc", "mit")
+REVIEWED_LICENSE_OVERRIDES = {
+    "clr-loader": "MIT",
+}
 
 
 def canonical(name: str) -> str:
@@ -91,7 +95,7 @@ def check_group(label: str, roots: set[str], *, allow_pyinstaller: bool) -> list
     except RuntimeError as exc:
         return [str(exc)]
     for name, distribution in sorted(closure.items()):
-        license_name = license_for(distribution)
+        license_name = license_for(distribution) or REVIEWED_LICENSE_OVERRIDES.get(name, "")
         if not license_name:
             errors.append(f"{label}: {name} 缺少可验证许可证元数据")
             continue
@@ -110,6 +114,13 @@ def main() -> int:
     runtime = requirement_names(RUNTIME_FILE)
     optional = requirement_names(OPTIONAL_FILE)
     dev = requirement_names(DEV_FILE) - runtime
+    windows = requirement_names(WINDOWS_FILE) - runtime
+    installed_windows = {
+        name
+        for name in windows
+        if importlib.metadata.packages_distributions().get(name.replace("-", "_"))
+        or importlib.metadata.packages_distributions().get(name)
+    }
     if "psycopg" in runtime or "psycopg-binary" in runtime:
         print("错误：psycopg 只能位于 requirements-postgres.txt", file=sys.stderr)
         return 1
@@ -117,6 +128,7 @@ def main() -> int:
         print("错误：requirements-postgres.txt 只能声明 psycopg 可选迁移依赖", file=sys.stderr)
         return 1
     errors = check_group("runtime", runtime, allow_pyinstaller=False)
+    errors.extend(check_group("windows", installed_windows, allow_pyinstaller=False))
     errors.extend(check_group("dev", dev, allow_pyinstaller=True))
     for error in errors:
         print(f"错误：{error}", file=sys.stderr)
