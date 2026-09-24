@@ -267,6 +267,10 @@ a {
   gap: 12px;
 }
 
+.page-heading > div {
+  min-width: 0;
+}
+
 .page-heading h1 {
   margin: 0;
   font-size: 24px;
@@ -2056,6 +2060,24 @@ a {
     right: 16px;
     left: 16px;
     width: auto;
+  }
+}
+
+@media (max-width: 380px) {
+  .page-header {
+    gap: 8px;
+  }
+
+  .page-heading {
+    gap: 8px;
+  }
+
+  .page-heading p {
+    display: none;
+  }
+
+  .page-header > button {
+    padding-inline: 10px;
   }
 }
 
