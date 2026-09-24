@@ -96,12 +96,14 @@ function SubmissionConfirmDialog({
   assignment,
   pending,
   submitting,
+  submissionError,
   onCancel,
   onConfirm,
 }: {
   assignment: AssignmentItem;
   pending: PendingSubmission;
   submitting: boolean;
+  submissionError: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -128,7 +130,12 @@ function SubmissionConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
-        aria-describedby="confirm-description"
+        aria-describedby={
+          submissionError
+            ? "confirm-description confirm-error"
+            : "confirm-description"
+        }
+        aria-busy={submitting}
         tabIndex={-1}
       >
         <h3 id="confirm-title">确认提交作业？</h3>
@@ -138,6 +145,11 @@ function SubmissionConfirmDialog({
           <p>类型：{typeLabels[pending.type]}</p>
           <p>内容 / 文件：{pending.label}</p>
         </div>
+        {submissionError && (
+          <p id="confirm-error" className="submission-error" role="alert">
+            {submissionError}
+          </p>
+        )}
         <div className="confirm-actions">
           <Button
             ref={cancelRef}
@@ -149,7 +161,11 @@ function SubmissionConfirmDialog({
             取消
           </Button>
           <Button type="button" disabled={submitting} onClick={onConfirm}>
-            {submitting ? "提交并验证中…" : "确认提交"}
+            {submitting
+              ? "提交并验证中…"
+              : submissionError
+                ? "重新提交"
+                : "确认提交"}
           </Button>
         </div>
       </section>
@@ -168,6 +184,7 @@ export function AssignmentsView() {
   const [showPan, setShowPan] = useState(false);
   const [pending, setPending] = useState<PendingSubmission | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState("");
   const [result, setResult] = useState<SubmissionResult | null>(null);
   const categoryRef = useRef(category);
   categoryRef.current = category;
@@ -202,6 +219,7 @@ export function AssignmentsView() {
     label: string,
     run: () => Promise<SubmissionResult>,
   ) => {
+    setSubmissionError("");
     setPending({ type, label, run });
   };
 
@@ -210,6 +228,7 @@ export function AssignmentsView() {
     const submittedAssignment = selected;
     const submittedCategory = category;
     setSubmitting(true);
+    setSubmissionError("");
     setResult(null);
     try {
       const next = await pending.run();
@@ -259,9 +278,11 @@ export function AssignmentsView() {
         }
       });
     } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "提交失败";
+      setSubmissionError(message);
       showToast({
         kind: "error",
-        message: reason instanceof Error ? reason.message : "提交失败",
+        message,
       });
     } finally {
       setSubmitting(false);
@@ -529,7 +550,11 @@ export function AssignmentsView() {
           assignment={selected}
           pending={pending}
           submitting={submitting}
-          onCancel={() => setPending(null)}
+          submissionError={submissionError}
+          onCancel={() => {
+            setSubmissionError("");
+            setPending(null);
+          }}
           onConfirm={() => void submit()}
         />
       )}

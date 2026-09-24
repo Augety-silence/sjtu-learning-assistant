@@ -186,6 +186,9 @@ describe("AssignmentsView", () => {
     expect(
       await screen.findByRole("button", { name: "提交并验证中…" }),
     ).toBeTruthy();
+    expect(screen.getByRole("alertdialog").getAttribute("aria-busy")).toBe(
+      "true",
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.getByRole("alertdialog")).toBeTruthy();
 
@@ -284,6 +287,12 @@ describe("AssignmentsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "准备提交文本" }));
     fireEvent.click(screen.getByRole("button", { name: "确认提交" }));
     await waitFor(() => expect(api.submitAssignmentText).toHaveBeenCalled());
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.getAttribute("aria-busy")).toBe("false");
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "验证失败",
+    );
+    expect(screen.getByRole("button", { name: "重新提交" })).toBeTruthy();
     expect(screen.queryByText("提交已由 Canvas 验证")).toBeNull();
   });
 });

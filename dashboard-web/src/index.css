@@ -2372,6 +2372,14 @@ a {
   overflow-wrap: anywhere;
 }
 
+.confirm-dialog .submission-error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
 .confirm-actions {
   margin-top: 20px;
   display: flex;
