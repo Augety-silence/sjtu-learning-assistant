@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Settings,
 } from "lucide-react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import appLogo from "@/assets/app-logo.png";
 import { Button } from "@/components/ui/Button";
@@ -93,28 +94,49 @@ function MobileDrawer({
 }) {
   const drawerRef = useRef<HTMLElement>(null);
   const currentItemRef = useRef<HTMLButtonElement>(null);
+  const isPresent = useIsPresent();
 
   useModalFocus(drawerRef, close, {
     initialFocusRef: currentItemRef,
     triggerRef: menuButtonRef,
     shouldRestoreFocus,
+    active: isPresent,
   });
 
   return (
-    <div className="drawer-layer" data-modal-layer>
+    <motion.div
+      className="drawer-layer"
+      data-modal-layer
+      data-motion-layer="drawer"
+      aria-hidden={isPresent ? undefined : true}
+      initial={{ opacity: 0.01 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: isPresent ? 0.14 : 0.12 }}
+    >
       <button
         type="button"
         className="drawer-mask"
         aria-label="关闭导航"
+        disabled={!isPresent}
         onClick={close}
       />
-      <aside
+      <motion.aside
         ref={drawerRef}
         className="mobile-drawer"
         role="dialog"
         aria-modal="true"
         aria-label="移动导航"
+        aria-hidden={isPresent ? undefined : true}
+        data-motion-surface="drawer"
         tabIndex={-1}
+        initial={{ opacity: 0.92, x: -12 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0.92, x: -10 }}
+        transition={{
+          duration: isPresent ? 0.22 : 0.16,
+          ease: [0.16, 1, 0.3, 1],
+        }}
       >
         <div className="brand">
           <img className="brand-mark" src={appLogo} alt="SJTU 学习助手标志" />
@@ -144,8 +166,8 @@ function MobileDrawer({
             关闭
           </Button>
         </div>
-      </aside>
-    </div>
+      </motion.aside>
+    </motion.div>
   );
 }
 
@@ -248,15 +270,17 @@ export function AppShell({
           </div>
         </div>
       </aside>
-      {drawerOpen && isMobile && (
-        <MobileDrawer
-          view={view}
-          select={select}
-          close={closeDrawer}
-          menuButtonRef={menuButtonRef}
-          shouldRestoreFocus={() => !navigatingRef.current}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {drawerOpen && isMobile && (
+          <MobileDrawer
+            view={view}
+            select={select}
+            close={closeDrawer}
+            menuButtonRef={menuButtonRef}
+            shouldRestoreFocus={() => !navigatingRef.current}
+          />
+        )}
+      </AnimatePresence>
       <main className="workspace">
         <header className="page-header">
           <div className="page-heading">

@@ -108,6 +108,7 @@ class DashboardSettingsTests(unittest.TestCase):
                 "ai_attachment_context_budget",
                 "ai_auto_open_activity",
                 "ai_code_line_numbers",
+                "theme_mode",
             },
             set(status),
         )

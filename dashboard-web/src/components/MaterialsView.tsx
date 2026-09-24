@@ -1,4 +1,5 @@
 import { ChevronLeft, File, Folder, Search } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import {
   type KeyboardEvent,
   useCallback,
@@ -878,9 +879,14 @@ export function MaterialsView() {
           )}
         </div>
       )}
-      {preview && (
-        <FilePreviewDialog preview={preview} onClose={() => setPreview(null)} />
-      )}
+      <AnimatePresence initial={false}>
+        {preview && (
+          <FilePreviewDialog
+            preview={preview}
+            onClose={() => setPreview(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

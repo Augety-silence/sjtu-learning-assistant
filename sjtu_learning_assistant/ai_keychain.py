@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from sjtu_learning_assistant.credential_store import keychain_item_exists
+
 AI_KEYCHAIN_SERVICE = "SJTU Learning Assistant - AI Classification"
 AI_KEYCHAIN_ACCOUNT = "openai-api-key"
 MAX_API_KEY_LENGTH = 4096
@@ -36,6 +38,10 @@ def validate_ai_api_key(value: object) -> str:
     ):
         raise AIKeychainError("AI API key 格式不正确。")
     return key
+
+
+def ai_api_key_saved() -> bool:
+    return keychain_item_exists(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
 
 
 def clear_ai_credential_cache() -> None:

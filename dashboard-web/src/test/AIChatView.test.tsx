@@ -49,6 +49,7 @@ const defaultSettings = {
   ai_attachment_context_budget: "balanced" as const,
   ai_auto_open_activity: true,
   ai_code_line_numbers: false,
+  theme_mode: "system" as const,
 };
 
 const trace = {
@@ -188,6 +189,11 @@ describe("AIChatView", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(await screen.findByText("查看推理过程")).toBeTruthy();
+    const animatedReply = document.querySelector(
+      '[data-motion-entry="assistant"]',
+    );
+    expect(animatedReply?.textContent).toContain("优先事项");
+    expect(document.querySelector('[data-motion-entry="user"]')).toBeNull();
     expect(sendAiChatMessage).toHaveBeenCalledWith(
       "session-1",
       "最近有什么消息？",

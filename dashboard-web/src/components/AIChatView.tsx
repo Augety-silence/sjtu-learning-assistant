@@ -1,4 +1,5 @@
 import { Activity, ArrowUp, PanelLeftOpen, PanelRightOpen } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   type DragEvent as ReactDragEvent,
   useCallback,
@@ -100,12 +101,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() =>
     typeof window === "undefined" ? true : window.innerWidth > 1180,
   );
   const wideActivityRef = useRef(
     typeof window === "undefined" ? true : window.innerWidth > 1180,
   );
+  const shouldReduceMotion = useReducedMotion();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const dragDepthRef = useRef(0);
@@ -124,6 +127,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, []);
 
   const applySession = useCallback((session: AIChatSession) => {
+    setMotionMessageIds([]);
     setActive(session);
     setModel((session.model as AIModel) || "auto");
     setDepth(session.thinking_depth);
@@ -247,8 +251,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
-  }, [active?.messages, busy]);
+    endRef.current?.scrollIntoView?.({
+      behavior: shouldReduceMotion ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [active?.messages, busy, shouldReduceMotion]);
 
   const updatePreference = async (change: Partial<AIChatPreferences>) => {
     if (settingsSaving) return;
@@ -395,6 +402,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       content: text,
       attachments: selectedAttachments,
     };
+    setMotionMessageIds([optimistic.id]);
     setActive((current) =>
       current?.id === sessionId
         ? { ...current, messages: [...current.messages, optimistic] }
@@ -421,6 +429,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               depth,
               selectedPresetId,
             );
+      setMotionMessageIds([result.assistant_message.id]);
       setActive((current) =>
         current?.id === sessionId
           ? {
@@ -438,6 +447,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setAttachments([]);
       await refreshSessions();
     } catch (reason) {
+      setMotionMessageIds([]);
       setActive((current) =>
         current?.id === sessionId
           ? {
@@ -478,8 +488,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const hasMessages = Boolean(active?.messages.length);
 
   return (
-    <main
+    <motion.main
       className="ai-workspace"
+      initial={{ opacity: 0.01 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -525,14 +538,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         >
           <span aria-hidden="true" />
         </div>
-        {historyOpen && (
-          <button
-            type="button"
-            className="ai-drawer-backdrop ai-sidebar-backdrop"
-            aria-label="关闭对话导航"
-            onClick={() => setHistoryOpen(false)}
-          />
-        )}
+        <AnimatePresence>
+          {historyOpen && (
+            <motion.button
+              type="button"
+              className="ai-drawer-backdrop ai-sidebar-backdrop"
+              aria-label="关闭对话导航"
+              tabIndex={-1}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={() => setHistoryOpen(false)}
+            />
+          )}
+        </AnimatePresence>
 
         <section
           className={
@@ -594,9 +614,17 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
           <div className="ai-chat-thread" aria-live="polite">
             {loading ? (
-              <div className="ai-thinking" role="status">
+              <motion.div
+                className="ai-thinking ai-initial-loading"
+                role="status"
+                initial={{ opacity: 0.01 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18 }}
+              >
+                <span aria-hidden="true" />
                 正在准备本地学习 Agent…
-              </div>
+              </motion.div>
             ) : !hasMessages ? (
               <div className="ai-chat-empty">
                 <span className="ai-chat-mark">
@@ -630,14 +658,24 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                     onOpenActivity={() => setActivityOpen(true)}
                     onRevealAttachment={(id) => void revealAttachment(id)}
                     showCodeLineNumbers={preferences.ai_code_line_numbers}
+                    animateEntry={motionMessageIds.includes(message.id)}
                   />
                 ))}
-                {busy && (
-                  <div className="ai-thinking" role="status">
-                    <span />
-                    Agent 正在检索本地学习数据…
-                  </div>
-                )}
+                <AnimatePresence>
+                  {busy && (
+                    <motion.div
+                      className="ai-thinking"
+                      role="status"
+                      initial={{ opacity: 0.01, y: 3 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 2 }}
+                      transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                      <span aria-hidden="true" />
+                      Agent 正在检索本地学习数据…
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 <div ref={endRef} />
               </div>
             )}
@@ -692,14 +730,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           <span aria-hidden="true" />
         </div>
 
-        {activityOpen && (
-          <button
-            type="button"
-            className="ai-drawer-backdrop ai-activity-backdrop"
-            aria-label="关闭 Activity"
-            onClick={() => setActivityOpen(false)}
-          />
-        )}
+        <AnimatePresence>
+          {activityOpen && (
+            <motion.button
+              type="button"
+              className="ai-drawer-backdrop ai-activity-backdrop"
+              aria-label="关闭 Activity"
+              tabIndex={-1}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={() => setActivityOpen(false)}
+            />
+          )}
+        </AnimatePresence>
         <AIChatTracePanel
           open={activityOpen}
           onClose={() => setActivityOpen(false)}
@@ -708,6 +753,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           busy={busy}
         />
       </div>
-    </main>
+    </motion.main>
   );
 }

@@ -99,6 +99,30 @@ describe("ToastProvider", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("鼠标悬停时暂停倒计时，移开后从剩余时间继续", () => {
+    vi.useFakeTimers();
+    render(
+      <ToastProvider>
+        <Trigger
+          toast={{ kind: "info", message: "可暂停通知", duration: 1000 }}
+        />
+      </ToastProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "触发通知" }));
+    const toast = screen.getByRole("status");
+    expect(toast.querySelector(".toast-progress")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.mouseEnter(toast);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByRole("status")).toBeTruthy();
+    fireEvent.mouseLeave(toast);
+    act(() => vi.advanceTimersByTime(399));
+    expect(screen.getByRole("status")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("卸载 Provider 时清理未完成 timer", () => {
     vi.useFakeTimers();
     const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");

@@ -39,6 +39,7 @@ datas = [
 ]
 
 hiddenimports = [
+    "logging.config",
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.macOS",

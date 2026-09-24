@@ -1,3 +1,4 @@
+import { motion, useIsPresent } from "motion/react";
 import {
   type RefObject,
   useCallback,
@@ -41,11 +42,13 @@ export function MessageDetailDialog({
   const [markingRead, setMarkingRead] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const isPresent = useIsPresent();
   const { showToast } = useToast();
 
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: closeButtonRef,
     triggerRef,
+    active: isPresent,
   });
 
   useEffect(() => {
@@ -114,20 +117,39 @@ export function MessageDetailDialog({
   );
 
   return (
-    <div className="message-dialog-layer" data-modal-layer>
+    <motion.div
+      className="message-dialog-layer"
+      data-modal-layer
+      data-motion-layer="modal"
+      aria-hidden={isPresent ? undefined : true}
+      initial={{ opacity: 0.01 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: isPresent ? 0.14 : 0.12 }}
+    >
       <button
         type="button"
         className="message-dialog-backdrop"
         aria-label="点击遮罩关闭消息详情"
+        disabled={!isPresent}
         onClick={onClose}
       />
-      <section
+      <motion.section
         ref={dialogRef}
         className="message-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="message-detail-title"
+        aria-hidden={isPresent ? undefined : true}
+        data-motion-surface="modal"
         tabIndex={-1}
+        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        transition={{
+          duration: isPresent ? 0.18 : 0.14,
+          ease: [0.16, 1, 0.3, 1],
+        }}
       >
         <header className="message-dialog-header">
           <div className="min-w-0">
@@ -195,7 +217,7 @@ export function MessageDetailDialog({
             </footer>
           </>
         )}
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }

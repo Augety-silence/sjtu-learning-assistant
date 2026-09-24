@@ -11,7 +11,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { type ReactNode, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import appLogo from "@/assets/app-logo.png";
 import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
@@ -41,6 +42,29 @@ const capabilities = [
 interface SessionGroup {
   label: string;
   items: AIChatSessionSummary[];
+}
+
+function AgentMenuSurface({ children }: { children: ReactNode }) {
+  const isPresent = useIsPresent();
+  return (
+    <motion.div
+      id="ai-sidebar-agent-list"
+      className="ai-sidebar-agent-menu"
+      role="listbox"
+      aria-label="切换 Agent"
+      aria-hidden={!isPresent}
+      inert={!isPresent ? true : undefined}
+      initial={{ opacity: 0.01, y: -4, scale: 0.99 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -3, scale: 0.99 }}
+      transition={{
+        duration: isPresent ? 0.17 : 0.13,
+        ease: [0.16, 1, 0.3, 1],
+      }}
+    >
+      {children}
+    </motion.div>
+  );
 }
 
 function groupSessions(sessions: AIChatSessionSummary[]): SessionGroup[] {
@@ -182,34 +206,33 @@ export function AIChatSidebar({
           </span>
           <ChevronDown aria-hidden="true" />
         </button>
-        {pickerOpen && (
-          <div
-            id="ai-sidebar-agent-list"
-            className="ai-sidebar-agent-menu"
-            role="listbox"
-            aria-label="切换 Agent"
-          >
-            {presets.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                role="option"
-                aria-selected={preset.id === selectedPresetId}
-                onClick={() => {
-                  onSelectPreset(preset.id);
-                  setPickerOpen(false);
-                }}
-              >
-                <img src={aiAgentLogo} alt="" aria-hidden="true" />
-                <span>
-                  <strong>{preset.name}</strong>
-                  <small>{preset.description}</small>
-                </span>
-                {preset.id === selectedPresetId && <Check aria-hidden="true" />}
-              </button>
-            ))}
-          </div>
-        )}
+        <AnimatePresence>
+          {pickerOpen && (
+            <AgentMenuSurface>
+              {presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  role="option"
+                  aria-selected={preset.id === selectedPresetId}
+                  onClick={() => {
+                    onSelectPreset(preset.id);
+                    setPickerOpen(false);
+                  }}
+                >
+                  <img src={aiAgentLogo} alt="" aria-hidden="true" />
+                  <span>
+                    <strong>{preset.name}</strong>
+                    <small>{preset.description}</small>
+                  </span>
+                  {preset.id === selectedPresetId && (
+                    <Check aria-hidden="true" />
+                  )}
+                </button>
+              ))}
+            </AgentMenuSurface>
+          )}
+        </AnimatePresence>
         <p className="ai-current-agent-description">
           {selectedPreset?.description ?? "选择一个 Agent 开始处理学习任务。"}
         </p>

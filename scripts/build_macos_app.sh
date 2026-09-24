@@ -16,6 +16,15 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 APP_PATH="$ROOT_DIR/dist/SJTU Learning Assistant.app"
+LOCAL_CODESIGN_IDENTITY="SJTU Learning Assistant Local Development"
+CODESIGN_IDENTITY="${SJTU_CODESIGN_IDENTITY:-}"
+if [[ -z "$CODESIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "$LOCAL_CODESIGN_IDENTITY"; then
+  CODESIGN_IDENTITY="$LOCAL_CODESIGN_IDENTITY"
+fi
+if [[ -z "$CODESIGN_IDENTITY" ]]; then
+  CODESIGN_IDENTITY="-"
+fi
+
 
 clean_packaging_xattrs() {
   local path
@@ -57,18 +66,18 @@ clean_bundle_xattrs() {
   done
 }
 
-adhoc_sign_bundle() {
+sign_bundle() {
   local attempt
   /usr/bin/xattr -cr "$APP_PATH"
   /bin/sleep 1
   for attempt in 1 2 3 4 5; do
     clean_bundle_xattrs
-    if /usr/bin/codesign --force --deep --sign - "$APP_PATH"; then
+    if /usr/bin/codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_PATH"; then
       return 0
     fi
     /bin/sleep 1
   done
-  printf '%s\n' "错误：清理 bundle xattr 后仍无法完成 ad-hoc 签名。" >&2
+  printf '%s\n' "错误：清理 bundle xattr 后仍无法完成代码签名。" >&2
   return 1
 }
 
@@ -77,26 +86,31 @@ rm -rf build dist
 PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR=1 \
   "$PYTHON_BIN" -m PyInstaller --noconfirm --clean packaging/desktop.spec
 
-# The Desktop path may be managed by File Provider, which can immediately
-# recreate FinderInfo on bundles. Prefer ad-hoc signing when the attributes
-# remain clear; otherwise keep a valid unsigned bundle instead of a broken one.
+# The Desktop path may be managed by File Provider, which can recreate FinderInfo.
+# Preserve a valid unsigned artifact only when no persistent signing identity is
+# available; configured identities must either sign successfully or fail clearly.
 /usr/bin/xattr -cr "$APP_PATH"
 /bin/sleep 5
-if /usr/bin/xattr -lr "$APP_PATH" 2>/dev/null | /usr/bin/grep -E \
+if [[ "$CODESIGN_IDENTITY" == "-" ]] && /usr/bin/xattr -lr "$APP_PATH" 2>/dev/null | /usr/bin/grep -E \
   'com\.apple\.(FinderInfo|ResourceFork)' >/dev/null; then
   /usr/bin/codesign --remove-signature "$APP_PATH" 2>/dev/null || true
   rm -rf "$APP_PATH/Contents/_CodeSignature"
   printf '%s\n' "提示：目标目录会恢复 FinderInfo；已保留未签名应用。"
 else
   set +e
-  adhoc_sign_bundle
+  sign_bundle
   sign_status=$?
   set -e
   if test "$sign_status" -eq 0; then
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+    printf '已使用签名身份：%s\n' "$CODESIGN_IDENTITY"
   else
     /usr/bin/codesign --remove-signature "$APP_PATH" 2>/dev/null || true
     rm -rf "$APP_PATH/Contents/_CodeSignature"
+    if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+      printf '错误：无法使用签名身份 %s。\n' "$CODESIGN_IDENTITY" >&2
+      exit 1
+    fi
     printf '%s\n' "提示：ad-hoc 签名未完成；已保留未签名应用。"
   fi
 fi

@@ -13,6 +13,7 @@ from sjtu_learning_assistant import (
     credential_store,
     mail_sync,
 )
+from sjtu_learning_assistant.cloud_storage import sjtu_pan
 from sjtu_learning_assistant.dashboard_service import DashboardService
 
 
@@ -38,6 +39,60 @@ class FakeKeyring:
     def delete_password(self, service, account):
         self.delete_calls.append((service, account))
         self.values.pop((service, account), None)
+
+
+class CredentialMetadataTests(unittest.TestCase):
+    @patch.object(credential_store.sys, "platform", "darwin")
+    @patch.object(credential_store.subprocess, "run")
+    def test_macos_presence_check_never_requests_secret(self, runner):
+        runner.return_value = SimpleNamespace(returncode=0)
+
+        self.assertTrue(
+            credential_store.keychain_item_exists("service-name", "account-name")
+        )
+
+        command = runner.call_args.args[0]
+        self.assertEqual(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "service-name",
+                "-a",
+                "account-name",
+            ],
+            command,
+        )
+        self.assertNotIn("-w", command)
+
+    @patch.object(credential_store.sys, "platform", "darwin")
+    @patch.object(credential_store.subprocess, "run")
+    def test_macos_presence_check_handles_missing_and_errors(self, runner):
+        runner.return_value = SimpleNamespace(returncode=44)
+        self.assertFalse(credential_store.keychain_item_exists("service", "account"))
+
+        runner.return_value = SimpleNamespace(returncode=1)
+        with self.assertRaises(credential_store.CredentialStoreError):
+            credential_store.keychain_item_exists("service", "account")
+
+    def test_specialized_presence_checks_share_metadata_path(self):
+        with (
+            patch.object(
+                ai_keychain, "keychain_item_exists", return_value=True
+            ) as ai_exists,
+            patch.object(
+                sjtu_pan, "keychain_item_exists", return_value=True
+            ) as cloud_exists,
+        ):
+            self.assertTrue(ai_keychain.ai_api_key_saved())
+            self.assertTrue(sjtu_pan.user_token_saved())
+
+        ai_exists.assert_called_once_with(
+            ai_keychain.AI_KEYCHAIN_SERVICE, ai_keychain.AI_KEYCHAIN_ACCOUNT
+        )
+        cloud_exists.assert_called_once_with(
+            sjtu_pan.KEYCHAIN_SERVICE, sjtu_pan.KEYCHAIN_ACCOUNT
+        )
 
 
 class CanvasCredentialCacheTests(unittest.TestCase):
@@ -205,23 +260,33 @@ class CredentialStoreCacheInvalidationTests(unittest.TestCase):
 
 
 class CredentialStatusTests(unittest.TestCase):
-    def test_settings_status_does_not_read_credentials(self):
-        def fail_ai_read():
-            raise AssertionError("settings_status must not read AI credentials")
-
+    def test_settings_status_uses_metadata_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "archive"
             root.mkdir()
-            service = DashboardService(
-                SimpleNamespace(), archive_root=root, ai_key_loader=fail_ai_read
-            )
+            service = DashboardService(SimpleNamespace(), archive_root=root)
             with (
-                patch("sjtu_learning_assistant.canvas_sync.load_keyring_module") as canvas_keyring,
-                patch("sjtu_learning_assistant.mail_sync.load_keyring_module") as mail_keyring,
+                patch(
+                    "sjtu_learning_assistant.dashboard_service.canvas_token_saved",
+                    return_value=True,
+                ) as canvas_saved,
+                patch(
+                    "sjtu_learning_assistant.dashboard_service.mail_password_saved",
+                    return_value=False,
+                ) as mail_saved,
+                patch(
+                    "sjtu_learning_assistant.dashboard_service.user_token_saved",
+                    return_value=True,
+                ) as cloud_saved,
             ):
-                service.settings_status()
-        canvas_keyring.assert_not_called()
-        mail_keyring.assert_not_called()
+                status = service.settings_status()
+
+        self.assertTrue(status["canvas_token_saved"])
+        self.assertFalse(status["mail_password_saved"])
+        self.assertTrue(status["cloud_token_saved"])
+        canvas_saved.assert_called_once_with()
+        mail_saved.assert_called_once()
+        cloud_saved.assert_called_once_with()
 
 
 if __name__ == "__main__":

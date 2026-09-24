@@ -1,6 +1,8 @@
 import { ArrowUp, Check, LoaderCircle, Paperclip, X } from "lucide-react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   type FormEvent,
+  type ReactNode,
   type RefObject,
   useEffect,
   useRef,
@@ -20,6 +22,39 @@ interface Choice<T extends string> {
   value: T;
   label: string;
   detail?: string;
+}
+
+function AnimatedChoiceMenu({
+  id,
+  className = "ai-choice-menu",
+  label,
+  children,
+}: {
+  id: string;
+  className?: string;
+  label: string;
+  children: ReactNode;
+}) {
+  const isPresent = useIsPresent();
+  return (
+    <motion.div
+      id={id}
+      className={className}
+      role="listbox"
+      aria-label={label}
+      aria-hidden={!isPresent}
+      inert={!isPresent ? true : undefined}
+      initial={{ opacity: 0.01, y: 4, scale: 0.99 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 3, scale: 0.99 }}
+      transition={{
+        duration: isPresent ? 0.16 : 0.12,
+        ease: [0.16, 1, 0.3, 1],
+      }}
+    >
+      {children}
+    </motion.div>
+  );
 }
 
 function ChoiceMenu<T extends string>({
@@ -57,31 +92,28 @@ function ChoiceMenu<T extends string>({
         <span className="ai-choice-dot" aria-hidden="true" />
         <span>{selected?.label ?? value}</span>
       </button>
-      {open && (
-        <div
-          id={menuId}
-          className="ai-choice-menu"
-          role="listbox"
-          aria-label={label}
-        >
-          <header>{label}</header>
-          {items.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              role="option"
-              aria-selected={item.value === value}
-              onClick={() => onSelect(item.value)}
-            >
-              <span>
-                <strong>{item.label}</strong>
-                {item.detail && <small>{item.detail}</small>}
-              </span>
-              {item.value === value && <Check aria-hidden="true" />}
-            </button>
-          ))}
-        </div>
-      )}
+      <AnimatePresence>
+        {open && (
+          <AnimatedChoiceMenu id={menuId} label={label}>
+            <header>{label}</header>
+            {items.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                role="option"
+                aria-selected={item.value === value}
+                onClick={() => onSelect(item.value)}
+              >
+                <span>
+                  <strong>{item.label}</strong>
+                  {item.detail && <small>{item.detail}</small>}
+                </span>
+                {item.value === value && <Check aria-hidden="true" />}
+              </button>
+            ))}
+          </AnimatedChoiceMenu>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -244,37 +276,38 @@ export function AIChatComposer({
                 <img src={aiAgentLogo} alt="" aria-hidden="true" />
                 <span>{selectedPreset?.name ?? "选择 Agent"}</span>
               </button>
-              {openMenu === "agent" && (
-                <div
-                  id="ai-composer-agent-menu"
-                  className="ai-choice-menu ai-agent-menu"
-                  role="listbox"
-                  aria-label="Agent 预设"
-                >
-                  <header>选择 Agent</header>
-                  {presets.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      role="option"
-                      aria-selected={preset.id === selectedPresetId}
-                      onClick={() => {
-                        onSelectPreset(preset.id);
-                        setOpenMenu(null);
-                      }}
-                    >
-                      <img src={aiAgentLogo} alt="" aria-hidden="true" />
-                      <span>
-                        <strong>{preset.name}</strong>
-                        <small>{preset.description}</small>
-                      </span>
-                      {preset.id === selectedPresetId && (
-                        <Check aria-hidden="true" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <AnimatePresence>
+                {openMenu === "agent" && (
+                  <AnimatedChoiceMenu
+                    id="ai-composer-agent-menu"
+                    className="ai-choice-menu ai-agent-menu"
+                    label="Agent 预设"
+                  >
+                    <header>选择 Agent</header>
+                    {presets.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        role="option"
+                        aria-selected={preset.id === selectedPresetId}
+                        onClick={() => {
+                          onSelectPreset(preset.id);
+                          setOpenMenu(null);
+                        }}
+                      >
+                        <img src={aiAgentLogo} alt="" aria-hidden="true" />
+                        <span>
+                          <strong>{preset.name}</strong>
+                          <small>{preset.description}</small>
+                        </span>
+                        {preset.id === selectedPresetId && (
+                          <Check aria-hidden="true" />
+                        )}
+                      </button>
+                    ))}
+                  </AnimatedChoiceMenu>
+                )}
+              </AnimatePresence>
             </div>
             <ChoiceMenu
               label="模型"

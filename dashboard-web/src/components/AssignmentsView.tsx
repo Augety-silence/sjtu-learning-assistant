@@ -1,4 +1,5 @@
 import { ExternalLink, Upload } from "lucide-react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
@@ -139,22 +140,33 @@ function SubmissionConfirmDialog({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const isPresent = useIsPresent();
 
   useModalFocus(dialogRef, onCancel, {
     initialFocusRef: cancelRef,
     dismissible: !submitting,
+    active: isPresent,
   });
 
   return (
-    <div className="confirm-layer" data-modal-layer>
+    <motion.div
+      className="confirm-layer"
+      data-modal-layer
+      data-motion-layer="modal"
+      aria-hidden={isPresent ? undefined : true}
+      initial={{ opacity: 0.01 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: isPresent ? 0.14 : 0.12 }}
+    >
       <button
         type="button"
         className="confirm-backdrop"
         aria-label="取消提交"
-        disabled={submitting}
+        disabled={submitting || !isPresent}
         onClick={onCancel}
       />
-      <section
+      <motion.section
         ref={dialogRef}
         className="confirm-dialog"
         role="alertdialog"
@@ -166,7 +178,16 @@ function SubmissionConfirmDialog({
             : "confirm-description"
         }
         aria-busy={submitting}
+        aria-hidden={isPresent ? undefined : true}
+        data-motion-surface="modal"
         tabIndex={-1}
+        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        transition={{
+          duration: isPresent ? 0.18 : 0.14,
+          ease: [0.16, 1, 0.3, 1],
+        }}
       >
         <h3 id="confirm-title">确认提交作业？</h3>
         <div id="confirm-description">
@@ -198,8 +219,8 @@ function SubmissionConfirmDialog({
                 : "确认提交"}
           </Button>
         </div>
-      </section>
-    </div>
+      </motion.section>
+    </motion.div>
   );
 }
 
@@ -591,19 +612,21 @@ export function AssignmentsView() {
           </section>
         </div>
       )}
-      {pending && selected && (
-        <SubmissionConfirmDialog
-          assignment={selected}
-          pending={pending}
-          submitting={submitting}
-          submissionError={submissionError}
-          onCancel={() => {
-            setSubmissionError("");
-            setPending(null);
-          }}
-          onConfirm={() => void submit()}
-        />
-      )}
+      <AnimatePresence initial={false}>
+        {pending && selected && (
+          <SubmissionConfirmDialog
+            assignment={selected}
+            pending={pending}
+            submitting={submitting}
+            submissionError={submissionError}
+            onCancel={() => {
+              setSubmissionError("");
+              setPending(null);
+            }}
+            onConfirm={() => void submit()}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

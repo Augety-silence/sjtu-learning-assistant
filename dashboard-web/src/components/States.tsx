@@ -1,12 +1,21 @@
+import { motion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/Button";
 
 export function LoadingState({ label = "正在加载…" }: { label?: string }) {
   return (
-    <div className="state-box" aria-live="polite" aria-busy="true">
+    <motion.div
+      className="state-box"
+      aria-live="polite"
+      aria-busy="true"
+      data-motion-surface="state"
+      initial={{ opacity: 0.88, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+    >
       <span className="spinner" aria-hidden="true" />
       {label}
-    </div>
+    </motion.div>
   );
 }
 
@@ -20,11 +29,18 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="state-box state-stack" role="status">
+    <motion.div
+      className="state-box state-stack"
+      role="status"
+      data-motion-surface="state"
+      initial={{ opacity: 0.88, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+    >
       <p className="font-medium text-ink">{title}</p>
       <p className="text-sm text-caption">{description}</p>
       {action}
-    </div>
+    </motion.div>
   );
 }
 
@@ -56,7 +72,14 @@ export function ErrorState({
   };
 
   return (
-    <div className="state-box state-stack state-error" role="alert">
+    <motion.div
+      className="state-box state-stack state-error"
+      role="alert"
+      data-motion-surface="state"
+      initial={{ opacity: 0.88, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+    >
       <p className="font-medium text-danger">加载失败</p>
       <p className="text-sm text-caption">{message}</p>
       <div className="state-actions">
@@ -82,7 +105,7 @@ export function ErrorState({
           </Button>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 

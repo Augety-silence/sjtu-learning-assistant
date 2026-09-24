@@ -14,6 +14,7 @@ export interface ModalFocusOptions {
   triggerRef?: RefObject<HTMLElement | null>;
   shouldRestoreFocus?: () => boolean;
   dismissible?: boolean;
+  active?: boolean;
 }
 
 type BackgroundState = {
@@ -55,8 +56,10 @@ export function useModalFocus(
   const optionsRef = useRef(options);
   dismissRef.current = onDismiss;
   optionsRef.current = options;
+  const active = options.active ?? true;
 
   useEffect(() => {
+    if (!active) return;
     const container = containerRef.current;
     if (!container) return;
 
@@ -151,5 +154,5 @@ export function useModalFocus(
         capturedTrigger.focus();
       }
     };
-  }, [containerRef]);
+  }, [active, containerRef]);
 }

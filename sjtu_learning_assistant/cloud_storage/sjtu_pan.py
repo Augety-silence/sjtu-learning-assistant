@@ -20,6 +20,8 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from sjtu_learning_assistant.credential_store import keychain_item_exists
+
 from .base import CloudStorageProvider, RemotePath, TemporaryDownload
 from .errors import (
     CloudAuthError,
@@ -61,6 +63,10 @@ def validate_user_token_value(value: object) -> str:
     if not token or len(token) > MAX_TOKEN_LENGTH or any(ord(c) < 33 or ord(c) == 127 for c in token):
         raise CloudAuthError("交大云盘 UserToken 格式不正确。")
     return token
+
+
+def user_token_saved() -> bool:
+    return keychain_item_exists(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
 
 
 def load_user_token(*, keyring_module: Any | None = None) -> str | None:
