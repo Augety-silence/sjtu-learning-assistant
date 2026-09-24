@@ -43,8 +43,12 @@ if (-not (Test-Path $Executable)) {
 
 $Zip = Join-Path $Root "dist\SJTU-Learning-Assistant-$Version-Windows-x64-portable.zip"
 Compress-Archive -Path "$AppDir\*" -DestinationPath $Zip -CompressionLevel Optimal -Force
-(Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + (Split-Path $Zip -Leaf) |
-    Set-Content "$Zip.sha256" -Encoding ascii
+$ZipHash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
+[System.IO.File]::WriteAllText(
+    "$Zip.sha256",
+    "$ZipHash  $(Split-Path $Zip -Leaf)`n",
+    [System.Text.Encoding]::ASCII
+)
 
 $IsccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 $IsccPath = if ($IsccCommand) { $IsccCommand.Source } else { $null }
@@ -60,8 +64,12 @@ if ($IsccPath) {
     if (-not (Test-Path $Setup)) {
         throw "Inno Setup 未生成预期安装器：$Setup"
     }
-    (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + (Split-Path $Setup -Leaf) |
-        Set-Content "$Setup.sha256" -Encoding ascii
+    $SetupHash = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLowerInvariant()
+    [System.IO.File]::WriteAllText(
+        "$Setup.sha256",
+        "$SetupHash  $(Split-Path $Setup -Leaf)`n",
+        [System.Text.Encoding]::ASCII
+    )
 } else {
     Write-Warning "未找到 Inno Setup；已生成 portable ZIP，但跳过安装器。"
 }
