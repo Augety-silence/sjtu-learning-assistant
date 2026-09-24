@@ -8,8 +8,9 @@
 ~/Library/Application Support/SJTU Learning Assistant/data/app.db
 ```
 
-首次打开 SQLite 时通过 SQLAlchemy metadata 创建当前 schema，并在
-`desktop_schema_version` 记录版本 `0016`。每条 SQLite 连接都会启用
+首次打开 SQLite 时会建立当前 ORM schema，并将既有桌面数据库安全采用为 Alembic
+`0016` 基线，再受控升级到当前版本 `0017`。`alembic_version` 是 schema 版本的唯一权威，
+`desktop_schema_version` 仅为旧版本兼容和 PostgreSQL 导入标记保留。每条 SQLite 连接都会启用
 `foreign_keys=ON`、WAL 和 5000 ms `busy_timeout`。`sync_data_to_db.py`、
 `sync_runner.py`、LaunchAgent 与 Dashboard 都通过同一个默认 URL 写入这个文件；
 LaunchAgent 无需数据库参数，也不会保存秘密。
@@ -21,8 +22,9 @@ LaunchAgent 无需数据库参数，也不会保存秘密。
 - 使用 `import-postgres` 将旧数据一次性导入 SQLite。
 
 PostgreSQL URL 仍只保存在 macOS Keychain（或由进程环境显式注入），不会写入
-SQLite、plist 或日志。SQLite 采用 metadata bootstrap，历史 Alembic `0001`–`0016`
-保持不变且只继续用于 PostgreSQL。
+SQLite、plist 或日志。SQLite 与 PostgreSQL 现在统一由 Alembic 管理后续 schema 演进；
+已发布 SQLite 会在迁移锁和升级前快照保护下采用 `0016` 基线，不重放仅适用于历史
+PostgreSQL 的建库迁移。
 
 ### 初始化与安全导入
 
@@ -172,7 +174,7 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-Phase 4A 不新增 Python 依赖。更新已有数据库后先运行 `python3 db_manage.py upgrade`；SQLite 使用 metadata bootstrap，显式 PostgreSQL 使用 Alembic `0006`。
+Phase 4A 不新增 Python 依赖。更新已有数据库后先运行 `python3 db_manage.py upgrade`；SQLite 与 PostgreSQL 的后续 schema 变更均由 Alembic 管理。
 
 ## 数据库管理
 
@@ -487,8 +489,9 @@ Agent 默认先检索附件名称、摘要和标签，只在需要细节时通�
 文件不参与删除。读取云端正文时同样临时下载并校验；显式“在 Finder 中显示”会先恢复到
 受控目录，再以固定参数 `/usr/bin/open -R` 显示。
 
-对应 PostgreSQL 迁移为 `0015_add_ai_managed_files.py` 与
-`0016_link_ai_chat_attachments.py`；已有迁移文件不应改写语义。
+对应 schema 迁移为 `0015_add_ai_managed_files.py` 与
+`0016_link_ai_chat_attachments.py`；`0017_adopt_sqlite_alembic.py` 建立 SQLite 的
+Alembic 采用基线，后续迁移必须同时兼容 SQLite 与 PostgreSQL。已有迁移文件不应改写语义。
 
 ### Phase 5A 验证
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 
-from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
+from sjtu_learning_assistant.desktop_database import SCHEMA_VERSION, bootstrap_sqlite
 from sjtu_learning_assistant.models import CourseFile, EmailAttachment
 
 
@@ -103,8 +103,8 @@ class ArchiveSchemaTests(unittest.TestCase):
                 with patch(
                     "sjtu_learning_assistant.desktop_database.Base.metadata.create_all"
                 ):
-                    self.assertEqual("0016", bootstrap_sqlite(engine))
-                    self.assertEqual("0016", bootstrap_sqlite(engine))
+                    self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(engine))
+                    self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(engine))
                 columns = tuple(
                     column["name"]
                     for column in inspect(engine).get_columns("course_files")

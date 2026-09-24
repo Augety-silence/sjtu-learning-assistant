@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -106,6 +107,17 @@ EMAIL = EmailRecord(
     is_unread=True,
     raw_data={"uid": 456, "nested": {"ok": True}},
 )
+
+
+def read_alembic_revision(path: Path) -> str | None:
+    with sqlite3.connect(path) as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+        ).fetchone()
+        if table is None:
+            return None
+        row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def seed_all(engine) -> None:
@@ -221,6 +233,9 @@ class SQLiteRecoveryTests(unittest.TestCase):
             bootstrap_sqlite(engine)
             with engine.begin() as connection:
                 connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+                connection.exec_driver_sql(
                     "UPDATE desktop_schema_version SET version='legacy' WHERE id=1"
                 )
             initialize_desktop_database(engine, skip_import=True)
@@ -231,16 +246,45 @@ class SQLiteRecoveryTests(unittest.TestCase):
         self.assertEqual("legacy", read_sqlite_schema_version(backup))
         self.assertEqual(SCHEMA_VERSION, read_sqlite_schema_version(self.path))
 
+    def test_concurrent_startup_serializes_single_alembic_upgrade(self) -> None:
+        engine = create_database_engine(default_sqlite_url(self.path))
+        try:
+            bootstrap_sqlite(engine)
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+        finally:
+            engine.dispose()
+
+        def initialize_once(_index: int) -> str:
+            local_engine = create_database_engine(default_sqlite_url(self.path))
+            try:
+                return initialize_desktop_database(
+                    local_engine, skip_import=True
+                ).schema_version
+            finally:
+                local_engine.dispose()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            versions = tuple(executor.map(initialize_once, range(2)))
+
+        self.assertEqual((SCHEMA_VERSION, SCHEMA_VERSION), versions)
+        self.assertEqual(SCHEMA_VERSION, read_alembic_revision(self.path))
+
     def test_failed_schema_upgrade_restores_pre_migration_snapshot(self) -> None:
         engine = create_database_engine(default_sqlite_url(self.path))
         try:
             bootstrap_sqlite(engine)
             with engine.begin() as connection:
                 connection.exec_driver_sql(
+                    "UPDATE alembic_version SET version_num='0016'"
+                )
+                connection.exec_driver_sql(
                     "UPDATE desktop_schema_version SET version='legacy' WHERE id=1"
                 )
             with patch(
-                "sjtu_learning_assistant.desktop_database.bootstrap_sqlite",
+                "sjtu_learning_assistant.desktop_database.command.upgrade",
                 side_effect=RuntimeError("simulated migration failure"),
             ), self.assertRaisesRegex(DesktopDatabaseError, "已自动恢复"):
                 initialize_desktop_database(engine, skip_import=True)
@@ -248,6 +292,11 @@ class SQLiteRecoveryTests(unittest.TestCase):
             engine.dispose()
 
         self.assertEqual("legacy", read_sqlite_schema_version(self.path))
+        with sqlite3.connect(self.path) as connection:
+            revision = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0]
+        self.assertEqual("0016", revision)
         self.assertTrue(check_sqlite_integrity(self.path, full=True))
 
 
@@ -281,6 +330,23 @@ class SQLiteIntegrationTests(unittest.TestCase):
                 columns = inspect(self.engine).get_columns(table_name)
                 primary_key = next(column for column in columns if column.get("name") == "id")
                 self.assertEqual("INTEGER", str(primary_key.get("type")))
+
+    def test_alembic_revision_is_authoritative_and_matches_orm_schema(self) -> None:
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE desktop_schema_version SET version='stale' WHERE id=1"
+            )
+        self.assertEqual(SCHEMA_VERSION, get_schema_version(self.engine))
+        self.assertEqual(SCHEMA_VERSION, read_alembic_revision(self.path))
+
+        inspector = inspect(self.engine)
+        for table in Base.metadata.sorted_tables:
+            with self.subTest(table=table.name):
+                actual = {
+                    str(column["name"])
+                    for column in inspector.get_columns(table.name)
+                }
+                self.assertEqual(set(table.columns.keys()), actual)
 
     def test_bootstrap_is_idempotent(self) -> None:
         self.assertEqual(SCHEMA_VERSION, bootstrap_sqlite(self.engine))

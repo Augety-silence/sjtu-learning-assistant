@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 SQLITE_BACKUP_COUNT = 3
 SQLITE_MAINTENANCE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -65,7 +65,7 @@ def _database_sidecars(database_path: Path) -> tuple[Path, Path]:
 
 
 @contextmanager
-def _maintenance_lock(database_path: Path) -> Iterator[None]:
+def sqlite_maintenance_lock(database_path: Path) -> Iterator[None]:
     lock_path = database_path.with_name(f"{database_path.name}.maintenance.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(lock_path.parent, 0o700)
@@ -162,6 +162,30 @@ def _rotate_backups(database_path: Path, temporary_path: Path, *, keep: int) -> 
     return backups[0]
 
 
+def _create_sqlite_backup_locked(
+    path: Path,
+    *,
+    keep: int,
+    minimum_interval_seconds: float,
+) -> Path | None:
+    newest = sqlite_backup_paths(path, keep=keep)[0]
+    if (
+        minimum_interval_seconds > 0
+        and newest.exists()
+        and datetime.now(timezone.utc).timestamp() - newest.stat().st_mtime
+        < minimum_interval_seconds
+    ):
+        return newest
+    if not check_sqlite_integrity(path):
+        raise SQLiteRecoveryError("本地数据库完整性校验失败，未创建快照。")
+    temporary_path = path.with_name(f"{path.name}.backup.tmp.{os.getpid()}")
+    _copy_with_sqlite_backup(path, temporary_path)
+    if not check_sqlite_integrity(temporary_path, full=True):
+        temporary_path.unlink(missing_ok=True)
+        raise SQLiteRecoveryError("新建的本地数据库快照未通过完整性校验。")
+    return _rotate_backups(path, temporary_path, keep=keep)
+
+
 def create_sqlite_backup(
     database_path: Path,
     *,
@@ -172,23 +196,34 @@ def create_sqlite_backup(
     path = database_path.expanduser()
     if not path.exists() or path.stat().st_size == 0:
         return None
-    with _maintenance_lock(path):
-        newest = sqlite_backup_paths(path, keep=keep)[0]
-        if (
-            minimum_interval_seconds > 0
-            and newest.exists()
-            and datetime.now(timezone.utc).timestamp() - newest.stat().st_mtime
-            < minimum_interval_seconds
-        ):
-            return newest
-        if not check_sqlite_integrity(path):
-            raise SQLiteRecoveryError("本地数据库完整性校验失败，未创建快照。")
-        temporary_path = path.with_name(f"{path.name}.backup.tmp.{os.getpid()}")
-        _copy_with_sqlite_backup(path, temporary_path)
-        if not check_sqlite_integrity(temporary_path, full=True):
-            temporary_path.unlink(missing_ok=True)
-            raise SQLiteRecoveryError("新建的本地数据库快照未通过完整性校验。")
-        return _rotate_backups(path, temporary_path, keep=keep)
+    with sqlite_maintenance_lock(path):
+        return _create_sqlite_backup_locked(
+            path,
+            keep=keep,
+            minimum_interval_seconds=minimum_interval_seconds,
+        )
+
+
+@contextmanager
+def sqlite_migration_guard(
+    database_path: Path,
+) -> Iterator[Callable[[], bool]]:
+    """Serialize schema changes and expose a lock-safe snapshot operation."""
+    path = database_path.expanduser()
+    with sqlite_maintenance_lock(path):
+        def create_backup() -> bool:
+            if not path.exists() or path.stat().st_size == 0:
+                return False
+            return (
+                _create_sqlite_backup_locked(
+                    path,
+                    keep=SQLITE_BACKUP_COUNT,
+                    minimum_interval_seconds=0,
+                )
+                is not None
+            )
+
+        yield create_backup
 
 
 def _restore_from_backup_locked(database_path: Path, backup_path: Path) -> bool:
@@ -215,7 +250,7 @@ def restore_latest_sqlite_backup(
 ) -> int | None:
     """Restore the newest valid snapshot and return its one-based index."""
     path = database_path.expanduser()
-    with _maintenance_lock(path):
+    with sqlite_maintenance_lock(path):
         for index, backup_path in enumerate(sqlite_backup_paths(path, keep=keep), start=1):
             if _restore_from_backup_locked(path, backup_path):
                 return index
@@ -236,7 +271,7 @@ def prepare_sqlite_database(database_path: Path) -> SQLiteRecoveryResult:
     path = database_path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    with _maintenance_lock(path):
+    with sqlite_maintenance_lock(path):
         if not path.exists() or path.stat().st_size == 0:
             return SQLiteRecoveryResult(status="new")
         if check_sqlite_integrity(path):

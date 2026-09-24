@@ -4,6 +4,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from sqlalchemy.engine import Connection
 
 from sjtu_learning_assistant.database import get_database_url
 from sjtu_learning_assistant.models import Base
@@ -17,25 +18,40 @@ target_metadata = Base.metadata
 
 def migration_database_url() -> str:
     configured = config.get_main_option("sqlalchemy.url")
-    database_url = configured or get_database_url()
-    if database_url.startswith("sqlite"):
-        raise RuntimeError("SQLite 使用 metadata bootstrap；Alembic 仅用于 PostgreSQL。")
-    return database_url
+    return configured or get_database_url()
+
+
+def _configure(connection: Connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        render_as_batch=connection.dialect.name == "sqlite",
+    )
 
 
 def run_migrations_offline() -> None:
+    database_url = migration_database_url()
     context.configure(
-        url=migration_database_url(),
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        render_as_batch=database_url.startswith("sqlite"),
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
+    provided_connection = config.attributes.get("connection")
+    if provided_connection is not None:
+        _configure(provided_connection)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = migration_database_url()
     connectable = engine_from_config(
@@ -44,11 +60,7 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-        )
+        _configure(connection)
         with context.begin_transaction():
             context.run_migrations()
 
