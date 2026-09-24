@@ -17,6 +17,9 @@ DEV_FILE = ROOT / "requirements-dev.txt"
 WINDOWS_FILE = ROOT / "requirements-windows.txt"
 STRONG_COPYLEFT = re.compile(r"(?:^|[^l])(?:a?gpl)(?:[- v]|$)", re.IGNORECASE)
 PERMISSIVE_ALTERNATIVES = ("apache", "bsd", "isc", "mit")
+REVIEWED_LICENSE_OVERRIDES = {
+    "clr-loader": "MIT",
+}
 
 
 def canonical(name: str) -> str:
@@ -92,7 +95,7 @@ def check_group(label: str, roots: set[str], *, allow_pyinstaller: bool) -> list
     except RuntimeError as exc:
         return [str(exc)]
     for name, distribution in sorted(closure.items()):
-        license_name = license_for(distribution)
+        license_name = license_for(distribution) or REVIEWED_LICENSE_OVERRIDES.get(name, "")
         if not license_name:
             errors.append(f"{label}: {name} 缺少可验证许可证元数据")
             continue
