@@ -6,7 +6,7 @@ export default {
       colors: {
         ink: "#1f2329",
         caption: "#646a73",
-        muted: "#8f959e",
+        muted: "var(--text-tertiary)",
         line: "#dee0e3",
         component: "#d0d3d6",
         primary: "#1456f0",
