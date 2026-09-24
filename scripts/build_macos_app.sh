@@ -37,11 +37,10 @@ clean_packaging_xattrs() {
 "$PYTHON_BIN" -m pip install -r requirements-dev.txt
 
 "$PYTHON_BIN" scripts/generate_macos_icon.py
-corepack enable
 pnpm --dir dashboard-web install --frozen-lockfile --ignore-scripts
-npm --prefix dashboard-web run test
-npm --prefix dashboard-web run lint
-npm --prefix dashboard-web run build
+pnpm --dir dashboard-web run test
+pnpm --dir dashboard-web run lint
+pnpm --dir dashboard-web run build
 "$PYTHON_BIN" -m unittest discover -s tests -v
 "$PYTHON_BIN" scripts/check_licenses.py
 node scripts/check_licenses.mjs

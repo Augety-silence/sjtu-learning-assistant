@@ -1,4 +1,7 @@
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 Set-StrictMode -Version Latest
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -18,12 +21,13 @@ if (-not (Test-Path $Python)) {
 & $Python -m pip install -r requirements-windows.txt
 & $Python scripts/generate_windows_icon.py
 
-corepack enable
 pnpm --dir dashboard-web install --frozen-lockfile --ignore-scripts
-npm --prefix dashboard-web run test -- --pool=forks --maxWorkers=1
-npm --prefix dashboard-web run lint
-npm --prefix dashboard-web run build
-& $Python -m unittest discover -s tests -v
+pnpm --dir dashboard-web run test -- --pool=forks --maxWorkers=1
+pnpm --dir dashboard-web run lint
+pnpm --dir dashboard-web run build
+& $Python -m unittest `
+    tests.test_dashboard_desktop_actions.DesktopActionSafetyTests.test_windows_commands_use_shell_free_system_handlers `
+    tests.test_notifications.WindowsNotificationSenderTests -v
 & $Python scripts/check_licenses.py
 node scripts/check_licenses.mjs
 & $Python scripts/scan_secrets.py

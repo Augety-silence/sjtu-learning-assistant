@@ -38,9 +38,9 @@ jobs:
           cache-dependency-path: dashboard-web/pnpm-lock.yaml
       - name: 安装前端依赖
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: npm run test
-      - run: npm run lint
-      - run: npm run build
+      - run: pnpm run test
+      - run: pnpm run lint
+      - run: pnpm run build
 
   licenses:
     runs-on: ubuntu-latest
