@@ -92,6 +92,7 @@ class DashboardSettingsTests(unittest.TestCase):
             {
                 "archive_root_ready",
                 "archive_root",
+                "credential_storage_name",
                 "mail_account",
                 "canvas_token_saved",
                 "mail_password_saved",
