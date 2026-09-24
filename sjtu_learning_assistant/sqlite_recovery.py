@@ -10,7 +10,7 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,10 +106,12 @@ def _run_integrity_check(database_path: Path, *, full: bool) -> bool:
     path = database_path.expanduser()
     pragma = "PRAGMA integrity_check" if full else "PRAGMA quick_check"
     try:
-        with sqlite3.connect(
-            _sqlite_uri(path),
-            uri=True,
-            timeout=SQLITE_TIMEOUT_SECONDS,
+        with closing(
+            sqlite3.connect(
+                _sqlite_uri(path),
+                uri=True,
+                timeout=SQLITE_TIMEOUT_SECONDS,
+            )
         ) as connection:
             rows = connection.execute(pragma).fetchall()
     except sqlite3.DatabaseError as exc:
@@ -135,10 +137,12 @@ def read_sqlite_schema_version(database_path: Path) -> str | None:
     if not path.exists() or path.stat().st_size == 0:
         return None
     try:
-        with sqlite3.connect(
-            _sqlite_uri(path),
-            uri=True,
-            timeout=SQLITE_TIMEOUT_SECONDS,
+        with closing(
+            sqlite3.connect(
+                _sqlite_uri(path),
+                uri=True,
+                timeout=SQLITE_TIMEOUT_SECONDS,
+            )
         ) as connection:
             table = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -157,11 +161,15 @@ def read_sqlite_schema_version(database_path: Path) -> str | None:
 def _copy_with_sqlite_backup(source_path: Path, target_path: Path) -> None:
     target_path.unlink(missing_ok=True)
     try:
-        with sqlite3.connect(
-            _sqlite_uri(source_path),
-            uri=True,
-            timeout=SQLITE_TIMEOUT_SECONDS,
-        ) as source, sqlite3.connect(target_path, timeout=SQLITE_TIMEOUT_SECONDS) as target:
+        with closing(
+            sqlite3.connect(
+                _sqlite_uri(source_path),
+                uri=True,
+                timeout=SQLITE_TIMEOUT_SECONDS,
+            )
+        ) as source, closing(
+            sqlite3.connect(target_path, timeout=SQLITE_TIMEOUT_SECONDS)
+        ) as target:
             source.backup(target)
             target.commit()
         os.chmod(target_path, 0o600)
@@ -170,15 +178,14 @@ def _copy_with_sqlite_backup(source_path: Path, target_path: Path) -> None:
         raise SQLiteRecoveryError("无法创建本地数据库安全快照。") from exc
 
 
-def _replace_file(source: Path, target: Path) -> None:
-    """Replace a file, retrying transient Windows sharing violations."""
+def _retry_windows_file_operation(operation: Callable[[], None]) -> None:
     if not _IS_WINDOWS:
-        os.replace(source, target)
+        operation()
         return
 
     for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS, None):
         try:
-            os.replace(source, target)
+            operation()
             return
         except OSError as exc:
             if (
@@ -188,6 +195,24 @@ def _replace_file(source: Path, target: Path) -> None:
             ):
                 raise
             time.sleep(delay)
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    """Replace a file, retrying transient Windows sharing violations."""
+    _retry_windows_file_operation(lambda: os.replace(source, target))
+
+
+def _cleanup_temporary_database(path: Path) -> None:
+    """Best-effort cleanup that never masks the primary database operation."""
+    for temporary_file in (path, *_database_sidecars(path)):
+        try:
+            _retry_windows_file_operation(
+                lambda temporary_file=temporary_file: temporary_file.unlink(
+                    missing_ok=True
+                )
+            )
+        except OSError:
+            pass
 
 
 def _rotate_backups(database_path: Path, temporary_path: Path, *, keep: int) -> Path:
@@ -224,8 +249,7 @@ def _create_sqlite_backup_locked(
             raise SQLiteRecoveryError("新建的本地数据库快照未通过完整性校验。")
         return _rotate_backups(path, temporary_path, keep=keep)
     finally:
-        for temporary_file in (temporary_path, *_database_sidecars(temporary_path)):
-            temporary_file.unlink(missing_ok=True)
+        _cleanup_temporary_database(temporary_path)
 
 
 def create_sqlite_backup(
@@ -282,8 +306,7 @@ def _restore_from_backup_locked(database_path: Path, backup_path: Path) -> bool:
         os.chmod(database_path, 0o600)
         return True
     finally:
-        for temporary_file in (temporary_path, *_database_sidecars(temporary_path)):
-            temporary_file.unlink(missing_ok=True)
+        _cleanup_temporary_database(temporary_path)
 
 
 def restore_latest_sqlite_backup(
