@@ -724,7 +724,7 @@ class DashboardService:
                 if self.canvas_client_factory is not None:
                     self._canvas_client = self.canvas_client_factory()
                 else:
-                    from test_canvas import (
+                    from sjtu_learning_assistant.canvas_sync import (
                         DEFAULT_BASE_URL,
                         DEFAULT_TIMEOUT_SECONDS,
                         build_http_client,

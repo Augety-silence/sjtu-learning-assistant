@@ -84,22 +84,16 @@ def canvas_token_saved() -> bool:
 
 def save_canvas_token(value: object) -> None:
     _save(CANVAS_SERVICE, CANVAS_ACCOUNT, value, "Canvas Access Token")
-    try:
-        from test_canvas import clear_canvas_credential_cache
+    from sjtu_learning_assistant.canvas_sync import clear_canvas_credential_cache
 
-        clear_canvas_credential_cache()
-    except ImportError:
-        pass
+    clear_canvas_credential_cache()
 
 
 def delete_canvas_token() -> None:
     _delete(CANVAS_SERVICE, CANVAS_ACCOUNT, "Canvas Access Token")
-    try:
-        from test_canvas import clear_canvas_credential_cache
+    from sjtu_learning_assistant.canvas_sync import clear_canvas_credential_cache
 
-        clear_canvas_credential_cache()
-    except ImportError:
-        pass
+    clear_canvas_credential_cache()
 
 
 def mail_password_saved(account: object) -> bool:
@@ -111,20 +105,14 @@ def mail_password_saved(account: object) -> bool:
 def save_mail_password(account: object, value: object) -> None:
     normalized = normalize_mail_account(account)
     _save(MAIL_SERVICE, normalized, value, "邮箱密码")
-    try:
-        from test_mail import clear_mail_credential_cache
+    from sjtu_learning_assistant.mail_sync import clear_mail_credential_cache
 
-        clear_mail_credential_cache()
-    except ImportError:
-        pass
+    clear_mail_credential_cache()
 
 
 def delete_mail_password(account: object) -> None:
     normalized = normalize_mail_account(account)
     _delete(MAIL_SERVICE, normalized, "邮箱密码")
-    try:
-        from test_mail import clear_mail_credential_cache
+    from sjtu_learning_assistant.mail_sync import clear_mail_credential_cache
 
-        clear_mail_credential_cache()
-    except ImportError:
-        pass
+    clear_mail_credential_cache()

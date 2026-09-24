@@ -44,7 +44,7 @@ from sjtu_learning_assistant.repository import (
     persist_email_body_backfill,
     persist_emails,
 )
-from test_canvas import (
+from sjtu_learning_assistant.canvas_sync import (
     CanvasCheckError,
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_SECONDS,
@@ -58,7 +58,12 @@ from test_canvas import (
     fetch_course_modules,
     get_token,
 )
-from test_mail import MailCheckError, get_password, normalize_email, prompt_email
+from sjtu_learning_assistant.mail_sync import (
+    MailCheckError,
+    get_password,
+    normalize_email,
+    prompt_email,
+)
 
 DEFAULT_EMAIL_BODY_BACKFILL_LIMIT = 50
 

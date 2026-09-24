@@ -81,8 +81,8 @@ class DashboardSettingsTests(unittest.TestCase):
             root.mkdir()
             service = DashboardService(SimpleNamespace(), archive_root=root)
             with (
-                patch("test_canvas.load_keyring_module") as canvas_keyring,
-                patch("test_mail.load_keyring_module") as mail_keyring,
+                patch("sjtu_learning_assistant.canvas_sync.load_keyring_module") as canvas_keyring,
+                patch("sjtu_learning_assistant.mail_sync.load_keyring_module") as mail_keyring,
             ):
                 status = service.settings_status()
         canvas_keyring.assert_not_called()
