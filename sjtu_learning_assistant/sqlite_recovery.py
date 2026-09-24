@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 
 if os.name == "nt":
     import msvcrt
@@ -18,6 +19,9 @@ from typing import Callable, Iterator, Literal
 SQLITE_BACKUP_COUNT = 3
 SQLITE_MAINTENANCE_INTERVAL_SECONDS = 24 * 60 * 60
 SQLITE_TIMEOUT_SECONDS = 5.0
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({32, 33})
+_WINDOWS_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 _SQLITE_CORRUPTION_CODES = {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
 
 
@@ -166,13 +170,33 @@ def _copy_with_sqlite_backup(source_path: Path, target_path: Path) -> None:
         raise SQLiteRecoveryError("无法创建本地数据库安全快照。") from exc
 
 
+def _replace_file(source: Path, target: Path) -> None:
+    """Replace a file, retrying transient Windows sharing violations."""
+    if not _IS_WINDOWS:
+        os.replace(source, target)
+        return
+
+    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS, None):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if (
+                getattr(exc, "winerror", None)
+                not in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+                or delay is None
+            ):
+                raise
+            time.sleep(delay)
+
+
 def _rotate_backups(database_path: Path, temporary_path: Path, *, keep: int) -> Path:
     backups = sqlite_backup_paths(database_path, keep=keep)
     for index in range(len(backups) - 1, 0, -1):
         previous = backups[index - 1]
         if previous.exists():
-            os.replace(previous, backups[index])
-    os.replace(temporary_path, backups[0])
+            _replace_file(previous, backus[index])
+    _replace_file(temporary_path, backups[0])
     os.chmod(backups[0], 0o600)
     return backups[0]
 
@@ -194,11 +218,14 @@ def _create_sqlite_backup_locked(
     if not check_sqlite_integrity(path):
         raise SQLiteRecoveryError("本地数据库完整性校验失败，未创建快照。")
     temporary_path = path.with_name(f"{path.name}.backup.tmp.{os.getpid()}")
-    _copy_with_sqlite_backup(path, temporary_path)
-    if not check_sqlite_integrity(temporary_path, full=True):
-        temporary_path.unlink(missing_ok=True)
-        raise SQLiteRecoveryError("新建的本地数据库快照未通过完整性校验。")
-    return _rotate_backups(path, temporary_path, keep=keep)
+    try:
+        _copy_with_sqlite_backup(path, temporary_path)
+        if not check_sqlite_integrity(temporary_path, full=True):
+            raise SQLiteRecoveryError("新建的本地数据库快照未通过完整性校验。")
+        return _rotate_backups(path, temporary_path, keep=keep)
+    finally:
+        for temporary_file in (temporary_path, *_database_sidecars(temporary_path)):
+            temporary_file.unlink(missing_ok=True)
 
 
 def create_sqlite_backup(
@@ -216,7 +243,7 @@ def create_sqlite_backup(
             path,
             keep=keep,
             minimum_interval_seconds=minimum_interval_seconds,
-        )
+         )
 
 
 @contextmanager
@@ -251,11 +278,12 @@ def _restore_from_backup_locked(database_path: Path, backup_path: Path) -> bool:
             return False
         for sidecar in _database_sidecars(database_path):
             sidecar.unlink(missing_ok=True)
-        os.replace(temporary_path, database_path)
+        _replace_file(temporary_path, database_path)
         os.chmod(database_path, 0o600)
         return True
     finally:
-        temporary_path.unlink(missing_ok=True)
+        for temporary_file in (temporary_path, *_database_sidecars(temporary_path)):
+            temporary_file.unlink(missing_ok=True)
 
 
 def restore_latest_sqlite_backup(
@@ -277,7 +305,7 @@ def _quarantine_database_family(database_path: Path) -> None:
     for path in (database_path, *_database_sidecars(database_path)):
         if path.exists():
             quarantined = path.with_name(f"{path.name}.corrupt.{timestamp}")
-            os.replace(path, quarantined)
+            _replace_file(path, quarantined)
             os.chmod(quarantined, 0o600)
 
 
