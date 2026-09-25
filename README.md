@@ -593,7 +593,7 @@ Bundle identifier 为 `io.github.sjtu-learning-assistant`，版本来自 `sjtu_l
 
 当前产物**未签名、未公证**。首次打开时 Gatekeeper 可能阻止运行。请仅对自己从可信源码构建、并已核对校验和的产物，在 Finder 中按住 Control 点击应用并选择“打开”，再确认；不要建议用户全局关闭 Gatekeeper。正式公开分发前应增加 Developer ID 签名、公证和 stapling 流程。
 
-推送与 `sjtu_learning_assistant.__version__` 完全一致的 `v*.*.*` tag 会触发 Release workflow，分别在 Apple Silicon 与 Windows runner 上构建并验证 macOS DMG、Windows x64 portable ZIP、Windows x64 安装器及对应 SHA-256，然后统一创建 GitHub Pre-release。当前产物尚未完成 Apple Developer ID 筛名、公证或 Windows Authenticode 签名；完成平台签名后再移除 Pre-release 标记。
+推送与 `sjtu_learning_assistant.__version__` 完全一致的 `v*.*.*` tag 会触发 Release workflow，分别在 Apple Silicon 与 Windows runner 上构建并验证 macOS DMG、Windows x64 portable ZIP、Windows x64 安装器及对应 SHA-256，然后统一创建 GitHub 正式 Release 并标记为 Latest。当前产物尚未完成 Apple Developer ID 筛名、公证或 Windows Authenticode 签名；发布说明会如实标注签名状态，所有版本均按正式 Release 发布。
 
 ### 构建 Windows 应用与安装器
 

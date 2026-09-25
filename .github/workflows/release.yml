@@ -104,7 +104,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: 创建 GitHub Pre-release
+      - name: 创建 GitHub 正式 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -113,5 +113,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --prerelease \
+            --latest \
             --title "SJTU Learning Assistant $GITHUB_REF_NAME"

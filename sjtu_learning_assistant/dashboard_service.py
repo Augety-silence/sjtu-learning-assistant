@@ -202,6 +202,7 @@ class DashboardService:
         process_launcher: Callable[..., Any] | None = None,
         ai_key_loader: Callable[[], str | None] = get_ai_api_key,
         ai_key_saver: Callable[[object], None] = save_ai_api_key,
+        ai_key_saved_checker: Callable[[], bool] = ai_api_key_saved,
         ai_client_factory: Callable[..., OpenAIClassificationClient] = OpenAIClassificationClient,
         mail_attachments_root: Path | None = None,
         canvas_client_factory: Callable[[], Any] | None = None,
@@ -219,6 +220,7 @@ class DashboardService:
         self.process_launcher = process_launcher or subprocess.Popen
         self.ai_key_loader = ai_key_loader
         self.ai_key_saver = ai_key_saver
+        self.ai_key_saved_checker = ai_key_saved_checker
         self.ai_client_factory = ai_client_factory
         self.mail_attachments_root = Path(
             mail_attachments_root or MAIL_ATTACHMENTS_ROOT
@@ -2011,7 +2013,7 @@ class DashboardService:
             cloud_saved = False
             credential_errors = True
         try:
-            ai_saved = ai_api_key_saved() if settings.ai_key_saved else False
+            ai_saved = self.ai_key_saved_checker() if settings.ai_key_saved else False
         except Exception:
             ai_saved = settings.ai_key_saved
             credential_errors = True
