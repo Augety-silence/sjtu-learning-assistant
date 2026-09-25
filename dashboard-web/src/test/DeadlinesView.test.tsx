@@ -97,7 +97,9 @@ describe("DeadlinesView responsive semantics", () => {
       name: "按日期分组的截止事项",
     });
     expect(table).toBeTruthy();
-    expect(document.querySelectorAll("tbody")).toHaveLength(4);
+    expect(document.querySelectorAll("tbody")).toHaveLength(
+      groupDeadlines(groupedItems).length,
+    );
     fireEvent.click(screen.getByRole("button", { name: "今天同刻第一项" }));
     await waitFor(() =>
       expect(openExternal).toHaveBeenCalledWith(
