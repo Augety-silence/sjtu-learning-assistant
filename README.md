@@ -96,6 +96,25 @@ python3 -m pip install -r requirements-postgres.txt
 
 系统通知覆盖 Canvas 新公告、新作业、新文件，以及 24 小时内截止且尚未提交的作业。Phase 4A/5A 已实现本地文件归档及桌面设置界面。
 
+## 项目目标、结构与跨平台迭代流程
+
+项目目标是将 Canvas 课程、交大邮箱、作业、资料归档和 AI 学习辅助集中到一个本地优先的桌面应用中，在不暴露凭据的前提下提供稳定的同步、检索、提醒和学习工作台体验。
+
+核心结构：
+
+- `dashboard-web/`：React + Vite 桌面工作台，负责概览、消息、作业、资料、备份、设置与 AI Chat。
+- `sjtu_learning_assistant/`：Python 核心逻辑，负责 SQLite/Alembic 数据层、Canvas 与邮箱同步、归档、通知、凭据和桌面桥接。
+- `packaging/`：macOS 与 Windows 的 PyInstaller、图标和安装器配置。
+- `scripts/`：测试、许可证与秘密扫描，以及 macOS、Windows 构建和发布脚本。
+- `tests/`：同步、数据库、凭据、桌面桥接和跨平台打包回归测试。
+
+后续功能迭代固定分为两个阶段：
+
+1. **macOS 本机验证与原型确认**：先在 macOS 完成功能、交互和视觉原型，运行相关测试并在本地 App 中验证；未确认的原型不进入 Windows 同步阶段。
+2. **Windows 同步推进与跨平台确认**：原型确认后同步实现 Windows 适配，通过 GitHub Actions 验证 macOS 与 Windows 的行为、安装包和发布资产一致性。
+
+GitHub 上的所有版本均按**正式 Release**发布并标记为 Latest，不使用 Pre-release。发布 tag 必须与 `sjtu_learning_assistant.__version__` 一致；tag workflow 会在同一个正式 Release 中统一上传 macOS DMG、Windows x64 安装器、portable ZIP 及对应 SHA-256。
+
 ## 数据表如何关联
 
 系统同时使用两类标识：
