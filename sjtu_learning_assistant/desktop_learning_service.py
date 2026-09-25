@@ -9,16 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.assignment_service import AssignmentService, SubmissionResult
 from sjtu_learning_assistant.canvas_client import CanvasClient, DEFAULT_BASE_URL
 from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
-from sjtu_learning_assistant.canvas_sync import (
-    KEYCHAIN_ACCOUNT as CANVAS_KEYCHAIN_ACCOUNT,
-    KEYCHAIN_SERVICE as CANVAS_KEYCHAIN_SERVICE,
-    load_keyring_module,
-)
+from sjtu_learning_assistant.canvas_sync import CanvasCheckError, get_saved_token
+from sjtu_learning_assistant.models import Assignment, Course
 
 
 class LearningServiceError(RuntimeError):
@@ -26,18 +24,14 @@ class LearningServiceError(RuntimeError):
 
 
 def load_canvas_token() -> str:
-    """Read the existing Canvas credential without prompting or printing."""
+    """Read the cached Canvas credential without interactive CLI fallback."""
     try:
-        keyring, _keyring_error = load_keyring_module()
-        token = keyring.get_password(CANVAS_KEYCHAIN_SERVICE, CANVAS_KEYCHAIN_ACCOUNT)
-    except Exception:
+        token = get_saved_token()
+    except CanvasCheckError:
         raise LearningServiceError("无法从 macOS Keychain 读取 Canvas Access Token。") from None
-    if not isinstance(token, str) or not token.strip():
+    if token is None:
         raise LearningServiceError("尚未在 macOS Keychain 中配置 Canvas Access Token。")
-    clean = token.strip()
-    if len(clean) > 4096 or any(ord(character) < 33 or ord(character) == 127 for character in clean):
-        raise LearningServiceError("Canvas Access Token 格式不正确。")
-    return clean
+    return token
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -173,7 +167,51 @@ class DesktopLearningService:
             "categories": _categories(assignment, self._now()),
         }
 
+    def _local_assignment_data(
+        self, assignment: Assignment, course: Course
+    ) -> dict[str, Any]:
+        raw = dict(assignment.raw_data or {})
+        raw["id"] = assignment.source_id
+        raw.setdefault("name", assignment.name)
+        raw.setdefault(
+            "due_at", assignment.due_at.isoformat() if assignment.due_at else None
+        )
+        raw.setdefault("points_possible", assignment.points_possible)
+        raw.setdefault("html_url", assignment.url)
+        if not isinstance(raw.get("submission"), Mapping):
+            raw["submission"] = {
+                "workflow_state": assignment.submission_state or "unsubmitted",
+                "missing": False,
+                "late": False,
+            }
+        return self._assignment_data(course.source_id, course.name, raw)
+
+    def _local_assignments(self, category: str) -> dict[str, Any]:
+        assert self._engine is not None
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(Assignment, Course)
+                .join(Course, Course.id == Assignment.course_id)
+                .where(Assignment.is_active.is_(True))
+            ).all()
+            items = [
+                self._local_assignment_data(assignment, course)
+                for assignment, course in rows
+            ]
+        items = [item for item in items if category in item["categories"]]
+        items.sort(
+            key=lambda item: (
+                item.get("due_at") is None,
+                item.get("due_at") or "",
+                item["course_name"],
+                item["name"],
+            )
+        )
+        return {"category": category, "items": items}
+
     def assignments_list(self, category: str) -> dict[str, Any]:
+        if self._engine is not None:
+            return self._local_assignments(category)
         service = self._assignment_service()
         courses = service.canvas.courses()
         items: list[dict[str, Any]] = []
@@ -191,6 +229,20 @@ class DesktopLearningService:
         return {"category": category, "items": items}
 
     def assignment_detail(self, course_id: int, assignment_id: int) -> dict[str, Any]:
+        if self._engine is not None:
+            with Session(self._engine) as session:
+                row = session.execute(
+                    select(Assignment, Course)
+                    .join(Course, Course.id == Assignment.course_id)
+                    .where(
+                        Course.source_id == str(course_id),
+                        Assignment.source_id == str(assignment_id),
+                        Assignment.is_active.is_(True),
+                    )
+                ).first()
+                if row is None:
+                    raise LearningServiceError("未找到已同步的作业。")
+                return self._local_assignment_data(*row)
         raw = self._assignment_service().detail(course_id, assignment_id)
         course_name = self._courses.get(str(course_id))
         if course_name is None:
