@@ -193,7 +193,7 @@ export function SettingsView({
       showToast({
         id: "settings-credential",
         kind: "success",
-        message: `${configMeta[editing].title} 配置已保存。敏感信息仅存入 macOS Keychain。`,
+        message: `${configMeta[editing].title} 配置已保存。敏感信息仅存入 ${next.credential_storage_name}。`,
       });
     } catch (reason) {
       showToast({
@@ -386,7 +386,10 @@ export function SettingsView({
         <div className="section-header">
           <div>
             <h3 id="configuration-title">连接配置</h3>
-            <p>集中管理连接凭据；敏感信息只保存到 macOS 钥匙串。</p>
+            <p>
+              集中管理连接凭据；敏感信息只保存到{" "}
+              {status.credential_storage_name}。
+            </p>
           </div>
           <button
             type="button"
@@ -515,6 +518,7 @@ export function SettingsView({
             aiBaseUrl={aiBaseUrl}
             aiModel={aiModel}
             secret={secret}
+            storageName={status.credential_storage_name}
             triggerRef={configTriggerRef}
             onMailAccount={setMailAccount}
             onAiBaseUrl={setAiBaseUrl}
@@ -541,6 +545,7 @@ function ConfigDialog({
   aiBaseUrl,
   aiModel,
   secret,
+  storageName,
   triggerRef,
   onMailAccount,
   onAiBaseUrl,
@@ -558,6 +563,7 @@ function ConfigDialog({
   aiBaseUrl: string;
   aiModel: string;
   secret: string;
+  storageName: string;
   triggerRef: RefObject<HTMLButtonElement | null>;
   onMailAccount: (value: string) => void;
   onAiBaseUrl: (value: string) => void;
@@ -633,7 +639,7 @@ function ConfigDialog({
         <form onSubmit={onSave}>
           <div className="credential-note">
             <ShieldCheck aria-hidden="true" />
-            <span>敏感信息只保存在 macOS Keychain。已保存的内容不会回显。</span>
+            <span>敏感信息只保存在 {storageName}。已保存的内容不会回显。</span>
           </div>
           {kind === "mail" && (
             <label>

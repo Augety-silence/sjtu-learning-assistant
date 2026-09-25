@@ -19,11 +19,22 @@ class CredentialStoreError(RuntimeError):
     """A bounded error that never includes credential values."""
 
 
+def credential_storage_name() -> str:
+    """Return the user-facing name of the platform credential store."""
+    if sys.platform == "win32":
+        return "Windows 凭据管理器"
+    if sys.platform == "darwin":
+        return "macOS Keychain"
+    return "系统安全存储"
+
+
 def _keyring() -> Any:
     try:
         import keyring  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise CredentialStoreError("缺少 keyring 依赖，无法访问 macOS Keychain。") from exc
+        raise CredentialStoreError(
+            f"缺少 keyring 依赖，无法访问 {credential_storage_name()}。"
+        ) from exc
     return keyring
 
 
@@ -88,7 +99,9 @@ def _exists(service: str, account: str) -> bool:
         with _lock:
             return keychain_item_exists(service, account)
     except Exception:
-        raise CredentialStoreError("无法读取 macOS Keychain 中的配置状态。") from None
+        raise CredentialStoreError(
+            f"无法读取 {credential_storage_name()} 中的配置状态。"
+        ) from None
 
 
 def _save(service: str, account: str, value: object, label: str) -> None:
@@ -97,21 +110,22 @@ def _save(service: str, account: str, value: object, label: str) -> None:
         with _lock:
             _keyring().set_password(service, account, clean)
     except Exception:
-        raise CredentialStoreError(f"无法将{label}保存到 macOS Keychain。") from None
+        raise CredentialStoreError(
+            f"无法将{label}保存到 {credential_storage_name()}。"
+        ) from None
 
 
 def _delete(service: str, account: str, label: str) -> None:
     backend = _keyring()
     try:
         with _lock:
-            backend.delete_password(service, account)
-    except Exception as exc:
-        missing_error = getattr(
-            getattr(backend, "errors", None), "PasswordDeleteError", None
-        )
-        if isinstance(missing_error, type) and isinstance(exc, missing_error):
-            return
-        raise CredentialStoreError(f"无法从 macOS Keychain 删除{label}。") from None
+            existing = backend.get_password(service, account)
+            if existing is not None:
+                backend.delete_password(service, account)
+    except Exception:
+        raise CredentialStoreError(
+            f"无法从 {credential_storage_name()} 删除{label}。"
+        ) from None
 
 
 def canvas_token_saved() -> bool:

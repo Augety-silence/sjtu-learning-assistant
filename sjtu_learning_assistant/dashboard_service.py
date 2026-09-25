@@ -54,6 +54,7 @@ from sjtu_learning_assistant.ai_keychain import (
 from sjtu_learning_assistant.credential_store import (
     CredentialStoreError,
     canvas_token_saved,
+    credential_storage_name,
     delete_canvas_token,
     delete_mail_password,
     mail_password_saved,
@@ -2017,12 +2018,14 @@ class DashboardService:
         except Exception:
             ai_saved = settings.ai_key_saved
             credential_errors = True
+        storage_name = credential_storage_name()
         credential_error = (
-            "无法读取部分 Keychain 配置状态。" if credential_errors else None
+            f"无法读取部分 {storage_name} 配置状态。" if credential_errors else None
         )
         return {
             "archive_root_ready": self.archive_root.is_dir(),
             "archive_root": str(self.archive_root),
+            "credential_storage_name": storage_name,
             "auto_download_current_term": settings.auto_download_current_term,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,

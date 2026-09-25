@@ -42,6 +42,7 @@ const status: SettingsStatus = {
   canvas_token_saved: false,
   mail_password_saved: false,
   cloud_token_saved: false,
+  credential_storage_name: "Windows Credential Manager",
   credential_status_error: null,
   ai_enabled: false,
   ai_base_url: "https://models.sjtu.edu.cn/api/v1",

@@ -226,6 +226,17 @@ def _parse_env_bool(name: str, value: str) -> bool:
     raise SettingsError(f"环境变量 {name} 必须是布尔值。")
 
 
+def _fsync_parent_directory(path: Path, *, platform: str | None = None) -> None:
+    """Persist a directory entry where the operating system supports it."""
+    if (platform or os.name) == "nt":
+        return
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 class SettingsStore:
     def __init__(self, path: Path = SETTINGS_PATH) -> None:
         self.path = Path(path).expanduser()
@@ -285,11 +296,9 @@ class SettingsStore:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_path, self.path)
-            directory_fd = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            # Windows cannot open directories with os.open(); file fsync above
+            # is sufficient there, while POSIX also persists the directory entry.
+            _fsync_parent_directory(self.path.parent)
         finally:
             temporary_path.unlink(missing_ok=True)
         return validated

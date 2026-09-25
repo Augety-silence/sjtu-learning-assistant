@@ -1,9 +1,11 @@
-"""AI 分类 API key 的 macOS Keychain 专用存取。"""
+"""AI 分类 API key 的系统安全存储。"""
 
 from __future__ import annotations
 
 import threading
 from typing import Any
+
+from sjtu_learning_assistant.credential_store import credential_storage_name
 
 from sjtu_learning_assistant.credential_store import keychain_item_exists
 
@@ -58,7 +60,9 @@ def save_ai_api_key(value: object, *, keyring_module: Any | None = None) -> None
         try:
             keyring_module.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
         except Exception:
-            raise AIKeychainError("无法保存 AI API key 到 macOS Keychain。") from None
+            raise AIKeychainError(
+                f"无法保存 AI API key 到 {credential_storage_name()}。"
+            ) from None
         return
 
     with _credential_cache_lock:
@@ -66,7 +70,9 @@ def save_ai_api_key(value: object, *, keyring_module: Any | None = None) -> None
         try:
             backend.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
         except Exception:
-            raise AIKeychainError("无法保存 AI API key 到 macOS Keychain。") from None
+            raise AIKeychainError(
+                f"无法保存 AI API key 到 {credential_storage_name()}。"
+            ) from None
         _cached_api_key = key
 
 
@@ -104,7 +110,9 @@ def delete_ai_api_key(*, keyring_module: Any | None = None) -> None:
         try:
             keyring_module.delete_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
         except Exception:
-            raise AIKeychainError("无法从 macOS Keychain 删除 AI API key。") from None
+            raise AIKeychainError(
+                f"无法从 {credential_storage_name()} 删除 AI API key。"
+            ) from None
         return
 
     with _credential_cache_lock:
@@ -113,4 +121,6 @@ def delete_ai_api_key(*, keyring_module: Any | None = None) -> None:
         try:
             backend.delete_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
         except Exception:
-            raise AIKeychainError("无法从 macOS Keychain 删除 AI API key。") from None
+            raise AIKeychainError(
+                f"无法从 {credential_storage_name()} 删除 AI API key。"
+            ) from None
