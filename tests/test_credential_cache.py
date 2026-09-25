@@ -135,7 +135,7 @@ class CanvasCredentialCacheTests(unittest.TestCase):
             canvas_sync.delete_token()
             keyring.values.update(((location, "replacement"),))
             self.assertEqual(("replacement", True), canvas_sync.get_token(True))
-        self.assertEqual(4, len(keyring.get_calls))
+        self.assertEqual(3, len(keyring.get_calls))
 
 
 class MailCredentialCacheTests(unittest.TestCase):
@@ -184,7 +184,7 @@ class MailCredentialCacheTests(unittest.TestCase):
             keyring.values.update((((service, first), "first-replacement"),))
             self.assertEqual(("first-replacement", True), mail_sync.get_password(first, True))
             self.assertEqual(("second-password", True), mail_sync.get_password(second, True))
-        self.assertEqual(4, len(keyring.get_calls))
+        self.assertEqual(3, len(keyring.get_calls))
 
 
 class AICredentialCacheTests(unittest.TestCase):

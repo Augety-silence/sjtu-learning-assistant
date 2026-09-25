@@ -15,7 +15,9 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 fi
 
-APP_PATH="$ROOT_DIR/dist/SJTU Learning Assistant.app"
+DIST_DIR="${SJTU_DIST_DIR:-$ROOT_DIR/dist}"
+BUILD_DIR="${SJTU_BUILD_DIR:-$ROOT_DIR/build}"
+APP_PATH="$DIST_DIR/SJTU Learning Assistant.app"
 LOCAL_CODESIGN_IDENTITY="SJTU Learning Assistant Local Development"
 CODESIGN_IDENTITY="${SJTU_CODESIGN_IDENTITY:-}"
 if [[ -z "$CODESIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "$LOCAL_CODESIGN_IDENTITY"; then
@@ -82,9 +84,11 @@ sign_bundle() {
 }
 
 clean_packaging_xattrs
-rm -rf build dist
+rm -rf "$BUILD_DIR" "$DIST_DIR"
+mkdir -p "$BUILD_DIR" "$DIST_DIR"
 PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR=1 \
-  "$PYTHON_BIN" -m PyInstaller --noconfirm --clean packaging/desktop.spec
+  "$PYTHON_BIN" -m PyInstaller --noconfirm --clean \
+    --workpath "$BUILD_DIR" --distpath "$DIST_DIR" packaging/desktop.spec
 
 # The Desktop path may be managed by File Provider, which can recreate FinderInfo.
 # Preserve a valid unsigned artifact only when no persistent signing identity is
@@ -118,4 +122,4 @@ fi
 "$PYTHON_BIN" scripts/verify_macos_bundle.py "$APP_PATH"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 
-printf '%s\n' "已生成并验证应用：dist/SJTU Learning Assistant.app"
+printf '已生成并验证应用：%s\n' "$APP_PATH"

@@ -157,9 +157,10 @@ class DesktopLearningServiceTests(unittest.TestCase):
         pan.close.assert_not_called()
 
     def test_missing_canvas_credential_is_safe(self):
-        keyring = Mock()
-        keyring.get_password.return_value = None
-        with patch("sjtu_learning_assistant.desktop_learning_service.load_keyring_module", return_value=(keyring, Exception)):
+        with patch(
+            "sjtu_learning_assistant.desktop_learning_service.get_saved_token",
+            return_value=None,
+        ):
             with self.assertRaisesRegex(LearningServiceError, "尚未"):
                 load_canvas_token()
 

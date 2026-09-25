@@ -47,6 +47,9 @@ TRUSTED_OBJECT_HOST_SUFFIXES = (
 SAFE_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(?:\d+|\*)$")
 
+_credential_cache_lock = threading.RLock()
+_cached_user_token: str | None = None
+
 
 def _load_keyring() -> Any:
     try:
@@ -69,34 +72,81 @@ def user_token_saved() -> bool:
     return keychain_item_exists(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
 
 
+def clear_user_token_cache() -> None:
+    """Clear the process-local SJTU Pan credential cache."""
+    global _cached_user_token
+    with _credential_cache_lock:
+        _cached_user_token = None
+
+
 def load_user_token(*, keyring_module: Any | None = None) -> str | None:
-    backend = keyring_module or _load_keyring()
-    try:
-        value = backend.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-    except Exception:
-        raise CloudAuthError("无法从系统 Keychain 读取交大云盘 UserToken。") from None
-    return None if value is None else validate_user_token_value(value)
+    global _cached_user_token
+    if keyring_module is not None:
+        try:
+            value = keyring_module.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        except Exception:
+            raise CloudAuthError("无法从系统 Keychain 读取交大云盘 UserToken。") from None
+        return None if value is None else validate_user_token_value(value)
+
+    with _credential_cache_lock:
+        if _cached_user_token is not None:
+            return _cached_user_token
+        try:
+            value = _load_keyring().get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        except Exception:
+            raise CloudAuthError("无法从系统 Keychain 读取交大云盘 UserToken。") from None
+        if value is None:
+            return None
+        token = validate_user_token_value(value)
+        _cached_user_token = token
+        return token
 
 
 def save_user_token(value: object, *, keyring_module: Any | None = None) -> None:
+    global _cached_user_token
     token = validate_user_token_value(value)
-    try:
-        (keyring_module or _load_keyring()).set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
-    except Exception:
-        raise CloudAuthError("无法将交大云盘 UserToken 保存到系统 Keychain。") from None
+    if keyring_module is not None:
+        try:
+            keyring_module.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
+        except Exception:
+            raise CloudAuthError("无法将交大云盘 UserToken 保存到系统 Keychain。") from None
+        return
+
+    with _credential_cache_lock:
+        try:
+            _load_keyring().set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
+        except Exception:
+            raise CloudAuthError("无法将交大云盘 UserToken 保存到系统 Keychain。") from None
+        _cached_user_token = token
 
 
 def delete_user_token(*, keyring_module: Any | None = None) -> None:
-    backend = keyring_module or _load_keyring()
-    try:
-        backend.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-    except Exception as exc:
-        missing_error = getattr(
-            getattr(backend, "errors", None), "PasswordDeleteError", None
-        )
-        if isinstance(missing_error, type) and isinstance(exc, missing_error):
-            return
-        raise CloudAuthError("无法从系统 Keychain 删除交大云盘 UserToken。") from None
+    global _cached_user_token
+    if keyring_module is not None:
+        backend = keyring_module
+        try:
+            backend.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        except Exception as exc:
+            missing_error = getattr(
+                getattr(backend, "errors", None), "PasswordDeleteError", None
+            )
+            if isinstance(missing_error, type) and isinstance(exc, missing_error):
+                return
+            raise CloudAuthError("无法从系统 Keychain 删除交大云盘 UserToken。") from None
+        return
+
+    with _credential_cache_lock:
+        _cached_user_token = None
+        backend = _load_keyring()
+        try:
+            backend.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        except Exception as exc:
+            missing_error = getattr(
+                getattr(backend, "errors", None), "PasswordDeleteError", None
+            )
+            if isinstance(missing_error, type) and isinstance(exc, missing_error):
+                return
+            raise CloudAuthError("无法从系统 Keychain 删除交大云盘 UserToken。") from None
 
 
 def _segments(path: RemotePath) -> tuple[str, ...]:

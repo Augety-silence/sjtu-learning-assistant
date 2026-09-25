@@ -1072,7 +1072,9 @@ class DashboardService:
                 raise DashboardError("未找到已保存的 AI API key。")
             return self._ai_client
 
-    def _new_archive_service(self, *, require_canvas: bool = False) -> ArchiveService:
+    def _new_archive_service(
+        self, *, require_canvas: bool = False, use_ai: bool = False
+    ) -> ArchiveService:
         if self.archive_service_factory is not None:
             return self.archive_service_factory()
         settings = self._effective_settings()
@@ -1083,8 +1085,8 @@ class DashboardService:
             archive_root=self.archive_root,
             organize_by_category=settings.organize_by_category,
             use_recent_active_courses=True,
-            ai_client=self._get_ai_client(settings),
-            ai_enabled=settings.ai_enabled,
+            ai_client=self._get_ai_client(settings) if use_ai else None,
+            ai_enabled=settings.ai_enabled if use_ai else False,
         )
 
     def download_material(self, source_id: str) -> dict[str, Any]:
@@ -1960,7 +1962,7 @@ class DashboardService:
         settings = self._effective_settings()
         if not settings.organize_by_category:
             raise DashboardError("请先开启“按类别整理”。")
-        service = self._new_archive_service()
+        service = self._new_archive_service(use_ai=True)
         try:
             summary = service.organize_current_term()
         finally:
@@ -1975,7 +1977,7 @@ class DashboardService:
         }
 
     def download_current_term(self) -> dict[str, Any]:
-        service = self._new_archive_service(require_canvas=True)
+        service = self._new_archive_service(require_canvas=True, use_ai=True)
         try:
             summary = service.archive_current_term()
         finally:

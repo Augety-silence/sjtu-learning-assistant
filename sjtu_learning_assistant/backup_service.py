@@ -22,7 +22,7 @@ from sjtu_learning_assistant.cloud_storage import (
     CloudConflictError,
     CloudStorageProvider,
     SJTUCloudPanProvider,
-    load_user_token,
+    user_token_saved,
 )
 from sjtu_learning_assistant.material_classifier import (
     archive_folder_names,
@@ -653,7 +653,7 @@ class BackupManager:
         self._mail_attachments_root = Path(mail_attachments_root)
         self._mail_account = mail_account
         self._provider_factory = provider_factory
-        self._token_loader = token_loader or load_user_token
+        self._credential_checker = token_loader or user_token_saved
         self._multipart_threshold = multipart_threshold
         self._ai_file_service = ai_file_service or AIManagedFileService(
             engine, archive_root=self._archive_root
@@ -687,11 +687,9 @@ class BackupManager:
 
     def _availability(self) -> tuple[bool, str | None]:
         try:
-            # Only retain whether a credential exists; the token never enters a DTO or
-            # manager state.
-            configured = self._token_loader() is not None
+            configured = bool(self._credential_checker())
         except Exception:
-            return False, "无法读取系统 Keychain 中的交大云盘凭据。"
+            return False, "无法查询系统 Keychain 中的交大云盘凭据状态。"
         if not configured:
             return False, "尚未在系统 Keychain 中配置交大云盘 UserToken。"
         return True, None

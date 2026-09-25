@@ -387,7 +387,8 @@ export function SettingsView({
           <div>
             <h3 id="configuration-title">连接配置</h3>
             <p>
-              集中管理连接凭据；敏感信息只保存到 {status.credential_storage_name}。
+              集中管理连接凭据；敏感信息只保存到{" "}
+              {status.credential_storage_name}。
             </p>
           </div>
           <button
