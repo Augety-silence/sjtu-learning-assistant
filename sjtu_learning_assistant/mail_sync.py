@@ -112,12 +112,14 @@ def delete_password(email_address: str) -> None:
         _cached_passwords.pop(email_address, None)
         keyring, KeyringError = load_keyring_module()
         try:
-            existing = keyring.get_password(KEYCHAIN_SERVICE, email_address)
-            if existing is None:
-                print("Keychain 中没有找到该邮箱的已保存密码。")
-                return
             keyring.delete_password(KEYCHAIN_SERVICE, email_address)
         except KeyringError as exc:
+            missing_error = getattr(
+                getattr(keyring, "errors", None), "PasswordDeleteError", None
+            )
+            if isinstance(missing_error, type) and isinstance(exc, missing_error):
+                print("Keychain 中没有找到该邮箱的已保存密码。")
+                return
             raise MailCheckError(f"无法删除 Keychain 密码：{exc}") from exc
     print("已从 macOS Keychain 删除该邮箱密码。")
 

@@ -104,10 +104,13 @@ def _delete(service: str, account: str, label: str) -> None:
     backend = _keyring()
     try:
         with _lock:
-            existing = backend.get_password(service, account)
-            if existing is not None:
-                backend.delete_password(service, account)
-    except Exception:
+            backend.delete_password(service, account)
+    except Exception as exc:
+        missing_error = getattr(
+            getattr(backend, "errors", None), "PasswordDeleteError", None
+        )
+        if isinstance(missing_error, type) and isinstance(exc, missing_error):
+            return
         raise CredentialStoreError(f"无法从 macOS Keychain 删除{label}。") from None
 
 
