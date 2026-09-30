@@ -532,11 +532,11 @@ describe("VideosView", () => {
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     fireEvent.keyDown(document.body, { key: "ArrowRight", repeat: true });
-    act(() => vi.advanceTimersByTime(349));
+    await act(async () => vi.advanceTimersByTimeAsync(349));
     expect(media.currentTime).toBe(50);
     fireEvent.keyUp(document.body, { key: "ArrowRight" });
     expect(media.currentTime).toBe(55);
-    act(() => vi.advanceTimersByTime(500));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
     expect(media.currentTime).toBe(55);
   });
 
@@ -566,7 +566,7 @@ describe("VideosView", () => {
     vi.useFakeTimers();
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     expect(media.playbackRate).toBe(2);
     expect(play).toHaveBeenCalledTimes(1);
     expect(screen.getByText("快进 2×")).toBeTruthy();
@@ -605,17 +605,17 @@ describe("VideosView", () => {
     vi.useFakeTimers();
 
     fireEvent.keyDown(document.body, { key: "ArrowLeft" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     expect(pause).toHaveBeenCalledTimes(1);
     expect(screen.getByText("倒退 2×")).toBeTruthy();
     fireEvent.keyDown(document.body, { key: "ArrowUp" });
     expect(screen.getByText("倒退 3×")).toBeTruthy();
-    act(() => vi.advanceTimersByTime(200));
+    await act(async () => vi.advanceTimersByTimeAsync(200));
     expect(media.currentTime).toBe(0);
     fireEvent.keyUp(document.body, { key: "ArrowLeft" });
     expect(media.playbackRate).toBe(1);
     expect(play).toHaveBeenCalledTimes(1);
-    act(() => vi.advanceTimersByTime(500));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
     expect(media.currentTime).toBe(0);
   });
 
@@ -642,18 +642,18 @@ describe("VideosView", () => {
     vi.useFakeTimers();
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     expect(media.playbackRate).toBe(2);
     fireEvent(window, new Event("blur"));
     expect(media.playbackRate).toBe(1);
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(media.playbackRate).toBe(1);
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     vi.useRealTimers();
     fireEvent.click(screen.getAllByRole("button", { name: "播放" })[2]);
     expect(media.playbackRate).toBe(1);
@@ -668,7 +668,7 @@ describe("VideosView", () => {
     });
     vi.useFakeTimers();
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
-    act(() => vi.advanceTimersByTime(350));
+    await act(async () => vi.advanceTimersByTimeAsync(350));
     expect(media.playbackRate).toBe(2);
     view.unmount();
     expect(media.playbackRate).toBe(1);
