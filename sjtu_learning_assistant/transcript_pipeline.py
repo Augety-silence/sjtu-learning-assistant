@@ -1,0 +1,1107 @@
+from __future__ import annotations
+
+import html
+import json
+import re
+import unicodedata
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping, Sequence
+
+PROMPT_VERSION = "transcript-v3"
+PIPELINE_VERSION = "transcript-pipeline-v4"
+TARGET_CHUNK_CHARS = 5200
+MAX_CHUNK_CHARS = 6000
+MAX_CHUNK_CUES = 120
+MAX_MESSAGE_CHARS = 14000
+MAX_REPAIR_FRAGMENT_CHARS = 6000
+MAX_VALIDATED_JSON_CHARS = 10000
+MAP_FALLBACK_WARNING = "AI 分块结果无效，已使用确定性字幕规整回退。"
+REDUCE_FALLBACK_WARNING = "AI最终汇总未完成，已根据已规整分块生成结果"
+SUMMARY_EMPTY_WARNING = "未提取出可验证的本节要点。"
+_TIMESTAMP = re.compile(r"^(?:(?P<h>\d{2,}):)?(?P<m>\d{2}):(?P<s>\d{2})[.,](?P<ms>\d{3})$")
+_TIMING = re.compile(r"^(?P<start>\S+)\s+-->\s+(?P<end>\S+)(?:\s+.*)?$")
+_TAG = re.compile(r"<[^>]+>")
+_SENTENCE = re.compile(r"(?<=[。！？；.!?;])")
+
+MAP_KEYS = frozenset((
+    "cleaned_transcript",
+    "topics",
+    "emphasized_points",
+    "concepts",
+    "cases_formulas_conclusions",
+    "review_questions",
+))
+SUMMARY_KEYS = frozenset((
+    "lesson_topic",
+    "learning_objectives",
+    "emphasized_points",
+    "concepts",
+    "cases_formulas_conclusions",
+    "review_questions",
+    "timeline",
+))
+MAP_SCHEMA_HINT = (
+    "必须包含且仅包含字段 cleaned_transcript、topics、emphasized_points、concepts、"
+    "cases_formulas_conclusions、review_questions。cleaned_transcript 项仅含 cue_id、"
+    "start_ms、end_ms、text；要点项仅含 text、evidence，evidence 项仅含 cue_id、"
+    "start_ms、end_ms、quote。"
+)
+SUMMARY_SCHEMA_HINT = (
+    "必须包含且仅包含字段 lesson_topic、learning_objectives、emphasized_points、concepts、"
+    "cases_formulas_conclusions、review_questions、timeline。所有 evidence 和 timeline 项必须引用 cue_id。"
+)
+
+
+class TranscriptAIFormatError(ValueError):
+    """A bounded error which never embeds model or transcript text."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.diagnostics = dict(diagnostics or {})
+
+
+class SchemaValidationError(ValueError):
+    """A schema mismatch that records structure, never model text."""
+
+    def __init__(self, path: str, expected: str, actual: object) -> None:
+        super().__init__(f"{path} 类型或结构无效。")
+        detail = dict(path=path[:160], expected=expected[:120], actual_type=type(actual).__name__)
+        if isinstance(actual, (str, list, tuple, dict)):
+            detail["length"] = len(actual)
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class Cue:
+    start_ms: int
+    end_ms: int
+    text: str
+    cue_id: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "cue_id": self.cue_id,
+            "start_ms": self.start_ms,
+            "end_ms": self.end_ms,
+            "text": self.text,
+        }
+
+
+@dataclass(frozen=True)
+class TranscriptChunk:
+    index: int
+    cues: tuple[Cue, ...]
+
+    def as_prompt_text(self) -> str:
+        return "\n".join(
+            f"[{cue.cue_id} {cue.start_ms}-{cue.end_ms}] {cue.text}"
+            for cue in self.cues
+        )
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    cues: list[dict[str, Any]]
+    chunks: list[dict[str, Any]]
+    cleaned_markdown: str
+    summary: dict[str, Any]
+    summary_markdown: str
+    partial_warnings: tuple[str, ...] = ()
+    prompt_version: str = PROMPT_VERSION
+    reduce_diagnostics: Mapping[str, Any] | None = None
+    summary_empty: bool = False
+
+
+def _timestamp_ms(value: str) -> int:
+    match = _TIMESTAMP.fullmatch(value)
+    if match is None:
+        raise ValueError("WebVTT 时间戳格式无效。")
+    hours = int(match.group("h") or 0)
+    minutes = int(match.group("m"))
+    seconds = int(match.group("s"))
+    millis = int(match.group("ms"))
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError("WebVTT 时间戳范围无效。")
+    return ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis
+
+
+def parse_vtt(value: str) -> list[Cue]:
+    if type(value) is not str or len(value.encode("utf-8")) > 32 * 1024 * 1024:
+        raise ValueError("字幕内容为空或超过安全限制。")
+    text = value.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    lines = text.split("\n")
+    if not lines or not lines[0].strip().startswith("WEBVTT"):
+        raise ValueError("字幕不是标准 WebVTT。")
+    cues: list[Cue] = []
+    index = 1
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
+        if not line:
+            continue
+        if line.startswith(("NOTE", "STYLE", "REGION")):
+            while index < len(lines) and lines[index].strip():
+                index += 1
+            continue
+        timing = _TIMING.fullmatch(line)
+        if timing is None and index < len(lines):
+            timing = _TIMING.fullmatch(lines[index].strip())
+            if timing is not None:
+                index += 1
+        if timing is None:
+            raise ValueError("WebVTT cue 缺少有效时间范围。")
+        start = _timestamp_ms(timing.group("start"))
+        end = _timestamp_ms(timing.group("end"))
+        if end <= start:
+            raise ValueError("WebVTT cue 时间范围无效。")
+        body: list[str] = []
+        while index < len(lines) and lines[index].strip():
+            body.append(lines[index].strip())
+            index += 1
+        content = unicodedata.normalize(
+            "NFC", html.unescape(_TAG.sub("", " ".join(body)))
+        )
+        content = " ".join(content.split())
+        if content:
+            cues.append(Cue(start, end, content, f"cue-{len(cues) + 1:06d}"))
+    if not cues:
+        raise ValueError("字幕中没有可用 cue。")
+    return sorted(cues, key=lambda cue: (cue.start_ms, cue.end_ms))
+
+
+def normalize_cues(cues: Sequence[Cue]) -> list[Cue]:
+    result: list[Cue] = []
+    for cue in cues:
+        text = unicodedata.normalize("NFC", " ".join(cue.text.split()))
+        if not text:
+            continue
+        cue_id = cue.cue_id or f"cue-{len(result) + 1:06d}"
+        current = Cue(cue.start_ms, cue.end_ms, text, cue_id)
+        if result:
+            previous = result[-1]
+            overlap = current.start_ms <= previous.end_ms + 250
+            if overlap and current.text == previous.text:
+                result[-1] = Cue(
+                    previous.start_ms,
+                    max(previous.end_ms, current.end_ms),
+                    previous.text,
+                    previous.cue_id,
+                )
+                continue
+            if overlap and current.text.startswith(previous.text) and len(previous.text) >= 4:
+                result[-1] = Cue(
+                    previous.start_ms,
+                    max(previous.end_ms, current.end_ms),
+                    current.text,
+                    previous.cue_id,
+                )
+                continue
+            if overlap and previous.text.startswith(current.text) and len(current.text) >= 4:
+                result[-1] = Cue(
+                    previous.start_ms,
+                    max(previous.end_ms, current.end_ms),
+                    previous.text,
+                    previous.cue_id,
+                )
+                continue
+        result.append(current)
+    return result
+
+
+def _split_long_cue(cue: Cue, limit: int) -> list[Cue]:
+    if len(cue.text) <= limit:
+        return [cue]
+    sentences = [piece for piece in _SENTENCE.split(cue.text) if piece]
+    parts: list[str] = []
+    buffer = ""
+    for sentence in sentences:
+        while len(sentence) > limit:
+            if buffer:
+                parts.append(buffer)
+                buffer = ""
+            parts.append(sentence[:limit])
+            sentence = sentence[limit:]
+        if buffer and len(buffer) + len(sentence) > limit:
+            parts.append(buffer)
+            buffer = sentence
+        else:
+            buffer += sentence
+    if buffer:
+        parts.append(buffer)
+    duration = max(cue.end_ms - cue.start_ms, len(parts))
+    return [
+        Cue(
+            cue.start_ms + duration * index // len(parts),
+            cue.start_ms + duration * (index + 1) // len(parts),
+            part,
+            f"{cue.cue_id}-{index + 1:02d}",
+        )
+        for index, part in enumerate(parts)
+    ]
+
+
+def chunk_cues(
+    cues: Sequence[Cue],
+    target_chars: int = TARGET_CHUNK_CHARS,
+    max_chars: int = MAX_CHUNK_CHARS,
+    overlap_cues: int = 2,
+    max_cues: int = MAX_CHUNK_CUES,
+) -> list[TranscriptChunk]:
+    if target_chars <= 0 or max_chars <= target_chars or max_chars >= MAX_MESSAGE_CHARS or max_cues <= 0:
+        raise ValueError("字幕分块参数无效。")
+    expanded: list[Cue] = []
+    for cue in cues:
+        expanded.extend(_split_long_cue(cue, max_chars - 120))
+    chunks: list[TranscriptChunk] = []
+    current: list[Cue] = []
+    current_size = 0
+    for cue in expanded:
+        line_size = len(f"[{cue.cue_id} {cue.start_ms}-{cue.end_ms}] {cue.text}\n")
+        if current and (current_size + line_size > target_chars or len(current) >= max_cues):
+            chunks.append(TranscriptChunk(len(chunks), tuple(current)))
+            current = current[-overlap_cues:] if overlap_cues else []
+            current_size = sum(
+                len(f"[{item.cue_id} {item.start_ms}-{item.end_ms}] {item.text}\n")
+                for item in current
+            )
+            while current and (current_size + line_size >= max_chars or len(current) >= max_cues):
+                current.pop(0)
+                current_size = sum(
+                    len(f"[{item.cue_id} {item.start_ms}-{item.end_ms}] {item.text}\n")
+                    for item in current
+                )
+        current.append(cue)
+        current_size += line_size
+    if current:
+        chunks.append(TranscriptChunk(len(chunks), tuple(current)))
+    return chunks
+
+
+def _response_metadata(response: object) -> dict[str, Any]:
+    if not isinstance(response, Mapping):
+        return {}
+    value = response.get("response_metadata")
+    metadata = dict(value) if isinstance(value, Mapping) else {}
+    if "finish_reason" not in metadata and type(response.get("finish_reason")) is str:
+        metadata["finish_reason"] = response["finish_reason"]
+    return metadata
+
+
+def _balanced_object_fragments(value: str) -> tuple[list[str], bool]:
+    text = value.lstrip("\ufeff")
+    fragments: list[str] = []
+    unbalanced = False
+    start = 0
+    while start < len(text):
+        start = text.find("{", start)
+        if start < 0:
+            break
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            current = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    fragments.append(text[start : index + 1])
+                    start = index + 1
+                    break
+        else:
+            unbalanced = True
+            break
+    return fragments, unbalanced
+
+
+def _diagnostics(content: object, response: object, error_type: str) -> dict[str, Any]:
+    text = content if type(content) is str else ""
+    stripped = text.strip().lstrip("\ufeff")
+    finish_reason = _response_metadata(response).get("finish_reason")
+    _fragments, unbalanced = _balanced_object_fragments(text)
+    return {
+        "content_length": len(text),
+        "first_char": stripped[:1],
+        "last_char": stripped[-1:],
+        "finish_reason": finish_reason if type(finish_reason) is str else None,
+        "has_code_fence": "```" in text,
+        "suspected_truncation": finish_reason == "length" or unbalanced,
+        "parse_error_type": error_type,
+    }
+
+
+def _validated_json(
+    content: object,
+    validator: Callable[[object], dict[str, Any]],
+    response: object,
+) -> dict[str, Any]:
+    if type(content) is not str or not content.strip():
+        raise TranscriptAIFormatError(
+            "AI 未返回可处理回复，请重试。",
+            category="empty",
+            diagnostics=_diagnostics(content, response, "TypeError"),
+        )
+    fragments, unbalanced = _balanced_object_fragments(content)
+    had_json_object = False
+    last_error_type = "JSONDecodeError"
+    schema_mismatch: dict[str, Any] | None = None
+    for fragment in fragments:
+        try:
+            parsed = json.loads(fragment)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if type(parsed) is not dict:
+            continue
+        had_json_object = True
+        try:
+            validated = validator(parsed)
+            encoded_length = len(
+                json.dumps(validated, ensure_ascii=False, separators=(",", ":"))
+            )
+            if encoded_length > MAX_VALIDATED_JSON_CHARS:
+                raise ValueError("validated JSON too long")
+            return validated
+        except (TypeError, ValueError) as exc:
+            last_error_type = type(exc).__name__
+            if isinstance(exc, SchemaValidationError):
+                schema_mismatch = dict(exc.detail)
+    finish_reason = _response_metadata(response).get("finish_reason")
+    if finish_reason == "length" or unbalanced:
+        raise TranscriptAIFormatError(
+            "AI 输出被长度限制截断，已保留该字幕块；请重试或更换模型。",
+            category="truncated",
+            diagnostics=_diagnostics(content, response, "JSONDecodeError"),
+        )
+    category = "schema" if had_json_object else "format"
+    message = (
+        "AI 返回字段不符合要求，请重试或更换模型。"
+        if category == "schema"
+        else "AI 返回不是可提取的完整 JSON 对象，请重试或更换模型。"
+    )
+    diagnostics = _diagnostics(content, response, last_error_type)
+    if schema_mismatch is not None:
+        diagnostics["schema_mismatch"] = schema_mismatch
+    raise TranscriptAIFormatError(
+        message,
+        category=category,
+        diagnostics=diagnostics,
+    )
+
+
+def _repair_fragment(content: object) -> str:
+    if type(content) is not str:
+        return ""
+    fragments, _unbalanced = _balanced_object_fragments(content)
+    for fragment in fragments:
+        if len(fragment) <= MAX_REPAIR_FRAGMENT_CHARS:
+            return fragment
+    return ""
+
+
+def _json_content(
+    ai_client: Any,
+    prompt: str,
+    validator: Callable[[object], dict[str, Any]],
+    *,
+    schema_hint: str,
+) -> dict[str, Any]:
+    system = "只依据字幕证据处理内容，不补写外部事实。只返回一个严格 JSON 对象。"
+    if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
+        raise ValueError("AI 请求超过单次消息安全限制。")
+    response = ai_client.chat_completion(
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        max_tokens=4096,
+        temperature=0,
+        system_prompt=False,
+    )
+    content = response.get("content") if isinstance(response, Mapping) else None
+    try:
+        return _validated_json(content, validator, response)
+    except TranscriptAIFormatError as first_error:
+        if first_error.category in {"empty", "truncated"}:
+            raise
+        fragment = _repair_fragment(content)
+        if not fragment:
+            raise
+        repair_prompt = (
+            "只修复下列 JSON 片段的语法和字段结构，不添加、删除或改写事实。限制："
+            + schema_hint
+            + "\n片段：\n"
+            + fragment
+        )
+        if len(repair_prompt) >= MAX_MESSAGE_CHARS:
+            raise first_error
+        repair = ai_client.chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": "只修复 JSON，不创造事实。只返回一个严格 JSON 对象。",
+                },
+                {"role": "user", "content": repair_prompt},
+            ],
+            max_tokens=4096,
+            temperature=0,
+            system_prompt=False,
+        )
+        repair_content = repair.get("content") if isinstance(repair, Mapping) else None
+        return _validated_json(repair_content, validator, repair)
+
+
+def _cue_lookup(cues):
+    result = dict()
+    for cue in cues or tuple():
+        result.update(((cue.cue_id, cue),))
+    return result
+
+
+def _schema_fail(path, expected, actual):
+    raise SchemaValidationError(path, expected, actual)
+
+
+def _required_alias(value, names, path):
+    for name in names:
+        if name in value:
+            result = value.get(name)
+            if result is None:
+                _schema_fail(path, "required non-null field", result)
+            return result
+    _schema_fail(path, "required field or known alias", None)
+
+
+def _coerce_items(value, path, limit):
+    if value is None:
+        return list()
+    if type(value) in (str, dict):
+        result = list((value,))
+    elif type(value) in (list, tuple):
+        result = list(value)
+    else:
+        _schema_fail(path, "string, object, or array", value)
+    if len(result) > limit:
+        _schema_fail(path, "bounded array", value)
+    return result
+
+
+def _alias(value, names):
+    for name in names:
+        if name in value:
+            return value.get(name)
+    return None
+
+
+def _coerce_text(value, path, limit, empty=False):
+    if type(value) is dict:
+        value = _alias(value, ("text", "name", "title", "description", "question", "summary", "content", "value"))
+    if type(value) is not str or len(value) > limit or (not empty and not value.strip()):
+        _schema_fail(path, "bounded string", value)
+    return value.strip()
+
+
+def _coerce_time(value, path):
+    if type(value) is int and value >= 0:
+        return value
+    if type(value) is float and value >= 0 and value.is_integer():
+        return int(value)
+    if type(value) is str:
+        text = value.strip().lower()
+        if text.endswith("ms") and text.removesuffix("ms").strip().isdigit():
+            return int(text.removesuffix("ms").strip())
+        if text.endswith("s"):
+            try:
+                seconds = float(text.removesuffix("s").strip())
+            except ValueError:
+                seconds = -1
+            if seconds >= 0:
+                return round(seconds.__mul__(1000))
+        if text.isdigit():
+            return int(text)
+        parts = text.replace(",", ".").split(":")
+        if len(parts) in (2, 3):
+            try:
+                seconds = float(parts.pop())
+                minutes = int(parts.pop())
+                hours = int(parts.pop()) if parts else 0
+            except ValueError:
+                seconds = -1
+                minutes = -1
+                hours = -1
+            if hours >= 0 and 0 <= minutes < 60 and 0 <= seconds < 60:
+                return round((hours.__mul__(3600) + minutes.__mul__(60) + seconds).__mul__(1000))
+    _schema_fail(path, "milliseconds or timestamp string", value)
+
+
+def _unwrap(value, expected):
+    if type(value) is not dict:
+        _schema_fail("$", "object", value)
+    if expected.intersection(value):
+        return value
+    nested = _alias(value, ("data", "result", "output", "summary"))
+    return nested if type(nested) is dict else value
+
+
+def _text_list(value, path, count, size):
+    result = list()
+    for index, item in enumerate(_coerce_items(value, path, count)):
+        result.append(_coerce_text(item, "%s[%d]" % (path, index), size))
+    return result
+
+
+def _find_evidence_cue(row, cues, quote):
+    lookup = _cue_lookup(cues)
+    cue_id = _alias(row, ("cue_id", "cueId", "id"))
+    candidate = lookup.get(str(cue_id).strip()) if type(cue_id) in (str, int) else None
+    if candidate is not None and quote in candidate.text:
+        return candidate
+    start_value = _alias(row, ("start_ms", "startMs", "start", "start_time", "time", "timestamp"))
+    try:
+        start = _coerce_time(start_value, "evidence.start_ms") if start_value is not None else None
+    except SchemaValidationError:
+        start = None
+    matches = list()
+    for cue in cues:
+        if quote in cue.text and (start is None or cue.start_ms <= start <= cue.end_ms):
+            matches.append(cue)
+    return matches.pop() if len(matches) == 1 else None
+
+
+def _normalize_evidence(value, cues, path):
+    result = list()
+    seen = set()
+    if cues is None:
+        return result
+    for raw in _coerce_items(value, path, 12):
+        if type(raw) is not dict:
+            continue
+        quote_value = _alias(raw, ("quote", "text", "description"))
+        if type(quote_value) is not str or not quote_value.strip() or len(quote_value) > 240:
+            continue
+        quote = quote_value.strip()
+        cue = _find_evidence_cue(raw, cues, quote)
+        key = (cue.cue_id, quote) if cue is not None else None
+        if cue is None or key in seen or len(result) >= 6:
+            continue
+        seen.add(key)
+        result.append(dict(cue_id=cue.cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=quote))
+    return sorted(result, key=lambda item: (item.get("start_ms"), item.get("end_ms"), item.get("cue_id"), item.get("quote")))
+
+
+def _normalize_points(value, path, cues):
+    result = list()
+    for index, row in enumerate(_coerce_items(value, path, 20)):
+        item_path = "%s[%d]" % (path, index)
+        text = _coerce_text(row, item_path + ".text", 600)
+        evidence = _alias(row, ("evidence", "evidences", "citations", "source")) if type(row) is dict else None
+        normalized_evidence = _normalize_evidence(evidence, cues, item_path + ".evidence")
+        if cues is not None and not normalized_evidence:
+            continue
+        result.append(dict(text=text, evidence=normalized_evidence))
+    return result
+
+
+def _combined(value, names):
+    result = list()
+    for name in names:
+        if name in value:
+            result.extend(_coerce_items(value.get(name), name, 20))
+    return result
+
+
+def normalize_map_output(value, cues=None):
+    source = _unwrap(value, MAP_KEYS)
+    raw_cleaned = _required_alias(source, ("cleaned_transcript", "cleanedTranscript", "cleaned", "transcript", "cues"), "cleaned_transcript")
+    rows = _coerce_items(raw_cleaned, "cleaned_transcript", MAX_CHUNK_CUES)
+    lookup = _cue_lookup(cues)
+    positions = iter(cues or tuple())
+    cleaned = list()
+    total = 0
+    for index, row in enumerate(rows):
+        path = "cleaned_transcript[%d]" % index
+        text = _coerce_text(row, path + ".text", 600)
+        if cues is not None:
+            positional = next(positions, None)
+            cue_id_value = _alias(row, ("cue_id", "cueId", "id")) if type(row) is dict else None
+            if type(cue_id_value) in (str, int):
+                cue = lookup.get(str(cue_id_value).strip())
+                if cue is None:
+                    _schema_fail(path + ".cue_id", "existing cue id", cue_id_value)
+            elif type(row) is dict and _alias(row, ("start_ms", "startMs", "start", "start_time")) is not None:
+                start_value = _alias(row, ("start_ms", "startMs", "start", "start_time"))
+                try:
+                    candidate_start = _coerce_time(start_value, path + ".start_ms")
+                except SchemaValidationError:
+                    candidate_start = None
+                matches = list(item for item in cues if candidate_start is not None and item.start_ms <= candidate_start <= item.end_ms)
+                cue = matches.pop() if len(matches) == 1 else None
+            else:
+                cue = positional
+            if cue is None:
+                continue
+            cue_id, start, end = cue.cue_id, cue.start_ms, cue.end_ms
+        else:
+            if type(row) is not dict:
+                _schema_fail(path, "object with cue fields", row)
+            cue_id = _coerce_text(_required_alias(row, ("cue_id", "cueId", "id"), path + ".cue_id"), path + ".cue_id", 64)
+            start = _coerce_time(_required_alias(row, ("start_ms", "startMs", "start", "start_time"), path + ".start_ms"), path + ".start_ms")
+            end = _coerce_time(_required_alias(row, ("end_ms", "endMs", "end", "end_time"), path + ".end_ms"), path + ".end_ms")
+            if end <= start:
+                _schema_fail(path + ".end_ms", "time after start", end)
+        total += len(text)
+        if total > 7000:
+            _schema_fail("cleaned_transcript", "total text length at most 7000", rows)
+        cleaned.append(dict(cue_id=cue_id, start_ms=start, end_ms=end, text=text))
+    if not cleaned:
+        _schema_fail("cleaned_transcript", "non-empty array", raw_cleaned)
+    case_names = ("cases_formulas_conclusions", "casesFormulasConclusions", "cases", "examples", "formulas", "conclusions")
+    if not any(name in source for name in case_names):
+        _schema_fail("cases_formulas_conclusions", "required field or known alias", None)
+    result = dict(
+        cleaned_transcript=cleaned,
+        topics=_text_list(_required_alias(source, ("topics", "topic", "lesson_topics", "main_topics"), "topics"), "topics", 12, 200),
+        emphasized_points=_normalize_points(_required_alias(source, ("emphasized_points", "emphasizedPoints", "key_points", "highlights"), "emphasized_points"), "emphasized_points", cues),
+        concepts=_normalize_points(_required_alias(source, ("concepts", "key_concepts", "terms"), "concepts"), "concepts", cues),
+        cases_formulas_conclusions=_normalize_points(_combined(source, case_names), "cases_formulas_conclusions", cues),
+        review_questions=_text_list(_required_alias(source, ("review_questions", "reviewQuestions", "questions"), "review_questions"), "review_questions", 12, 300),
+    )
+    warning = source.get("partial_warning")
+    if warning is not None:
+        warning = _coerce_text(warning, "partial_warning", 120)
+        if warning != MAP_FALLBACK_WARNING:
+            _schema_fail("partial_warning", "known warning", warning)
+        result.update(partial_warning=warning)
+    return result
+
+
+def _normalize_timeline(value, cues):
+    result = list()
+    lookup = _cue_lookup(cues)
+    for index, row in enumerate(_coerce_items(value, "timeline", 80)):
+        path = "timeline[%d]" % index
+        if type(row) is not dict:
+            _schema_fail(path, "object", row)
+        title = _coerce_text(_alias(row, ("title", "name", "text")), path + ".title", 200)
+        summary = _coerce_text(_alias(row, ("summary", "description", "text")), path + ".summary", 600)
+        cue_id_value = _alias(row, ("cue_id", "cueId", "id"))
+        cue = lookup.get(str(cue_id_value).strip()) if cues is not None and type(cue_id_value) in (str, int) else None
+        if cues is not None and cue is None:
+            start_value = _alias(row, ("start_ms", "startMs", "start", "time", "timestamp"))
+            try:
+                candidate_start = _coerce_time(start_value, path + ".start_ms")
+            except SchemaValidationError:
+                candidate_start = None
+            matches = list(item for item in cues if candidate_start is not None and item.start_ms <= candidate_start <= item.end_ms)
+            cue = matches.pop() if len(matches) == 1 else None
+        if cues is not None and cue is None:
+            continue
+        cue_id = cue.cue_id if cue is not None else _coerce_text(cue_id_value, path + ".cue_id", 64)
+        start = cue.start_ms if cue is not None else _coerce_time(_alias(row, ("start_ms", "startMs", "start", "time", "timestamp")), path + ".start_ms")
+        result.append(dict(cue_id=cue_id, start_ms=start, title=title, summary=summary))
+    return sorted(result, key=lambda item: (item.get("start_ms"), item.get("cue_id"), item.get("title")))
+
+
+def normalize_summary_output(value, cues=None):
+    source = _unwrap(value, SUMMARY_KEYS)
+    case_names = ("cases_formulas_conclusions", "casesFormulasConclusions", "cases", "examples", "formulas", "conclusions")
+    if not any(name in source for name in case_names):
+        _schema_fail("cases_formulas_conclusions", "required field or known alias", None)
+    return dict(
+        lesson_topic=_coerce_text(_required_alias(source, ("lesson_topic", "lessonTopic", "topic", "title", "name"), "lesson_topic"), "lesson_topic", 300),
+        learning_objectives=_text_list(_required_alias(source, ("learning_objectives", "learningObjectives", "objectives", "goals"), "learning_objectives"), "learning_objectives", 12, 300),
+        emphasized_points=_normalize_points(_required_alias(source, ("emphasized_points", "emphasizedPoints", "key_points", "highlights"), "emphasized_points"), "emphasized_points", cues),
+        concepts=_normalize_points(_required_alias(source, ("concepts", "key_concepts", "terms"), "concepts"), "concepts", cues),
+        cases_formulas_conclusions=_normalize_points(_combined(source, case_names), "cases_formulas_conclusions", cues),
+        review_questions=_text_list(_required_alias(source, ("review_questions", "reviewQuestions", "questions"), "review_questions"), "review_questions", 12, 300),
+        timeline=_normalize_timeline(_required_alias(source, ("timeline", "time_line", "chapters", "outline"), "timeline"), cues),
+    )
+
+
+def validate_map(value, cues=None):
+    return normalize_map_output(value, cues)
+
+
+def validate_summary(value, cues=None):
+    return normalize_summary_output(value, cues)
+
+
+
+
+PLAIN_MAP_SECTIONS = dict((
+    ("TOPICS", "topics"),
+    ("EMPHASIZED_POINTS", "emphasized_points"),
+    ("CONCEPTS", "concepts"),
+    ("CASES_FORMULAS_CONCLUSIONS", "cases_formulas_conclusions"),
+    ("REVIEW_QUESTIONS", "review_questions"),
+))
+PLAIN_MAP_FORMAT = (
+    "不要输出 JSON、代码围栏或 HTML，也不要复述字幕。严格按以下五个标签段输出；每行只能以 - 开头。"
+    "TOPICS 必须提取本块真实主题。EMPHASIZED_POINTS、CONCEPTS、CASES_FORMULAS_CONCLUSIONS "
+    "每项格式为：- 内容 || cue_id || 字幕中的逐字短引文；引用必须来自同一个 cue。"
+    "REVIEW_QUESTIONS 写成只靠本块字幕即可回答的复习问题，格式为：- 问题。某段确无内容时写 - NONE，"
+    "但有实质课程内容时不得所有分析段均为 NONE。\n"
+    "[TOPICS]\n- 主题\n"
+    "[EMPHASIZED_POINTS]\n- 要点 || cue-000001 || 逐字短引文\n"
+    "[CONCEPTS]\n- 概念说明 || cue-000001 || 逐字短引文\n"
+    "[CASES_FORMULAS_CONCLUSIONS]\n- 案例、公式或结论 || cue-000001 || 逐字短引文\n"
+    "[REVIEW_QUESTIONS]\n- 字幕中明确提出的问题"
+)
+
+
+def _map_with_source_cues(value, cues):
+    source = _unwrap(value, MAP_KEYS)
+    if type(source) is not dict:
+        _schema_fail("$", "object", source)
+    payload = dict(source)
+    for name in ("cleaned_transcript", "cleanedTranscript", "cleaned", "transcript", "cues"):
+        payload.pop(name, None)
+    payload.update(cleaned_transcript=list(cue.as_dict() for cue in cues))
+    return payload
+
+
+def has_map_insights(value):
+    return bool(
+        value.get("topics")
+        and any(
+            value.get(name)
+            for name in (
+                "emphasized_points",
+                "concepts",
+                "cases_formulas_conclusions",
+            )
+        )
+    )
+
+
+def _validate_map_insights(value, cues):
+    normalized = validate_map(_map_with_source_cues(value, cues), cues)
+    if normalized.get("partial_warning"):
+        return normalized
+    if not normalized.get("topics"):
+        _schema_fail("topics", "non-empty array with a source-grounded topic", normalized.get("topics"))
+    if not has_map_insights(normalized):
+        _schema_fail("$", "at least one source-grounded point, concept, case, conclusion, formula, or question", value)
+    return normalized
+
+
+def parse_plain_map_output(content, cues):
+    if type(content) is not str or not content.strip():
+        _schema_fail("$", "non-empty plain structured response", content)
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").strip().lstrip("\ufeff").split("\n")
+    if lines and lines[0].strip().startswith("```"):
+        if len(lines) < 3 or lines[-1].strip() != "```":
+            _schema_fail("$", "complete optional code fence", content)
+        lines = lines[1:-1]
+    sections = dict((field, list()) for field in PLAIN_MAP_SECTIONS.values())
+    headings = dict(("[%s]" % label, field) for label, field in PLAIN_MAP_SECTIONS.items())
+    headings.update(("## %s" % label, field) for label, field in PLAIN_MAP_SECTIONS.items())
+    seen = set()
+    current = None
+    none_sections = set()
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in headings:
+            current = headings.get(line)
+            if current in seen:
+                _schema_fail(current, "section appearing once", line)
+            seen.add(current)
+            continue
+        if current is None or not line.startswith("- "):
+            _schema_fail("$", "only known headings and dash-prefixed rows", line)
+        item = line[2:].strip()
+        if item == "NONE":
+            if sections.get(current):
+                _schema_fail(current, "NONE or rows, not both", item)
+            none_sections.add(current)
+            continue
+        if current in none_sections:
+            _schema_fail(current, "NONE or rows, not both", item)
+        if current in ("topics", "review_questions"):
+            sections.get(current).append(item)
+            continue
+        parts = tuple(part.strip() for part in item.split("||"))
+        if len(parts) != 3 or not all(parts):
+            _schema_fail(current, "text || cue_id || exact quote", item)
+        text, cue_id, quote = parts
+        sections.get(current).append(
+            dict(text=text, evidence=list((dict(cue_id=cue_id, quote=quote),)))
+        )
+    if seen != set(PLAIN_MAP_SECTIONS.values()):
+        _schema_fail("$", "all five plain structured sections", tuple(sorted(seen)))
+    return _validate_map_insights(sections, cues)
+
+
+def _validated_map_response(content, response, cues):
+    try:
+        return _validated_json(
+            content, lambda value: _validate_map_insights(value, cues), response
+        )
+    except TranscriptAIFormatError as json_error:
+        try:
+            return parse_plain_map_output(content, cues)
+        except SchemaValidationError as plain_error:
+            if json_error.category == "truncated":
+                raise json_error
+            diagnostics = dict(json_error.diagnostics)
+            diagnostics.update(plain_schema_mismatch=dict(plain_error.detail))
+            raise TranscriptAIFormatError(
+                "AI 返回内容不符合精简 JSON 或固定标签格式，请重试或更换模型。",
+                category="schema" if json_error.category == "schema" else "format",
+                diagnostics=diagnostics,
+            ) from None
+
+
+def _map_content(ai_client, prompt, cues):
+    system = (
+        "只依据字幕证据提取内容，不补写外部事实。不要复述字幕；"
+        "严格使用用户指定的固定标签纯文本格式。"
+    )
+    if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
+        raise ValueError("AI 请求超过单次消息安全限制。")
+    response = ai_client.chat_completion(
+        list((dict(role="system", content=system), dict(role="user", content=prompt))),
+        max_tokens=3072,
+        temperature=0,
+        system_prompt=False,
+    )
+    content = response.get("content") if isinstance(response, Mapping) else None
+    return _validated_map_response(content, response, cues)
+
+
+def _fallback_map(chunk: TranscriptChunk) -> dict[str, Any]:
+    return {
+        "cleaned_transcript": [cue.as_dict() for cue in chunk.cues],
+        "topics": [],
+        "emphasized_points": [],
+        "concepts": [],
+        "cases_formulas_conclusions": [],
+        "review_questions": [],
+        "partial_warning": MAP_FALLBACK_WARNING,
+    }
+
+
+def _markdown_text(value: object) -> str:
+    return html.escape(str(value), quote=False)
+
+
+def render_cleaned(chunks: Sequence[Mapping[str, Any]]) -> str:
+    lines = list(("# 规整字幕", ""))
+    by_cue_id: dict[str, Mapping[str, Any]] = dict()
+    for chunk in chunks:
+        for row in chunk.get("cleaned_transcript", list()):
+            by_cue_id.setdefault(str(row.get("cue_id")), row)
+    ordered = sorted(
+        by_cue_id.values(),
+        key=lambda row: (int(row.get("start_ms")), int(row.get("end_ms")), str(row.get("cue_id"))),
+    )
+    for row in ordered:
+        seconds = int(row.get("start_ms")) // 1000
+        lines.append(
+            f"**{seconds // 60:02d}:{seconds % 60:02d}**  {_markdown_text(row.get('text'))}"
+        )
+    return "\n\n".join(lines).strip() + "\n"
+
+
+def render_summary(summary: Mapping[str, Any]) -> str:
+    title = summary.get("lesson_topic") or "暂未提取到可验证的本节主题"
+    lines = ["# " + _markdown_text(title), "", "## 学习目标"]
+    lines.extend(f"- {_markdown_text(item)}" for item in summary["learning_objectives"])
+    lines.extend(("", "## 本节要点"))
+    for point in summary["emphasized_points"]:
+        evidence = "；".join(
+            f"{item['start_ms'] // 60000:02d}:{item['start_ms'] // 1000 % 60:02d} {_markdown_text(item['quote'])}"
+            for item in point["evidence"]
+        )
+        lines.append(
+            f"- {_markdown_text(point['text'])}" + (f"（{evidence}）" if evidence else "")
+        )
+    for title, key in (("概念", "concepts"), ("案例、公式与结论", "cases_formulas_conclusions")):
+        lines.extend(("", f"## {title}"))
+        lines.extend(f"- {_markdown_text(item['text'])}" for item in summary[key])
+    lines.extend(("", "## 复习问题"))
+    lines.extend(f"- {_markdown_text(item)}" for item in summary["review_questions"])
+    lines.extend(("", "## 时间线"))
+    for item in summary["timeline"]:
+        seconds = item["start_ms"] // 1000
+        lines.append(
+            f"- **{seconds // 60:02d}:{seconds % 60:02d} · {_markdown_text(item['title'])}**："
+            f"{_markdown_text(item['summary'])}"
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _dedupe_strings(values, limit):
+    result = list()
+    seen = set()
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _merge_points(chunks, field):
+    ordered = list()
+    by_text = dict()
+    for chunk in chunks:
+        for point in chunk.get(field, list()):
+            text = point.get("text")
+            evidence_rows = point.get("evidence", list())
+            if type(text) is not str or not text.strip() or not evidence_rows:
+                continue
+            key = text.strip().casefold()
+            if key not in by_text:
+                target = dict(text=text.strip(), evidence=list())
+                by_text.update(((key, target),))
+                ordered.append(target)
+            target = by_text.get(key)
+            known = set((item.get("cue_id"), item.get("quote")) for item in target.get("evidence", list()))
+            for evidence in evidence_rows:
+                evidence_key = (evidence.get("cue_id"), evidence.get("quote"))
+                if evidence_key not in known and len(target.get("evidence", list())) < 6:
+                    target.get("evidence").append(dict(evidence))
+                    known.add(evidence_key)
+    for point in ordered:
+        point.get("evidence").sort(key=lambda item: (item.get("start_ms"), item.get("end_ms"), item.get("cue_id"), item.get("quote")))
+    ordered.sort(key=lambda point: (point.get("evidence")[0].get("start_ms"), point.get("text").casefold()))
+    return ordered[:20]
+
+
+def _reduce_failure_diagnostics(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, TranscriptAIFormatError):
+        diagnostics = dict(exc.diagnostics)
+        diagnostics["category"] = exc.category
+        return diagnostics
+    if isinstance(exc, SchemaValidationError):
+        return dict(category="schema", schema_mismatch=dict(exc.detail))
+    name = type(exc).__name__
+    lowered = name.casefold()
+    status_code = getattr(exc, "status_code", None)
+    provider_category = getattr(exc, "category", None)
+    known_categories = (
+        "authentication", "endpoint_or_model", "http_error", "network",
+        "rate_limit_or_quota", "request_parameters", "response_format",
+        "timeout", "unsupported_tools", "upstream_service",
+    )
+    if type(provider_category) is str and provider_category in known_categories:
+        category = provider_category
+    elif isinstance(exc, TimeoutError) or "timeout" in lowered:
+        category = "timeout"
+    elif isinstance(exc, (ConnectionError, OSError)) or any(token in lowered for token in ("connection", "network", "transport")):
+        category = "network"
+    elif type(status_code) is int and status_code >= 500:
+        category = "upstream_5xx"
+    else:
+        category = "reduce_error"
+    diagnostics: dict[str, Any] = dict(category=category, error_type=name[:120])
+    if type(status_code) is int:
+        diagnostics["status_code"] = status_code
+    return diagnostics
+
+
+def summary_has_content(summary):
+    return bool(
+        summary.get("lesson_topic")
+        and any(
+            summary.get(name)
+            for name in (
+                "emphasized_points",
+                "concepts",
+                "cases_formulas_conclusions",
+            )
+        )
+    )
+
+
+def deterministic_summary(chunks):
+    topics = _dedupe_strings((item for chunk in chunks for item in chunk.get("topics", list())), 12)
+    questions = _dedupe_strings((item for chunk in chunks for item in chunk.get("review_questions", list())), 12)
+    return dict(
+        lesson_topic=topics[0] if topics else "",
+        learning_objectives=list(),
+        emphasized_points=_merge_points(chunks, "emphasized_points"),
+        concepts=_merge_points(chunks, "concepts"),
+        cases_formulas_conclusions=_merge_points(chunks, "cases_formulas_conclusions"),
+        review_questions=questions,
+        timeline=list(),
+    )
+
+
+class TranscriptPipeline:
+    def run(
+        self,
+        raw_vtt: str,
+        ai_client: Any,
+        *,
+        cached_chunks: Mapping[int, Mapping[str, Any]] | None = None,
+        on_chunk: Callable[[int, dict[str, Any]], None] | None = None,
+        on_cleaned: Callable[[str], None] | None = None,
+        offline_only: bool = False,
+    ) -> PipelineResult:
+        cues = normalize_cues(parse_vtt(raw_vtt))
+        chunks = chunk_cues(cues)
+        mapped: list[dict[str, Any]] = list()
+        warnings: list[str] = list()
+        cached = cached_chunks or dict()
+        for chunk in chunks:
+            if chunk.index in cached:
+                result = validate_map(cached.get(chunk.index), chunk.cues)
+            elif offline_only:
+                raise ValueError("离线恢复要求全部字幕分块均已存在且验证通过。")
+            else:
+                prompt = (
+                    "从以下带 cue_id 与时间的字幕块提取本节强调内容。不得改动术语、数字、公式；"
+                    "不得补写字幕外事实；证据 quote 必须逐字来自所引用 cue。"
+                    + PLAIN_MAP_FORMAT
+                    + "\n字幕块：\n"
+                    + chunk.as_prompt_text()
+                )
+                if len(prompt) >= MAX_MESSAGE_CHARS:
+                    raise ValueError("字幕分块超过 AI 单消息限制。")
+                try:
+                    result = _map_content(ai_client, prompt, chunk.cues)
+                except TranscriptAIFormatError as exc:
+                    result = _fallback_map(chunk)
+                    warnings.append("第 %d 块：%s" % (chunk.index + 1, exc.category))
+                if on_chunk:
+                    on_chunk(chunk.index, result)
+            if result.get("partial_warning"):
+                warnings.append("第 %d 块：已使用回退" % (chunk.index + 1))
+            mapped.append(result)
+        cleaned_markdown = render_cleaned(mapped)
+        if on_cleaned:
+            on_cleaned(cleaned_markdown)
+        summary = deterministic_summary(mapped)
+        summary_empty = not summary_has_content(summary)
+        if summary_empty:
+            warnings.append(SUMMARY_EMPTY_WARNING)
+        return PipelineResult(
+            cues=list(cue.as_dict() for cue in cues),
+            chunks=mapped,
+            cleaned_markdown=cleaned_markdown,
+            summary=summary,
+            summary_markdown=render_summary(summary),
+            partial_warnings=tuple(dict.fromkeys(warnings)),
+            reduce_diagnostics=None,
+            summary_empty=summary_empty,
+        )

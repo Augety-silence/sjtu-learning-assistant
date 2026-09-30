@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import deadlinesClearIllustration from "@/assets/empty-states/deadlines-clear.webp";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -93,7 +94,7 @@ export function groupDeadlines(
     .filter((group) => group.items.length > 0);
 }
 
-export function DeadlinesView() {
+export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
   const [windowValue, setWindowValue] = useState("7d");
   const [items, setItems] = useState<Deadline[] | null>(null);
   const [error, setError] = useState("");
@@ -133,11 +134,13 @@ export function DeadlinesView() {
 
   return (
     <div className="section-stack deadlines-page">
-      <div className="view-intro">
-        <div>
-          <h2>待处理作业</h2>
-          <p>仅显示所选时间范围内尚未完成的作业。</p>
-        </div>
+      <div className={embedded ? "message-toolbar" : "view-intro"}>
+        {!embedded && (
+          <div>
+            <h2>待处理作业</h2>
+            <p>仅显示所选时间范围内尚未完成的作业。</p>
+          </div>
+        )}
         <Tabs value={windowValue} onValueChange={setWindowValue}>
           <TabsList aria-label="截止时间范围">
             {windows.map((item) => (
@@ -156,6 +159,7 @@ export function DeadlinesView() {
         <EmptyState
           title="当前范围没有截止事项"
           description="系统中有数据后，所选时间范围内的待完成作业会显示在这里。"
+          illustration={<img src={deadlinesClearIllustration} alt="" />}
           action={
             <Button variant="outline" size="sm" onClick={() => void load()}>
               重新检查

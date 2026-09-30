@@ -1,0 +1,19 @@
+{
+  "content_length": 9838,
+  "field_types": {
+    "cases_formulas_conclusions": "unavailable",
+    "cleaned_transcript": "unavailable",
+    "concepts": "unavailable",
+    "emphasized_points": "unavailable",
+    "review_questions": "unavailable",
+    "topics": "unavailable"
+  },
+  "finish_reason": "length",
+  "has_code_fence": false,
+  "schema_failure": {
+    "path": "$",
+    "reason": "no parseable JSON value"
+  },
+  "top_level_keys": [],
+  "top_level_type": "unparsed"
+}

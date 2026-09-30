@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { motionDuration, motionEase } from "@/lib/motion";
 
 export type ToastKind = "success" | "error" | "info";
 
@@ -90,8 +91,8 @@ function ToastCard({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 10 }}
       transition={{
-        duration: isPresent ? 0.18 : 0.14,
-        ease: [0.16, 1, 0.3, 1],
+        duration: isPresent ? motionDuration.enter : motionDuration.control,
+        ease: motionEase.out,
       }}
       layout="position"
       data-paused={paused || undefined}

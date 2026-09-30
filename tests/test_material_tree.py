@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from sjtu_learning_assistant.material_tree import build_material_tree, classify_material, safe_folder_chain
+from sjtu_learning_assistant.material_tree import (
+    build_material_tree,
+    classify_material,
+    material_preview_kind,
+    safe_folder_chain,
+)
 from sjtu_learning_assistant.models import Base, Course, CourseFile, CourseFolder, CourseModule, CourseModuleItem
 
 
@@ -38,6 +43,13 @@ class MaterialClassificationTests(unittest.TestCase):
         chain = safe_folder_chain(1, {1: first, 2: second})
         self.assertEqual(2, len(chain))
         self.assertEqual({1, 2}, {item.id for item in chain})
+
+
+class MaterialPreviewKindTests(unittest.TestCase):
+    def test_structured_documents_are_previewable(self):
+        for filename in ("讲义.docx", "slides.pptx", "成绩.xlsx", "分析.ipynb", "资料包.zip"):
+            with self.subTest(filename=filename):
+                self.assertEqual("structured", material_preview_kind(filename))
 
 
 class MaterialTreeTests(unittest.TestCase):

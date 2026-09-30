@@ -63,6 +63,58 @@ describe("responsive and motion regression rules", () => {
     expect(css).not.toMatch(/(?:linear|radial|conic)-gradient\s*\(/i);
   });
 
+  it("keeps AI Chat conversation width and responsive drawers intentional", () => {
+    expect(css).toContain("max-width: min(76%, 620px)");
+    expect(css).toContain("max-width: 820px");
+    expect(css).toContain("@media (min-width: 1050px) and (max-width: 1349px)");
+    expect(css).toContain("@media (min-width: 850px) and (max-width: 1049px)");
+    expect(css).toContain(
+      "grid-template-columns: clamp(208px, 18vw, 236px) 6px minmax(500px, 1fr)",
+    );
+    expect(css).not.toContain(
+      "grid-template-columns: clamp(220px, 20vw, 260px) 6px minmax(0, 1fr) 300px",
+    );
+    expect(css).not.toContain(
+      "grid-template-columns: var(--ai-sidebar-width) 6px minmax(0, 1fr)",
+    );
+    expect(css).toContain("width: min(320px, calc(100vw - 500px))");
+    expect(css).toContain(".ai-trace-step");
+    expect(css).toMatch(
+      /\.ai-trace-node \{[^}]*position: static[^}]*min-width: 24px[^}]*border: 0/,
+    );
+    expect(css).toMatch(
+      /\.ai-trace-step > summary \{[^}]*width: 100%[^}]*min-width: 0/,
+    );
+    expect(css).toMatch(
+      /\.ai-trace-summary-copy strong \{[^}]*overflow-wrap: normal[^}]*word-break: normal[^}]*white-space: normal/,
+    );
+    expect(css).not.toContain(".ai-activity-backdrop");
+    expect(css).toContain("--ai-floating-activity-width: min(340px, 42vw)");
+  });
+
+  it("keeps AI message and thinking rows horizontal without breaking normal CJK", () => {
+    expect(css).not.toMatch(/\.ai-message > header \{[^}]*display: contents/);
+    expect(css).toMatch(
+      /\.ai-message-avatar \{[^}]*min-width: 34px[^}]*grid-column: 1[^}]*grid-row: 1/,
+    );
+    expect(css).toMatch(
+      /\.ai-markdown \{[^}]*overflow-wrap: normal[^}]*word-break: normal/,
+    );
+    expect(css).toMatch(
+      /\.ai-thinking-copy \{[^}]*display: flex[^}]*flex-wrap: wrap/,
+    );
+    expect(css).toContain(".ai-chat-messages .ai-thinking > span:first-child");
+  });
+
+  it("keeps the composer compact and caps its internal scroller", () => {
+    expect(css).toMatch(
+      /\.ai-composer textarea \{[^}]*height: 42px[^}]*min-height: 42px[^}]*max-height: min\(160px, 32vh\)[^}]*resize: none/,
+    );
+    expect(css).toMatch(
+      /\.ai-conversation\.is-empty \.ai-composer textarea \{[^}]*min-height: 42px/,
+    );
+  });
+
   it("keeps toast chrome clean and pauses its progress feedback", () => {
     expect(css).toMatch(/\.toast \{[^}]*border: 0/);
     expect(css).toContain(".toast-progress");
@@ -82,6 +134,17 @@ describe("responsive and motion regression rules", () => {
     );
     expect(panelRule).toContain("left: 8px");
     expect(panelRule).toContain("width: min(336px, calc(100% - 16px))");
+  });
+
+  it("keeps contextual illustrations contained and non-interactive", () => {
+    expect(css).toMatch(
+      /\.state-illustration img \{[^}]*max-width:[^}]*max-height:[^}]*object-fit: contain/,
+    );
+    expect(css).toMatch(
+      /\.ai-chat-empty-illustration \{[^}]*object-fit: contain[^}]*pointer-events: none/,
+    );
+    expect(css).toContain(".settings-first-config-illustration");
+    expect(css).toContain(".submission-success-illustration");
   });
 
   it("keeps motion on compositor-friendly properties", () => {
@@ -114,5 +177,15 @@ describe("responsive and motion regression rules", () => {
     expect(reducedMotion).toContain("animation-duration: 0.01ms !important");
     expect(reducedMotion).toContain("transition-duration: 0.01ms !important");
     expect(reducedMotion).toContain("transition-delay: 0ms !important");
+  });
+
+  it("uses container-based video table breakpoints without changing AI panel width", () => {
+    expect(css).toContain("container: video-list / inline-size");
+    expect(css).toContain("@container video-list (max-width: 859px)");
+    expect(css).toContain("@container video-list (max-width: 679px)");
+    expect(css).toMatch(
+      /\.video-table th,[\s\S]*?\.video-table td {[^}]*white-space: normal/,
+    );
+    expect(css).toContain("width: min(336px, calc(100% - 16px))");
   });
 });

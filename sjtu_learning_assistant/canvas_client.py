@@ -6,9 +6,10 @@ upload requests: bearer credentials are only ever sent to the configured origin.
 from __future__ import annotations
 
 import mimetypes
+import re
 from pathlib import Path
-from typing import Any, Iterable, Mapping
-from urllib.parse import urlparse
+from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -31,6 +32,19 @@ class CanvasNetworkError(CanvasError):
 
 class CanvasProtocolError(CanvasError):
     """Canvas returned an invalid or unsafe response."""
+
+
+_CANVAS_ID = re.compile(r"[1-9][0-9]{0,18}")
+_CONTEXT_CODE = re.compile(r"course_[1-9][0-9]{0,18}")
+
+
+def _canvas_id(value: int | str, label: str) -> str:
+    if isinstance(value, bool):
+        raise CanvasProtocolError(f"{label}不正确。")
+    result = str(value).strip()
+    if _CANVAS_ID.fullmatch(result) is None:
+        raise CanvasProtocolError(f"{label}不正确。")
+    return result
 
 
 def normalize_base_url(value: str) -> str:
@@ -263,6 +277,212 @@ class CanvasClient:
     list_announcements = announcements
     get_announcements = announcements
 
+    def colors(self) -> dict[str, Any]:
+        """Return the current user's Canvas context colors."""
+        return self._get_object("/api/v1/users/self/colors")
+
+    get_colors = colors
+    user_colors = colors
+
+    def calendar_events(
+        self,
+        context_codes: Sequence[str],
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        if (
+            isinstance(context_codes, (str, bytes))
+            or not isinstance(context_codes, Sequence)
+            or not 1 <= len(context_codes) <= 10
+        ):
+            raise CanvasProtocolError("日历课程范围不正确。")
+        contexts: list[str] = []
+        for value in context_codes:
+            if type(value) is not str or _CONTEXT_CODE.fullmatch(value.strip()) is None:
+                raise CanvasProtocolError("日历课程范围不正确。")
+            context = value.strip()
+            if context not in contexts:
+                contexts.append(context)
+        if not contexts:
+            raise CanvasProtocolError("日历课程范围不正确。")
+        for value in (start_date, end_date):
+            if type(value) is not str or not value.strip() or len(value) > 64 or "\x00" in value:
+                raise CanvasProtocolError("日历时间范围不正确。")
+        params: list[tuple[str, str]] = [
+            ("type", "assignment"),
+            ("start_date", start_date.strip()),
+            ("end_date", end_date.strip()),
+            ("per_page", str(DEFAULT_PAGE_SIZE)),
+        ]
+        params.extend(("context_codes[]", value) for value in contexts)
+        return self._paginate("/api/v1/calendar_events", params=params)
+
+    list_calendar_events = calendar_events
+
+    def course_users(self, course_id: int | str) -> list[dict[str, Any]]:
+        course = _canvas_id(course_id, "课程 ID")
+        return self._paginate(
+            f"/api/v1/courses/{course}/users",
+            params=[("per_page", str(DEFAULT_PAGE_SIZE)), ("include[]", "enrollments")],
+        )
+
+    list_course_users = course_users
+    get_course_users = course_users
+
+    def course_students(self, course_id: int | str) -> list[dict[str, Any]]:
+        course = _canvas_id(course_id, "课程 ID")
+        return self._paginate(
+            f"/api/v1/courses/{course}/users",
+            params=[
+                ("per_page", str(DEFAULT_PAGE_SIZE)),
+                ("enrollment_type[]", "student"),
+                ("include[]", "enrollments"),
+            ],
+        )
+
+    list_course_students = course_students
+
+    def assignment_submissions(
+        self, course_id: int | str, assignment_id: int | str
+    ) -> list[dict[str, Any]]:
+        course = _canvas_id(course_id, "课程 ID")
+        assignment = _canvas_id(assignment_id, "作业 ID")
+        return self._paginate(
+            f"/api/v1/courses/{course}/assignments/{assignment}/submissions",
+            params=[
+                ("per_page", str(DEFAULT_PAGE_SIZE)),
+                ("include[]", "submission_comments"),
+            ],
+        )
+
+    list_assignment_submissions = assignment_submissions
+    list_course_assignment_submissions = assignment_submissions
+
+    def submission_for_user(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+    ) -> dict[str, Any]:
+        course = _canvas_id(course_id, "课程 ID")
+        assignment = _canvas_id(assignment_id, "作业 ID")
+        student = _canvas_id(student_id, "学生 ID")
+        return self._get_object(
+            f"/api/v1/courses/{course}/assignments/{assignment}/submissions/{student}",
+            params=[("include[]", "submission_comments")],
+        )
+
+    get_user_submission = submission_for_user
+    get_single_course_assignment_submission = submission_for_user
+
+    def user_submissions(
+        self, course_id: int | str, student_ids: Sequence[int | str]
+    ) -> list[dict[str, Any]]:
+        if (
+            isinstance(student_ids, (str, bytes))
+            or not isinstance(student_ids, Sequence)
+            or not 1 <= len(student_ids) <= 50
+        ):
+            raise CanvasProtocolError("学生 ID 列表不正确。")
+        course = _canvas_id(course_id, "课程 ID")
+        students = list(dict.fromkeys(_canvas_id(value, "学生 ID") for value in student_ids))
+        params: list[tuple[str, str]] = [
+            ("grouped", "true"),
+            ("per_page", str(DEFAULT_PAGE_SIZE)),
+        ]
+        params.extend(("student_ids[]", value) for value in students)
+        return self._paginate(
+            f"/api/v1/courses/{course}/students/submissions", params=params
+        )
+
+    list_user_submissions = user_submissions
+
+    def update_user_submission(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+        data: Sequence[tuple[str, str]],
+    ) -> dict[str, Any]:
+        course = _canvas_id(course_id, "课程 ID")
+        assignment = _canvas_id(assignment_id, "作业 ID")
+        student = _canvas_id(student_id, "学生 ID")
+        if isinstance(data, (str, bytes)) or not isinstance(data, Sequence) or not 1 <= len(data) <= 2:
+            raise CanvasProtocolError("评分更新参数不正确。")
+        allowed = {"submission[posted_grade]", "comment[text_comment]"}
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in data:
+            if (
+                not isinstance(item, (tuple, list))
+                or len(item) != 2
+                or type(item[0]) is not str
+                or type(item[1]) is not str
+                or item[0] not in allowed
+                or item[0] in seen
+                or len(item[1]) > 10_000
+                or "\x00" in item[1]
+            ):
+                raise CanvasProtocolError("评分更新参数不正确。")
+            seen.add(item[0])
+            normalized.append((item[0], item[1]))
+        response = self._request(
+            "PUT",
+            f"/api/v1/courses/{course}/assignments/{assignment}/submissions/{student}",
+            data=dict(normalized),
+            uncertain_on_error=True,
+        )
+        return self._json(response, dict)
+
+    def grade_submission(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+        grade: str,
+    ) -> dict[str, Any]:
+        if type(grade) is not str:
+            raise CanvasProtocolError("评分格式不正确。")
+        return self.update_user_submission(
+            course_id, assignment_id, student_id, [("submission[posted_grade]", grade)]
+        )
+
+    def update_grade(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+        grade: str | None = None,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        data: list[tuple[str, str]] = []
+        if grade is not None:
+            if type(grade) is not str:
+                raise CanvasProtocolError("评分格式不正确。")
+            data.append(("submission[posted_grade]", grade))
+        if comment is not None:
+            if type(comment) is not str or not comment.strip():
+                raise CanvasProtocolError("评论内容不正确。")
+            data.append(("comment[text_comment]", comment))
+        if not data:
+            raise CanvasProtocolError("评分和评论不能同时为空。")
+        return self.update_user_submission(
+            course_id, assignment_id, student_id, data
+        )
+
+    def comment_submission(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+        comment: str,
+    ) -> dict[str, Any]:
+        if type(comment) is not str or not comment.strip():
+            raise CanvasProtocolError("评论内容不正确。")
+        return self.update_user_submission(
+            course_id, assignment_id, student_id, [("comment[text_comment]", comment)]
+        )
+
     def submission(self, course_id: int | str, assignment_id: int | str) -> dict[str, Any]:
         return self._get_object(
             f"/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self"
@@ -369,7 +589,8 @@ class CanvasClient:
         response = self._request(
             "POST",
             f"/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions",
-            data=data,
+            content=urlencode(data).encode("ascii"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             uncertain_on_error=True,
         )
         return self._json(response, dict)

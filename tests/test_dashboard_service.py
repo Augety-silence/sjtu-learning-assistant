@@ -44,7 +44,7 @@ class DashboardFileSafetyTests(unittest.TestCase):
         self.set_local_path(document)
         result = self.service.open_material("42")
         self.assertEqual("opened", result["status"])
-        self.assertEqual([["/usr/bin/open", str(document.resolve())]], self.commands)
+        self.assertEqual([["/usr/bin/open", "--", str(document.resolve())]], self.commands)
 
     def test_rejects_outside_missing_directory_and_symlink(self) -> None:
         outside = Path(self.temp.name) / "outside.pdf"

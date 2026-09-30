@@ -5,6 +5,8 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import userAvatar from "@/assets/user-avatar.webp";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type { AIChatMessage } from "@/lib/types";
 
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
@@ -35,12 +37,14 @@ export function AIChatMessageBubble({
   onRevealAttachment,
   showCodeLineNumbers,
   animateEntry = false,
+  queued = false,
 }: {
   message: AIChatMessage;
   onOpenActivity: () => void;
   onRevealAttachment: (id: number) => void;
   showCodeLineNumbers: boolean;
   animateEntry?: boolean;
+  queued?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const shouldReduceMotion = useReducedMotion();
@@ -56,28 +60,34 @@ export function AIChatMessageBubble({
       initial={
         animateEntry
           ? shouldReduceMotion
-            ? { opacity: 0.01 }
-            : { opacity: 0.01, y: message.role === "user" ? 4 : 6 }
+            ? false
+            : { opacity: 0.72, y: message.role === "user" ? 4 : 6 }
           : false
       }
       animate={{ opacity: 1, y: 0 }}
       transition={{
-        duration: message.role === "user" ? 0.16 : 0.2,
-        ease: [0.16, 1, 0.3, 1],
+        duration:
+          message.role === "user"
+            ? motionDuration.control
+            : motionDuration.enter,
+        ease: motionEase.out,
       }}
       data-motion-entry={animateEntry ? message.role : undefined}
+      aria-label={message.role === "user" ? "你的消息" : "学习 Agent 回复"}
     >
-      <header>
-        <span className="ai-message-avatar">
-          {message.role === "user" ? (
-            "你"
-          ) : (
-            <img src={aiAgentLogo} alt="" aria-hidden="true" />
-          )}
-        </span>
-        <strong>{message.role === "user" ? "你" : "学习 Agent"}</strong>
-      </header>
+      <span className="ai-message-avatar">
+        <img
+          src={message.role === "user" ? userAvatar : aiAgentLogo}
+          alt=""
+          aria-hidden="true"
+        />
+      </span>
       <div className="ai-message-body">
+        {message.role === "assistant" && (
+          <header className="ai-message-author">
+            <strong>学习 Agent</strong>
+          </header>
+        )}
         {message.reasoning_content && (
           <details className="ai-reasoning">
             <summary>查看推理过程</summary>
@@ -135,6 +145,9 @@ export function AIChatMessageBubble({
           </div>
         )}
         <footer>
+          {queued && (
+            <span className="ai-message-queued">将在当前检索完成后执行</span>
+          )}
           {message.model && <span>{message.model}</span>}
           {message.tool_runs && message.tool_runs.length > 0 && (
             <button type="button" onClick={onOpenActivity}>

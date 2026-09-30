@@ -1,5 +1,7 @@
 import { CloudUpload, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import backupFinishedIllustration from "@/assets/empty-states/backup-finished.webp";
+import { ArchiveManager } from "@/components/archive/ArchiveManager";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { getBackupStatus, startCloudBackup } from "@/lib/api";
@@ -11,7 +13,7 @@ const POLL_INTERVAL_MS = 1000;
 function safeText(value: string | null | undefined, fallback = "—") {
   if (!value) return fallback;
   return value
-    .replace(/\/Users\/[^\s,;)}\]]+/gi, "[本地路径已隐藏]")
+    .replace(/\/Users\/[^/\r\n]+(?=\/|$)/g, "~")
     .replace(/\bBearer\s+\S+/gi, "[凭据已隐藏]")
     .replace(
       /\b(?:access[_-]?token|refresh[_-]?token|token|authorization)\b\s*[:=]\s*\S+/gi,
@@ -170,6 +172,8 @@ export function BackupView() {
   const progress = backup.progress;
   const progressTotal = Math.max(progress?.total ?? 0, 1);
   const progressDone = Math.min(progress?.done ?? 0, progressTotal);
+  const showFinishedIllustration =
+    backup.status === "finished" && Boolean(backup.last_result);
 
   return (
     <div className="section-stack backup-page">
@@ -243,6 +247,12 @@ export function BackupView() {
             {refreshing ? "刷新中" : "刷新状态"}
           </Button>
         </div>
+
+        {showFinishedIllustration && (
+          <div className="backup-finished-illustration" aria-hidden="true">
+            <img src={backupFinishedIllustration} alt="" />
+          </div>
+        )}
 
         {loadError && (
           <p className="backup-inline-error" role="alert">
@@ -318,6 +328,8 @@ export function BackupView() {
           </div>
         )}
       </section>
+
+      <ArchiveManager />
 
       {backup.last_result && <ResultSummary result={backup.last_result} />}
     </div>

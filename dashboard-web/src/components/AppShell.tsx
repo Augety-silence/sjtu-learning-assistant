@@ -1,30 +1,40 @@
 import {
   CalendarDays,
+  ChartNoAxesColumnIncreasing,
   ClipboardCheck,
   CloudUpload,
   FolderOpen,
+  GraduationCap,
   Home,
   type LucideIcon,
   Mail,
   MessageCircle,
+  NotebookPen,
   RefreshCw,
   Settings,
+  Users,
+  Video,
 } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import appLogo from "@/assets/app-logo.png";
 import { Button } from "@/components/ui/Button";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type { SyncStatus, ViewName } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
 const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: Home },
-  { id: "deadlines", label: "截止事项", icon: CalendarDays },
+  { id: "calendar", label: "日程", icon: CalendarDays },
   { id: "messages", label: "消息", icon: Mail },
   { id: "assignments", label: "作业中心", icon: ClipboardCheck },
   { id: "materials", label: "课程资料", icon: FolderOpen },
+  { id: "grades", label: "成绩", icon: ChartNoAxesColumnIncreasing },
+  { id: "roster", label: "花名册", icon: Users },
+  { id: "grading", label: "作业批改", icon: NotebookPen },
+  { id: "videos", label: "课程视频", icon: Video },
   { id: "backup", label: "云盘备份", icon: CloudUpload },
-  { id: "ai-chat", label: "AI Chat", icon: MessageCircle },
+  { id: "ai-chat", label: "AI 助手", icon: MessageCircle },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -33,6 +43,7 @@ const utilityNavigation = navigation.filter((item) => item.id === "settings");
 
 interface AppShellProps {
   view: ViewName;
+  availableViews?: readonly ViewName[];
   setView: (view: ViewName) => void;
   drawerOpen: boolean;
   setDrawerOpen: (open: boolean) => void;
@@ -81,12 +92,14 @@ function NavItems({
 
 function MobileDrawer({
   view,
+  items,
   select,
   close,
   menuButtonRef,
   shouldRestoreFocus,
 }: {
   view: ViewName;
+  items: typeof primaryNavigation;
   select: (view: ViewName) => void;
   close: () => void;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
@@ -112,7 +125,9 @@ function MobileDrawer({
       initial={{ opacity: 0.01 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: isPresent ? 0.14 : 0.12 }}
+      transition={{
+        duration: isPresent ? motionDuration.control : motionDuration.fast,
+      }}
     >
       <button
         type="button"
@@ -134,8 +149,8 @@ function MobileDrawer({
         animate={{ opacity: 1, x: 0 }}
         exit={{ opacity: 0.92, x: -10 }}
         transition={{
-          duration: isPresent ? 0.22 : 0.16,
-          ease: [0.16, 1, 0.3, 1],
+          duration: isPresent ? motionDuration.panel : motionDuration.control,
+          ease: motionEase.out,
         }}
       >
         <div className="brand">
@@ -147,7 +162,7 @@ function MobileDrawer({
         </div>
         <div className="sidebar-scroll">
           <NavItems
-            items={primaryNavigation}
+            items={items}
             label="主导航"
             view={view}
             select={select}
@@ -179,6 +194,7 @@ function mobileViewport() {
 
 export function AppShell({
   view,
+  availableViews,
   setView,
   drawerOpen,
   setDrawerOpen,
@@ -188,6 +204,9 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const [isMobile, setIsMobile] = useState(mobileViewport);
+  const visiblePrimaryNavigation = availableViews
+    ? primaryNavigation.filter((item) => availableViews.includes(item.id))
+    : primaryNavigation;
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousViewRef = useRef(view);
@@ -248,7 +267,7 @@ export function AppShell({
         </div>
         <div className="sidebar-scroll">
           <NavItems
-            items={primaryNavigation}
+            items={visiblePrimaryNavigation}
             label="主导航"
             view={view}
             select={select}
@@ -274,6 +293,7 @@ export function AppShell({
         {drawerOpen && isMobile && (
           <MobileDrawer
             view={view}
+            items={visiblePrimaryNavigation}
             select={select}
             close={closeDrawer}
             menuButtonRef={menuButtonRef}

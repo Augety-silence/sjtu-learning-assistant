@@ -6,18 +6,20 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { useReducedMotion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { Button } from "@/components/ui/Button";
 import type { AIAgentPreset, AIAgentTrace, AIToolRun } from "@/lib/types";
 
 const toolLabels: Record<string, string> = {
-  list_courses: "查询课程",
-  search_course_files: "搜索课程文件",
+  list_courses: "检索课程信息",
+  search_course_files: "检索课程文件",
   list_course_files: "读取课程文件",
-  get_deadlines: "查询截止日期",
-  search_messages: "搜索消息",
+  get_deadlines: "检索截止日期",
+  search_messages: "检索课程消息",
   get_message_detail: "读取消息详情",
-  get_material_tree: "读取资料树",
+  get_material_tree: "读取资料目录",
 };
 
 const traceStatusLabels: Record<string, string> = {
@@ -60,6 +62,11 @@ function traceHits(trace: AIAgentTrace) {
     const count = summary.count ?? summary.items_count;
     return total + (typeof count === "number" ? count : 0);
   }, 0);
+}
+
+function traceTitle(trace: AIAgentTrace) {
+  const run = trace.tool_runs[0];
+  return run ? (toolLabels[run.tool_name] ?? run.tool_name) : "整理检索结果";
 }
 
 function TraceRun({ run }: { run: AIToolRun }) {
@@ -112,7 +119,31 @@ export function AIChatTracePanel({
   traces: AIAgentTrace[];
   busy: boolean;
 }) {
-  const newestFirst = [...traces].reverse();
+  const shouldReduceMotion = useReducedMotion();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToLatestRef = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+
+  const scrollToLatest = () => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    scroller.scrollTo?.({
+      top: scroller.scrollHeight,
+      behavior: shouldReduceMotion ? "auto" : "smooth",
+    });
+    pinnedToLatestRef.current = true;
+    setShowLatest(false);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    if (pinnedToLatestRef.current) {
+      scrollToLatest();
+    } else {
+      setShowLatest(true);
+    }
+  }, [open, traces.length, busy]);
+
   return (
     <aside
       className={open ? "ai-activity is-open" : "ai-activity"}
@@ -138,83 +169,62 @@ export function AIChatTracePanel({
         </Button>
       </header>
 
-      <div className="ai-activity-scroll">
+      <div
+        className="ai-activity-scroll"
+        ref={scrollRef}
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          const distanceFromBottom =
+            target.scrollHeight - target.scrollTop - target.clientHeight;
+          pinnedToLatestRef.current = distanceFromBottom <= 24;
+          if (pinnedToLatestRef.current) setShowLatest(false);
+        }}
+      >
         <div className="ai-activity-section-title">
-          <span>检索轨迹</span>
+          <span>Agent 工作过程</span>
           <small>
-            {traces.length > 0 ? `${traces.length} 轮` : "等待任务"}
+            {traces.length > 0 || busy
+              ? `${traces.length + (busy ? 1 : 0)} 轮`
+              : "等待任务"}
           </small>
         </div>
 
-        {busy && (
-          <article className="ai-trace-card is-running" role="status">
-            <span className="ai-trace-node is-running">
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
-            </span>
-            <header>
-              <strong>Agent 正在检索</strong>
-              <span>正在规划并调用本地只读工具</span>
-            </header>
-          </article>
-        )}
-
-        {!busy && newestFirst.length === 0 && (
+        {!busy && traces.length === 0 && (
           <div className="ai-activity-empty">
             <span>
               <Search aria-hidden="true" />
             </span>
             <strong>还没有检索活动</strong>
-            <p>
-              Agent
-              的工具调用会显示在这里，包括检索阶段、状态、命中数量与安全摘要。
-            </p>
+            <p>开始提问后，这里会用简洁时间线展示检索与整理进度。</p>
           </div>
         )}
 
         <div className="ai-trace-list">
-          {newestFirst.map((trace, index) => {
-            const round = newestFirst.length - index;
+          {traces.map((trace, index) => {
             const hits = traceHits(trace);
+            const failed = trace.status === "failed";
             return (
-              <article className="ai-trace-card" key={trace.id}>
-                <span
-                  className={`ai-trace-node ${trace.status === "failed" ? "is-failed" : ""}`}
-                  aria-hidden="true"
-                >
-                  {trace.status === "failed" ? (
-                    <CircleSlash2 />
-                  ) : (
-                    <CheckCircle2 />
-                  )}
-                </span>
-                <header>
-                  <div>
-                    <strong>第 {round} 轮</strong>
-                    <span>
-                      {traceStatusLabels[trace.status] ?? trace.status}
-                    </span>
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>步骤</dt>
-                      <dd>{trace.steps}</dd>
-                    </div>
-                    <div>
-                      <dt>调用</dt>
-                      <dd>{trace.tool_runs.length}</dd>
-                    </div>
-                    <div>
-                      <dt>命中</dt>
-                      <dd>{hits}</dd>
-                    </div>
-                  </dl>
-                </header>
-                {trace.tool_runs.length > 0 ? (
-                  <details className="ai-trace-details">
-                    <summary>
-                      查看执行详情
-                      <ChevronRight aria-hidden="true" />
-                    </summary>
+              <details
+                className={failed ? "ai-trace-step is-failed" : "ai-trace-step"}
+                key={trace.id}
+              >
+                <summary>
+                  <span className="ai-trace-node" aria-hidden="true">
+                    {failed ? <CircleSlash2 /> : <CheckCircle2 />}
+                  </span>
+                  <span className="ai-trace-summary-copy">
+                    <strong>
+                      第 {index + 1} 轮　{traceTitle(trace)}
+                    </strong>
+                    <small>
+                      {traceStatusLabels[trace.status] ?? trace.status} · 调用{" "}
+                      {trace.tool_runs.length} 次 · 命中 {hits} 项
+                    </small>
+                  </span>
+                  <ChevronRight className="ai-trace-caret" aria-hidden="true" />
+                </summary>
+                <div className="ai-trace-content">
+                  {trace.tool_runs.length > 0 ? (
                     <div className="ai-tool-runs">
                       {trace.tool_runs.map((run, runIndex) => (
                         <TraceRun
@@ -223,15 +233,36 @@ export function AIChatTracePanel({
                         />
                       ))}
                     </div>
-                  </details>
-                ) : (
-                  <p className="ai-trace-no-tools">本轮未调用工具。</p>
-                )}
-              </article>
+                  ) : (
+                    <p className="ai-trace-no-tools">本轮未调用工具。</p>
+                  )}
+                </div>
+              </details>
             );
           })}
+
+          {busy && (
+            <article className="ai-trace-step is-running" role="status">
+              <span className="ai-trace-node" aria-hidden="true">
+                <LoaderCircle className="animate-spin" />
+              </span>
+              <span className="ai-trace-summary-copy">
+                <strong>第 {traces.length + 1} 轮　正在检索</strong>
+                <small>正在规划并调用本地只读工具</small>
+              </span>
+            </article>
+          )}
         </div>
       </div>
+      {showLatest && (
+        <button
+          type="button"
+          className="ai-activity-latest"
+          onClick={scrollToLatest}
+        >
+          ↓ 查看最新活动
+        </button>
+      )}
     </aside>
   );
 }

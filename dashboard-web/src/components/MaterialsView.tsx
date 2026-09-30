@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import materialsFirstSyncIllustration from "@/assets/empty-states/materials-first-sync.webp";
 import { FilePreviewDialog } from "@/components/FilePreviewDialog";
 import {
   isMaterialDropTarget,
@@ -21,6 +22,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
+  getMediaPreview,
   invoke,
   moveMaterial,
   previewMaterial,
@@ -34,8 +36,80 @@ import {
   findNodePath,
   visibleTreeItems,
 } from "@/lib/materialTree";
-import type { MaterialNode, MaterialPreview, MaterialTree } from "@/lib/types";
+import type {
+  MaterialNode,
+  MaterialPreview,
+  MaterialTree,
+  MediaPreviewResult,
+} from "@/lib/types";
 import { useCompactViewport } from "@/lib/useCompactViewport";
+
+const structuredPreviewExtensions = new Set([
+  "docx",
+  "pptx",
+  "xlsx",
+  "ipynb",
+  "zip",
+]);
+
+function records(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+}
+
+function structuredPreviewText(preview: MediaPreviewResult) {
+  const suffix = preview.truncated ? "\n\n（预览内容已按安全上限截断）" : "";
+  if (preview.kind === "docx")
+    return `${String(preview.text ?? "")} ${suffix}`.trim();
+  if (preview.kind === "pptx")
+    return (
+      records(preview.slides)
+        .map(
+          (slide, index) =>
+            `第 ${String(slide.number ?? index + 1)} 页\n${String(slide.text ?? "")}`,
+        )
+        .join("\n\n") + suffix
+    );
+  if (preview.kind === "xlsx")
+    return (
+      records(preview.sheets)
+        .map((sheet, index) => {
+          const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+          return `[${String(sheet.name ?? `Sheet ${index + 1}`)}]\n${rows
+            .map((row) =>
+              Array.isArray(row)
+                ? row.map((cell) => String(cell ?? "")).join("\t")
+                : "",
+            )
+            .join("\n")}`;
+        })
+        .join("\n\n") + suffix
+    );
+  if (preview.kind === "ipynb")
+    return (
+      records(preview.cells)
+        .map((cell, index) => {
+          const outputs = records(cell.outputs)
+            .map((output) => String(output.text ?? ""))
+            .filter(Boolean)
+            .join("\n");
+          return `单元 ${index + 1} · ${String(cell.cell_type ?? "raw")}\n${String(cell.source ?? "")}${outputs ? `\n输出：\n${outputs}` : ""}`;
+        })
+        .join("\n\n") + suffix
+    );
+  if (preview.kind === "zip")
+    return records(preview.entries)
+      .map(
+        (entry) =>
+          `${entry.directory ? "目录" : "文件"} · ${String(entry.name ?? "")} · ${String(entry.size ?? 0)} B`,
+      )
+      .join("\n");
+  return "此文件暂不支持结构化预览。";
+}
 
 function defaultExpandedIds(root: MaterialNode) {
   const expanded = new Set<string>();
@@ -290,7 +364,16 @@ export function MaterialsView() {
       duration: 0,
     });
     try {
-      const nextPreview = await previewMaterial(file.source_id);
+      const extension = file.name.split(".").pop()?.toLocaleLowerCase() ?? "";
+      const nextPreview = structuredPreviewExtensions.has(extension)
+        ? await getMediaPreview(file.source_id).then(
+            (result): MaterialPreview => ({
+              kind: "text",
+              name: result.name ?? file.name,
+              text: structuredPreviewText(result),
+            }),
+          )
+        : await previewMaterial(file.source_id);
       setPreview(nextPreview);
       showToast({
         id: toastId,
@@ -509,6 +592,7 @@ export function MaterialsView() {
         <EmptyState
           title="暂无课程资料"
           description="完成 Canvas 同步后，资料会按课程目录显示。"
+          illustration={<img src={materialsFirstSyncIllustration} alt="" />}
           action={
             <Button variant="outline" size="sm" onClick={() => void load()}>
               重新检查

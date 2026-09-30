@@ -3,6 +3,7 @@ from pathlib import Path
 
 from PyInstaller.building.osx import BUNDLE
 from PyInstaller.utils import osx as pyinstaller_osx
+from PyInstaller.utils.hooks import collect_data_files
 
 from sjtu_learning_assistant import __version__
 
@@ -36,6 +37,7 @@ datas = [
     (str(ROOT / "AGENT.md"), "."),
     (str(ROOT / "agent_presets"), "agent_presets"),
     (str(ROOT / "migrations"), "migrations"),
+    *collect_data_files("imageio_ffmpeg"),
 ]
 
 hiddenimports = [
@@ -44,6 +46,10 @@ hiddenimports = [
     "keyring.backends.fail",
     "keyring.backends.macOS",
     "keyring.backends.macOS.api",
+    "imageio_ffmpeg",
+    "PIL",
+    "PIL.Image",
+    "pypdf",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

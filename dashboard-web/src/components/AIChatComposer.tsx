@@ -10,6 +10,7 @@ import {
 } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { Button } from "@/components/ui/Button";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAgentPreset,
   AIChatSendShortcut,
@@ -23,6 +24,10 @@ interface Choice<T extends string> {
   label: string;
   detail?: string;
 }
+
+const COMPOSER_MIN_HEIGHT = 42;
+const COMPOSER_MAX_HEIGHT = 160;
+const COMPOSER_MAX_VIEWPORT_RATIO = 0.32;
 
 function AnimatedChoiceMenu({
   id,
@@ -48,8 +53,8 @@ function AnimatedChoiceMenu({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 3, scale: 0.99 }}
       transition={{
-        duration: isPresent ? 0.16 : 0.12,
-        ease: [0.16, 1, 0.3, 1],
+        duration: isPresent ? motionDuration.enter : motionDuration.fast,
+        ease: motionEase.out,
       }}
     >
       {children}
@@ -121,7 +126,6 @@ function ChoiceMenu<T extends string>({
 export function AIChatComposer({
   draft,
   error,
-  busy,
   attachmentBusy,
   attachments,
   active,
@@ -144,7 +148,6 @@ export function AIChatComposer({
 }: {
   draft: string;
   error: string | null;
-  busy: boolean;
   attachmentBusy: boolean;
   attachments: AIManagedAttachment[];
   active: boolean;
@@ -171,6 +174,22 @@ export function AIChatComposer({
   const controlsRef = useRef<HTMLDivElement>(null);
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
+
+  useEffect(() => {
+    const input = textareaRef.current;
+    if (!input) return;
+    const maxHeight = Math.min(
+      COMPOSER_MAX_HEIGHT,
+      window.innerHeight * COMPOSER_MAX_VIEWPORT_RATIO,
+    );
+    input.style.height = "0px";
+    const contentHeight = draft ? input.scrollHeight : COMPOSER_MIN_HEIGHT;
+    input.style.height = `${Math.min(
+      Math.max(contentHeight, COMPOSER_MIN_HEIGHT),
+      maxHeight,
+    )}px`;
+    input.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, [draft, hasMessages, textareaRef]);
 
   useEffect(() => {
     const closeOnOutside = (event: MouseEvent) => {
@@ -206,7 +225,7 @@ export function AIChatComposer({
           className="ai-composer-input"
           value={draft}
           maxLength={4000}
-          rows={hasMessages ? 2 : 3}
+          rows={1}
           aria-label="输入问题"
           placeholder="让 Agent 检索课程、文件、截止日期或消息…"
           onChange={(event) => onDraftChange(event.target.value)}
@@ -232,7 +251,7 @@ export function AIChatComposer({
               type="button"
               className="ai-attachment-button"
               aria-label={attachmentBusy ? "正在添加附件" : "添加本地附件"}
-              disabled={busy || attachmentBusy || attachments.length >= 20}
+              disabled={attachmentBusy || attachments.length >= 20}
               onClick={onPickAttachment}
             >
               {attachmentBusy ? (
@@ -251,7 +270,7 @@ export function AIChatComposer({
                     <button
                       type="button"
                       aria-label={`移除附件 ${attachment.name}`}
-                      disabled={busy || attachmentBusy}
+                      disabled={attachmentBusy}
                       onClick={() => onRemoveAttachment(attachment.id)}
                     >
                       <X aria-hidden="true" />
@@ -268,7 +287,6 @@ export function AIChatComposer({
                 aria-controls="ai-composer-agent-menu"
                 aria-haspopup="listbox"
                 aria-expanded={openMenu === "agent"}
-                disabled={busy}
                 onClick={() =>
                   setOpenMenu((menu) => (menu === "agent" ? null : "agent"))
                 }
@@ -315,7 +333,7 @@ export function AIChatComposer({
               value={model}
               items={models}
               open={openMenu === "model"}
-              disabled={busy}
+              disabled={false}
               onToggle={() =>
                 setOpenMenu((menu) => (menu === "model" ? null : "model"))
               }
@@ -330,7 +348,7 @@ export function AIChatComposer({
               value={depth}
               items={depths}
               open={openMenu === "depth"}
-              disabled={busy}
+              disabled={false}
               onToggle={() =>
                 setOpenMenu((menu) => (menu === "depth" ? null : "depth"))
               }
@@ -345,7 +363,6 @@ export function AIChatComposer({
             size="icon"
             aria-label="发送消息"
             disabled={
-              busy ||
               attachmentBusy ||
               (!draft.trim() && attachments.length === 0) ||
               !active ||

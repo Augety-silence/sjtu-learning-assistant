@@ -23,10 +23,12 @@ export function EmptyState({
   title,
   description,
   action,
+  illustration,
 }: {
   title: string;
   description: string;
   action?: ReactNode;
+  illustration?: ReactNode;
 }) {
   return (
     <motion.div
@@ -37,6 +39,11 @@ export function EmptyState({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
     >
+      {illustration && (
+        <div className="state-illustration" aria-hidden="true">
+          {illustration}
+        </div>
+      )}
       <p className="font-medium text-ink">{title}</p>
       <p className="text-sm text-caption">{description}</p>
       {action}

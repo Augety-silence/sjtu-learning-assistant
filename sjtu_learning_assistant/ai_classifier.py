@@ -43,6 +43,16 @@ CHAT_SYSTEM_PROMPT = (
 class AIClassificationError(RuntimeError):
     """A bounded, credential-safe AI classification failure."""
 
+    def __init__(
+        self,
+        message: str,
+        category: str = "validation",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+
 
 class AIToolsUnsupportedError(AIClassificationError):
     """The selected OpenAI-compatible endpoint rejected tool calling."""
@@ -121,7 +131,7 @@ class OpenAIClassificationClient:
         model: str = DEFAULT_AI_MODEL,
         transport: httpx.BaseTransport | None = None,
         limiter: Callable[[], None] | None = None,
-        timeout: httpx.Timeout | float = httpx.Timeout(20.0, connect=5.0),
+        timeout: httpx.Timeout | float = httpx.Timeout(120.0, connect=5.0),
     ) -> None:
         if not api_key:
             raise AIClassificationError("AI API key 为空。")
@@ -294,27 +304,84 @@ class OpenAIClassificationClient:
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
             response = self._client.post("chat/completions", json=request_body)
             response.raise_for_status()
-            message = response.json()["choices"][0]["message"]
+            payload = response.json()
+            choices = payload.get("choices") if type(payload) is dict else None
+            if type(choices) is not list or not choices:
+                raise ValueError("invalid choices")
+            choice = next(iter(choices))
+            if type(choice) is not dict or type(choice.get("message")) is not dict:
+                raise ValueError("invalid choice")
+            message = choice.get("message")
             content = message.get("content")
             reasoning = message.get("reasoning_content")
-            tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
+            tool_calls = self._parse_tool_calls(message.get("tool_calls", list()))
             if (type(content) is not str or not content.strip()) and not tool_calls:
                 raise ValueError("empty response")
-            return {
-                "content": content.strip() if type(content) is str else "",
-                "reasoning_content": reasoning.strip()
+            usage = payload.get("usage")
+            usage = usage if isinstance(usage, Mapping) else dict()
+            finish_reason = choice.get("finish_reason")
+            response_metadata = dict(
+                finish_reason=finish_reason if type(finish_reason) is str else None,
+                prompt_tokens=usage.get("prompt_tokens") if type(usage.get("prompt_tokens")) is int else None,
+                completion_tokens=usage.get("completion_tokens") if type(usage.get("completion_tokens")) is int else None,
+            )
+            return dict(
+                content=content.strip() if type(content) is str else "",
+                reasoning_content=reasoning.strip()
                 if type(reasoning) is str and reasoning.strip()
                 else None,
-                "tool_calls": tool_calls,
-            }
+                tool_calls=tool_calls,
+                response_metadata=response_metadata,
+            )
+
         except AIClassificationError:
             raise
         except httpx.HTTPStatusError as exc:
-            if tools and exc.response.status_code in {400, 404, 405, 415, 422}:
-                raise AIToolsUnsupportedError("当前模型接口不支持工具调用。") from None
-            raise AIClassificationError("AI 对话请求失败，请稍后重试。") from None
+            status_code = exc.response.status_code
+            if tools and status_code in (400, 404, 405, 415, 422):
+                raise AIToolsUnsupportedError(
+                    "当前模型接口不支持工具调用。",
+                    category="unsupported_tools",
+                    status_code=status_code,
+                ) from None
+            if status_code in (401, 403):
+                message = "AI 认证或访问权限失败，请在设置中检查 API key 和账号权限。"
+                category = "authentication"
+            elif status_code == 404:
+                message = "AI 接口路径或模型不存在，请检查 Base URL 与模型。"
+                category = "endpoint_or_model"
+            elif status_code in (400, 405, 415, 422):
+                message = "AI 请求参数不被上游接口接受，请检查模型兼容性。"
+                category = "request_parameters"
+            elif status_code == 429:
+                message = "AI 请求受限或配额不足，请稍后重试或检查配额。"
+                category = "rate_limit_or_quota"
+            elif status_code >= 500:
+                message = "AI 服务暂时不可用（服务端错误），请稍后重试。"
+                category = "upstream_service"
+            else:
+                message = "AI 对话请求失败，请稍后重试。"
+                category = "http_error"
+            raise AIClassificationError(
+                message, category=category, status_code=status_code
+            ) from None
+        except httpx.TimeoutException:
+            raise AIClassificationError(
+                "AI 请求超时，请检查网络或稍后重试。", category="timeout"
+            ) from None
+        except httpx.RequestError:
+            raise AIClassificationError(
+                "无法连接 AI 服务，请检查网络与 Base URL。", category="network"
+            ) from None
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+            raise AIClassificationError(
+                "AI 服务返回格式不兼容，请检查模型接口兼容性。",
+                category="response_format",
+            ) from None
         except Exception:
-            raise AIClassificationError("AI 对话请求失败，请稍后重试。") from None
+            raise AIClassificationError(
+                "AI 对话请求失败，请稍后重试。", category="client_error"
+            ) from None
 
     @staticmethod
     def _parse_tool_calls(value: object) -> list[dict[str, Any]]:

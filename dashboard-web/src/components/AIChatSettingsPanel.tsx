@@ -1,6 +1,7 @@
 import { Check, Settings2, X } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAttachmentContextBudget,
   AIChatPreferences,
@@ -16,14 +17,17 @@ function PersonalizationSurface({ children }: { children: React.ReactNode }) {
     <motion.section
       className="ai-personalization-panel"
       role="dialog"
-      aria-label="AI Chat 个性化设置"
+      aria-label="AI 助手个性化设置"
       aria-modal="false"
       aria-hidden={!isPresent}
       inert={!isPresent ? true : undefined}
-      initial={{ opacity: 0.01, y: 6, scale: 0.985 }}
+      initial={{ opacity: 0.72, y: 5, scale: 0.985 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 4, scale: 0.99 }}
-      transition={{ duration: isPresent ? 0.2 : 0.15, ease: [0.16, 1, 0.3, 1] }}
+      transition={{
+        duration: isPresent ? motionDuration.panel : motionDuration.control,
+        ease: motionEase.out,
+      }}
     >
       {children}
     </motion.section>
