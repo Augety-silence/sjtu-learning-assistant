@@ -26,6 +26,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from sjtu_learning_assistant.course_learning_orchestrator import (
+    PIPELINE_VERSION as COURSE_PIPELINE_VERSION,
+    PROMPT_VERSION as COURSE_PROMPT_VERSION,
+    CourseLearningOrchestrator,
+    OpenAIClassificationSemanticAdapter,
+)
+from sjtu_learning_assistant.course_learning_schemas import (
+    CriticDecision,
+    OrchestratorResult,
+)
+from sjtu_learning_assistant.course_memory import (
+    CourseMemoryStore,
+    TrainingSampleQualityGate,
+)
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.transcript_pipeline import (
     PIPELINE_VERSION,
@@ -42,10 +56,14 @@ from sjtu_learning_assistant.transcript_pipeline import (
 from sjtu_learning_assistant.video_service import parse_remote_source_id
 
 DEFAULT_TRANSCRIPT_ROOT = APP_SUPPORT_DIR / "transcripts" / "v1"
+DEFAULT_COURSE_MEMORY_ROOT = APP_SUPPORT_DIR / "transcripts" / "v2" / "course_memory"
 ACTIVE_STATES = frozenset(("queued", "fetching", "saved", "organizing"))
 FINAL_STATES = frozenset(("completed", "completed_with_warnings", "partial", "failed", "waiting_for_ai", "waiting_remote", "cancelled", "interrupted"))
 LEASE_SECONDS = 900
 MANIFEST_SCHEMA_VERSION = 2
+V2_MANIFEST_SCHEMA_VERSION = 1
+V2_JSON_PREVIEW_LIMIT = 2 * 1024 * 1024
+V2_TEXT_PREVIEW_LIMIT = 8 * 1024 * 1024
 ARTIFACT_FILES = {
     "raw_vtt": "raw.vtt",
     "cues": "cues.json",
@@ -53,8 +71,35 @@ ARTIFACT_FILES = {
     "summary_json": "summary.json",
     "summary": "summary.md",
 }
+V2_ARTIFACT_FILES = {
+    "semantic_chunks": "semantic_chunks.json",
+    "corrected_json": "corrected.json",
+    "corrected": "corrected.md",
+    "correction_diff": "correction_diff.json",
+    "uncertain": "uncertain.json",
+    "quality": "quality.json",
+    "course_memory_version": "course_memory_version.json",
+    "pipeline_events": "pipeline_events.json",
+    "training_examples": "training_examples.jsonl",
+}
+V2_ARTIFACT_LABELS = {
+    "semantic_chunks": "语义分块",
+    "corrected_json": "纠错数据",
+    "corrected": "纠错字幕",
+    "correction_diff": "纠错差异",
+    "uncertain": "待确认片段",
+    "quality": "质量报告",
+    "course_memory_version": "课程记忆版本",
+    "pipeline_events": "流水线事件",
+    "training_examples": "合格训练样本",
+}
+V2_JSON_KINDS = frozenset(set(V2_ARTIFACT_FILES) - {"corrected", "training_examples"})
 _ID = re.compile(r"^[0-9a-f]{32}$")
+_OPAQUE_ID = re.compile(r"^[0-9a-f]{32}$")
 _ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):(raw_vtt|cues|cleaned|summary_json|summary)$")
+_V2_ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):v2:([0-9a-f]{32})$")
+_PHASE1_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_PHASE1_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 class TranscriptError(RuntimeError):
@@ -135,15 +180,31 @@ class TranscriptService:
         subtitle_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
         ai_context_provider: Callable[[], AIContext] | None = None,
         pipeline: TranscriptPipeline | None = None,
+        orchestrator: Any | None = None,
+        memory_root: Path = DEFAULT_COURSE_MEMORY_ROOT,
+        memory_store_factory: Callable[[Path, str], Any] | None = None,
+        enable_phase1: bool | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         revealer: Callable[[Path], Any] | None = None,
         autostart_worker: bool = True,
         lease_seconds: int = LEASE_SECONDS,
     ) -> None:
         self.root = Path(root).expanduser()
+        self.enable_phase1 = (
+            self.root == DEFAULT_TRANSCRIPT_ROOT or orchestrator is not None
+            if enable_phase1 is None
+            else bool(enable_phase1)
+        )
         self.subtitle_fetcher = subtitle_fetcher
         self.ai_context_provider = ai_context_provider or (lambda: AIContext(None, "", "", False))
         self.pipeline = pipeline or TranscriptPipeline()
+        self.orchestrator = orchestrator
+        if self.orchestrator is not None and hasattr(self.orchestrator, "persist_raw"):
+            self.orchestrator.persist_raw = False
+        self.memory_root = Path(memory_root).expanduser()
+        self.memory_store_factory = memory_store_factory or (
+            lambda root, course_id: CourseMemoryStore(root, course_id)
+        )
         self.sleeper = sleeper
         self.revealer = revealer or self._default_reveal
         self._lock = threading.RLock()
@@ -454,19 +515,20 @@ class TranscriptService:
     def cancel(self, *, batch_id: str | None = None, job_id: str | None = None) -> dict[str, Any]:
         if (batch_id is None) == (job_id is None):
             raise TranscriptError("必须且只能指定一个待取消任务。")
-        if job_id is not None:
-            batch, job = self._find_job(job_id)
-            target_id = str(batch["id"])
-            job["cancel_requested"] = True
-        else:
-            target_id = str(batch_id)
-            batch = self._read_json(self._batch_path(target_id))
-            batch["cancel_requested"] = True
-            for job in batch.get("jobs", []):
-                if job.get("status") not in FINAL_STATES:
-                    job["cancel_requested"] = True
-        batch["updated_at"] = _now()
-        self._write_json(self._batch_path(target_id), batch)
+        with self._lock, self._batch_lock():
+            if job_id is not None:
+                batch, job = self._find_job(job_id)
+                target_id = str(batch["id"])
+                job["cancel_requested"] = True
+            else:
+                target_id = str(batch_id)
+                batch = self._read_json(self._batch_path(target_id))
+                batch["cancel_requested"] = True
+                for job in batch.get("jobs", []):
+                    if job.get("status") not in FINAL_STATES:
+                        job["cancel_requested"] = True
+            batch["updated_at"] = _now()
+            self._write_json(self._batch_path(target_id), batch)
         return self._public_batch(batch)
 
     def _find_job(self, job_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -510,8 +572,35 @@ class TranscriptService:
             if batch is not None:
                 self._process_batch(batch)
 
+    @staticmethod
+    def _merge_cancel_requests(
+        batch: dict[str, Any], persisted: Mapping[str, Any]
+    ) -> None:
+        if persisted.get("cancel_requested"):
+            batch["cancel_requested"] = True
+        persisted_jobs = {
+            str(item.get("id")): item
+            for item in persisted.get("jobs", [])
+            if isinstance(item, Mapping)
+        }
+        for job in batch.get("jobs", []):
+            persisted_job = persisted_jobs.get(str(job.get("id")))
+            if persisted_job is not None and persisted_job.get("cancel_requested"):
+                job["cancel_requested"] = True
+
+    def _refresh_cancel_requested(
+        self, batch: dict[str, Any], job: dict[str, Any]
+    ) -> bool:
+        with self._lock, self._batch_lock():
+            persisted = self._read_json(self._batch_path(str(batch["id"])))
+            self._merge_cancel_requests(batch, persisted)
+        return bool(batch.get("cancel_requested") or job.get("cancel_requested"))
+
     def _save_batch(self, batch: dict[str, Any]) -> None:
-        with self._lock:
+        with self._lock, self._batch_lock():
+            path = self._batch_path(str(batch["id"]))
+            if path.is_file() and not path.is_symlink():
+                self._merge_cancel_requests(batch, self._read_json(path))
             jobs = batch.get("jobs", [])
             batch["progress"] = round(sum(int(job.get("progress") or 0) for job in jobs) / max(1, len(jobs)))
             states = {str(job.get("status")) for job in jobs}
@@ -539,8 +628,7 @@ class TranscriptService:
                 batch["status"] = "partial"
             batch["updated_at"] = _now()
             self._refresh_owner(batch)
-            with self._batch_lock():
-                self._write_json(self._batch_path(str(batch["id"])), batch)
+            self._write_json(path, batch)
 
     def _heartbeat_batch(self, batch_id: str) -> bool:
         with self._lock, self._batch_lock():
@@ -605,12 +693,30 @@ class TranscriptService:
                 self._save_batch(batch)
         for job in batch["jobs"]:
             if job.get("status") == "saved":
-                if batch.get("cancel_requested") or job.get("cancel_requested"):
+                if self._refresh_cancel_requested(batch, job):
                     job["status"] = "cancelled"
                     job["progress"] = 100
                 else:
                     self._organize(batch, job)
                 self._save_batch(batch)
+        for job in batch["jobs"]:
+            if job.get("status") not in {"completed", "completed_with_warnings"}:
+                continue
+            video_dir = self._job_video_dir(job)
+            manifest = self._read_json(video_dir / "manifest.json")
+            if not self._completed_artifacts_valid(video_dir, manifest):
+                continue
+            if self._refresh_cancel_requested(batch, job):
+                job["status"] = "cancelled"
+                job["stage"] = "cancelled"
+                job["progress"] = 100
+                job["message"] = "字幕任务已取消；已生成的旧版字幕仍可使用。"
+            else:
+                raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
+                self._run_phase1_safely(
+                    batch, job, video_dir, raw, self.ai_context_provider()
+                )
+            self._save_batch(batch)
         self._save_batch(batch)
 
     @staticmethod
@@ -677,17 +783,444 @@ class TranscriptService:
         return type(value) is dict and value == self._current_chunk_context(manifest, job, context)
 
     @staticmethod
-    def _hashed_file_valid(path: Path, expected_hash: object) -> bool:
+    def _hashed_file_valid(path: Path, expected_hash: object, expected_size: object = None) -> bool:
         try:
             return (
                 type(expected_hash) is str
                 and len(expected_hash) == 64
+                and (expected_size is None or (type(expected_size) is int and expected_size >= 0))
                 and path.is_file()
                 and not path.is_symlink()
+                and (expected_size is None or path.stat().st_size == expected_size)
                 and _sha256(path.read_bytes()) == expected_hash
             )
         except OSError:
             return False
+
+    @staticmethod
+    def _phase1_value(result: object, name: str, default: object = None) -> object:
+        if isinstance(result, Mapping):
+            return result.get(name, default)
+        return getattr(result, name, default)
+
+    @staticmethod
+    def _phase1_plain(value: object) -> object:
+        converter = getattr(value, "to_dict", None)
+        if callable(converter):
+            return converter()
+        if isinstance(value, Mapping):
+            return {str(key): TranscriptService._phase1_plain(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [TranscriptService._phase1_plain(item) for item in value]
+        if hasattr(value, "value") and type(getattr(value, "value")) is str:
+            return getattr(value, "value")
+        return value
+
+    @staticmethod
+    def _phase1_markdown(result: object) -> str:
+        text = str(TranscriptService._phase1_value(result, "corrected_transcript", "") or "")
+        return "# 课程语境纠错字幕\n\n" + text.rstrip() + "\n"
+
+    @staticmethod
+    def _phase1_versions(orchestrator: object) -> tuple[str, str, str]:
+        return (
+            str(getattr(orchestrator, "pipeline_version", COURSE_PIPELINE_VERSION))[:256],
+            str(getattr(orchestrator, "prompt_version", COURSE_PROMPT_VERSION))[:256],
+            str(getattr(orchestrator, "model", "unknown"))[:256],
+        )
+
+    @staticmethod
+    def _phase1_seed_revision(orchestrator: object) -> str:
+        status = getattr(orchestrator, "seed_glossary_status", None)
+        if isinstance(status, Mapping):
+            revision = status.get("revision")
+            if type(revision) is str and revision:
+                return revision[:1024]
+        return "unavailable"
+
+    @staticmethod
+    def _phase1_cache_key(
+        raw_hash: str,
+        memory_version: str | None,
+        pipeline_version: str,
+        prompt_version: str,
+        model_version: str,
+        seed_glossary_revision: str,
+    ) -> str:
+        value = {
+            "raw_hash": raw_hash,
+            "course_memory_version": memory_version,
+            "pipeline_version": pipeline_version,
+            "prompt_version": prompt_version,
+            "model_version": model_version,
+            "seed_glossary_revision": seed_glossary_revision,
+        }
+        payload = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        return _sha256(payload)
+
+    @staticmethod
+    def _safe_v2_record(record: object, kind: str) -> bool:
+        if type(record) is not dict or set(record) != {"id", "path", "sha256", "size"}:
+            return False
+        return bool(
+            record.get("path") == V2_ARTIFACT_FILES[kind]
+            and type(record.get("id")) is str
+            and _OPAQUE_ID.fullmatch(str(record.get("id")))
+            and type(record.get("sha256")) is str
+            and len(str(record.get("sha256"))) == 64
+            and type(record.get("size")) is int
+            and int(record.get("size")) >= 0
+        )
+
+    def _v2_dir(self, video_dir: Path) -> Path:
+        return video_dir / "v2"
+
+    def _v2_manifest(self, video_dir: Path) -> dict[str, Any] | None:
+        path = self._v2_dir(video_dir) / "manifest.json"
+        if not path.exists() or path.is_symlink():
+            return None
+        try:
+            manifest = self._read_json(path)
+        except TranscriptError:
+            return None
+        return manifest if manifest.get("schema_version") == V2_MANIFEST_SCHEMA_VERSION else None
+
+    def _v2_artifacts_valid(
+        self,
+        video_dir: Path,
+        manifest: Mapping[str, Any],
+        *,
+        expected_cache_key: str | None = None,
+    ) -> bool:
+        if expected_cache_key is not None and manifest.get("cache_key") != expected_cache_key:
+            return False
+        records = manifest.get("artifacts")
+        if type(records) is not dict:
+            return False
+        required = set(V2_ARTIFACT_FILES) - {"training_examples"}
+        if not required.issubset(records) or set(records) - set(V2_ARTIFACT_FILES):
+            return False
+        v2_dir = self._v2_dir(video_dir)
+        if v2_dir.is_symlink() or not v2_dir.is_dir():
+            return False
+        for kind, record in records.items():
+            if kind not in V2_ARTIFACT_FILES or not self._safe_v2_record(record, kind):
+                return False
+            if not self._hashed_file_valid(
+                v2_dir / V2_ARTIFACT_FILES[kind], record.get("sha256"), record.get("size")
+            ):
+                return False
+        return True
+
+    def _phase1_training_examples(self, result: object) -> list[dict[str, Any]]:
+        chunks = list(self._phase1_value(result, "chunks", ()) or ())
+        corrections = list(self._phase1_value(result, "corrections", ()) or ())
+        critics = list(self._phase1_value(result, "critics", ()) or ())
+        gate = TrainingSampleQualityGate()
+        rows: list[dict[str, Any]] = []
+        for chunk, correction, critic in zip(chunks, corrections, critics):
+            decision = self._phase1_value(critic, "decision")
+            decision_value = getattr(decision, "value", decision)
+            critic_confidence = self._phase1_value(critic, "confidence", 0.0)
+            correction_confidence = self._phase1_value(correction, "confidence", 0.0)
+            changes = list(self._phase1_value(correction, "changes", ()) or ())
+            source = str(self._phase1_value(chunk, "current_text", "") or "")
+            corrected = str(self._phase1_value(correction, "corrected_text", "") or "")
+            evidence = list(dict.fromkeys(
+                str(item)
+                for change in changes
+                if float(self._phase1_value(change, "confidence", 0.0) or 0.0) >= 0.9
+                for item in (self._phase1_value(change, "evidence", ()) or ())
+                if type(item) is str and item
+            ))
+            if (
+                decision_value != CriticDecision.PASS.value
+                or type(critic_confidence) not in (int, float)
+                or type(correction_confidence) not in (int, float)
+                or min(float(critic_confidence), float(correction_confidence)) < 0.9
+                or source == corrected
+                or not evidence
+            ):
+                continue
+            sample = {
+                "sample_type": "sft",
+                "task_type": "subtitle_correction",
+                "system": "只做有证据的最小必要字幕纠错",
+                "input": source,
+                "output": corrected,
+                "chosen": None,
+                "rejected": None,
+            }
+            confidence = min(float(critic_confidence), float(correction_confidence))
+            try:
+                checked = gate.validate(
+                    sample,
+                    source="high_confidence_correction",
+                    confidence=confidence,
+                    verification="LIKELY",
+                    evidence=evidence,
+                )
+            except Exception:
+                continue
+            rows.append({
+                "id": _sha256((source + "\0" + corrected).encode("utf-8"))[:32],
+                "sample": checked,
+                "source": "high_confidence_correction",
+                "confidence": confidence,
+                "verification": "LIKELY",
+                "evidence": evidence,
+            })
+        return rows
+
+    def _phase1_payloads(self, result: object) -> dict[str, bytes]:
+        chunks = self._phase1_plain(self._phase1_value(result, "chunks", ()))
+        corrections = self._phase1_plain(self._phase1_value(result, "corrections", ()))
+        quality = self._phase1_plain(self._phase1_value(result, "quality", {}))
+        uncertain = self._phase1_plain(self._phase1_value(result, "uncertain", ()))
+        events = self._phase1_plain(self._phase1_value(result, "events", ()))
+        memory_version = self._phase1_value(result, "memory_version")
+        changes = []
+        for correction in list(self._phase1_value(result, "corrections", ()) or ()):
+            changes.extend(self._phase1_plain(self._phase1_value(correction, "changes", ())) or [])
+        payloads = {
+            "semantic_chunks": _json_bytes(chunks),
+            "corrected_json": _json_bytes({
+                "status": self._phase1_value(result, "status", "completed"),
+                "corrected_transcript": self._phase1_value(result, "corrected_transcript", ""),
+                "corrections": corrections,
+            }),
+            "corrected": self._phase1_markdown(result).encode("utf-8"),
+            "correction_diff": _json_bytes(changes),
+            "uncertain": _json_bytes(uncertain),
+            "quality": _json_bytes(quality),
+            "course_memory_version": _json_bytes({"version": memory_version}),
+            "pipeline_events": _json_bytes(events),
+        }
+        training = self._phase1_training_examples(result)
+        if training:
+            payloads["training_examples"] = b"".join(
+                (json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+                for row in training
+            )
+        return payloads
+
+    def _phase1_orchestrator(self, context: AIContext) -> Any:
+        if self.orchestrator is not None:
+            return self.orchestrator
+        if not context.enabled or context.client is None:
+            raise TranscriptError("Phase1 未运行：AI 未配置。")
+        adapter = OpenAIClassificationSemanticAdapter(context.client)
+        adapter.model = context.model or adapter.model
+        return CourseLearningOrchestrator(adapter, persist_raw=False)
+
+    def _run_phase1(
+        self,
+        batch: Mapping[str, Any],
+        job: dict[str, Any],
+        video_dir: Path,
+        raw: str,
+        context: AIContext,
+    ) -> None:
+        raw_path = video_dir / "raw.vtt"
+        cues_path = video_dir / "cues.json"
+        raw_hash = _sha256(raw.encode("utf-8"))
+        if not self._hashed_file_valid(raw_path, raw_hash) or cues_path.is_symlink() or not cues_path.is_file():
+            raise TranscriptError("Phase1 输入工件校验失败。")
+        course_id = str(batch.get("course_id") or "")
+        _remote_course_id, video_id = parse_remote_source_id(str(job.get("source_id")))
+        v2_dir = self._v2_dir(video_dir)
+        if v2_dir.exists() and (v2_dir.is_symlink() or not v2_dir.is_dir()):
+            raise TranscriptError("Phase1 工件目录不安全。")
+        memory_repo = self.memory_store_factory(self.memory_root, course_id)
+        current_memory_version = getattr(memory_repo, "current_version", None)
+        orchestrator = self._phase1_orchestrator(context)
+        pipeline_version, prompt_version, model_version = self._phase1_versions(orchestrator)
+        seed_glossary_revision = self._phase1_seed_revision(orchestrator)
+        expected_key = self._phase1_cache_key(
+            raw_hash,
+            current_memory_version,
+            pipeline_version,
+            prompt_version,
+            model_version,
+            seed_glossary_revision,
+        )
+        cached_manifest = self._v2_manifest(video_dir)
+        if (
+            cached_manifest is not None
+            and cached_manifest.get("status") in {"completed", "completed_with_warnings"}
+            and cached_manifest.get("source_id") == str(job.get("source_id"))
+            and cached_manifest.get("raw_sha256") == raw_hash
+            and cached_manifest.get("course_id") == course_id
+            and cached_manifest.get("video_id") == video_id
+            and cached_manifest.get("course_memory_version") == current_memory_version
+            and cached_manifest.get("seed_glossary_revision") == seed_glossary_revision
+            and self._v2_artifacts_valid(video_dir, cached_manifest, expected_cache_key=expected_key)
+        ):
+            job.update(
+                phase1_status=str(cached_manifest.get("status") or "completed"),
+                pipeline_status=str(cached_manifest.get("status") or "completed"),
+                quality=cached_manifest.get("quality"),
+                phase1_reused=True,
+            )
+            return
+        result = orchestrator.orchestrate(
+            course_id=course_id,
+            video_id=video_id,
+            raw_vtt=raw,
+            memory_repo=memory_repo,
+        )
+        if isinstance(result, Mapping):
+            result = OrchestratorResult.from_dict(dict(result))
+        result_raw_hash = self._phase1_value(result, "raw_hash", raw_hash)
+        if result_raw_hash and result_raw_hash != raw_hash:
+            raise TranscriptError("Phase1 原始字幕哈希不一致。")
+        output_memory_version = self._phase1_value(result, "memory_version", current_memory_version)
+        result_cache_key = self._phase1_cache_key(
+            raw_hash,
+            output_memory_version if type(output_memory_version) is str else None,
+            pipeline_version,
+            prompt_version,
+            model_version,
+            seed_glossary_revision,
+        )
+        payloads = self._phase1_payloads(result)
+        v2_dir = self._v2_dir(video_dir)
+        if v2_dir.exists() and (v2_dir.is_symlink() or not v2_dir.is_dir()):
+            raise TranscriptError("Phase1 工件目录不安全。")
+        v2_dir.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(v2_dir, 0o700)
+        records: dict[str, dict[str, Any]] = {}
+        for kind, payload in payloads.items():
+            name = V2_ARTIFACT_FILES[kind]
+            path = v2_dir / name
+            if path.exists() and path.is_symlink():
+                raise TranscriptError("Phase1 工件路径不安全。")
+            self._atomic_write(path, payload)
+            records[kind] = {
+                "id": uuid.uuid4().hex,
+                "path": name,
+                "sha256": _sha256(payload),
+                "size": len(payload),
+            }
+        stale_training = v2_dir / V2_ARTIFACT_FILES["training_examples"]
+        if "training_examples" not in records and stale_training.exists():
+            if stale_training.is_symlink():
+                raise TranscriptError("Phase1 工件路径不安全。")
+            stale_training.unlink()
+        status = str(self._phase1_value(result, "status", "completed"))
+        quality = self._phase1_plain(self._phase1_value(result, "quality", {}))
+        manifest = {
+            "schema_version": V2_MANIFEST_SCHEMA_VERSION,
+            "source_id": str(job.get("source_id")),
+            "course_id": course_id,
+            "video_id": video_id,
+            "raw_sha256": raw_hash,
+            "course_memory_version": output_memory_version,
+            "pipeline_version": pipeline_version,
+            "prompt_version": prompt_version,
+            "model_version": model_version,
+            "seed_glossary_revision": seed_glossary_revision,
+            "cache_key": result_cache_key,
+            "status": status,
+            "quality": quality,
+            "warnings": self._phase1_plain(self._phase1_value(result, "warnings", ())),
+            "artifacts": records,
+            "updated_at": _now(),
+        }
+        self._write_json(v2_dir / "manifest.json", manifest)
+        job.update(
+            phase1_status=status,
+            pipeline_status=status,
+            quality=quality,
+            phase1_reused=False,
+        )
+        if status != "completed":
+            job["partial_warning"] = True
+            job["message"] = str(job.get("message") or "") + " Phase1 已降级，请查看质量报告。"
+
+    @contextmanager
+    def _phase1_course_lock(self, course_id: str):
+        lock_root = self.memory_root / ".phase1-locks"
+        lock_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if lock_root.is_symlink() or not lock_root.is_dir():
+            raise TranscriptError("Phase1 锁目录不安全。")
+        os.chmod(lock_root, 0o700)
+        lock_path = lock_root / f"{_sha256(course_id.encode('utf-8'))}.lock"
+        key = str(lock_path.resolve())
+        with _PHASE1_THREAD_LOCKS_GUARD:
+            thread_lock = _PHASE1_THREAD_LOCKS.setdefault(key, threading.RLock())
+        with thread_lock:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    if os.fstat(descriptor).st_size == 0:
+                        os.write(descriptor, b"0")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                os.close(descriptor)
+
+    def _run_phase1_safely(
+        self,
+        batch: Mapping[str, Any],
+        job: dict[str, Any],
+        video_dir: Path,
+        raw: str,
+        context: AIContext,
+    ) -> None:
+        if not self.enable_phase1:
+            return
+        try:
+            course_id = str(batch.get("course_id") or "")
+            with self._phase1_course_lock(course_id):
+                self._run_phase1(batch, job, video_dir, raw, context)
+        except Exception as exc:
+            warning = _safe_error(exc)
+            job.update(
+                phase1_status="partial",
+                pipeline_status="partial",
+                phase1_reused=False,
+                phase1_warning=warning,
+                partial_warning=True,
+            )
+            job["message"] = str(job.get("message") or "") + " Phase1 未完成，旧版字幕与摘要仍可用。"
+            v2_dir = self._v2_dir(video_dir)
+            if not v2_dir.exists():
+                v2_dir.mkdir(exist_ok=True, mode=0o700)
+                os.chmod(v2_dir, 0o700)
+            if not v2_dir.is_symlink() and v2_dir.is_dir():
+                self._write_json(v2_dir / "manifest.json", {
+                    "schema_version": V2_MANIFEST_SCHEMA_VERSION,
+                    "source_id": str(job.get("source_id")),
+                    "course_id": str(batch.get("course_id") or ""),
+                    "video_id": parse_remote_source_id(str(job.get("source_id")))[1],
+                    "raw_sha256": _sha256(raw.encode("utf-8")),
+                    "course_memory_version": None,
+                    "pipeline_version": COURSE_PIPELINE_VERSION,
+                    "prompt_version": COURSE_PROMPT_VERSION,
+                    "model_version": context.model,
+                    "seed_glossary_revision": self._phase1_seed_revision(
+                        self.orchestrator
+                    )
+                    if self.orchestrator is not None
+                    else "unavailable",
+                    "cache_key": None,
+                    "status": "partial",
+                    "quality": None,
+                    "warnings": [warning],
+                    "artifacts": {},
+                    "updated_at": _now(),
+                })
 
     def _validated_cached_chunks(
         self,
@@ -1018,8 +1551,98 @@ class TranscriptService:
             job.update(dict(status="partial", stage="ai_failed", progress=manifest["progress"], message="原始字幕已保存；AI 规整失败，可重试。", error=_safe_error(exc)))
         self._write_json(manifest_path, manifest)
 
+    def _v2_manifest_matches_v1(
+        self,
+        batch: Mapping[str, Any],
+        job: Mapping[str, Any],
+        video_dir: Path,
+        manifest: Mapping[str, Any],
+    ) -> bool:
+        try:
+            v1_manifest = self._read_json(video_dir / "manifest.json")
+            source_id = str(job.get("source_id") or "")
+            remote_course_id, video_id = parse_remote_source_id(source_id)
+        except (TranscriptError, ValueError):
+            return False
+        raw_hash = v1_manifest.get("raw_sha256")
+        v1_source = v1_manifest.get("source")
+        v1_course = v1_manifest.get("course")
+        return bool(
+            type(raw_hash) is str
+            and isinstance(v1_source, Mapping)
+            and v1_source.get("source_id") == source_id
+            and isinstance(v1_course, Mapping)
+            and str(v1_course.get("id") or "") == str(batch.get("course_id") or "")
+            and remote_course_id == str(batch.get("course_id") or "")
+            and manifest.get("source_id") == source_id
+            and manifest.get("course_id") == remote_course_id
+            and manifest.get("video_id") == video_id
+            and manifest.get("raw_sha256") == raw_hash
+            and self._hashed_file_valid(video_dir / "raw.vtt", raw_hash)
+        )
+
+    def _v2_artifact_items(
+        self,
+        job_id: str,
+        batch: Mapping[str, Any],
+        job: Mapping[str, Any],
+        video_dir: Path,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        manifest = self._v2_manifest(video_dir)
+        if manifest is not None and not self._v2_manifest_matches_v1(
+            batch, job, video_dir, manifest
+        ):
+            manifest = None
+        records = manifest.get("artifacts") if type(manifest) is dict else {}
+        if type(records) is not dict:
+            records = {}
+        items: list[dict[str, Any]] = []
+        for kind, name in V2_ARTIFACT_FILES.items():
+            record = records.get(kind)
+            available = bool(
+                self._safe_v2_record(record, kind)
+                and self._hashed_file_valid(
+                    self._v2_dir(video_dir) / name,
+                    record.get("sha256"),
+                    record.get("size"),
+                )
+            )
+            item: dict[str, Any] = {
+                "id": f"{job_id}:v2:{record.get('id')}" if available else None,
+                "kind": kind,
+                "label": V2_ARTIFACT_LABELS[kind],
+                "content_type": (
+                    "application/x-ndjson"
+                    if kind == "training_examples"
+                    else "text/markdown"
+                    if kind == "corrected"
+                    else "application/json"
+                ),
+                "available": available,
+                "version": "v2",
+            }
+            if available:
+                item["size"] = int(record.get("size"))
+                item["sha256"] = str(record.get("sha256"))
+            items.append(item)
+        return items, manifest
+
+    def list_v2_artifacts(self, job_id: str) -> dict[str, Any]:
+        batch, job = self._find_job(job_id)
+        video_dir = self._job_video_dir(job)
+        items, manifest = self._v2_artifact_items(job_id, batch, job, video_dir)
+        available = bool(manifest is not None and any(item["available"] for item in items))
+        return {
+            "available": available,
+            "status": manifest.get("status") if manifest is not None else None,
+            "pipeline_status": manifest.get("status") if manifest is not None else None,
+            "quality": manifest.get("quality") if manifest is not None else None,
+            "warnings": list(manifest.get("warnings") or []) if manifest is not None else [],
+            "items": items,
+        }
+
     def list_artifacts(self, job_id: str) -> dict[str, Any]:
-        _batch, job = self._find_job(job_id)
+        batch, job = self._find_job(job_id)
         video_dir = self._job_video_dir(job)
         manifest = self._read_json(video_dir / "manifest.json")
         items = []
@@ -1028,8 +1651,62 @@ class TranscriptService:
                 continue
             path = video_dir / str(record.get("path"))
             if path.is_file() and not path.is_symlink():
-                items.append({"id": f"{job_id}:{kind}", "kind": kind, "label": {"raw_vtt": "原始字幕", "cues": "Cue 数据", "cleaned": "规整字幕", "summary_json": "要点数据", "summary": "本节要点"}[kind], "content_type": "application/json" if kind in {"cues", "summary_json"} else "text/markdown" if kind in {"cleaned", "summary"} else "text/vtt"})
-        return {"items": items}
+                items.append({"id": f"{job_id}:{kind}", "kind": kind, "label": {"raw_vtt": "原始字幕", "cues": "Cue 数据", "cleaned": "规整字幕", "summary_json": "要点数据", "summary": "本节要点"}[kind], "content_type": "application/json" if kind in {"cues", "summary_json"} else "text/markdown" if kind in {"cleaned", "summary"} else "text/vtt", "available": True, "version": "v1"})
+        v2_items, v2_manifest = self._v2_artifact_items(
+            job_id, batch, job, video_dir
+        )
+        items.extend(v2_items)
+        return {
+            "items": items,
+            "v2": {
+                "available": bool(v2_manifest is not None and any(item["available"] for item in v2_items)),
+                "status": v2_manifest.get("status") if v2_manifest is not None else None,
+                "pipeline_status": v2_manifest.get("status") if v2_manifest is not None else None,
+                "quality": v2_manifest.get("quality") if v2_manifest is not None else None,
+                "warnings": list(v2_manifest.get("warnings") or []) if v2_manifest is not None else [],
+            },
+        }
+
+    def _resolve_v2_artifact(self, artifact_id: str) -> tuple[Path, str, Mapping[str, Any]]:
+        match = _V2_ARTIFACT_ID.fullmatch(artifact_id)
+        if match is None:
+            raise TranscriptError("Phase1 工件标识不正确。")
+        job_id, opaque_id = match.groups()
+        batch, job = self._find_job(job_id)
+        video_dir = self._job_video_dir(job)
+        manifest = self._v2_manifest(video_dir)
+        if manifest is None or not self._v2_manifest_matches_v1(
+            batch, job, video_dir, manifest
+        ):
+            raise TranscriptError("Phase1 工件不存在。")
+        records = manifest.get("artifacts")
+        if type(records) is not dict:
+            raise TranscriptError("Phase1 工件不存在。")
+        found = [
+            (kind, record)
+            for kind, record in records.items()
+            if kind in V2_ARTIFACT_FILES
+            and type(record) is dict
+            and record.get("id") == opaque_id
+        ]
+        if len(found) != 1:
+            raise TranscriptError("Phase1 工件不存在。")
+        kind, record = found[0]
+        if not self._safe_v2_record(record, kind):
+            raise TranscriptError("Phase1 工件记录无效。")
+        path = self._v2_dir(video_dir) / V2_ARTIFACT_FILES[kind]
+        try:
+            root = self._v2_dir(video_dir).resolve(strict=True)
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+            mode = path.lstat().st_mode
+        except (OSError, ValueError):
+            raise TranscriptError("Phase1 工件路径不安全。") from None
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise TranscriptError("Phase1 工件路径不安全。")
+        if not self._hashed_file_valid(path, record.get("sha256"), record.get("size")):
+            raise TranscriptError("Phase1 工件完整性校验失败。")
+        return path, kind, record
 
     def _resolve_artifact(self, artifact_id: str) -> tuple[Path, str]:
         if type(artifact_id) is not str:
@@ -1057,14 +1734,60 @@ class TranscriptService:
         return path, kind
 
     def read_artifact(self, artifact_id: str) -> dict[str, Any]:
-        path, kind = self._resolve_artifact(artifact_id)
+        is_v2 = type(artifact_id) is str and _V2_ARTIFACT_ID.fullmatch(artifact_id) is not None
+        if is_v2:
+            path, kind, record = self._resolve_v2_artifact(artifact_id)
+            limit = V2_JSON_PREVIEW_LIMIT if kind in V2_JSON_KINDS or kind == "training_examples" else V2_TEXT_PREVIEW_LIMIT
+        else:
+            path, kind = self._resolve_artifact(artifact_id)
+            record = None
+            limit = V2_TEXT_PREVIEW_LIMIT
         try:
+            if path.stat().st_size > limit:
+                raise TranscriptError("字幕工件超过预览限制。")
             content = path.read_text(encoding="utf-8")
+        except TranscriptError:
+            raise
         except (OSError, UnicodeError) as exc:
             raise TranscriptError("字幕工件无法读取。") from exc
-        if len(content) > 8_000_000:
+        if len(content.encode("utf-8")) > limit:
             raise TranscriptError("字幕工件超过预览限制。")
-        return {"id": artifact_id, "kind": kind, "content": content}
+        parsed: object | None = None
+        if is_v2 and kind in V2_JSON_KINDS:
+            try:
+                parsed = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                raise TranscriptError("Phase1 JSON 工件格式无效。") from None
+            if type(parsed) not in (dict, list):
+                raise TranscriptError("Phase1 JSON 工件格式无效。")
+        elif is_v2 and kind == "training_examples":
+            rows: list[dict[str, Any]] = []
+            try:
+                for line in content.splitlines():
+                    value = json.loads(line)
+                    if type(value) is not dict:
+                        raise ValueError
+                    rows.append(value)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                raise TranscriptError("Phase1 JSONL 工件格式无效。") from None
+            parsed = rows
+        result = {"id": artifact_id, "kind": kind, "content": content}
+        if is_v2:
+            result.update(
+                version="v2",
+                content_type=(
+                    "application/x-ndjson"
+                    if kind == "training_examples"
+                    else "text/markdown"
+                    if kind == "corrected"
+                    else "application/json"
+                ),
+                size=int(record.get("size")) if record is not None else len(content.encode("utf-8")),
+                sha256=str(record.get("sha256")) if record is not None else _sha256(content.encode("utf-8")),
+            )
+            if parsed is not None:
+                result["data"] = parsed
+        return result
 
     def reveal_artifact(self, artifact_id: str) -> dict[str, str]:
         path, _kind = self._resolve_artifact(artifact_id)

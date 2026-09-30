@@ -784,10 +784,30 @@ export type TranscriptJobStatus =
   | "waiting_for_ai"
   | "organizing"
   | "completed"
+  | "completed_with_warnings"
   | "partial"
   | "failed"
   | "interrupted"
   | "cancelled";
+
+export type Phase1PipelineStatus =
+  | "completed"
+  | "completed_with_warnings"
+  | "partial"
+  | "failed";
+
+export interface Phase1QualityReport {
+  score: number;
+  passed: boolean;
+  metrics: Record<string, number>;
+  warnings: string[];
+  schema_pass: boolean;
+  critic_pass_rate: number;
+  uncertain_rate: number;
+  numeric_change_count: number;
+  unsupported_change_count: number;
+  status: Phase1PipelineStatus;
+}
 
 export interface TranscriptJob {
   id: string;
@@ -801,6 +821,12 @@ export interface TranscriptJob {
   message?: string | null;
   error?: string | null;
   reused?: boolean;
+  phase1_status?: Phase1PipelineStatus | null;
+  pipeline_status?: Phase1PipelineStatus | null;
+  quality?: Phase1QualityReport | null;
+  phase1_reused?: boolean;
+  phase1_warning?: string | null;
+  partial_warning?: boolean;
 }
 
 export interface TranscriptBatch {
@@ -825,4 +851,82 @@ export interface TranscriptArtifactContent {
   id: string;
   kind: TranscriptArtifact["kind"];
   content: string;
+}
+
+export type Phase1ArtifactKind =
+  | "semantic_chunks"
+  | "corrected_json"
+  | "corrected"
+  | "correction_diff"
+  | "uncertain"
+  | "quality"
+  | "course_memory_version"
+  | "pipeline_events"
+  | "training_examples";
+
+export type Phase1ArtifactContentType =
+  | "application/json"
+  | "application/x-ndjson"
+  | "text/markdown";
+
+export interface Phase1ArtifactItem {
+  id: string | null;
+  kind: Phase1ArtifactKind;
+  label: string;
+  content_type: Phase1ArtifactContentType;
+  available: boolean;
+  version: "v2";
+  size?: number;
+  sha256?: string;
+}
+
+export interface Phase1ArtifactList {
+  available: boolean;
+  status: Phase1PipelineStatus | null;
+  pipeline_status: Phase1PipelineStatus | null;
+  quality: Phase1QualityReport | null;
+  warnings: string[];
+  items: Phase1ArtifactItem[];
+}
+
+export interface Phase1ArtifactRead {
+  id: string;
+  kind: Phase1ArtifactKind;
+  content: string;
+  version: "v2";
+  content_type: Phase1ArtifactContentType;
+  size: number;
+  sha256: string;
+  data?: Record<string, unknown> | unknown[];
+}
+
+export interface Phase1CorrectionChange {
+  original: string;
+  corrected: string;
+  type: string;
+  confidence: number;
+  reason: string;
+  start: number;
+  end: number;
+  cue_ids: string[];
+  evidence: string[];
+}
+
+export interface Phase1TermCandidate {
+  original: string;
+  canonical: string;
+  category: string;
+  confidence: number;
+  source: string;
+  cue_ids: string[];
+  evidence: string[];
+}
+
+export interface Phase1UncertainSpan {
+  text: string;
+  candidates: Phase1TermCandidate[];
+  confidence: number;
+  start: number;
+  end: number;
+  cue_ids: string[];
 }

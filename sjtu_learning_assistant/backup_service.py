@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -38,12 +39,23 @@ from sjtu_learning_assistant.models import (
     Email,
     EmailAttachment,
 )
+from sjtu_learning_assistant.transcript_service import (
+    ARTIFACT_FILES as TRANSCRIPT_V1_ARTIFACT_FILES,
+    DEFAULT_TRANSCRIPT_ROOT,
+    MANIFEST_SCHEMA_VERSION as TRANSCRIPT_MANIFEST_SCHEMA_VERSION,
+    V2_ARTIFACT_FILES as TRANSCRIPT_V2_ARTIFACT_FILES,
+    V2_MANIFEST_SCHEMA_VERSION as TRANSCRIPT_V2_MANIFEST_SCHEMA_VERSION,
+)
+from sjtu_learning_assistant.video_service import SJTUVideoError, parse_remote_source_id
 
 BACKUP_ROOT = "SJTU Learning Assistant"
 DEFAULT_MULTIPART_THRESHOLD = 8 * 1024 * 1024
 MAX_COMPONENT_LENGTH = 120
 MAX_FILENAME_LENGTH = 200
 MAX_FAILURE_DETAILS = 100
+MAX_TRANSCRIPT_MANIFEST_SIZE = 2 * 1024 * 1024
+TRANSCRIPT_DIRECTORY = "Transcripts"
+_HEX_DIGITS = frozenset("0123456789abcdef")
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -56,7 +68,7 @@ class BackupError(RuntimeError):
 @dataclass(frozen=True)
 class BackupCandidate:
     key: str
-    source: Literal["canvas", "mail", "ai"]
+    source: Literal["canvas", "mail", "ai", "transcript"]
     remote_path: tuple[str, ...]
     local_path: str | None = field(repr=False)
     local_root: Path = field(repr=False)
@@ -65,6 +77,9 @@ class BackupCandidate:
     cloud_path: str | None = None
     cloud_size: int | None = None
     sha256: str | None = field(default=None, repr=False)
+    expected_size: int | None = field(default=None, repr=False)
+    transcript_group: str | None = field(default=None, repr=False)
+    transcript_manifest: bool = field(default=False, repr=False)
 
     @property
     def cloud_only(self) -> bool:
@@ -109,6 +124,66 @@ def stable_filename(value: object, identity: str) -> str:
     stem_limit = MAX_FILENAME_LENGTH - len(extension) - len(suffix) - 2
     stem = (path.stem if extension else clean)[: max(stem_limit, 1)].rstrip(" .") or "文件"
     return f"{stem}--{suffix}{extension}"
+
+
+def stable_directory(value: object, identity: str, *, fallback: str) -> str:
+    """Return a readable, collision-safe remote directory component."""
+    suffix = hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:12]
+    clean = safe_path_component(
+        value,
+        fallback=fallback,
+        limit=MAX_COMPONENT_LENGTH - len(suffix) - 2,
+    )
+    return f"{clean}--{suffix}"
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in _HEX_DIGITS for character in value)
+    )
+
+
+def _valid_opaque_id(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 32
+        and all(character in _HEX_DIGITS for character in value)
+    )
+
+
+def _controlled_digest(
+    root: Path,
+    raw_path: str,
+    *,
+    maximum_size: int | None = None,
+) -> tuple[str, int, bytes | None]:
+    digest = hashlib.sha256()
+    payload = bytearray() if maximum_size is not None else None
+    with open_controlled_file(root, raw_path) as (stream, size):
+        if maximum_size is not None and size > maximum_size:
+            raise BackupError("字幕清单过大或格式无效。")
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+            if payload is not None:
+                payload.extend(chunk)
+    return digest.hexdigest(), size, bytes(payload) if payload is not None else None
+
+
+def _controlled_json(root: Path, raw_path: str) -> tuple[dict[str, Any], str, int]:
+    digest, size, payload = _controlled_digest(
+        root,
+        raw_path,
+        maximum_size=MAX_TRANSCRIPT_MANIFEST_SIZE,
+    )
+    try:
+        value = json.loads((payload or b"").decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise BackupError("字幕清单过大或格式无效。") from None
+    if type(value) is not dict:
+        raise BackupError("字幕清单过大或格式无效。")
+    return value, digest, size
 
 
 def canvas_remote_path(
@@ -298,6 +373,7 @@ class BackupService:
         mail_account: str = "",
         multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
         ai_file_service: AIManagedFileService | None = None,
+        transcript_root: Path | None = None,
     ) -> None:
         if multipart_threshold <= 0:
             raise ValueError("分片上传阈值必须为正数。")
@@ -307,9 +383,241 @@ class BackupService:
         self.mail_attachments_root = Path(mail_attachments_root)
         self.mail_account = safe_path_component(mail_account, fallback="default")
         self.multipart_threshold = multipart_threshold
+        self.transcript_root = None if transcript_root is None else Path(transcript_root)
         self.ai_file_service = ai_file_service or AIManagedFileService(
             engine, archive_root=self.archive_root
         )
+
+    def _transcript_candidate(
+        self,
+        *,
+        video_directory: str,
+        version: str,
+        filename: str,
+        remote_directory: tuple[str, ...],
+        expected_sha256: str,
+        expected_size: int,
+        manifest: bool = False,
+    ) -> BackupCandidate:
+        relative = "/".join(
+            ("videos", video_directory, *(('v2',) if version == "v2" else ()), filename)
+        )
+        group = f"{video_directory}:{version}"
+        return BackupCandidate(
+            key=_candidate_key("transcript", f"{group}:{filename}"),
+            source="transcript",
+            remote_path=(*remote_directory, version, filename),
+            local_path=relative,
+            local_root=self.transcript_root,
+            ready=True,
+            sha256=expected_sha256,
+            expected_size=expected_size,
+            transcript_group=group,
+            transcript_manifest=manifest,
+        )
+
+    def _validated_transcript_artifact(
+        self,
+        *,
+        video_directory: str,
+        version: str,
+        filename: str,
+        expected_sha256: object,
+        expected_size: object = None,
+    ) -> tuple[str, int] | None:
+        if not _valid_sha256(expected_sha256):
+            return None
+        relative = "/".join(
+            ("videos", video_directory, *(('v2',) if version == "v2" else ()), filename)
+        )
+        try:
+            actual_sha256, actual_size, _payload = _controlled_digest(
+                self.transcript_root, relative
+            )
+        except BackupError:
+            return None
+        if actual_sha256 != expected_sha256:
+            return None
+        if expected_size is not None and (
+            type(expected_size) is not int
+            or expected_size < 0
+            or actual_size != expected_size
+        ):
+            return None
+        return actual_sha256, actual_size
+
+    def _scan_transcript_video(self, video_directory: str) -> tuple[BackupCandidate, ...]:
+        manifest_relative = f"videos/{video_directory}/manifest.json"
+        try:
+            manifest, manifest_sha256, manifest_size = _controlled_json(
+                self.transcript_root, manifest_relative
+            )
+        except BackupError:
+            return ()
+        if manifest.get("schema_version") != TRANSCRIPT_MANIFEST_SCHEMA_VERSION:
+            return ()
+        source = manifest.get("source")
+        course = manifest.get("course")
+        video = manifest.get("video")
+        records = manifest.get("artifacts")
+        if not all(type(value) is dict for value in (source, course, video, records)):
+            return ()
+        source_id = source.get("source_id")
+        course_id = course.get("id")
+        if (
+            type(source_id) is not str
+            or not source_id
+            or course_id is None
+            or video_directory != hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:32]
+        ):
+            return ()
+        try:
+            source_course_id, source_video_id = parse_remote_source_id(source_id)
+        except SJTUVideoError:
+            return ()
+        if str(course_id) != source_course_id:
+            return ()
+        remote_directory = (
+            BACKUP_ROOT,
+            TRANSCRIPT_DIRECTORY,
+            stable_directory(course.get("name"), str(course_id), fallback="未命名课程"),
+            stable_directory(video.get("title"), source_id, fallback="未命名录像"),
+        )
+        v1_candidates: list[BackupCandidate] = []
+        for kind, filename in TRANSCRIPT_V1_ARTIFACT_FILES.items():
+            record = records.get(kind)
+            if record is None:
+                continue
+            if type(record) is not dict or record.get("path") != filename:
+                return ()
+            validated = self._validated_transcript_artifact(
+                video_directory=video_directory,
+                version="v1",
+                filename=filename,
+                expected_sha256=record.get("sha256"),
+                expected_size=record.get("size"),
+            )
+            if validated is None:
+                return ()
+            actual_sha256, actual_size = validated
+            v1_candidates.append(
+                self._transcript_candidate(
+                    video_directory=video_directory,
+                    version="v1",
+                    filename=filename,
+                    remote_directory=remote_directory,
+                    expected_sha256=actual_sha256,
+                    expected_size=actual_size,
+                )
+            )
+
+        v2_candidates: list[BackupCandidate] = []
+        v2_manifest_relative = f"videos/{video_directory}/v2/manifest.json"
+        try:
+            v2_manifest, v2_manifest_sha256, v2_manifest_size = _controlled_json(
+                self.transcript_root, v2_manifest_relative
+            )
+        except BackupError:
+            v2_manifest = None
+        if v2_manifest is not None:
+            v2_records = v2_manifest.get("artifacts")
+            v2_valid = bool(
+                v2_manifest.get("schema_version")
+                == TRANSCRIPT_V2_MANIFEST_SCHEMA_VERSION
+                and v2_manifest.get("course_id") == source_course_id
+                and v2_manifest.get("video_id") == source_video_id
+                and type(v2_records) is dict
+                and not (set(v2_records) - set(TRANSCRIPT_V2_ARTIFACT_FILES))
+            )
+            if v2_valid:
+                assert type(v2_records) is dict
+                for kind, filename in TRANSCRIPT_V2_ARTIFACT_FILES.items():
+                    record = v2_records.get(kind)
+                    if record is None:
+                        continue
+                    if (
+                        type(record) is not dict
+                        or set(record) != {"id", "path", "sha256", "size"}
+                        or not _valid_opaque_id(record.get("id"))
+                        or record.get("path") != filename
+                    ):
+                        v2_valid = False
+                        break
+                    validated = self._validated_transcript_artifact(
+                        video_directory=video_directory,
+                        version="v2",
+                        filename=filename,
+                        expected_sha256=record.get("sha256"),
+                        expected_size=record.get("size"),
+                    )
+                    if validated is None:
+                        v2_valid = False
+                        break
+                    actual_sha256, actual_size = validated
+                    v2_candidates.append(
+                        self._transcript_candidate(
+                            video_directory=video_directory,
+                            version="v2",
+                            filename=filename,
+                            remote_directory=remote_directory,
+                            expected_sha256=actual_sha256,
+                            expected_size=actual_size,
+                        )
+                    )
+            if v2_valid:
+                v2_candidates.append(
+                    self._transcript_candidate(
+                        video_directory=video_directory,
+                        version="v2",
+                        filename="manifest.json",
+                        remote_directory=remote_directory,
+                        expected_sha256=v2_manifest_sha256,
+                        expected_size=v2_manifest_size,
+                        manifest=True,
+                    )
+                )
+            else:
+                v2_candidates.clear()
+
+        v1_candidates.append(
+            self._transcript_candidate(
+                video_directory=video_directory,
+                version="v1",
+                filename="manifest.json",
+                remote_directory=remote_directory,
+                expected_sha256=manifest_sha256,
+                expected_size=manifest_size,
+                manifest=True,
+            )
+        )
+        return tuple((*v1_candidates[:-1], *v2_candidates, v1_candidates[-1]))
+
+    def _scan_transcripts(self) -> tuple[BackupCandidate, ...]:
+        if self.transcript_root is None:
+            return ()
+        videos = self.transcript_root / "videos"
+        try:
+            if (
+                self.transcript_root.is_symlink()
+                or not self.transcript_root.is_dir()
+                or videos.is_symlink()
+                or not videos.is_dir()
+            ):
+                return ()
+            names = sorted(
+                entry.name
+                for entry in videos.iterdir()
+                if len(entry.name) == 32
+                and all(character in _HEX_DIGITS for character in entry.name)
+                and not entry.is_symlink()
+                and entry.is_dir()
+            )
+        except OSError:
+            return ()
+        candidates: list[BackupCandidate] = []
+        for name in names:
+            candidates.extend(self._scan_transcript_video(name))
+        return tuple(candidates)
 
     def scan(self) -> tuple[BackupCandidate, ...]:
         """Read candidate values and material placement in one short-lived session."""
@@ -416,6 +724,7 @@ class BackupService:
                         sha256=attachment.sha256,
                     )
                 )
+        candidates.extend(self._scan_transcripts())
         return tuple(candidates)
 
     def preview(self) -> dict[str, int]:
@@ -438,7 +747,7 @@ class BackupService:
     def _persist_cloud_metadata(
         self, candidate: BackupCandidate, *, size: int, backed_up_at: datetime
     ) -> bool:
-        if candidate.source == "ai":
+        if candidate.source in {"ai", "transcript"}:
             return False
         if candidate.record_id is None:
             return False
@@ -455,7 +764,7 @@ class BackupService:
         return True
 
     def _clear_local_reference(self, candidate: BackupCandidate) -> None:
-        if candidate.source == "ai":
+        if candidate.source in {"ai", "transcript"}:
             return
         if candidate.record_id is None:
             return
@@ -470,6 +779,30 @@ class BackupService:
                 record.local_path = None
                 if candidate.source == "canvas":
                     record.download_status = "cloud_only"
+
+    def _remote_digest(self, candidate: BackupCandidate) -> tuple[str, int]:
+        assert self.provider is not None
+        digest = hashlib.sha256()
+        downloaded_size = 0
+        with self.provider.download_temp(candidate.remote_path) as downloaded:
+            with Path(downloaded).open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    downloaded_size += len(chunk)
+                    digest.update(chunk)
+        return digest.hexdigest(), downloaded_size
+
+    def _verify_remote_sha256(
+        self,
+        candidate: BackupCandidate,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        actual_sha256, downloaded_size = self._remote_digest(candidate)
+        if downloaded_size != expected_size or actual_sha256 != expected_sha256:
+            if candidate.source == "transcript":
+                raise BackupError("云端字幕工件哈希校验失败，已保留本地文件。")
+            raise BackupError("云端附件哈希校验失败，已保留受控副本。")
 
     def backup(
         self,
@@ -498,6 +831,7 @@ class BackupService:
         total = len(selected)
         done = 0
         ensured: set[tuple[str, ...]] = set()
+        failed_transcript_groups: set[str] = set()
 
         def report(current_name: str | None) -> None:
             if progress_callback is None:
@@ -515,6 +849,11 @@ class BackupService:
             )
             report(current_name)
             try:
+                if (
+                    candidate.transcript_manifest
+                    and candidate.transcript_group in failed_transcript_groups
+                ):
+                    continue
                 if not candidate.ready:
                     if candidate.cloud_only:
                         continue
@@ -530,6 +869,19 @@ class BackupService:
                             source_info.st_ino,
                             source_info.st_mtime_ns,
                         )
+                        if candidate.source == "transcript":
+                            if (
+                                candidate.sha256 is None
+                                or candidate.expected_size is None
+                                or size != candidate.expected_size
+                            ):
+                                raise BackupError("字幕工件在扫描后发生变化，已跳过。")
+                            local_digest = hashlib.sha256()
+                            while chunk := source.read(1024 * 1024):
+                                local_digest.update(chunk)
+                            if local_digest.hexdigest() != candidate.sha256:
+                                raise BackupError("字幕工件在扫描后发生变化，已跳过。")
+                            source.seek(0)
                         directory = candidate.remote_path[:-1]
                         if directory not in ensured:
                             self._ensure_directory(directory)
@@ -540,7 +892,17 @@ class BackupService:
                         if exists:
                             remote = self.provider.get_info(candidate.remote_path)
                             if not remote.is_directory and remote.size == size:
-                                result["skipped_existing"] += 1
+                                if candidate.source == "transcript":
+                                    remote_sha256, remote_size = self._remote_digest(candidate)
+                                    if (
+                                        remote_size == size
+                                        and remote_sha256 == candidate.sha256
+                                    ):
+                                        result["skipped_existing"] += 1
+                                    else:
+                                        overwrite = True
+                                else:
+                                    result["skipped_existing"] += 1
                             else:
                                 overwrite = True
                         if not exists or overwrite:
@@ -558,6 +920,8 @@ class BackupService:
                                 )
                             uploaded = True
                 except BackupError:
+                    if candidate.transcript_group is not None:
+                        failed_transcript_groups.add(candidate.transcript_group)
                     result["skipped_missing_local"] += 1
                     continue
 
@@ -566,23 +930,28 @@ class BackupService:
                 verified = self.provider.get_info(candidate.remote_path)
                 if verified.is_directory or verified.size != size:
                     raise BackupError("云端文件校验失败，已保留本地文件。")
-                if candidate.source == "ai":
+                if candidate.source == "transcript":
+                    if candidate.sha256 is None:
+                        raise BackupError("字幕工件备份记录无效，已保留本地文件。")
+                    self._verify_remote_sha256(
+                        candidate,
+                        expected_sha256=candidate.sha256,
+                        expected_size=size,
+                    )
+                    persisted = False
+                elif candidate.source == "ai":
                     if candidate.record_id is None or candidate.sha256 is None:
                         raise BackupError("AI 附件备份记录无效，已保留受控副本。")
-                    digest = hashlib.sha256()
-                    downloaded_size = 0
-                    with self.provider.download_temp(candidate.remote_path) as downloaded:
-                        with Path(downloaded).open("rb") as stream:
-                            while chunk := stream.read(1024 * 1024):
-                                downloaded_size += len(chunk)
-                                digest.update(chunk)
-                    if downloaded_size != size or digest.hexdigest() != candidate.sha256:
-                        raise BackupError("云端附件哈希校验失败，已保留受控副本。")
+                    self._verify_remote_sha256(
+                        candidate,
+                        expected_sha256=candidate.sha256,
+                        expected_size=size,
+                    )
                     self.ai_file_service.record_cloud_backup(
                         candidate.record_id,
                         cloud_path="/".join(candidate.remote_path),
                         cloud_size=size,
-                        cloud_sha256=digest.hexdigest(),
+                        cloud_sha256=candidate.sha256,
                         cloud_remote_id=getattr(verified, "etag", None),
                         remove_local=remove_local,
                     )
@@ -607,6 +976,8 @@ class BackupService:
             except Exception:
                 # Provider exceptions may contain credentials or signed URLs. Never
                 # copy their text into a bridge DTO.
+                if candidate.transcript_group is not None:
+                    failed_transcript_groups.add(candidate.transcript_group)
                 result["failed"] += 1
                 if len(result["failures"]) < MAX_FAILURE_DETAILS:
                     safe_source = safe_path_component(
@@ -647,6 +1018,7 @@ class BackupManager:
         token_loader: Callable[[], str | None] | None = None,
         multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
         ai_file_service: AIManagedFileService | None = None,
+        transcript_root: Path = DEFAULT_TRANSCRIPT_ROOT,
     ) -> None:
         self._engine = engine
         self._archive_root = Path(archive_root)
@@ -655,6 +1027,7 @@ class BackupManager:
         self._provider_factory = provider_factory
         self._credential_checker = token_loader or user_token_saved
         self._multipart_threshold = multipart_threshold
+        self._transcript_root = Path(transcript_root)
         self._ai_file_service = ai_file_service or AIManagedFileService(
             engine, archive_root=self._archive_root
         )
@@ -683,6 +1056,7 @@ class BackupManager:
             mail_account=self._mail_account,
             multipart_threshold=self._multipart_threshold,
             ai_file_service=self._ai_file_service,
+            transcript_root=self._transcript_root,
         )
 
     def _availability(self) -> tuple[bool, str | None]:

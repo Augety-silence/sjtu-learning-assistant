@@ -24,8 +24,14 @@ class FakeService:
     def transcript_artifacts(self, job_id):
         return {"items":[],"job_id":job_id}
 
+    def transcript_v2_artifacts(self, job_id):
+        return {"available":False,"items":[],"job_id":job_id}
+
     def transcript_artifact_read(self, artifact_id):
         return {"id":artifact_id,"content":"ok"}
+
+    def transcript_v2_artifact_read(self, artifact_id):
+        return {"id":artifact_id,"content":"{}","data":{}}
 
     def transcript_artifact_reveal(self, artifact_id):
         return {"id":artifact_id,"status":"revealed"}
@@ -34,13 +40,26 @@ class FakeService:
 class TranscriptBridgeTests(unittest.TestCase):
     def test_allowlist_and_strict_payloads(self):
         bridge = DesktopBridge(FakeService())
-        expected = {"transcript_batch_start","transcript_batch_get","transcript_jobs","transcript_retry","transcript_cancel","transcript_artifacts","transcript_artifact_read","transcript_artifact_reveal"}
+        expected = {"transcript_batch_start","transcript_batch_get","transcript_jobs","transcript_retry","transcript_cancel","transcript_artifacts","transcript_v2_artifacts","transcript_artifact_read","transcript_v2_artifact_read","transcript_artifact_reveal"}
         self.assertTrue(expected.issubset(bridge._handlers))
         started = bridge.invoke("transcript_batch_start",{"course_id":12,"source_ids":["sjtu-video:12:99"]})
         self.assertTrue(started["ok"])
         for payload in ({"course_id":12},{"course_id":12,"source_ids":[]},{"course_id":12,"source_ids":["sjtu-video:13:99"]},{"course_id":12,"source_ids":["sjtu-video:12:99"],"endpoint":"https://evil"}):
             self.assertFalse(bridge.invoke("transcript_batch_start",payload)["ok"])
         self.assertFalse(bridge.invoke("transcript_artifact_read",{"artifact_id":"../secret"})["ok"])
+        job_id = "a" * 32
+        opaque_id = "b" * 32
+        listed = bridge.invoke("transcript_v2_artifacts", {"job_id": job_id})
+        self.assertTrue(listed["ok"])
+        self.assertFalse(listed["data"]["available"])
+        read = bridge.invoke(
+            "transcript_v2_artifact_read",
+            {"artifact_id": f"{job_id}:v2:{opaque_id}"},
+        )
+        self.assertTrue(read["ok"])
+        self.assertFalse(
+            bridge.invoke("transcript_v2_artifact_read", {"artifact_id": f"{job_id}:quality"})["ok"]
+        )
 
 
 if __name__ == "__main__":

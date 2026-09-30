@@ -362,3 +362,24 @@ interface FilePreviewer {
 
 剩余风险与下一步：本轮按限制未对整节课重试，也未使用新 plain 协议进行第二次真实请求；后续由用户主动重试目标录像时，新的 prompt/pipeline 版本会使旧空 summary 缓存失效并重新生成。
 
+
+
+## 15. CourseLearningOrchestrator Phase 1 接续记录（2026-09-30）
+
+已完成：
+
+- 新增课程隔离的字幕纠错编排器，串联 VTT/cue 预处理、语义分块、课程记忆检索、Terminology、Correction、Critic、程序化 diff/质量门禁与 Memory propose/validate/commit。
+- 所有模型输入统一标记为不可信 DATA；Correction 仅允许修改 `current_text`，并对数字、否定词、人名、公式、cue、证据、偏移和大段新增执行确定性校验。
+- Critic 支持 `PASS/REVISE/UNCERTAIN`，默认最多 2 轮、硬上限 3 轮；网络、超时和 schema 失败均保留原文并产生 warning。
+- 增加不可覆盖的 raw hash 存储、包含 raw/memory/pipeline/prompt/model 版本的幂等缓存，以及不记录字幕正文和凭据的阶段事件。
+- 扩展结果与质量 schema，输出 corrected transcript、uncertain、memory version、events、状态和关键质量指标；training example 受 Critic/置信度与 memory repository 双重门禁。
+- 新增 12 项编排器测试；编排器、schema、chunker、memory、transcript pipeline/service/bridge 共 78 项相关测试通过，`py_compile` 与 `git diff --check` 通过。
+
+下一步：
+
+- 将编排器接入持久化字幕任务入口和前端状态展示，并补充真实模型的小流量端到端验证。
+
+风险：
+
+- 本轮未调用真实模型或迁移既有字幕任务；完整 Python 测试受环境中的无效 HTTP 端口配置及既有 desktop lifecycle fake 缺字段影响，456 项中有 22 项非本功能错误，专项测试不受影响。
+- 按任务要求未暂存、提交、推送或切换分支；工作区原有未跟踪文件均保留。

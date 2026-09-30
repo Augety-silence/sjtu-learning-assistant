@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,11 +34,13 @@ from sjtu_learning_assistant.models import (
     Email,
     EmailAttachment,
 )
+from sjtu_learning_assistant.transcript_service import ARTIFACT_FILES, V2_ARTIFACT_FILES
 
 
 class FakeProvider:
     def __init__(self) -> None:
         self.remote: dict[tuple[str, ...], CloudItem] = {}
+        self.payloads: dict[tuple[str, ...], bytes] = {}
         self.directories: list[tuple[str, ...]] = []
         self.simple: list[tuple[tuple[str, ...], bytes, bool]] = []
         self.multipart: list[tuple[tuple[str, ...], bytes, bool]] = []
@@ -66,6 +70,7 @@ class FakeProvider:
         self.simple.append((normalized, payload, overwrite))
         item = CloudItem(normalized[-1], normalized, False, len(payload))
         self.remote[normalized] = item
+        self.payloads[normalized] = payload
         return item
 
     def multipart_upload(self, path, source, *, overwrite=False, chunk_size=4 * 1024 * 1024):
@@ -76,7 +81,16 @@ class FakeProvider:
         self.multipart.append((normalized, payload, overwrite))
         item = CloudItem(normalized[-1], normalized, False, len(payload))
         self.remote[normalized] = item
+        self.payloads[normalized] = payload
         return item
+
+    @contextmanager
+    def download_temp(self, path):
+        normalized = tuple(path)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "download"
+            target.write_bytes(self.payloads[normalized])
+            yield target
 
     def close(self):
         self.closed = True
@@ -100,8 +114,10 @@ class BackupServiceTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.archive = root / "archive"
         self.mail = root / "mail-attachments"
+        self.transcripts = root / "transcripts"
         self.archive.mkdir()
         self.mail.mkdir()
+        (self.transcripts / "videos").mkdir(parents=True)
         self.engine = create_engine(f"sqlite+pysqlite:///{root / 'backup.db'}")
         Base.metadata.create_all(self.engine)
 
@@ -172,7 +188,64 @@ class BackupServiceTests(unittest.TestCase):
             mail_attachments_root=self.mail,
             mail_account="student/name@example.edu",
             multipart_threshold=threshold,
+            transcript_root=self.transcripts,
         )
+
+    def _add_transcript(self, *, training_examples: bool = True) -> tuple[Path, dict[str, bytes]]:
+        source_id = "sjtu-video:12:99"
+        video_directory = hashlib.sha256(source_id.encode()).hexdigest()[:32]
+        video_dir = self.transcripts / "videos" / video_directory
+        v2_dir = video_dir / "v2"
+        v2_dir.mkdir(parents=True)
+        v1_payloads = {
+            filename: f"v1:{kind}\n".encode()
+            for kind, filename in ARTIFACT_FILES.items()
+        }
+        v2_payloads = {
+            filename: f"v2:{kind}\n".encode()
+            for kind, filename in V2_ARTIFACT_FILES.items()
+            if training_examples or kind != "training_examples"
+        }
+        for filename, payload in v1_payloads.items():
+            (video_dir / filename).write_bytes(payload)
+        for filename, payload in v2_payloads.items():
+            (v2_dir / filename).write_bytes(payload)
+        v2_records = {
+            kind: {
+                "id": hashlib.sha256(kind.encode()).hexdigest()[:32],
+                "path": filename,
+                "sha256": hashlib.sha256(v2_payloads[filename]).hexdigest(),
+                "size": len(v2_payloads[filename]),
+            }
+            for kind, filename in V2_ARTIFACT_FILES.items()
+            if filename in v2_payloads
+        }
+        v2_manifest = {
+            "schema_version": 1,
+            "course_id": "12",
+            "video_id": "99",
+            "artifacts": v2_records,
+        }
+        (v2_dir / "manifest.json").write_text(
+            json.dumps(v2_manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        v1_manifest = {
+            "schema_version": 2,
+            "source": {"source_id": source_id, "type": "video_space"},
+            "course": {"id": "12", "name": "课程/安全"},
+            "video": {"title": "第 3 周\\课程"},
+            "artifacts": {
+                kind: {
+                    "path": filename,
+                    "sha256": hashlib.sha256(v1_payloads[filename]).hexdigest(),
+                }
+                for kind, filename in ARTIFACT_FILES.items()
+            },
+        }
+        (video_dir / "manifest.json").write_text(
+            json.dumps(v1_manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        return video_dir, {**v1_payloads, **v2_payloads}
 
     def test_path_cleaning_and_filename_disambiguation_are_stable(self) -> None:
         traversal = safe_path_component("../..\x00")
@@ -221,6 +294,135 @@ class BackupServiceTests(unittest.TestCase):
         self.assertNotIn(str(self.archive), serialized)
         self.assertNotIn(str(self.mail), serialized)
         self.assertNotIn("mail-secret-id", serialized)
+
+    def test_scan_transcript_manifests_validates_hash_size_and_orders_manifests_last(self) -> None:
+        _video_dir, _payloads = self._add_transcript()
+
+        candidates = tuple(
+            item for item in self._service().scan() if item.source == "transcript"
+        )
+
+        expected_names = [
+            *ARTIFACT_FILES.values(),
+            *V2_ARTIFACT_FILES.values(),
+            "manifest.json",
+            "manifest.json",
+        ]
+        self.assertEqual(expected_names, [item.remote_path[-1] for item in candidates])
+        self.assertEqual(
+            ["v1"] * len(ARTIFACT_FILES)
+            + ["v2"] * (len(V2_ARTIFACT_FILES) + 1)
+            + ["v1"],
+            [item.remote_path[-2] for item in candidates],
+        )
+        self.assertTrue(all(item.ready for item in candidates))
+        self.assertTrue(all(item.sha256 and item.expected_size is not None for item in candidates))
+        self.assertEqual("manifest.json", candidates[-1].remote_path[-1])
+        self.assertEqual("v1", candidates[-1].remote_path[-2])
+        self.assertEqual("manifest.json", candidates[-2].remote_path[-1])
+        self.assertEqual("v2", candidates[-2].remote_path[-2])
+        self.assertTrue(
+            all(
+                part not in {".", ".."} and "/" not in part and "\\" not in part
+                for item in candidates
+                for part in item.remote_path
+            )
+        )
+
+    def test_transcript_backup_is_hash_verified_idempotent_and_never_removed(self) -> None:
+        video_dir, _payloads = self._add_transcript(training_examples=False)
+        provider = FakeProvider()
+        service = self._service(provider)
+        candidates = tuple(item for item in service.scan() if item.source == "transcript")
+
+        first = service.backup(candidates, remove_local=True)
+        self.assertEqual(len(candidates), first["uploaded"])
+        self.assertEqual(0, first["failed"])
+        self.assertEqual(0, first["local_removed"])
+        self.assertTrue((video_dir / "raw.vtt").is_file())
+        self.assertTrue((video_dir / "v2" / "quality.json").is_file())
+        self.assertEqual("manifest.json", provider.simple[-1][0][-1])
+        self.assertEqual("v1", provider.simple[-1][0][-2])
+
+        uploads = len(provider.simple) + len(provider.multipart)
+        second = service.backup(candidates, remove_local=True)
+        self.assertEqual(0, second["uploaded"])
+        self.assertEqual(len(candidates), second["skipped_existing"])
+        self.assertEqual(uploads, len(provider.simple) + len(provider.multipart))
+
+        raw = next(item for item in candidates if item.remote_path[-1] == "raw.vtt")
+        provider.payloads[raw.remote_path] = b"x" * raw.expected_size
+        third = service.backup(candidates)
+        self.assertEqual(1, third["uploaded"])
+        repaired = next(call for call in provider.simple if call[0] == raw.remote_path and call[2])
+        self.assertEqual((video_dir / "raw.vtt").read_bytes(), repaired[1])
+
+    def test_transcript_failure_keeps_local_and_defers_its_manifest_until_retry(self) -> None:
+        video_dir, _payloads = self._add_transcript()
+        provider = FakeProvider()
+        service = self._service(provider)
+        candidates = tuple(item for item in service.scan() if item.source == "transcript")
+        failed = next(item for item in candidates if item.remote_path[-1] == "quality.json")
+        v2_manifest = next(
+            item
+            for item in candidates
+            if item.transcript_manifest and item.remote_path[-2] == "v2"
+        )
+        provider.fail_paths.add(failed.remote_path)
+
+        first = service.backup(candidates, remove_local=True)
+
+        self.assertEqual(1, first["failed"])
+        self.assertEqual(0, first["local_removed"])
+        self.assertNotIn(v2_manifest.remote_path, provider.remote)
+        self.assertTrue((video_dir / "v2" / "quality.json").is_file())
+        self.assertTrue((video_dir / "manifest.json").is_file())
+
+        provider.fail_paths.clear()
+        second = service.backup(candidates, remove_local=True)
+        self.assertEqual(0, second["failed"])
+        self.assertIn(v2_manifest.remote_path, provider.remote)
+        self.assertTrue((video_dir / "v2" / "quality.json").is_file())
+
+    def test_transcript_scan_rejects_symlink_and_manifest_size_or_hash_mismatch(self) -> None:
+        video_dir, _payloads = self._add_transcript()
+        quality = video_dir / "v2" / "quality.json"
+        outside = Path(self.temporary.name) / "outside.json"
+        outside.write_bytes(quality.read_bytes())
+        quality.unlink()
+        quality.symlink_to(outside)
+        candidates = tuple(
+            item for item in self._service().scan() if item.source == "transcript"
+        )
+        self.assertEqual(
+            [*ARTIFACT_FILES.values(), "manifest.json"],
+            [item.remote_path[-1] for item in candidates],
+        )
+        self.assertTrue(all(item.remote_path[-2] == "v1" for item in candidates))
+
+        quality.unlink()
+        quality.write_bytes(outside.read_bytes())
+        v2_manifest_path = video_dir / "v2" / "manifest.json"
+        manifest = json.loads(v2_manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["quality"]["size"] += 1
+        v2_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        candidates = tuple(
+            item for item in self._service().scan() if item.source == "transcript"
+        )
+        self.assertEqual(
+            [*ARTIFACT_FILES.values(), "manifest.json"],
+            [item.remote_path[-1] for item in candidates],
+        )
+
+        manifest["artifacts"]["quality"]["size"] -= 1
+        v2_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        v1_manifest_path = video_dir / "manifest.json"
+        v1_manifest = json.loads(v1_manifest_path.read_text(encoding="utf-8"))
+        v1_manifest["artifacts"]["raw_vtt"]["path"] = "../raw.vtt"
+        v1_manifest_path.write_text(json.dumps(v1_manifest), encoding="utf-8")
+        self.assertEqual(
+            (), tuple(item for item in self._service().scan() if item.source == "transcript")
+        )
 
     def test_canvas_remote_path_matches_material_tree_placement_and_display_name(self) -> None:
         local = self.archive / "讲义.pdf"
@@ -609,6 +811,7 @@ class BackupServiceTests(unittest.TestCase):
             mail_account="student",
             provider_factory=lambda: providers.pop(0),
             token_loader=lambda: "configured-but-never-returned",
+            transcript_root=self.transcripts,
         )
         idle = manager.status()
         self.assertEqual("idle", idle["status"])
@@ -669,6 +872,7 @@ class BackupServiceTests(unittest.TestCase):
             mail_attachments_root=self.mail,
             provider_factory=provider_factory,
             token_loader=lambda: None,
+            transcript_root=self.transcripts,
         )
         status = manager.status()
         self.assertFalse(status["available"])
@@ -687,6 +891,7 @@ class BackupServiceTests(unittest.TestCase):
                 RuntimeError(f"token={sensitive_value}")
             ),
             token_loader=lambda: "configured",
+            transcript_root=self.transcripts,
         )
         self.assertTrue(manager.status()["available"])
         self.assertEqual("started", manager.start()["status"])
@@ -745,6 +950,7 @@ class BackupServiceTests(unittest.TestCase):
             archive_root=self.archive,
             mail_attachments_root=self.mail,
             token_loader=lambda: None,
+            transcript_root=self.transcripts,
         )
         backend_status = manager.status()
         self.assertEqual(status_fields, set(backend_status))

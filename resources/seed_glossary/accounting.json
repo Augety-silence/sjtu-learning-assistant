@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "pack_id": "accounting",
+  "pack_version": "1.0.0",
+  "display_name": "会计学",
+  "domain_keywords": ["financial accounting", "财务会计", "accounting equation", "会计等式", "debit and credit", "借贷记账", "financial statements", "财务报表"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "openstax_accounting_ch1", "title": "Ch. 1 Key Terms - Principles of Accounting, Volume 1: Financial Accounting | OpenStax", "url": "https://openstax.org/books/principles-financial-accounting/pages/1-key-terms"},
+    {"source_id": "openstax_accounting_ch2", "title": "Ch. 2 Key Terms - Principles of Accounting, Volume 1: Financial Accounting | OpenStax", "url": "https://openstax.org/books/principles-financial-accounting/pages/2-key-terms"},
+    {"source_id": "openstax_accounting_ch3", "title": "Ch. 3 Key Terms - Principles of Accounting, Volume 1: Financial Accounting | OpenStax", "url": "https://openstax.org/books/principles-financial-accounting/pages/3-key-terms"},
+    {"source_id": "openstax_accounting_ch4", "title": "Ch. 4 Key Terms - Principles of Accounting, Volume 1: Financial Accounting | OpenStax", "url": "https://openstax.org/books/principles-financial-accounting/pages/4-key-terms"}
+  ],
+  "terms": [
+    {"id": "accounting.accounting", "canonical": "accounting", "zh_name": "会计", "aliases": ["accountancy"], "category": "foundation", "definition_zh": "识别、记录并传达组织财务信息的过程。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.transaction", "canonical": "transaction", "zh_name": "交易", "aliases": ["business transaction"], "category": "foundation", "definition_zh": "会影响企业财务状况并可用货币计量的事项。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.stakeholder", "canonical": "stakeholder", "zh_name": "利益相关者", "aliases": ["interested party"], "category": "user", "definition_zh": "会影响组织或受到组织活动影响的个人或群体。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.stockholder", "canonical": "stockholder", "zh_name": "股东", "aliases": ["shareholder"], "category": "user", "definition_zh": "持有公司股份并拥有相应权益的所有者。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.generally_accepted_accounting_principles", "canonical": "generally accepted accounting principles", "zh_name": "公认会计原则", "aliases": ["GAAP"], "category": "standard", "definition_zh": "美国财务报告编制普遍采用的一套会计规则与惯例。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.financial_accounting_standards_board", "canonical": "Financial Accounting Standards Board", "zh_name": "财务会计准则委员会", "aliases": ["FASB"], "category": "institution", "definition_zh": "负责制定美国私人部门财务会计准则的机构。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.securities_exchange_commission", "canonical": "Securities and Exchange Commission", "zh_name": "证券交易委员会", "aliases": ["SEC", "US SEC"], "category": "institution", "definition_zh": "监管美国证券市场及上市公司披露的联邦机构。", "asr_variants": [], "source_id": "openstax_accounting_ch1"},
+    {"id": "accounting.asset", "canonical": "asset", "zh_name": "资产", "aliases": ["economic resource"], "category": "accounting_element", "definition_zh": "由企业控制并预期带来未来经济利益的资源。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.liability", "canonical": "liability", "zh_name": "负债", "aliases": ["obligation"], "category": "accounting_element", "definition_zh": "企业因过去事项承担的现时经济义务。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.equity", "canonical": "equity", "zh_name": "所有者权益", "aliases": ["owners equity", "stockholders equity"], "category": "accounting_element", "definition_zh": "资产扣除负债后归属于所有者的剩余权益。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.accounting_equation", "canonical": "accounting equation", "zh_name": "会计等式", "aliases": ["basic accounting equation"], "category": "equation", "definition_zh": "表达资产等于负债加所有者权益的基本关系。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.revenue", "canonical": "revenue", "zh_name": "收入", "aliases": ["sales revenue"], "category": "accounting_element", "definition_zh": "日常经营活动带来的资产增加或负债减少。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.expense", "canonical": "expense", "zh_name": "费用", "aliases": ["operating expense"], "category": "accounting_element", "definition_zh": "为取得收入而消耗资源或承担的成本。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.net_income", "canonical": "net income", "zh_name": "净利润", "aliases": ["net profit", "earnings"], "category": "performance", "definition_zh": "一定期间收入超过费用的金额。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.balance_sheet", "canonical": "balance sheet", "zh_name": "资产负债表", "aliases": ["statement of financial position"], "category": "statement", "definition_zh": "反映特定日期资产、负债和权益的财务报表。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.income_statement", "canonical": "income statement", "zh_name": "利润表", "aliases": ["statement of operations", "profit and loss statement", "P&L"], "category": "statement", "definition_zh": "汇总一定期间收入、费用及经营成果的财务报表。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.statement_of_cash_flows", "canonical": "statement of cash flows", "zh_name": "现金流量表", "aliases": ["cash flow statement"], "category": "statement", "definition_zh": "按活动类别报告一定期间现金流入和流出的报表。", "asr_variants": [], "source_id": "openstax_accounting_ch2"},
+    {"id": "accounting.account", "canonical": "account", "zh_name": "账户", "aliases": ["ledger account"], "category": "recording", "definition_zh": "分类记录某项资产、负债、权益、收入或费用变动的载体。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.debit", "canonical": "debit", "zh_name": "借方", "aliases": ["DR"], "category": "recording", "definition_zh": "账户左侧的记录方向，其增减含义取决于账户类型。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.credit", "canonical": "credit", "zh_name": "贷方", "aliases": ["CR"], "category": "recording", "definition_zh": "账户右侧的记录方向，其增减含义取决于账户类型。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.double_entry_accounting", "canonical": "double-entry accounting", "zh_name": "复式记账", "aliases": ["double-entry bookkeeping"], "category": "recording", "definition_zh": "每项交易至少影响两个账户且借贷总额相等的制度。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.journal", "canonical": "journal", "zh_name": "日记账", "aliases": ["book of original entry"], "category": "recording", "definition_zh": "按时间顺序首次记录交易会计分录的簿册。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.ledger", "canonical": "ledger", "zh_name": "分类账", "aliases": ["general ledger", "GL"], "category": "recording", "definition_zh": "按账户汇总企业全部交易记录的账簿。", "asr_variants": [], "source_id": "openstax_accounting_ch3"},
+    {"id": "accounting.trial_balance", "canonical": "trial balance", "zh_name": "试算平衡表", "aliases": ["unadjusted trial balance"], "category": "recording", "definition_zh": "列示各账户余额并检查借贷总额是否相等的清单。", "asr_variants": [], "source_id": "openstax_accounting_ch3"}
+  ]
+}

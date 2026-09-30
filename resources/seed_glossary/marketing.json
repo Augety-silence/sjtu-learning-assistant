@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "pack_id": "marketing",
+  "pack_version": "1.0.0",
+  "display_name": "市场营销",
+  "domain_keywords": ["marketing", "市场营销", "marketing mix", "营销组合", "market segmentation", "市场细分", "targeting and positioning", "目标市场与定位"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "openstax_marketing_ch1", "title": "Ch. 1 Key Terms - Principles of Marketing | OpenStax", "url": "https://openstax.org/books/principles-marketing/pages/1-key-terms"},
+    {"source_id": "openstax_marketing_ch5", "title": "Ch. 5 Key Terms - Principles of Marketing | OpenStax", "url": "https://openstax.org/books/principles-marketing/pages/5-key-terms"}
+  ],
+  "terms": [
+    {"id": "marketing.marketing", "canonical": "marketing", "zh_name": "市场营销", "aliases": ["marketing activity"], "category": "foundation", "definition_zh": "创造、沟通、交付并交换对相关方有价值产品的活动。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.marketing_mix", "canonical": "marketing mix", "zh_name": "营销组合", "aliases": ["four Ps", "4Ps"], "category": "strategy", "definition_zh": "企业协调产品、价格、渠道和促销形成的可控营销工具组合。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.product", "canonical": "product", "zh_name": "产品", "aliases": ["market offering"], "category": "marketing_mix", "definition_zh": "为满足需要而向市场提供的商品、服务或理念。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.price", "canonical": "price", "zh_name": "价格", "aliases": ["pricing"], "category": "marketing_mix", "definition_zh": "顾客为获得产品价值而付出的货币或其他代价。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.place", "canonical": "place", "zh_name": "渠道", "aliases": ["distribution", "distribution channel"], "category": "marketing_mix", "definition_zh": "使产品可被目标顾客获得的分销安排。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.promotion", "canonical": "promotion", "zh_name": "促销", "aliases": ["marketing communication"], "category": "marketing_mix", "definition_zh": "向目标受众沟通价值并促使其行动的活动。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.customer_value", "canonical": "customer value", "zh_name": "顾客价值", "aliases": ["perceived customer value"], "category": "value", "definition_zh": "顾客感知收益与为取得产品所付成本之间的权衡。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.customer_relationship_management", "canonical": "customer relationship management", "zh_name": "客户关系管理", "aliases": ["CRM"], "category": "relationship", "definition_zh": "系统管理客户互动以建立和维持关系的过程。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.consumer", "canonical": "consumer", "zh_name": "消费者", "aliases": ["end consumer"], "category": "market_actor", "definition_zh": "最终使用或消费产品的个人。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.customer", "canonical": "customer", "zh_name": "顾客", "aliases": ["client"], "category": "market_actor", "definition_zh": "购买产品或服务的个人或组织。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.buyer", "canonical": "buyer", "zh_name": "购买者", "aliases": ["purchaser"], "category": "market_actor", "definition_zh": "在购买过程中实际完成交易的一方。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.target_market", "canonical": "target market", "zh_name": "目标市场", "aliases": ["target audience"], "category": "targeting", "definition_zh": "企业选择并集中营销资源服务的顾客群体。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.market_segmentation", "canonical": "market segmentation", "zh_name": "市场细分", "aliases": ["segmentation"], "category": "segmentation", "definition_zh": "按共同需求或特征把整体市场划分为群体的过程。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.demographic_segmentation", "canonical": "demographic segmentation", "zh_name": "人口统计细分", "aliases": ["demographics-based segmentation"], "category": "segmentation", "definition_zh": "依据年龄、收入等人口统计特征划分市场。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.geographic_segmentation", "canonical": "geographic segmentation", "zh_name": "地理细分", "aliases": ["geographical segmentation"], "category": "segmentation", "definition_zh": "依据国家、地区或气候等地理特征划分市场。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.psychographic_segmentation", "canonical": "psychographic segmentation", "zh_name": "心理细分", "aliases": ["lifestyle segmentation"], "category": "segmentation", "definition_zh": "依据生活方式、价值观或个性等心理特征划分市场。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.behavioral_segmentation", "canonical": "behavioral segmentation", "zh_name": "行为细分", "aliases": ["behavioural segmentation"], "category": "segmentation", "definition_zh": "依据购买、使用或响应行为划分市场。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.buyer_persona", "canonical": "buyer persona", "zh_name": "买方画像", "aliases": ["customer persona"], "category": "targeting", "definition_zh": "根据研究构建的典型目标顾客半虚构描述。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.stp_model", "canonical": "STP model", "zh_name": "STP模型", "aliases": ["segmentation targeting positioning", "STP"], "category": "strategy", "definition_zh": "依次开展市场细分、目标选择和市场定位的框架。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.product_positioning", "canonical": "product positioning", "zh_name": "产品定位", "aliases": ["market positioning", "positioning"], "category": "positioning", "definition_zh": "在目标顾客心中塑造产品相对竞争者独特位置的过程。", "asr_variants": [], "source_id": "openstax_marketing_ch5"},
+    {"id": "marketing.marketing_strategy", "canonical": "marketing strategy", "zh_name": "营销战略", "aliases": ["market strategy"], "category": "strategy", "definition_zh": "为实现营销目标而选择市场并配置营销活动的总体方案。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.pestle_analysis", "canonical": "PESTLE analysis", "zh_name": "PESTLE分析", "aliases": ["PESTEL analysis", "PESTLE"], "category": "environment", "definition_zh": "从政治、经济、社会、技术、法律和环境因素分析外部环境。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.utility", "canonical": "utility", "zh_name": "效用", "aliases": ["customer utility"], "category": "value", "definition_zh": "产品满足顾客需要或欲望的能力。", "asr_variants": [], "source_id": "openstax_marketing_ch1"},
+    {"id": "marketing.value_proposition", "canonical": "value proposition", "zh_name": "价值主张", "aliases": ["customer value proposition", "CVP"], "category": "value", "definition_zh": "向目标顾客说明产品独特利益与购买理由的承诺。", "asr_variants": [], "source_id": "openstax_marketing_ch1"}
+  ]
+}

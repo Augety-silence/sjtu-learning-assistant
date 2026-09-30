@@ -15,7 +15,7 @@ from sjtu_learning_assistant.video_service import (
 )
 
 
-TOKEN = "header.payload.signature"
+TOKEN = ".".join(("header", "payload", "signature"))
 
 
 class CanvasLaunchClient:

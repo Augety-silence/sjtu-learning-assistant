@@ -163,6 +163,176 @@ describe("VideosView", () => {
     expect(screen.queryByLabelText("批量操作")).toBeNull();
   });
 
+  it("generates an AI summary through the transcript flow and opens it after Phase1", async () => {
+    let finishStart: (() => void) | undefined;
+    const start = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+    const callbacks = {
+      onStartTranscript: start,
+      onRetryTranscript: vi.fn(async () => undefined),
+      onRevealTranscript: vi.fn(async () => undefined),
+    };
+    const view = render(<VideosView videos={[videos[2]]} {...callbacks} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "AI 总结" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(
+      screen.getByText("生成前会先规整字幕并完成 AI 校对，再生成总结。"),
+    ).toBeTruthy();
+
+    const generate = screen.getByRole("button", { name: "生成 AI 总结" });
+    await waitFor(() => expect(generate).toHaveProperty("disabled", false));
+    fireEvent.click(generate);
+    fireEvent.click(generate);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith([videos[2]]);
+    expect(generate.getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => finishStart?.());
+    const processingJob = {
+      id: "summary-job",
+      batch_id: "summary-batch",
+      source_id: "v3",
+      title: "第三讲",
+      status: "organizing" as const,
+      stage: "phase1",
+      progress: 80,
+      attempts: 1,
+      message: "正在进行 AI 校对",
+    };
+    view.rerender(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[processingJob]}
+        {...callbacks}
+      />,
+    );
+    expect(screen.getByText("正在进行 AI 校对")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", {
+          name: "第三讲：正在规整字幕和 AI 校对，随后生成总结",
+        })
+        .getAttribute("aria-busy"),
+    ).toBe("true");
+
+    view.rerender(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            ...processingJob,
+            status: "completed",
+            stage: "completed",
+            progress: 100,
+            message: "字幕规整完成",
+          },
+        ]}
+        {...callbacks}
+      />,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByText(
+        "字幕已规整，正在等待 AI 校对完成；完成后才能查看总结。",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看 AI 总结" })).toBeNull();
+
+    view.rerender(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            ...processingJob,
+            status: "completed",
+            stage: "completed",
+            progress: 100,
+            phase1_status: "completed",
+          },
+        ]}
+        {...callbacks}
+      />,
+    );
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer).toBeTruthy();
+    expect(
+      screen
+        .getByRole("tab", { name: "本节要点" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        drawer.querySelector(
+          '.transcript-drawer-header button[aria-label="关闭字幕详情"]',
+        ),
+      ),
+    );
+  });
+
+  it("shows a retryable summary action after start or job failure", async () => {
+    const start = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("AI 服务暂时不可用"))
+      .mockResolvedValueOnce(undefined);
+    const retry = vi.fn(async () => undefined);
+    const view = render(
+      <VideosView
+        videos={[videos[2]]}
+        onStartTranscript={start}
+        onRetryTranscript={retry}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "AI 总结" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const generate = screen.getByRole("button", { name: "生成 AI 总结" });
+    await waitFor(() => expect(generate).toHaveProperty("disabled", false));
+    fireEvent.click(generate);
+    expect(
+      await screen.findByText(/AI 服务暂时不可用.*可重试生成/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试生成 AI 总结" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+
+    view.rerender(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "failed-summary",
+            batch_id: "summary-batch",
+            source_id: "v3",
+            title: "第三讲",
+            status: "failed",
+            stage: "phase1",
+            progress: 70,
+            attempts: 1,
+            error: "AI 校对失败",
+          },
+        ]}
+        onStartTranscript={start}
+        onRetryTranscript={retry}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "重试生成 AI 总结" }),
+      ).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重试生成 AI 总结" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+  });
+
   it("renders unified text statuses and learning tool tabs", () => {
     render(
       <VideosView
@@ -493,7 +663,9 @@ describe("VideosView", () => {
       play: { configurable: true, value: vi.fn(async () => undefined) },
       pause: { configurable: true, value: vi.fn() },
     });
-    fireEvent.loadedMetadata(media);
+    await act(async () => {
+      fireEvent.loadedMetadata(media);
+    });
     vi.useFakeTimers();
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     act(() => vi.advanceTimersByTime(350));
@@ -719,6 +891,79 @@ describe("VideosView", () => {
     ).toBeNull();
     fireEvent.click(disclosure);
     expect(screen.queryByText("历史 0")).toBeNull();
+  });
+
+  it("classifies paused, warning and saved transcript states consistently", async () => {
+    const retry = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => undefined);
+    const { container } = render(
+      <VideosView
+        videos={videos}
+        transcriptJobs={[
+          {
+            id: "waiting-job",
+            batch_id: "batch-1",
+            source_id: "v1",
+            title: "第一讲",
+            status: "waiting_for_ai",
+            stage: "waiting_for_ai",
+            progress: 45,
+            attempts: 1,
+          },
+          {
+            id: "warning-job",
+            batch_id: "batch-2",
+            source_id: "v2",
+            title: "旧版录像",
+            status: "completed_with_warnings",
+            stage: "completed_with_warnings",
+            progress: 100,
+            attempts: 1,
+          },
+          {
+            id: "saved-job",
+            batch_id: "batch-3",
+            source_id: "v3",
+            title: "第三讲",
+            status: "saved",
+            stage: "raw_saved",
+            progress: 45,
+            attempts: 1,
+          },
+        ]}
+        onRetryTranscript={retry}
+        onCancelTranscript={cancel}
+        onRevealTranscript={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("1 项进行中 · 2 项需关注")).toBeTruthy();
+    expect(
+      container.querySelectorAll(".video-job-list .video-status-processing"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelectorAll(".video-job-list .video-status-partial"),
+    ).toHaveLength(1);
+    expect(
+      container.querySelectorAll(".video-job-list .video-status-pending"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "取消" })).toHaveLength(1);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "AI 总结" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const retrySummary = screen.getByRole("button", {
+      name: "重试生成 AI 总结",
+    });
+    await waitFor(() => expect(retrySummary).toHaveProperty("disabled", false));
+    fireEvent.click(retrySummary);
+    await waitFor(() =>
+      expect(retry).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "waiting-job" }),
+      ),
+    );
   });
 
   it("keeps history-only task state to one compact summary row", () => {

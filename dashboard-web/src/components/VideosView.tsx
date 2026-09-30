@@ -194,7 +194,16 @@ function jobTimestamp(job: TimestampedJob) {
 function jobCategory(status: string): JobCategory {
   if (["completed", "cancelled", "interrupted"].includes(status))
     return "history";
-  if (["failed", "partial", "saved"].includes(status)) return "attention";
+  if (
+    [
+      "completed_with_warnings",
+      "failed",
+      "partial",
+      "waiting_remote",
+      "waiting_for_ai",
+    ].includes(status)
+  )
+    return "attention";
   return "active";
 }
 
@@ -228,19 +237,45 @@ function compactJobTitle(title: string, courseName: string) {
 
 function transcriptStatus(status?: TranscriptJob["status"]): UnifiedStatus {
   if (status === "completed") return "completed";
-  if (status === "partial" || status === "saved") return "partial";
+  if (status === "completed_with_warnings" || status === "partial")
+    return "partial";
   if (status === "failed" || status === "interrupted") return "failed";
-  if (
-    [
-      "queued",
-      "fetching",
-      "waiting_remote",
-      "waiting_for_ai",
-      "organizing",
-    ].includes(status || "")
-  )
+  if (["queued", "fetching", "saved", "organizing"].includes(status || ""))
     return "processing";
   return "pending";
+}
+
+function transcriptIsProcessing(job?: TranscriptJob) {
+  return Boolean(
+    job && ["queued", "fetching", "saved", "organizing"].includes(job.status),
+  );
+}
+
+function transcriptIsComplete(job?: TranscriptJob) {
+  return Boolean(
+    job && ["completed", "completed_with_warnings"].includes(job.status),
+  );
+}
+
+function phase1IsReady(job?: TranscriptJob) {
+  const status = job?.phase1_status ?? job?.pipeline_status;
+  return status === "completed" || status === "completed_with_warnings";
+}
+
+function transcriptNeedsRetry(job?: TranscriptJob) {
+  if (!job) return false;
+  const phase1Status = job.phase1_status ?? job.pipeline_status;
+  return (
+    [
+      "waiting_remote",
+      "waiting_for_ai",
+      "partial",
+      "failed",
+      "interrupted",
+    ].includes(job.status) ||
+    phase1Status === "partial" ||
+    phase1Status === "failed"
+  );
 }
 
 function taskStatus(status: VideoTaskStatus): UnifiedStatus {
@@ -475,6 +510,17 @@ export function VideosView({
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null);
   const [learningTab, setLearningTab] = useState<LearningTab>("transcript");
   const [detailJob, setDetailJob] = useState<TranscriptJob | null>(null);
+  const [detailInitialTab, setDetailInitialTab] = useState<
+    "summary" | "cleaned"
+  >("summary");
+  const [pendingSummarySourceId, setPendingSummarySourceId] = useState<
+    string | null
+  >(null);
+  const [summaryRequestError, setSummaryRequestError] = useState<{
+    sourceId: string;
+    message: string;
+  } | null>(null);
+  const [summaryRequestSettled, setSummaryRequestSettled] = useState(0);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
@@ -492,6 +538,10 @@ export function VideosView({
   const speedTriggerRef = useRef<HTMLButtonElement>(null);
   const speedOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const feedbackTimer = useRef<number | null>(null);
+  const summaryPriorJobIds = useRef<Set<string>>(new Set());
+  const summaryRequestedJobId = useRef<string | null>(null);
+  const summaryAwaitsNewJob = useRef(false);
+  const busyRef = useRef(false);
   const playerLoadedRef = useRef(false);
   const playbackRateRef = useRef<PlaybackRate>(1);
   const temporaryPlaybackRef = useRef<TemporaryPlaybackState | null>(null);
@@ -516,6 +566,14 @@ export function VideosView({
     return result;
   }, [transcriptJobs]);
   const selectedJob = selected ? jobsByVideo.get(selected.id) : undefined;
+  const selectedSummaryPending = Boolean(
+    selected && pendingSummarySourceId === selected.id,
+  );
+  const selectedSummaryProcessing =
+    selectedSummaryPending || transcriptIsProcessing(selectedJob);
+  const selectedSummaryReady =
+    transcriptIsComplete(selectedJob) && phase1IsReady(selectedJob);
+  const selectedSummaryFailed = transcriptNeedsRetry(selectedJob);
   const selectedTasks = selected
     ? tasks.filter((task) => task.videoId === selected.id)
     : [];
@@ -582,6 +640,10 @@ export function VideosView({
   useEffect(() => {
     setSelectedIds(new Set());
     setOpenMenuId(null);
+    setPendingSummarySourceId(null);
+    setSummaryRequestError(null);
+    summaryRequestedJobId.current = null;
+    summaryAwaitsNewJob.current = false;
   }, [courseId]);
   useEffect(() => {
     if (!openMenuId) return;
@@ -598,6 +660,35 @@ export function VideosView({
     const latest = transcriptJobs.find((job) => job.id === detailJob.id);
     if (latest && latest !== detailJob) setDetailJob(latest);
   }, [detailJob, transcriptJobs]);
+  useEffect(() => {
+    if (!pendingSummarySourceId || !summaryAwaitsNewJob.current) return;
+    const requestedJob = transcriptJobs.find(
+      (job) =>
+        job.source_id === pendingSummarySourceId &&
+        !summaryPriorJobIds.current.has(job.id),
+    );
+    if (!requestedJob) return;
+    summaryRequestedJobId.current = requestedJob.id;
+    summaryAwaitsNewJob.current = false;
+  }, [pendingSummarySourceId, summaryRequestSettled, transcriptJobs]);
+  useEffect(() => {
+    if (!pendingSummarySourceId || summaryAwaitsNewJob.current) return;
+    const requestedJob = summaryRequestedJobId.current
+      ? transcriptJobs.find((job) => job.id === summaryRequestedJobId.current)
+      : jobsByVideo.get(pendingSummarySourceId);
+    if (!requestedJob) return;
+    if (transcriptIsComplete(requestedJob) && phase1IsReady(requestedJob)) {
+      setDetailInitialTab("summary");
+      setDetailJob(requestedJob);
+      setPendingSummarySourceId(null);
+      summaryRequestedJobId.current = null;
+      return;
+    }
+    if (transcriptNeedsRetry(requestedJob)) {
+      setPendingSummarySourceId(null);
+      summaryRequestedJobId.current = null;
+    }
+  }, [jobsByVideo, pendingSummarySourceId, transcriptJobs]);
   useEffect(() => {
     if (!speedMenuOpen && !shortcutsOpen) return;
     const close = (event: MouseEvent) => {
@@ -911,18 +1002,22 @@ export function VideosView({
     key: string,
     label: string,
     action?: () => void | Promise<void>,
+    onError?: (message: string) => void,
   ) => {
-    if (!action || busy) return;
+    if (!action || busyRef.current || busy) return false;
+    busyRef.current = true;
     setBusy(key);
     try {
       await action();
       showToast({ kind: "success", message: label });
+      return true;
     } catch (reason) {
-      showToast({
-        kind: "error",
-        message: reason instanceof Error ? reason.message : "视频操作失败",
-      });
+      const message = reason instanceof Error ? reason.message : "视频操作失败";
+      onError?.(message);
+      showToast({ kind: "error", message });
+      return false;
     } finally {
+      busyRef.current = false;
       setBusy(null);
     }
   };
@@ -1010,6 +1105,51 @@ export function VideosView({
       await onStartTranscript(items);
       setSelectedIds(new Set());
     });
+  const requestSummary = async (
+    video: CourseVideoItem,
+    job?: TranscriptJob,
+  ) => {
+    if (transcriptIsProcessing(job) || pendingSummarySourceId === video.id)
+      return;
+    if (job && transcriptIsComplete(job) && phase1IsReady(job)) {
+      setDetailInitialTab("summary");
+      setDetailJob(job);
+      return;
+    }
+    const action = transcriptNeedsRetry(job)
+      ? onRetryTranscript
+        ? () => onRetryTranscript(job as TranscriptJob)
+        : undefined
+      : onStartTranscript
+        ? () => onStartTranscript([video])
+        : undefined;
+    if (!action) return;
+
+    setSelected(video);
+    setLearningTab("summary");
+    setSummaryRequestError(null);
+    setPendingSummarySourceId(video.id);
+    summaryRequestedJobId.current = null;
+    summaryPriorJobIds.current = new Set(
+      transcriptJobs
+        .filter((item) => item.source_id === video.id)
+        .map((item) => item.id),
+    );
+    summaryAwaitsNewJob.current = true;
+    const succeeded = await run(
+      `summary:${video.id}`,
+      "已开始生成 AI 总结。",
+      action,
+      (message) => setSummaryRequestError({ sourceId: video.id, message }),
+    );
+    if (!succeeded) {
+      summaryAwaitsNewJob.current = false;
+      summaryRequestedJobId.current = null;
+      setPendingSummarySourceId(null);
+      return;
+    }
+    setSummaryRequestSettled((value) => value + 1);
+  };
   const createPdfs = () =>
     run("pdf:batch", "课件 PDF 已生成。", async () => {
       for (const video of pdfEligible) await onCreateSlidesPdf?.(video);
@@ -1082,23 +1222,101 @@ export function VideosView({
       );
     }
     const isSummary = tab === "summary";
+    if (isSummary) {
+      const requestError =
+        summaryRequestError?.sourceId === selected.id
+          ? summaryRequestError.message
+          : null;
+      const waitingForPhase1 =
+        transcriptIsComplete(selectedJob) &&
+        !phase1IsReady(selectedJob) &&
+        !selectedSummaryFailed;
+      const summaryMessage = requestError
+        ? `${requestError}。可重试生成。`
+        : selectedSummaryFailed
+          ? selectedJob?.error ||
+            selectedJob?.message ||
+            "生成未完成，可从失败阶段重试。"
+          : waitingForPhase1
+            ? "字幕已规整，正在等待 AI 校对完成；完成后才能查看总结。"
+            : selectedSummaryProcessing
+              ? selectedJob?.message ||
+                "正在规整字幕并进行 AI 校对，完成后将自动打开总结。"
+              : selectedSummaryReady
+                ? "字幕规整和 AI 校对已完成，可查看 AI 总结。"
+                : "生成前会先规整字幕并完成 AI 校对，再生成总结。";
+      const summaryEligible =
+        selected.source === "video_space" && selected.supportsSubtitle;
+      const canRequestSummary = selectedSummaryFailed
+        ? Boolean(onRetryTranscript)
+        : Boolean(summaryEligible && onStartTranscript);
+      return (
+        <div
+          className="video-tool-summary"
+          aria-busy={selectedSummaryProcessing || undefined}
+          aria-live="polite"
+        >
+          <StatusBadge
+            status={
+              requestError || selectedSummaryFailed
+                ? "failed"
+                : selectedSummaryProcessing || waitingForPhase1
+                  ? "processing"
+                  : selectedSummaryReady
+                    ? "completed"
+                    : "pending"
+            }
+          />
+          <span>{summaryMessage}</span>
+          {selectedSummaryReady && selectedJob ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetailInitialTab("summary");
+                setDetailJob(selectedJob);
+              }}
+            >
+              查看 AI 总结
+            </Button>
+          ) : canRequestSummary ? (
+            <Button
+              variant="outline"
+              size="sm"
+              loading={selectedSummaryProcessing}
+              loadingLabel={
+                busy === `summary:${selected.id}` ? "正在启动…" : "正在生成…"
+              }
+              disabled={Boolean(busy) || selectedSummaryProcessing}
+              onClick={() => void requestSummary(selected, selectedJob)}
+            >
+              <Captions aria-hidden="true" />
+              {selectedSummaryFailed || requestError
+                ? "重试生成 AI 总结"
+                : waitingForPhase1
+                  ? "继续生成 AI 总结"
+                  : "生成 AI 总结"}
+            </Button>
+          ) : null}
+        </div>
+      );
+    }
     return (
       <div className="video-tool-summary">
         <StatusBadge status={transcriptStatus(selectedJob?.status)} />
         <span>
-          {isSummary
-            ? selectedJob?.message || "AI 总结随字幕整理任务生成。"
-            : subtitleMessage ||
-              selectedJob?.message ||
-              "尚无可查看的字幕内容。"}
+          {subtitleMessage || selectedJob?.message || "尚无可查看的字幕内容。"}
         </span>
         {selectedJob && onRetryTranscript && onRevealTranscript ? (
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setDetailJob(selectedJob)}
+            onClick={() => {
+              setDetailInitialTab("cleaned");
+              setDetailJob(selectedJob);
+            }}
           >
-            {isSummary ? "查看 AI 总结" : "查看字幕"}
+            查看字幕
           </Button>
         ) : onStartTranscript &&
           selected.source === "video_space" &&
@@ -1464,6 +1682,21 @@ export function VideosView({
                 const canShowTranscript = Boolean(
                   job && onRetryTranscript && onRevealTranscript,
                 );
+                const rowSummaryPending = pendingSummarySourceId === video.id;
+                const rowSummaryProcessing =
+                  rowSummaryPending || transcriptIsProcessing(job);
+                const rowSummaryReady =
+                  transcriptIsComplete(job) && phase1IsReady(job);
+                const rowSummaryFailed = transcriptNeedsRetry(job);
+                const rowSummaryEligible =
+                  video.source === "video_space" && video.supportsSubtitle;
+                const canRequestRowSummary = rowSummaryFailed
+                  ? Boolean(onRetryTranscript)
+                  : Boolean(rowSummaryEligible && onStartTranscript);
+                const showSummaryAction =
+                  rowSummaryReady ||
+                  rowSummaryProcessing ||
+                  canRequestRowSummary;
                 const hasMenu = Boolean(
                   canShowTranscript ||
                     (video.supportsSubtitle &&
@@ -1514,6 +1747,41 @@ export function VideosView({
                         <Play aria-hidden="true" />
                         播放
                       </Button>
+                      {showSummaryAction && (
+                        <Button
+                          variant="link"
+                          size="sm"
+                          loading={rowSummaryProcessing}
+                          loadingLabel={
+                            busy === `summary:${video.id}`
+                              ? "正在启动…"
+                              : "正在生成…"
+                          }
+                          disabled={Boolean(busy) || rowSummaryProcessing}
+                          aria-label={
+                            rowSummaryReady
+                              ? `${video.title}：查看 AI 总结`
+                              : rowSummaryProcessing
+                                ? `${video.title}：正在规整字幕和 AI 校对，随后生成总结`
+                                : `${video.title}：生成 AI 总结（先规整字幕并完成 AI 校对）`
+                          }
+                          onClick={() => {
+                            setSelected(video);
+                            setLearningTab("summary");
+                            if (rowSummaryReady && job) {
+                              setDetailInitialTab("summary");
+                              setDetailJob(job);
+                            } else void requestSummary(video, job);
+                          }}
+                        >
+                          <FileText aria-hidden="true" />
+                          {rowSummaryReady
+                            ? "AI 总结"
+                            : rowSummaryFailed
+                              ? "重试总结"
+                              : "生成总结"}
+                        </Button>
+                      )}
                       {hasMenu && (
                         <div className="video-more">
                           <Button
@@ -1542,12 +1810,17 @@ export function VideosView({
                                   type="button"
                                   role="menuitem"
                                   onClick={() => {
+                                    setDetailInitialTab(
+                                      rowSummaryReady ? "summary" : "cleaned",
+                                    );
                                     setDetailJob(job || null);
                                     setOpenMenuId(null);
                                   }}
                                 >
                                   <Captions aria-hidden="true" />
-                                  查看字幕与 AI 总结
+                                  {rowSummaryReady
+                                    ? "查看字幕与 AI 总结"
+                                    : "查看字幕处理详情"}
                                 </button>
                               )}
                               {!job &&
@@ -1694,14 +1967,9 @@ export function VideosView({
                 <div className="video-job-actions">
                   {job.transcript &&
                     onCancelTranscript &&
-                    [
-                      "queued",
-                      "fetching",
-                      "waiting_remote",
-                      "waiting_for_ai",
-                      "organizing",
-                      "cancelling",
-                    ].includes(job.rawStatus) && (
+                    ["queued", "fetching", "saved", "organizing"].includes(
+                      job.rawStatus,
+                    ) && (
                       <Button
                         variant="link"
                         size="sm"
@@ -1742,7 +2010,10 @@ export function VideosView({
                       <Button
                         variant="link"
                         size="sm"
-                        onClick={() => setDetailJob(job.transcript || null)}
+                        onClick={() => {
+                          setDetailInitialTab("summary");
+                          setDetailJob(job.transcript || null);
+                        }}
                       >
                         详情
                       </Button>
@@ -1765,7 +2036,10 @@ export function VideosView({
                   <Button
                     variant="link"
                     size="sm"
-                    onClick={() => setDetailJob(job.transcript || null)}
+                    onClick={() => {
+                      setDetailInitialTab("summary");
+                      setDetailJob(job.transcript || null);
+                    }}
                   >
                     详情
                   </Button>
@@ -1780,6 +2054,7 @@ export function VideosView({
       {detailJob && onRetryTranscript && onRevealTranscript && (
         <TranscriptDetailDrawer
           job={detailJob}
+          initialTab={detailInitialTab}
           onClose={() => setDetailJob(null)}
           onRetry={onRetryTranscript}
           onCancel={onCancelTranscript || (() => undefined)}

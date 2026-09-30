@@ -727,11 +727,23 @@ class DashboardService:
         except TranscriptError as exc:
             raise DashboardError(str(exc)) from None
 
+    def transcript_v2_artifacts(self, job_id: str) -> dict[str, Any]:
+        """Return Phase1 availability and safe opaque artifact descriptors."""
+        try:
+            return self._transcript_service().list_v2_artifacts(job_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
     def transcript_artifact_read(self, artifact_id: str) -> dict[str, Any]:
         try:
             return self._transcript_service().read_artifact(artifact_id)
         except TranscriptError as exc:
             raise DashboardError(str(exc)) from None
+
+    def transcript_v2_artifact_read(self, artifact_id: str) -> dict[str, Any]:
+        if type(artifact_id) is not str or ":v2:" not in artifact_id:
+            raise DashboardError("Phase1 工件标识不正确。")
+        return self.transcript_artifact_read(artifact_id)
 
     def transcript_artifact_reveal(self, artifact_id: str) -> dict[str, Any]:
         try:

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "pack_id": "traditional_machine_learning",
+  "pack_version": "1.0.0",
+  "display_name": "传统机器学习",
+  "domain_keywords": ["machine learning", "机器学习", "classification", "分类模型", "clustering", "聚类", "feature engineering", "特征工程", "scikit-learn"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "google_ml_glossary", "title": "Machine Learning Glossary | Google for Developers", "url": "https://developers.google.com/machine-learning/glossary"}
+  ],
+  "terms": [
+    {"id": "traditional_machine_learning.feature", "canonical": "feature", "zh_name": "特征", "aliases": ["input feature"], "category": "data", "definition_zh": "模型用于学习或预测的输入变量。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.label", "canonical": "label", "zh_name": "标签", "aliases": ["target label"], "category": "data", "definition_zh": "监督学习样本中模型要预测的目标值。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.dataset", "canonical": "dataset", "zh_name": "数据集", "aliases": ["data set"], "category": "data", "definition_zh": "用于训练、验证或评估模型的一组样本。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.training", "canonical": "training", "zh_name": "训练", "aliases": ["model training"], "category": "workflow", "definition_zh": "利用数据调整模型参数以降低目标损失的过程。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.inference", "canonical": "inference", "zh_name": "推理", "aliases": ["prediction"], "category": "workflow", "definition_zh": "将训练后的模型用于新输入并产生预测。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.supervised_learning", "canonical": "supervised learning", "zh_name": "监督学习", "aliases": ["supervised ML"], "category": "learning_paradigm", "definition_zh": "从带标签样本学习输入与目标之间关系的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.unsupervised_learning", "canonical": "unsupervised learning", "zh_name": "无监督学习", "aliases": ["unsupervised ML"], "category": "learning_paradigm", "definition_zh": "从无标签数据中发现结构或模式的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.classification", "canonical": "classification", "zh_name": "分类", "aliases": ["classification task"], "category": "task", "definition_zh": "预测样本所属离散类别的机器学习任务。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.regression", "canonical": "regression", "zh_name": "回归", "aliases": ["regression task"], "category": "task", "definition_zh": "预测连续数值的机器学习任务。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.ols_linear_regression", "canonical": "linear regression", "zh_name": "线性回归", "aliases": ["linear model"], "category": "algorithm", "definition_zh": "用特征的线性组合估计连续目标的模型。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.logistic_regression", "canonical": "logistic regression", "zh_name": "逻辑回归", "aliases": ["logit model"], "category": "algorithm", "definition_zh": "用逻辑函数估计类别概率的分类模型。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.decision_tree", "canonical": "decision tree", "zh_name": "决策树", "aliases": ["tree model"], "category": "algorithm", "definition_zh": "通过一系列特征条件分支产生预测的模型。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.random_forest", "canonical": "random forest", "zh_name": "随机森林", "aliases": ["RF"], "category": "ensemble", "definition_zh": "汇总多棵随机化决策树预测的集成方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.gradient_boosting", "canonical": "gradient boosting", "zh_name": "梯度提升", "aliases": ["GBDT"], "category": "ensemble", "definition_zh": "依次拟合弱学习器以修正已有误差的集成方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.k_means_clustering", "canonical": "k-means clustering", "zh_name": "K均值聚类", "aliases": ["k-means"], "category": "algorithm", "definition_zh": "按与中心点的距离将样本划分为若干簇的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.loss", "canonical": "loss", "zh_name": "损失", "aliases": ["loss function"], "category": "optimization", "definition_zh": "衡量单个样本或一批预测误差的量。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.gradient_descent", "canonical": "gradient descent", "zh_name": "梯度下降", "aliases": ["GD"], "category": "optimization", "definition_zh": "沿降低损失的梯度方向迭代更新参数的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.hyperparameter", "canonical": "hyperparameter", "zh_name": "超参数", "aliases": ["hyper-parameter"], "category": "configuration", "definition_zh": "训练开始前设定且不由训练直接学习的配置。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.overfitting", "canonical": "overfitting", "zh_name": "过拟合", "aliases": ["overfit"], "category": "generalization", "definition_zh": "模型过度贴合训练数据而难以泛化的现象。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.underfitting", "canonical": "underfitting", "zh_name": "欠拟合", "aliases": ["underfit"], "category": "generalization", "definition_zh": "模型能力或训练不足，连训练模式也未充分学到。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.regularization", "canonical": "regularization", "zh_name": "正则化", "aliases": ["regularisation"], "category": "generalization", "definition_zh": "通过约束模型复杂度来降低过拟合风险的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.cross_validation", "canonical": "cross-validation", "zh_name": "交叉验证", "aliases": ["cross validation", "CV"], "category": "evaluation", "definition_zh": "轮换数据子集进行训练和验证的评估方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.precision", "canonical": "precision", "zh_name": "精确率", "aliases": ["positive predictive value", "PPV"], "category": "metric", "definition_zh": "预测为正的样本中实际为正的比例。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "traditional_machine_learning.recall", "canonical": "recall", "zh_name": "召回率", "aliases": ["sensitivity", "true positive rate", "TPR"], "category": "metric", "definition_zh": "实际为正的样本中被正确识别的比例。", "asr_variants": [], "source_id": "google_ml_glossary"}
+  ]
+}

@@ -162,5 +162,32 @@ class DashboardActionTests(unittest.TestCase):
 
 
 
+class DashboardTranscriptPhase1Tests(unittest.TestCase):
+    def test_v2_read_only_facade_preserves_absent_contract(self) -> None:
+        class FakeTranscript:
+            def list_v2_artifacts(self, job_id):
+                return {"available": False, "status": None, "items": [], "job_id": job_id}
+
+            def read_artifact(self, artifact_id):
+                return {"id": artifact_id, "kind": "quality", "content": "{}", "data": {}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "archive"
+            root.mkdir()
+            service = DashboardService(
+                SimpleNamespace(),
+                archive_root=root,
+                transcript_service=FakeTranscript(),
+            )
+            job_id = "a" * 32
+            opaque_id = "b" * 32
+            absent = service.transcript_v2_artifacts(job_id)
+            self.assertFalse(absent["available"])
+            read = service.transcript_v2_artifact_read(f"{job_id}:v2:{opaque_id}")
+            self.assertEqual({}, read["data"])
+            with self.assertRaises(DashboardError):
+                service.transcript_v2_artifact_read(f"{job_id}:quality")
+
+
 if __name__ == "__main__":
     unittest.main()

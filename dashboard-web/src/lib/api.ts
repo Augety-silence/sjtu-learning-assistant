@@ -759,6 +759,20 @@ export function readTranscriptArtifact(artifactId: string) {
   );
 }
 
+export function getTranscriptV2Artifacts(jobId: string) {
+  return invoke<import("@/lib/types").Phase1ArtifactList>(
+    "transcript_v2_artifacts",
+    { job_id: jobId },
+  );
+}
+
+export function readTranscriptV2Artifact(artifactId: string) {
+  return invoke<import("@/lib/types").Phase1ArtifactRead>(
+    "transcript_v2_artifact_read",
+    { artifact_id: artifactId },
+  );
+}
+
 export function revealTranscriptArtifact(artifactId: string) {
   return invoke<{ id: string; status: string }>("transcript_artifact_reveal", {
     artifact_id: artifactId,
