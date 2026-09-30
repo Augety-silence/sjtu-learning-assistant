@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "pack_id": "artificial_intelligence",
+  "pack_version": "1.0.0",
+  "display_name": "人工智能",
+  "domain_keywords": ["artificial intelligence", "人工智能", "trustworthy AI", "可信人工智能", "generative AI", "生成式人工智能", "large language model", "大语言模型"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "nist_airc_glossary", "title": "Trustworthy and Responsible AI Resource Center Glossary | NIST", "url": "https://airc.nist.gov/glossary/"},
+    {"source_id": "nist_ai_100_3", "title": "The Language of Trustworthy AI: An In-Depth Glossary of Terms | NIST", "url": "https://www.nist.gov/publications/language-trustworthy-ai-depth-glossary-terms"},
+    {"source_id": "google_ml_glossary", "title": "Machine Learning Glossary | Google for Developers", "url": "https://developers.google.com/machine-learning/glossary"}
+  ],
+  "terms": [
+    {"id": "artificial_intelligence.artificial_intelligence", "canonical": "artificial intelligence", "zh_name": "人工智能", "aliases": ["AI"], "category": "foundation", "definition_zh": "使机器执行通常需要人类智能活动的技术与方法集合。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.ai_system", "canonical": "AI system", "zh_name": "人工智能系统", "aliases": ["artificial intelligence system"], "category": "foundation", "definition_zh": "基于输入产生预测、内容、建议或决策等输出的工程系统。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.machine_learning", "canonical": "machine learning", "zh_name": "机器学习", "aliases": ["ML"], "category": "foundation", "definition_zh": "从数据中学习模式以完成预测或决策的方法。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.deep_learning", "canonical": "deep learning", "zh_name": "深度学习", "aliases": ["DL"], "category": "method", "definition_zh": "使用多层神经网络学习数据表示的方法。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "artificial_intelligence.neural_network", "canonical": "neural network", "zh_name": "神经网络", "aliases": ["artificial neural network", "ANN"], "category": "model", "definition_zh": "由相连计算单元分层组成并可从数据学习的模型。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "artificial_intelligence.generative_ai", "canonical": "generative AI", "zh_name": "生成式人工智能", "aliases": ["generative artificial intelligence", "GenAI"], "category": "model", "definition_zh": "能够生成文本、图像或其他新内容的人工智能。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.large_language_model", "canonical": "large language model", "zh_name": "大语言模型", "aliases": ["LLM"], "category": "model", "definition_zh": "在大规模文本上训练并处理语言任务的模型。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "artificial_intelligence.natural_language_processing", "canonical": "natural language processing", "zh_name": "自然语言处理", "aliases": ["NLP"], "category": "application", "definition_zh": "让计算系统分析、理解或生成人类语言的领域。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "artificial_intelligence.computer_vision", "canonical": "computer vision", "zh_name": "计算机视觉", "aliases": ["CV"], "category": "application", "definition_zh": "让计算系统从图像或视频中提取信息的领域。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.ai_agent", "canonical": "AI agent", "zh_name": "人工智能智能体", "aliases": ["artificial intelligence agent"], "category": "system", "definition_zh": "感知环境并采取行动以实现目标的人工智能实体。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.foundation_model", "canonical": "foundation model", "zh_name": "基础模型", "aliases": ["FM"], "category": "model", "definition_zh": "经广泛数据训练、可适配多种下游任务的模型。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.training_data", "canonical": "training data", "zh_name": "训练数据", "aliases": ["training dataset"], "category": "data", "definition_zh": "用于学习模型参数或行为的数据。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.inference", "canonical": "inference", "zh_name": "模型推理", "aliases": ["model inference"], "category": "workflow", "definition_zh": "运行已训练模型以根据输入产生输出的过程。", "asr_variants": [], "source_id": "google_ml_glossary"},
+    {"id": "artificial_intelligence.trustworthy_ai", "canonical": "trustworthy AI", "zh_name": "可信人工智能", "aliases": ["trustworthy artificial intelligence"], "category": "trustworthiness", "definition_zh": "在有效、安全、透明、公平等特性上值得信赖的人工智能。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.validity_reliability", "canonical": "validity and reliability", "zh_name": "有效性与可靠性", "aliases": ["valid and reliable"], "category": "trustworthiness", "definition_zh": "系统符合预期用途并在既定条件下保持稳定表现的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.safe", "canonical": "safe", "zh_name": "安全性", "aliases": ["AI safety"], "category": "trustworthiness", "definition_zh": "系统不会在预期条件下造成不可接受伤害的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.secure_resilient", "canonical": "secure and resilient", "zh_name": "安全与韧性", "aliases": ["security and resilience"], "category": "trustworthiness", "definition_zh": "系统能抵御威胁并在不利事件后维持或恢复功能的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.accountable_transparent", "canonical": "accountable and transparent", "zh_name": "可问责与透明", "aliases": ["accountability and transparency"], "category": "trustworthiness", "definition_zh": "系统责任可归属，且相关信息能被适当披露的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.explainable_interpretable", "canonical": "explainable and interpretable", "zh_name": "可解释与可理解", "aliases": ["explainability and interpretability", "XAI"], "category": "trustworthiness", "definition_zh": "人能够理解系统输出依据及其含义的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.privacy_enhanced", "canonical": "privacy-enhanced", "zh_name": "隐私增强", "aliases": ["privacy enhancing"], "category": "trustworthiness", "definition_zh": "在人工智能生命周期中降低个人信息暴露与滥用风险的特性。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.fair_harmful_bias_managed", "canonical": "fair with harmful bias managed", "zh_name": "公平且有害偏差受控", "aliases": ["fairness", "harmful bias management"], "category": "trustworthiness", "definition_zh": "识别并管理可能造成不公平影响的系统偏差。", "asr_variants": [], "source_id": "nist_airc_glossary"},
+    {"id": "artificial_intelligence.ai_risk", "canonical": "AI risk", "zh_name": "人工智能风险", "aliases": ["artificial intelligence risk"], "category": "risk", "definition_zh": "人工智能带来负面影响的可能性及其后果程度。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.human_ai_configuration", "canonical": "human-AI configuration", "zh_name": "人机配置", "aliases": ["human artificial intelligence configuration"], "category": "human_factors", "definition_zh": "人员与人工智能系统在任务中的角色和交互安排。", "asr_variants": [], "source_id": "nist_ai_100_3"},
+    {"id": "artificial_intelligence.red_teaming", "canonical": "red teaming", "zh_name": "红队测试", "aliases": ["AI red teaming"], "category": "evaluation", "definition_zh": "以对抗性方式主动寻找系统缺陷、风险或失效模式的评估。", "asr_variants": [], "source_id": "nist_airc_glossary"}
+  ]
+}

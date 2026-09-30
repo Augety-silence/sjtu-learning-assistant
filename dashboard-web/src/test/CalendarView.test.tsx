@@ -30,8 +30,8 @@ describe("CalendarView", () => {
     render(
       <CalendarView
         events={events}
-        month="2026-10-01T00:00:00+08:00"
-        now="2026-09-29T00:00:00+08:00"
+        month={new Date(2026, 9, 1)}
+        now={new Date(2026, 8, 29)}
         onOpenEvent={open}
       />,
     );

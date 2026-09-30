@@ -40,6 +40,21 @@ $Executable = Join-Path $AppDir "SJTU Learning Assistant.exe"
 if (-not (Test-Path $Executable)) {
     throw "PyInstaller 未生成预期可执行文件：$Executable"
 }
+$SeedGlossaryDir = Join-Path $AppDir "_internal\resources\seed_glossary"
+$ExpectedSeedGlossaries = @(
+    "traditional_machine_learning.json",
+    "artificial_intelligence.json",
+    "regression_analysis.json",
+    "finance_economics.json",
+    "accounting.json",
+    "marketing.json"
+)
+foreach ($SeedGlossary in $ExpectedSeedGlossaries) {
+    $SeedGlossaryPath = Join-Path $SeedGlossaryDir $SeedGlossary
+    if (-not (Test-Path $SeedGlossaryPath -PathType Leaf)) {
+        throw "Windows bundle 缺少种子词表：$SeedGlossary"
+    }
+}
 
 $Zip = Join-Path $Root "dist\SJTU-Learning-Assistant-$Version-Windows-x64-portable.zip"
 Compress-Archive -Path "$AppDir\*" -DestinationPath $Zip -CompressionLevel Optimal -Force

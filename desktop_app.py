@@ -168,7 +168,9 @@ def _transcript_id(value: object, label: str) -> str:
 
 
 def _artifact_id(value: object) -> str:
-    result = _bounded_id(value, limit=100, label="字幕工件标识")
+    result = _bounded_id(value, limit=110, label="字幕工件标识")
+    if re.fullmatch(r"[0-9a-f]{32}:v2:[0-9a-f]{32}", result) is not None:
+        return result
     job_id, separator, kind = result.partition(":")
     if (
         not separator
@@ -177,6 +179,13 @@ def _artifact_id(value: object) -> str:
         or kind not in {"raw_vtt", "cues", "cleaned", "summary_json", "summary"}
     ):
         raise DashboardError("字幕工件标识不正确。")
+    return result
+
+
+def _v2_artifact_id(value: object) -> str:
+    result = _artifact_id(value)
+    if re.fullmatch(r"[0-9a-f]{32}:v2:[0-9a-f]{32}", result) is None:
+        raise DashboardError("Phase1 工件标识不正确。")
     return result
 
 
@@ -340,7 +349,9 @@ class DesktopBridge:
             "transcript_retry": self._transcript_retry,
             "transcript_cancel": self._transcript_cancel,
             "transcript_artifacts": self._transcript_artifacts,
+            "transcript_v2_artifacts": self._transcript_v2_artifacts,
             "transcript_artifact_read": self._transcript_artifact_read,
+            "transcript_v2_artifact_read": self._transcript_v2_artifact_read,
             "transcript_artifact_reveal": self._transcript_artifact_reveal,
             "update": self._update_check,
             "update_check": self._update_check,
@@ -1062,9 +1073,21 @@ class DesktopBridge:
             _transcript_id(payload.get("job_id"), "字幕任务标识")
         )
 
+    def _transcript_v2_artifacts(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"job_id"})
+        return self._service.transcript_v2_artifacts(
+            _transcript_id(payload.get("job_id"), "字幕任务标识")
+        )
+
     def _transcript_artifact_read(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"artifact_id"})
         return self._service.transcript_artifact_read(_artifact_id(payload.get("artifact_id")))
+
+    def _transcript_v2_artifact_read(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"artifact_id"})
+        return self._service.transcript_v2_artifact_read(
+            _v2_artifact_id(payload.get("artifact_id"))
+        )
 
     def _transcript_artifact_reveal(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"artifact_id"})
@@ -1284,8 +1307,8 @@ def run_desktop_app() -> int:
         )
         diagnostic_bundle = DiagnosticBundleService(
             engine,
-            config_status_provider=service.settings_status,
-            status_provider=service.sync_status,
+            config_status_provider=getattr(service, "settings_status", lambda: {}),
+            status_provider=getattr(service, "sync_status", lambda: {}),
         )
         bridge = DesktopBridge(
             service,

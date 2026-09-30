@@ -15,6 +15,7 @@ import {
   getMessageResource,
   getSettings,
   getTranscriptBatch,
+  getTranscriptV2Artifacts,
   getVideoSubtitles,
   ingestAiAttachment,
   invoke,
@@ -22,6 +23,7 @@ import {
   openMailAttachment,
   planRestore,
   readTranscriptArtifact,
+  readTranscriptV2Artifact,
   retryArchive,
   revealMailAttachment,
   saveBackupToken,
@@ -326,6 +328,15 @@ describe("cloud archive bridge payloads", () => {
     await readTranscriptArtifact(`${id}:summary`);
     expect(bridge).toHaveBeenLastCalledWith("transcript_artifact_read", {
       artifact_id: `${id}:summary`,
+    });
+    await getTranscriptV2Artifacts(id);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_v2_artifacts", {
+      job_id: id,
+    });
+    const v2ArtifactId = `${id}:v2:${"b".repeat(32)}`;
+    await readTranscriptV2Artifact(v2ArtifactId);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_v2_artifact_read", {
+      artifact_id: v2ArtifactId,
     });
   });
 });
