@@ -2470,6 +2470,7 @@ export function VideosView({
                   rowSummaryReady ||
                   rowSummaryProcessing ||
                   canRequestRowSummary;
+                const rowIsLoading = busy === `play:${video.id}`;
                 const hasMenu = Boolean(
                   onStartTranscript ||
                     onRetryTranscript ||
@@ -2493,11 +2494,15 @@ export function VideosView({
                       <button
                         type="button"
                         className="video-recording-play-target"
-                        aria-label={`播放 ${video.title}`}
-                        disabled={
-                          video.playable === false ||
-                          Boolean(busy && busy !== `play:${video.id}`)
+                        aria-label={
+                          rowIsLoading
+                            ? `正在加载 ${video.title}`
+                            : video.playable === false
+                              ? `不可播放 ${video.title}`
+                              : `播放 ${video.title}`
                         }
+                        aria-busy={rowIsLoading ? "true" : undefined}
+                        disabled={video.playable === false || Boolean(busy)}
                         onClick={() => void play(video)}
                         onKeyDown={(event) => {
                           if (event.key !== "Enter" && event.key !== " ")
@@ -2791,13 +2796,21 @@ export function VideosView({
                             <StatusBadge status={learningState.status} />
                           )}
                         </div>
-                        <span className="video-play-state" aria-hidden="true">
-                          {busy === `play:${video.id}` ? (
-                            <LoaderCircle className="is-loading" />
+                        <span
+                          className="video-play-state"
+                          role={rowIsLoading ? "status" : undefined}
+                          aria-live={rowIsLoading ? "polite" : undefined}
+                          aria-hidden={rowIsLoading ? undefined : true}
+                        >
+                          {rowIsLoading ? (
+                            <LoaderCircle
+                              className="is-loading"
+                              aria-hidden="true"
+                            />
                           ) : (
                             <Play />
                           )}
-                          {busy === `play:${video.id}`
+                          {rowIsLoading
                             ? "正在加载"
                             : video.playable === false
                               ? "不可播放"

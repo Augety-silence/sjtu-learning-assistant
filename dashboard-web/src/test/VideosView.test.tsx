@@ -251,6 +251,51 @@ describe("VideosView", () => {
     await waitFor(() => expect(play).toHaveBeenCalledTimes(3));
   });
 
+  it("播放加载期间禁用入口、公开忙碌状态并阻止重复播放", async () => {
+    let resolvePlay: (() => void) | undefined;
+    const play = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        }),
+    );
+    render(<VideosView videos={[videos[0]]} onPlay={play} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+
+    const loading = await screen.findByRole("button", {
+      name: "正在加载 第一讲",
+    });
+    expect((loading as HTMLButtonElement).disabled).toBe(true);
+    expect(loading.getAttribute("aria-busy")).toBe("true");
+    expect(
+      document.querySelector(".video-play-state[role=status]")?.textContent,
+    ).toContain("正在加载");
+
+    fireEvent.click(loading);
+    fireEvent.keyDown(loading, { key: "Enter" });
+    expect(play).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolvePlay?.());
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "播放 第一讲" })
+          .hasAttribute("aria-busy"),
+      ).toBe(false),
+    );
+  });
+
+  it("不可播放行使用准确的禁用名称", () => {
+    render(<VideosView videos={[videos[1]]} />);
+
+    const unavailable = screen.getByRole("button", {
+      name: "不可播放 旧版录像",
+    });
+    expect((unavailable as HTMLButtonElement).disabled).toBe(true);
+    expect(unavailable.hasAttribute("aria-busy")).toBe(false);
+  });
+
   it("更多菜单与批量选择不会触发播放，且没有嵌套按钮", async () => {
     const play = vi.fn();
     const startTranscript = vi.fn();
@@ -284,7 +329,7 @@ describe("VideosView", () => {
     expect(screen.getByText("第一讲")).toBeTruthy();
     expect(screen.queryByText("旧版录像")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
-    expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();
+    expect(await findPlayer("第一讲")).toBeTruthy();
     expect(
       screen
         .getAllByText("第一讲")
@@ -1846,7 +1891,7 @@ describe("VideosView", () => {
     await waitFor(() => expect(playMedia).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "查看学习材料" }));
-    expect(await screen.findByLabelText("播放 第三讲")).toBeTruthy();
+    expect(await findPlayer("第三讲")).toBeTruthy();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(playMedia).toHaveBeenCalledTimes(1);
   });
@@ -1873,7 +1918,7 @@ describe("VideosView", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
-    await screen.findByLabelText("播放 第一讲");
+    await findPlayer("第一讲");
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "查看学习材料" }));
 
@@ -1899,7 +1944,7 @@ describe("VideosView", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
-    await screen.findByLabelText("播放 第一讲");
+    await findPlayer("第一讲");
     fireEvent.mouseDown(screen.getByRole("tab", { name: "课件" }), {
       button: 0,
       ctrlKey: false,
@@ -1947,7 +1992,7 @@ describe("VideosView", () => {
       "共 1 节，已整理 0 节",
     );
     fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
-    await screen.findByLabelText("播放 第一讲");
+    await findPlayer("第一讲");
     expect(
       screen.getByText("AI 校对未通过，关键术语、数字和公式请对照视频核实"),
     ).toBeTruthy();
