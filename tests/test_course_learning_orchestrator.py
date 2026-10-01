@@ -452,5 +452,24 @@ class CourseLearningOrchestratorTests(unittest.TestCase):
             OrchestratorPolicy.from_value({"max_critic_loops": 4})
 
 
+    def test_memory_prompt_separates_knowledge_examples_and_model_training(self):
+        _, agent, result = self.execute()
+        self.assertEqual("completed", result.status)
+        messages = next(messages for role, messages in agent.calls if role == "memory")
+        instruction = messages.pop().get("content")
+        self.assertIn("定义、原则、方法", instruction)
+        self.assertIn("演示、案例和类比", instruction)
+        self.assertIn("模型训练样本", instruction)
+        self.assertIn("回忆题或应用题", instruction)
+
+    def test_failed_requires_no_usable_transcript_product(self):
+        _, _, empty = self.execute(cues=list())
+        self.assertEqual("failed", empty.status)
+        self.assertEqual("", empty.corrected_transcript)
+        _, _, fallback = self.execute(FakeAgent(failure="terminology"), course="fallback-course")
+        self.assertEqual("partial", fallback.status)
+        self.assertEqual(CUES[0].get("text"), fallback.corrected_transcript)
+
+
 if __name__ == "__main__":
     unittest.main()

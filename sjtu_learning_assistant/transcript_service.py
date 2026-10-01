@@ -35,6 +35,7 @@ from sjtu_learning_assistant.course_learning_orchestrator import (
 from sjtu_learning_assistant.course_learning_schemas import (
     CriticDecision,
     OrchestratorResult,
+    resolve_product_status,
 )
 from sjtu_learning_assistant.course_memory import (
     CourseMemoryStore,
@@ -44,6 +45,7 @@ from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.transcript_pipeline import (
     PIPELINE_VERSION,
     PROMPT_VERSION,
+    LEARNING_PRODUCTS_INCOMPLETE_WARNING,
     REDUCE_FALLBACK_WARNING,
     SUMMARY_EMPTY_WARNING,
     TranscriptAIFormatError,
@@ -638,6 +640,20 @@ class TranscriptService:
         with self._lease_heartbeat(str(batch["id"])):
             self._process_claimed_batch(batch)
 
+    def _job_has_usable_subtitle(self, job: Mapping[str, Any]) -> bool:
+        source_id = job.get("source_id")
+        if type(source_id) is not str:
+            return False
+        try:
+            video_dir = self._video_dir(source_id)
+        except Exception:
+            return False
+        for name in ("raw.vtt", "cues.json", "cleaned.md"):
+            path = video_dir / name
+            if path.is_file() and not path.is_symlink() and path.stat().st_size > 0:
+                return True
+        return False
+
     def _process_claimed_batch(self, batch: dict[str, Any]) -> None:
         if batch.get("cancel_requested"):
             for job in batch["jobs"]:
@@ -655,10 +671,14 @@ class TranscriptService:
                 try:
                     future.result()
                 except Exception as exc:
-                    job["status"] = "failed"
+                    has_subtitle = self._job_has_usable_subtitle(job)
+                    job["status"] = resolve_product_status(has_subtitle, False, True)
                     job["stage"] = "fetch"
                     job["error"] = _safe_error(exc)
-                    job["message"] = "字幕存储失败，可重试。"
+                    job["message"] = (
+                        "基础字幕已保存；后续存储失败，可重试。"
+                        if has_subtitle else "字幕存储失败，可重试。"
+                    )
                 self._save_batch(batch)
         for job in batch["jobs"]:
             if job.get("status") == "saved":
@@ -1439,7 +1459,12 @@ class TranscriptService:
                 if reduce_diagnostics:
                     warning_category = str(reduce_diagnostics.get("category") or "reduce_error")
                     manifest["ai_warning"] = dict(category=warning_category, diagnostics=dict(reduce_diagnostics))
-                message = REDUCE_FALLBACK_WARNING if REDUCE_FALLBACK_WARNING in result.partial_warnings else "字幕与经验证的本节要点已生成；部分分块使用原字幕回退。"
+                if LEARNING_PRODUCTS_INCOMPLETE_WARNING in result.partial_warnings:
+                    message = LEARNING_PRODUCTS_INCOMPLETE_WARNING
+                elif REDUCE_FALLBACK_WARNING in result.partial_warnings:
+                    message = REDUCE_FALLBACK_WARNING
+                else:
+                    message = "字幕与经验证的本节要点已生成；部分分块使用原字幕回退。"
                 job.update(dict(status="completed_with_warnings", stage="completed_with_warnings", progress=100, message=message, error=None, partial_warning=True))
             else:
                 manifest.pop("partial_warnings", None)

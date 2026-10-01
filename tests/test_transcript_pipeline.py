@@ -59,7 +59,10 @@ def map_payload() -> dict[str, object]:
         ],
         "concepts": [],
         "cases_formulas_conclusions": [],
-        "review_questions": ["什么是证据使用？"],
+        "review_questions": list(("什么是证据使用？",)),
+        "knowledge_points": list((dict(kind="principle", concept="证据使用", statement="保留术语和数字", evidence=list((dict(cue_id="cue-000003", start_ms=3000, end_ms=5000, quote="不要改动"),))),)),
+        "classroom_examples": list(),
+        "practice_items": list((dict(type="recall", prompt="需要保留什么？", related_knowledge_points=list(("证据使用",)), answer_key=list(("术语和数字",)), rubric=list(), evidence=list((dict(cue_id="cue-000003", start_ms=3000, end_ms=5000, quote="不要改动"),))),)),
     }
 
 
@@ -375,6 +378,64 @@ class TranscriptPipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             TranscriptPipeline().run(VTT, ai, cached_chunks=dict(), offline_only=True)
 
+
+
+    def test_structured_learning_products_are_grounded_linked_and_deduplicated(self):
+        evidence_a = dict(cue_id="cue-1", start_ms=0, end_ms=1000, quote="均值是总和除以数量")
+        evidence_b = dict(cue_id="cue-2", start_ms=1000, end_ms=2000, quote="比如三个人的平均分")
+        chunks = list((
+            dict(
+                topics=list(("均值",)), emphasized_points=list(), concepts=list(),
+                cases_formulas_conclusions=list(), review_questions=list(),
+                knowledge_points=list((dict(concept="均值", kind="definition", statement="均值是总和除以数量。", evidence=list((evidence_a,))),)),
+                classroom_examples=list((dict(example="三个人平均分的演示", related_knowledge_points=list(("均值",)), evidence=list((evidence_b,))),)),
+                practice_items=list(),
+            ),
+            dict(
+                topics=list(("均值",)), emphasized_points=list(), concepts=list(),
+                cases_formulas_conclusions=list(), review_questions=list(),
+                knowledge_points=list((dict(concept="均 值", kind="definition", statement="均值是总和除以数量", evidence=list((evidence_a,))),)),
+                classroom_examples=list((dict(example="无关联例子", related_knowledge_points=list(("不存在",)), evidence=list((evidence_b,))),)),
+                practice_items=list(),
+            ),
+        ))
+        summary = deterministic_summary(chunks)
+        self.assertEqual(1, len(summary.get("knowledge_points")))
+        self.assertEqual(1, len(summary.get("classroom_examples")))
+        practice = next(iter(summary.get("practice_items")))
+        self.assertEqual("recall", practice.get("type"))
+        self.assertEqual(list(("均值是总和除以数量。",)), practice.get("answer_key"))
+        self.assertNotIn("ASR", json.dumps(practice, ensure_ascii=False))
+
+    def test_learning_product_schema_rejects_unsupported_practice_type_and_unbound_evidence(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        payload = map_payload()
+        payload.update(
+            knowledge_points=list((dict(
+                kind="definition", concept="证据", statement="证据必须可核验",
+                evidence=list((dict(cue_id="cue-000003", quote="不要改动"),)),
+            ),)),
+            classroom_examples=list(),
+            practice_items=list((dict(
+                type="asr_correction", prompt="修正错字",
+                related_knowledge_points=list(("证据",)), answer_key=list(("改字",)),
+                rubric=list(), evidence=list((dict(cue_id="cue-000003", quote="不要改动"),)),
+            ),)),
+        )
+        with self.assertRaises(ValueError):
+            normalize_map_output(payload, cues)
+        payload.get("practice_items").clear()
+        payload.get("knowledge_points").pop().get("evidence").clear()
+        self.assertEqual(list(), normalize_map_output(payload, cues).get("knowledge_points"))
+
+    def test_prompt_explicitly_separates_knowledge_examples_and_asr_training(self):
+        ai = FakeAI()
+        TranscriptPipeline().run(VTT, ai)
+        prompt = ai.calls.pop().pop().get("content")
+        self.assertIn("KNOWLEDGE_POINTS", prompt)
+        self.assertIn("CLASSROOM_EXAMPLES", prompt)
+        self.assertIn("PRACTICE_ITEMS", prompt)
+        self.assertIn("ASR 纠错", prompt)
 
 
 if __name__ == "__main__":

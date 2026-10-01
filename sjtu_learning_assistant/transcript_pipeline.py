@@ -7,8 +7,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-PROMPT_VERSION = "transcript-v3"
-PIPELINE_VERSION = "transcript-pipeline-v4"
+PROMPT_VERSION = "transcript-v4-learning-products"
+PIPELINE_VERSION = "transcript-pipeline-v5"
 TARGET_CHUNK_CHARS = 5200
 MAX_CHUNK_CHARS = 6000
 MAX_CHUNK_CUES = 120
@@ -18,6 +18,7 @@ MAX_VALIDATED_JSON_CHARS = 10000
 MAP_FALLBACK_WARNING = "AI 分块结果无效，已使用确定性字幕规整回退。"
 REDUCE_FALLBACK_WARNING = "AI最终汇总未完成，已根据已规整分块生成结果"
 SUMMARY_EMPTY_WARNING = "未提取出可验证的本节要点。"
+LEARNING_PRODUCTS_INCOMPLETE_WARNING = "未提取出可验证知识点，已保留兼容摘要与基础字幕。"
 _TIMESTAMP = re.compile(r"^(?:(?P<h>\d{2,}):)?(?P<m>\d{2}):(?P<s>\d{2})[.,](?P<ms>\d{3})$")
 _TIMING = re.compile(r"^(?P<start>\S+)\s+-->\s+(?P<end>\S+)(?:\s+.*)?$")
 _TAG = re.compile(r"<[^>]+>")
@@ -30,6 +31,9 @@ MAP_KEYS = frozenset((
     "concepts",
     "cases_formulas_conclusions",
     "review_questions",
+    "knowledge_points",
+    "classroom_examples",
+    "practice_items",
 ))
 SUMMARY_KEYS = frozenset((
     "lesson_topic",
@@ -39,16 +43,24 @@ SUMMARY_KEYS = frozenset((
     "cases_formulas_conclusions",
     "review_questions",
     "timeline",
+    "knowledge_points",
+    "classroom_examples",
+    "practice_items",
 ))
 MAP_SCHEMA_HINT = (
     "必须包含且仅包含字段 cleaned_transcript、topics、emphasized_points、concepts、"
-    "cases_formulas_conclusions、review_questions。cleaned_transcript 项仅含 cue_id、"
-    "start_ms、end_ms、text；要点项仅含 text、evidence，evidence 项仅含 cue_id、"
-    "start_ms、end_ms、quote。"
+    "cases_formulas_conclusions、review_questions、knowledge_points、classroom_examples、"
+    "practice_items。cleaned_transcript 项仅含 cue_id、start_ms、end_ms、text；"
+    "知识点必须标明 kind（definition/principle/method/fact/formula/conclusion）、concept、"
+    "statement 与逐字 evidence；课堂例子必须关联 related_knowledge_points；练习仅允许"
+    " recall/application，并给 answer_key 或 rubric。evidence 项仅含 cue_id、start_ms、"
+    "end_ms、quote。宁缺毋滥，不得把字幕纠错样本当作练习。"
 )
 SUMMARY_SCHEMA_HINT = (
     "必须包含且仅包含字段 lesson_topic、learning_objectives、emphasized_points、concepts、"
-    "cases_formulas_conclusions、review_questions、timeline。所有 evidence 和 timeline 项必须引用 cue_id。"
+    "cases_formulas_conclusions、review_questions、timeline、knowledge_points、"
+    "classroom_examples、practice_items。所有 evidence 和 timeline 项必须引用 cue_id；"
+    "例子必须关联知识点，练习必须包含答案要点或评估标准。"
 )
 
 
@@ -624,6 +636,68 @@ def _combined(value, names):
     return result
 
 
+def _concept_refs(value, path):
+    return _dedupe_strings(
+        (_coerce_text(item, path, 200) for item in _coerce_items(value, path, 12)),
+        12,
+    )
+
+
+def _normalize_knowledge_points(value, cues):
+    result = list()
+    allowed = frozenset(("definition", "principle", "method", "fact", "formula", "conclusion"))
+    for index, row in enumerate(_coerce_items(value, "knowledge_points", 30)):
+        path = "knowledge_points[%d]" % index
+        if type(row) is not dict:
+            _schema_fail(path, "object", row)
+        kind = _coerce_text(_alias(row, ("kind", "type", "category")), path + ".kind", 32).casefold()
+        if kind not in allowed:
+            _schema_fail(path + ".kind", "definition/principle/method/fact/formula/conclusion", kind)
+        concept = _coerce_text(_alias(row, ("concept", "name", "title")), path + ".concept", 200)
+        statement = _coerce_text(_alias(row, ("statement", "text", "description")), path + ".statement", 600)
+        evidence = _normalize_evidence(_alias(row, ("evidence", "citations", "source")), cues, path + ".evidence")
+        if cues is not None and not evidence:
+            continue
+        result.append(dict(concept=concept, kind=kind, statement=statement, evidence=evidence))
+    return result
+
+
+def _normalize_classroom_examples(value, cues):
+    result = list()
+    for index, row in enumerate(_coerce_items(value, "classroom_examples", 20)):
+        path = "classroom_examples[%d]" % index
+        if type(row) is not dict:
+            _schema_fail(path, "object", row)
+        example = _coerce_text(_alias(row, ("example", "text", "description")), path + ".example", 600)
+        related = _concept_refs(_alias(row, ("related_knowledge_points", "related_concepts", "concepts")), path + ".related_knowledge_points")
+        evidence = _normalize_evidence(_alias(row, ("evidence", "citations", "source")), cues, path + ".evidence")
+        if not related or (cues is not None and not evidence):
+            continue
+        result.append(dict(example=example, related_knowledge_points=related, evidence=evidence))
+    return result
+
+
+def _normalize_practice_items(value, cues):
+    result = list()
+    allowed = frozenset(("recall", "application"))
+    for index, row in enumerate(_coerce_items(value, "practice_items", 20)):
+        path = "practice_items[%d]" % index
+        if type(row) is not dict:
+            _schema_fail(path, "object", row)
+        item_type = _coerce_text(_alias(row, ("type", "kind")), path + ".type", 32).casefold()
+        if item_type not in allowed:
+            _schema_fail(path + ".type", "recall or application", item_type)
+        prompt = _coerce_text(_alias(row, ("prompt", "question", "text")), path + ".prompt", 600)
+        related = _concept_refs(_alias(row, ("related_knowledge_points", "related_concepts", "concepts")), path + ".related_knowledge_points")
+        answer = _text_list(row.get("answer_key"), path + ".answer_key", 12, 300)
+        rubric = _text_list(row.get("rubric"), path + ".rubric", 12, 300)
+        evidence = _normalize_evidence(_alias(row, ("evidence", "citations", "source")), cues, path + ".evidence")
+        if not related or not (answer or rubric) or (cues is not None and not evidence):
+            continue
+        result.append(dict(type=item_type, prompt=prompt, related_knowledge_points=related, answer_key=answer, rubric=rubric, evidence=evidence))
+    return result
+
+
 def normalize_map_output(value, cues=None):
     source = _unwrap(value, MAP_KEYS)
     raw_cleaned = _required_alias(source, ("cleaned_transcript", "cleanedTranscript", "cleaned", "transcript", "cues"), "cleaned_transcript")
@@ -679,6 +753,9 @@ def normalize_map_output(value, cues=None):
         concepts=_normalize_points(_required_alias(source, ("concepts", "key_concepts", "terms"), "concepts"), "concepts", cues),
         cases_formulas_conclusions=_normalize_points(_combined(source, case_names), "cases_formulas_conclusions", cues),
         review_questions=_text_list(_required_alias(source, ("review_questions", "reviewQuestions", "questions"), "review_questions"), "review_questions", 12, 300),
+        knowledge_points=_normalize_knowledge_points(source.get("knowledge_points", list()), cues),
+        classroom_examples=_normalize_classroom_examples(source.get("classroom_examples", list()), cues),
+        practice_items=_normalize_practice_items(source.get("practice_items", list()), cues),
     )
     warning = source.get("partial_warning")
     if warning is not None:
@@ -729,6 +806,9 @@ def normalize_summary_output(value, cues=None):
         cases_formulas_conclusions=_normalize_points(_combined(source, case_names), "cases_formulas_conclusions", cues),
         review_questions=_text_list(_required_alias(source, ("review_questions", "reviewQuestions", "questions"), "review_questions"), "review_questions", 12, 300),
         timeline=_normalize_timeline(_required_alias(source, ("timeline", "time_line", "chapters", "outline"), "timeline"), cues),
+        knowledge_points=_normalize_knowledge_points(source.get("knowledge_points", list()), cues),
+        classroom_examples=_normalize_classroom_examples(source.get("classroom_examples", list()), cues),
+        practice_items=_normalize_practice_items(source.get("practice_items", list()), cues),
     )
 
 
@@ -748,19 +828,29 @@ PLAIN_MAP_SECTIONS = dict((
     ("CONCEPTS", "concepts"),
     ("CASES_FORMULAS_CONCLUSIONS", "cases_formulas_conclusions"),
     ("REVIEW_QUESTIONS", "review_questions"),
+    ("KNOWLEDGE_POINTS", "knowledge_points"),
+    ("CLASSROOM_EXAMPLES", "classroom_examples"),
+    ("PRACTICE_ITEMS", "practice_items"),
+))
+LEGACY_PLAIN_MAP_FIELDS = frozenset((
+    "topics", "emphasized_points", "concepts",
+    "cases_formulas_conclusions", "review_questions",
 ))
 PLAIN_MAP_FORMAT = (
-    "不要输出 JSON、代码围栏或 HTML，也不要复述字幕。严格按以下五个标签段输出；每行只能以 - 开头。"
-    "TOPICS 必须提取本块真实主题。EMPHASIZED_POINTS、CONCEPTS、CASES_FORMULAS_CONCLUSIONS "
-    "每项格式为：- 内容 || cue_id || 字幕中的逐字短引文；引用必须来自同一个 cue。"
-    "REVIEW_QUESTIONS 写成只靠本块字幕即可回答的复习问题，格式为：- 问题。某段确无内容时写 - NONE，"
-    "但有实质课程内容时不得所有分析段均为 NONE。\n"
+    "不要输出 JSON、代码围栏或 HTML，也不要复述字幕。严格按以下八个标签段输出；每行只能以 - 开头。"
+    "知识点只收录字幕明确陈述的定义、原则、方法、事实、公式或结论；教师演示、案例、类比只能放 CLASSROOM_EXAMPLES，"
+    "且关联知识点。无法判定时写 NONE。练习是学习者练习，不是 ASR 纠错/训练样本；只允许 recall 或 application，"
+    "必须给答案要点或评估标准。所有事实性条目都带同一 cue 的逐字引文。\n"
     "[TOPICS]\n- 主题\n"
     "[EMPHASIZED_POINTS]\n- 要点 || cue-000001 || 逐字短引文\n"
-    "[CONCEPTS]\n- 概念说明 || cue-000001 || 逐字短引文\n"
-    "[CASES_FORMULAS_CONCLUSIONS]\n- 案例、公式或结论 || cue-000001 || 逐字短引文\n"
-    "[REVIEW_QUESTIONS]\n- 字幕中明确提出的问题"
+    "[CONCEPTS]\n- 兼容概念说明 || cue-000001 || 逐字短引文\n"
+    "[CASES_FORMULAS_CONCLUSIONS]\n- 兼容案例、公式或结论 || cue-000001 || 逐字短引文\n"
+    "[REVIEW_QUESTIONS]\n- 兼容复习问题\n"
+    "[KNOWLEDGE_POINTS]\n- definition/principle/method/fact/formula/conclusion || 概念 || 可验证陈述 || cue-000001 || 逐字短引文\n"
+    "[CLASSROOM_EXAMPLES]\n- 明确标记的课堂例子/演示/类比 || 关联知识点概念 || cue-000001 || 逐字短引文\n"
+    "[PRACTICE_ITEMS]\n- recall/application || 题目 || 关联知识点概念 || 答案要点或评估标准 || cue-000001 || 逐字短引文"
 )
+
 
 
 def _map_with_source_cues(value, cues):
@@ -780,6 +870,7 @@ def has_map_insights(value):
         and any(
             value.get(name)
             for name in (
+                "knowledge_points",
                 "emphasized_points",
                 "concepts",
                 "cases_formulas_conclusions",
@@ -837,14 +928,42 @@ def parse_plain_map_output(content, cues):
             sections.get(current).append(item)
             continue
         parts = tuple(part.strip() for part in item.split("||"))
+        if current == "knowledge_points":
+            if len(parts) != 5 or not all(parts):
+                _schema_fail(current, "kind || concept || statement || cue_id || exact quote", item)
+            kind, concept, statement, cue_id, quote = parts
+            sections.get(current).append(dict(
+                kind=kind, concept=concept, statement=statement,
+                evidence=list((dict(cue_id=cue_id, quote=quote),)),
+            ))
+            continue
+        if current == "classroom_examples":
+            if len(parts) != 4 or not all(parts):
+                _schema_fail(current, "example || related concept || cue_id || exact quote", item)
+            example, related, cue_id, quote = parts
+            sections.get(current).append(dict(
+                example=example, related_knowledge_points=list((related,)),
+                evidence=list((dict(cue_id=cue_id, quote=quote),)),
+            ))
+            continue
+        if current == "practice_items":
+            if len(parts) != 6 or not all(parts):
+                _schema_fail(current, "type || prompt || related concept || answer/rubric || cue_id || exact quote", item)
+            item_type, prompt, related, answer, cue_id, quote = parts
+            sections.get(current).append(dict(
+                type=item_type, prompt=prompt,
+                related_knowledge_points=list((related,)), answer_key=list((answer,)), rubric=list(),
+                evidence=list((dict(cue_id=cue_id, quote=quote),)),
+            ))
+            continue
         if len(parts) != 3 or not all(parts):
             _schema_fail(current, "text || cue_id || exact quote", item)
         text, cue_id, quote = parts
         sections.get(current).append(
             dict(text=text, evidence=list((dict(cue_id=cue_id, quote=quote),)))
         )
-    if seen != set(PLAIN_MAP_SECTIONS.values()):
-        _schema_fail("$", "all five plain structured sections", tuple(sorted(seen)))
+    if not LEGACY_PLAIN_MAP_FIELDS.issubset(seen):
+        _schema_fail("$", "five legacy sections and optional learning-product sections", tuple(sorted(seen)))
     return _validate_map_insights(sections, cues)
 
 
@@ -870,8 +989,9 @@ def _validated_map_response(content, response, cues):
 
 def _map_content(ai_client, prompt, cues):
     system = (
-        "只依据字幕证据提取内容，不补写外部事实。不要复述字幕；"
-        "严格使用用户指定的固定标签纯文本格式。"
+        "只依据字幕证据提取内容，不补写外部事实。知识点仅限定义、原则、方法、事实、公式和结论；"
+        "教师演示、案例和类比必须单列为课堂例子并关联知识点。无法判定时宁缺毋滥并保留逐字证据。"
+        "练习面向学生回忆或应用，不得把 ASR 纠错样本伪装成学习训练。严格使用用户指定的固定标签纯文本格式。"
     )
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
         raise ValueError("AI 请求超过单次消息安全限制。")
@@ -893,6 +1013,9 @@ def _fallback_map(chunk: TranscriptChunk) -> dict[str, Any]:
         "concepts": [],
         "cases_formulas_conclusions": [],
         "review_questions": [],
+        "knowledge_points": [],
+        "classroom_examples": [],
+        "practice_items": [],
         "partial_warning": MAP_FALLBACK_WARNING,
     }
 
@@ -935,6 +1058,22 @@ def render_summary(summary: Mapping[str, Any]) -> str:
     for title, key in (("概念", "concepts"), ("案例、公式与结论", "cases_formulas_conclusions")):
         lines.extend(("", f"## {title}"))
         lines.extend(f"- {_markdown_text(item['text'])}" for item in summary[key])
+    lines.extend(("", "## 可验证知识点"))
+    for item in summary.get("knowledge_points", list()):
+        evidence = "；".join(
+            "%02d:%02d %s" % (row.get("start_ms") // 60000, row.get("start_ms") // 1000 % 60, _markdown_text(row.get("quote")))
+            for row in item.get("evidence", list())
+        )
+        lines.append("- %s · %s：%s（%s）" % (_markdown_text(item.get("concept")), _markdown_text(item.get("kind")), _markdown_text(item.get("statement")), evidence))
+    lines.extend(("", "## 课堂例子（非知识点）"))
+    for item in summary.get("classroom_examples", list()):
+        related = "、".join(_markdown_text(value) for value in item.get("related_knowledge_points", list()))
+        lines.append("- %s（关联：%s）" % (_markdown_text(item.get("example")), related))
+    lines.extend(("", "## 学习练习"))
+    for item in summary.get("practice_items", list()):
+        answer = "；".join(_markdown_text(value) for value in item.get("answer_key", list()))
+        rubric = "；".join(_markdown_text(value) for value in item.get("rubric", list()))
+        lines.append("- %s：%s；答案要点/标准：%s" % (_markdown_text(item.get("type")), _markdown_text(item.get("prompt")), answer or rubric))
     lines.extend(("", "## 复习问题"))
     lines.extend(f"- {_markdown_text(item)}" for item in summary["review_questions"])
     lines.extend(("", "## 时间线"))
@@ -987,6 +1126,80 @@ def _merge_points(chunks, field):
     return ordered[:20]
 
 
+def _canonical_learning_key(value):
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _merge_evidence(target, rows):
+    known = set((item.get("cue_id"), item.get("quote")) for item in target)
+    for evidence in rows:
+        key = (evidence.get("cue_id"), evidence.get("quote"))
+        if key not in known and len(target) < 6:
+            target.append(dict(evidence))
+            known.add(key)
+    target.sort(key=lambda item: (item.get("start_ms"), item.get("end_ms"), item.get("cue_id"), item.get("quote")))
+
+
+def _first_evidence_start(item):
+    first = next(iter(item.get("evidence", list())), dict())
+    return first.get("start_ms")
+
+
+def _merge_learning_products(chunks):
+    knowledge = list()
+    knowledge_by_key = dict()
+    for chunk in chunks:
+        for item in chunk.get("knowledge_points", list()):
+            key = (item.get("kind"), _canonical_learning_key(item.get("concept")), _canonical_learning_key(item.get("statement")))
+            if not all(key) or not item.get("evidence"):
+                continue
+            target = knowledge_by_key.get(key)
+            if target is None:
+                target = dict(concept=item.get("concept"), kind=item.get("kind"), statement=item.get("statement"), evidence=list())
+                knowledge_by_key[key] = target
+                knowledge.append(target)
+            _merge_evidence(target.get("evidence"), item.get("evidence", list()))
+    knowledge.sort(key=lambda item: (_first_evidence_start(item), _canonical_learning_key(item.get("concept")), item.get("kind")))
+    knowledge = knowledge[:30]
+    known_concepts = set(_canonical_learning_key(item.get("concept")) for item in knowledge)
+    examples = list()
+    example_by_key = dict()
+    practices = list()
+    practice_by_key = dict()
+    for chunk in chunks:
+        for item in chunk.get("classroom_examples", list()):
+            related = _dedupe_strings((ref for ref in item.get("related_knowledge_points", list()) if _canonical_learning_key(ref) in known_concepts), 12)
+            key = _canonical_learning_key(item.get("example"))
+            if not key or not related or not item.get("evidence"):
+                continue
+            target = example_by_key.get(key)
+            if target is None:
+                target = dict(example=item.get("example"), related_knowledge_points=related, evidence=list())
+                example_by_key[key] = target
+                examples.append(target)
+            else:
+                target["related_knowledge_points"] = _dedupe_strings(target.get("related_knowledge_points") + related, 12)
+            _merge_evidence(target.get("evidence"), item.get("evidence", list()))
+        for item in chunk.get("practice_items", list()):
+            related = _dedupe_strings((ref for ref in item.get("related_knowledge_points", list()) if _canonical_learning_key(ref) in known_concepts), 12)
+            key = (item.get("type"), _canonical_learning_key(item.get("prompt")))
+            if not all(key) or not related or not item.get("evidence") or not (item.get("answer_key") or item.get("rubric")):
+                continue
+            target = practice_by_key.get(key)
+            if target is None:
+                target = dict(type=item.get("type"), prompt=item.get("prompt"), related_knowledge_points=related, answer_key=list(item.get("answer_key", list())), rubric=list(item.get("rubric", list())), evidence=list())
+                practice_by_key[key] = target
+                practices.append(target)
+            _merge_evidence(target.get("evidence"), item.get("evidence", list()))
+    examples.sort(key=lambda item: (_first_evidence_start(item), _canonical_learning_key(item.get("example"))))
+    practices.sort(key=lambda item: (_first_evidence_start(item), item.get("type"), _canonical_learning_key(item.get("prompt"))))
+    if knowledge and not practices:
+        for item in knowledge[:12]:
+            practices.append(dict(type="recall", prompt="请说明%s。" % item.get("concept"), related_knowledge_points=list((item.get("concept"),)), answer_key=list((item.get("statement"),)), rubric=list(), evidence=list(dict(row) for row in item.get("evidence", list()))))
+    return knowledge, examples[:20], practices[:20]
+
+
 def _reduce_failure_diagnostics(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, TranscriptAIFormatError):
         diagnostics = dict(exc.diagnostics)
@@ -1025,6 +1238,7 @@ def summary_has_content(summary):
         and any(
             summary.get(name)
             for name in (
+                "knowledge_points",
                 "emphasized_points",
                 "concepts",
                 "cases_formulas_conclusions",
@@ -1036,14 +1250,18 @@ def summary_has_content(summary):
 def deterministic_summary(chunks):
     topics = _dedupe_strings((item for chunk in chunks for item in chunk.get("topics", list())), 12)
     questions = _dedupe_strings((item for chunk in chunks for item in chunk.get("review_questions", list())), 12)
+    knowledge, examples, practices = _merge_learning_products(chunks)
     return dict(
-        lesson_topic=topics[0] if topics else "",
+        lesson_topic=next(iter(topics), ""),
         learning_objectives=list(),
         emphasized_points=_merge_points(chunks, "emphasized_points"),
         concepts=_merge_points(chunks, "concepts"),
         cases_formulas_conclusions=_merge_points(chunks, "cases_formulas_conclusions"),
         review_questions=questions,
         timeline=list(),
+        knowledge_points=knowledge,
+        classroom_examples=examples,
+        practice_items=practices,
     )
 
 
@@ -1070,8 +1288,9 @@ class TranscriptPipeline:
                 raise ValueError("离线恢复要求全部字幕分块均已存在且验证通过。")
             else:
                 prompt = (
-                    "从以下带 cue_id 与时间的字幕块提取本节强调内容。不得改动术语、数字、公式；"
-                    "不得补写字幕外事实；证据 quote 必须逐字来自所引用 cue。"
+                    "从以下带 cue_id 与时间的字幕块提取可学习内容。明确区分真正知识点与教师演示、案例、类比；"
+                    "不要把课堂例子提升为原则，也不要把 ASR 纠错样本写成练习。无法判定时留空。"
+                    "不得改动术语、数字、公式，不得补写字幕外事实；证据 quote 必须逐字来自所引用 cue。"
                     + PLAIN_MAP_FORMAT
                     + "\n字幕块：\n"
                     + chunk.as_prompt_text()
@@ -1095,6 +1314,8 @@ class TranscriptPipeline:
         summary_empty = not summary_has_content(summary)
         if summary_empty:
             warnings.append(SUMMARY_EMPTY_WARNING)
+        elif not summary.get("knowledge_points"):
+            warnings.append(LEARNING_PRODUCTS_INCOMPLETE_WARNING)
         return PipelineResult(
             cues=list(cue.as_dict() for cue in cues),
             chunks=mapped,

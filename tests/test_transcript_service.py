@@ -42,6 +42,9 @@ class TranscriptServiceTests(unittest.TestCase):
             concepts=list(),
             cases_formulas_conclusions=list(),
             review_questions=list(("如何进行成本分析？",)),
+            knowledge_points=list((dict(kind="method", concept="成本分析", statement="本节课强调成本分析", evidence=list((dict(cue_id="cue-000001", start_ms=0, end_ms=2000, quote="成本分析"),))),)),
+            classroom_examples=list(),
+            practice_items=list((dict(type="recall", prompt="本节强调什么？", related_knowledge_points=list(("成本分析",)), answer_key=list(("成本分析",)), rubric=list(), evidence=list((dict(cue_id="cue-000001", start_ms=0, end_ms=2000, quote="成本分析"),))),)),
         )
 
     def create_partial_with_complete_chunks(self):
@@ -411,6 +414,25 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertTrue(reused.get("reused"))
         self.assertEqual("completed", reused.get("status"))
         self.assertEqual(1, self.fetches)
+
+
+    def test_fetch_exception_after_raw_save_is_partial_not_failed(self):
+        service = self.service()
+
+        def save_raw_then_fail(batch, job):
+            del batch
+            video_dir = service._video_dir(job.get("source_id"))
+            video_dir.mkdir(parents=True, exist_ok=True)
+            (video_dir / "raw.vtt").write_text(VTT, encoding="utf-8")
+            raise RuntimeError("post-save failure")
+
+        service._fetch_and_store = save_raw_then_fail
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))
+        service.run_pending()
+        job = next(iter(service.get_batch(batch.get("id")).get("jobs")))
+        self.assertEqual("partial", job.get("status"))
+        self.assertIn("基础字幕已保存", job.get("message"))
+        self.assertEqual("partial", service.get_batch(batch.get("id")).get("status"))
 
 
 if __name__ == "__main__":

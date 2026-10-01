@@ -516,6 +516,22 @@ class QualityReport(StrictSchema):
         )
 
 
+def resolve_product_status(
+    has_basic_content: bool, has_learning_product: bool, has_warnings: bool = False
+) -> str:
+    """Resolve terminal status; failed means that no usable artifact exists."""
+
+    if type(has_basic_content) is not bool or type(has_learning_product) is not bool:
+        raise TypeError("content flags must be boolean")
+    if type(has_warnings) is not bool:
+        raise TypeError("has_warnings must be boolean")
+    if has_learning_product:
+        return "completed_with_warnings" if has_warnings else "completed"
+    if has_basic_content:
+        return "partial"
+    return "failed"
+
+
 @dataclass(frozen=True)
 class MemoryDelta(StrictSchema):
     add_terms: tuple[dict[str, Any], ...]
@@ -608,6 +624,8 @@ class OrchestratorResult(StrictSchema):
             _string(event["status"], f"$.events[{index}].status", limit=64)
         if self.status not in {"completed", "completed_with_warnings", "partial", "failed"}:
             _fail("$.status", "invalid orchestrator status")
+        if self.status == "failed" and (self.chunks or self.corrected_transcript.strip()):
+            _fail("$.status", "failed requires no usable transcript or chunk artifact")
         for name, value in (("raw_hash", self.raw_hash), ("cache_key", self.cache_key)):
             _string(value, f"$.{name}", empty=True, limit=128)
             if value and (len(value) != 64 or any(character not in "0123456789abcdef" for character in value)):
@@ -653,5 +671,6 @@ __all__ = [
     "SubtitleChunk",
     "TermCandidate",
     "UncertainSpan",
+    "resolve_product_status",
     "stable_json_dumps",
 ]

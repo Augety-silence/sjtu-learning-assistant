@@ -533,7 +533,11 @@ class MemorySnapshot:
 
 
 class TrainingSampleQualityGate:
-    """Reject weak/self-generated examples before they enter training memory."""
+    """Gate model-training data, never learner-facing practice items.
+
+    Subtitle correction pairs remain isolated in ``training_examples`` and must not
+    be surfaced as recall/application exercises in course learning products.
+    """
 
     minimum_confidence = 0.90
 

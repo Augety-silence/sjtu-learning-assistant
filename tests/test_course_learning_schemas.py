@@ -15,6 +15,7 @@ from sjtu_learning_assistant.course_learning_schemas import (
     SubtitleChunk,
     TermCandidate,
     UncertainSpan,
+    resolve_product_status,
     stable_json_dumps,
 )
 
@@ -167,6 +168,23 @@ class CourseLearningSchemaTests(unittest.TestCase):
                 new_error_patterns=(),
                 new_concepts=(),
                 new_relationships=(),
+            )
+
+
+    def test_shared_status_semantics_reserve_failed_for_no_usable_artifact(self):
+        self.assertEqual("failed", resolve_product_status(False, False))
+        self.assertEqual("partial", resolve_product_status(True, False, True))
+        self.assertEqual("completed", resolve_product_status(True, True))
+        self.assertEqual("completed_with_warnings", resolve_product_status(True, True, True))
+
+        with self.assertRaises(SchemaValidationError):
+            OrchestratorResult(
+                course_id="course", video_id="video",
+                chunks=(SubtitleChunk.from_dict(chunk_payload()),),
+                corrections=(), critics=(),
+                quality=QualityReport(0.0, False, dict(), (), status="failed"),
+                memory_delta=MemoryDelta((), (), (), (), ()), warnings=(),
+                corrected_transcript="仍有可用字幕", status="failed",
             )
 
 

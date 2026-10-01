@@ -27,6 +27,7 @@ from .course_learning_schemas import (
     SubtitleChunk,
     TermCandidate,
     UncertainSpan,
+    resolve_product_status,
     stable_json_dumps,
 )
 from .course_memory import CourseMemoryStore, MemoryValidationError
@@ -40,7 +41,7 @@ from .semantic_chunker import SemanticChunker
 from .transcript_pipeline import Cue, normalize_cues, parse_vtt
 
 PIPELINE_VERSION = "course-learning-orchestrator-v1"
-PROMPT_VERSION = "course-learning-prompts-v1"
+PROMPT_VERSION = "course-learning-prompts-v2"
 MAX_CRITIC_LOOPS = 3
 _EMPTY_DELTA = MemoryDelta((), (), (), (), ())
 _NEGATIONS = re.compile(r"(?:不|没|无|未|非|否|勿|莫|not|no|never|without|cannot|can't|isn't|aren't)", re.I)
@@ -883,13 +884,12 @@ class CourseLearningOrchestrator:
         critic_rate = critic_passes / len(chunks) if chunks else 0.0
         uncertain_rate = sum(bool(item.uncertain) for item in corrections) / len(chunks) if chunks else 0.0
         quality_warnings = tuple(dict.fromkeys(warnings))
-        status = "completed"
-        if warnings:
-            status = "partial" if critic_passes < len(chunks) else "completed_with_warnings"
         if not chunks:
-            status = "failed"
             warnings.append("字幕中没有可处理内容。")
             quality_warnings = tuple(dict.fromkeys(warnings))
+        status = resolve_product_status(
+            bool(chunks), bool(chunks) and critic_passes == len(chunks), bool(warnings)
+        )
         score = max(0.0, min(1.0, critic_rate * (1.0 - uncertain_rate)))
         quality = QualityReport(
             score=score,
@@ -930,6 +930,9 @@ class CourseLearningOrchestrator:
                     "memory",
                     _data_messages(
                         "Memory", "只提出有证据的课程记忆增量，不直接写入。输出严格 MemoryDelta JSON。"
+                        "new_concepts 只收录字幕明确陈述的定义、原则、方法、事实、公式或结论；"
+                        "教师演示、案例和类比不得伪装成知识点。字幕纠错对仅属于模型训练样本，"
+                        "不得伪装成面向学生的回忆题或应用题。无法判定时宁缺毋滥并保留 cue 证据。"
                         "单次 AI 来源必须标为 single_ai、UNVERIFIED 且置信度不超过仓库限制。",
                         memory_data,
                     ),
@@ -960,7 +963,9 @@ class CourseLearningOrchestrator:
                     "memory_commit", model=self.pipeline_version,
                     prompt_version=self.prompt_version, status="rejected",
                 ))
-                status = "completed_with_warnings" if critic_passes == len(chunks) else "partial"
+                status = resolve_product_status(
+                    bool(chunks), bool(chunks) and critic_passes == len(chunks), True
+                )
                 quality = replace(
                     quality,
                     warnings=tuple(dict.fromkeys(warnings)),
