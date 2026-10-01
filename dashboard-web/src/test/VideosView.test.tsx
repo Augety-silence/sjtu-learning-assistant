@@ -51,6 +51,73 @@ const videos: CourseVideoItem[] = [
 ];
 
 describe("VideosView", () => {
+  it("在 loading 首帧保留课程、深色播放器与录像列表骨架", () => {
+    const { container } = render(<VideosView videos={[]} loading />);
+
+    expect(screen.getByLabelText("正在确认课程")).toBeTruthy();
+    expect(screen.getByText("正在准备视频工作台")).toBeTruthy();
+    expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
+    expect(container.querySelector(".video-player-shell")).toBeTruthy();
+    expect(
+      container.querySelectorAll(".video-recording-skeleton"),
+    ).toHaveLength(4);
+    expect(screen.queryByText("需要视频访问权限")).toBeNull();
+  });
+
+  it("数据到达后原位填充主要工作台容器", () => {
+    const view = render(<VideosView videos={[]} loading />);
+    const workbench = view.container.querySelector(".video-workbench");
+    const player = view.container.querySelector(".video-player-shell");
+    const list = view.container.querySelector(".video-list-panel");
+
+    view.rerender(
+      <VideosView videos={videos} courseId={1} courseName="数据结构" />,
+    );
+
+    expect(view.container.querySelector(".video-workbench")).toBe(workbench);
+    expect(view.container.querySelector(".video-player-shell")).toBe(player);
+    expect(view.container.querySelector(".video-list-panel")).toBe(list);
+    expect(screen.getByText("第一讲")).toBeTruthy();
+  });
+
+  it.each([
+    {
+      props: { error: "网络连接失败" },
+      state: "error",
+      copy: "录像列表加载失败",
+      action: "重新加载",
+    },
+    {
+      props: {},
+      state: "empty",
+      copy: "这门课程还没有录像",
+      action: "重新加载",
+    },
+    {
+      props: { permissionDenied: true },
+      state: "permission-denied",
+      copy: "当前账号无权查看课程录像",
+      action: "重新检查登录",
+    },
+  ])(
+    "$state 状态仍保留播放器框架与可行动文案",
+    ({ props, state, copy, action }) => {
+      const retry = vi.fn();
+      const { container } = render(
+        <VideosView videos={[]} onRetry={retry} {...props} />,
+      );
+
+      expect(
+        container.querySelector(`.video-workbench[data-state="${state}"]`),
+      ).toBeTruthy();
+      expect(container.querySelector(".video-player-shell")).toBeTruthy();
+      expect(container.querySelector(".video-list-panel")).toBeTruthy();
+      expect(screen.getByText(copy)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: action }));
+      expect(retry).toHaveBeenCalledOnce();
+    },
+  );
+
   it("uses an accessible custom course picker and supports pointer selection", () => {
     const change = vi.fn();
     render(

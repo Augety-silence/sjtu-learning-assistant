@@ -84,6 +84,7 @@ beforeEach(() => {
     })),
   );
   vi.mocked(invoke).mockImplementation(async (action) => {
+    if (action === "capabilities") return new Promise<never>(() => undefined);
     if (action === "overview") return overview as never;
     if (action === "settings_status") {
       return { theme_mode: settingsTheme } as never;
@@ -133,6 +134,29 @@ afterEach(() => {
   document.documentElement.removeAttribute("data-theme-mode");
   document.documentElement.style.removeProperty("color-scheme");
   window.location.hash = "";
+});
+
+describe("课程视频首帧导航", () => {
+  it("capabilities 未返回时已经显示课程视频入口", () => {
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "课程视频" })).toBeTruthy();
+  });
+
+  it("保留恢复的 videos 导航意图并呈现稳定工作台，而非权限拒绝", () => {
+    window.location.hash = "#/videos";
+    const { container } = render(<App />);
+
+    expect(window.location.hash).toBe("#/videos");
+    expect(
+      screen.getByRole("heading", { level: 1, name: "课程视频" }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("课程视频学习工作台")).toBeTruthy();
+    expect(
+      container.querySelector('.video-workbench[data-state="loading"]'),
+    ).toBeTruthy();
+    expect(screen.queryByText("需要视频访问权限")).toBeNull();
+  });
 });
 
 describe("application theme", () => {

@@ -8024,6 +8024,32 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   max-width: 100%;
 }
 
+.video-course-placeholder {
+  width: 320px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border-component);
+  border-radius: 11px;
+  background: var(--surface-page);
+}
+
+.video-skeleton-line,
+.video-recording-skeleton span {
+  display: block;
+  border-radius: 999px;
+  background: var(--surface-control);
+  animation: video-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.video-skeleton-line {
+  width: 62%;
+  height: 12px;
+}
+
 .video-course-trigger,
 .video-course-readonly {
   width: 320px;
@@ -8243,6 +8269,10 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   font-size: 12px;
 }
 
+.video-player-loading svg {
+  animation: video-status-spin 1.2s linear infinite;
+}
+
 .video-now-playing {
   min-width: 0;
   padding: 12px 2px 2px;
@@ -8351,6 +8381,51 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   padding: 0;
   overflow-y: auto;
   list-style: none;
+}
+
+.video-list-skeleton {
+  min-height: 368px;
+  overflow: hidden;
+}
+
+.video-recording-skeleton {
+  min-height: 92px;
+  padding: 16px 14px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.video-recording-skeleton > span {
+  width: 16px;
+  height: 16px;
+}
+
+.video-recording-skeleton > div {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.video-recording-skeleton > div > span:nth-child(1) {
+  width: 72%;
+  height: 12px;
+}
+
+.video-recording-skeleton > div > span:nth-child(2) {
+  width: 48%;
+  height: 9px;
+}
+
+.video-recording-skeleton > div > span:nth-child(3) {
+  width: 35%;
+  height: 9px;
+}
+
+@keyframes video-skeleton-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
 }
 
 .video-recording-list > li {
@@ -8554,15 +8629,25 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-list-empty {
-  min-height: 160px;
+  min-height: 368px;
   padding: 20px;
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 4px;
+  gap: 8px;
   color: var(--text-secondary);
   font-size: 13px;
   text-align: center;
+}
+
+.video-list-empty strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.video-list-empty span {
+  max-width: 34ch;
+  line-height: 20px;
 }
 
 .video-jobs {
@@ -8672,6 +8757,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   }
 
   .video-course-picker,
+  .video-course-placeholder,
   .video-course-trigger,
   .video-course-readonly {
     width: 100%;
@@ -8747,6 +8833,12 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   }
 
   .video-status-processing svg {
+    animation: none;
+  }
+
+  .video-skeleton-line,
+  .video-recording-skeleton span,
+  .video-player-loading svg {
     animation: none;
   }
 }

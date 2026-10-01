@@ -23,7 +23,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { Button } from "@/components/ui/Button";
@@ -1186,23 +1185,6 @@ export function VideosView({
       setSelectedIds(new Set());
     });
 
-  if (permissionDenied)
-    return (
-      <EmptyState
-        title="需要视频访问权限"
-        description="请先完成视频平台登录，或检查当前课程的视频权限。"
-        action={
-          onRetry ? (
-            <Button variant="outline" onClick={() => void onRetry()}>
-              重新检查登录
-            </Button>
-          ) : undefined
-        }
-      />
-    );
-  if (error) return <ErrorState message={error} retry={onRetry} />;
-  if (loading) return <LoadingState label="正在汇总课程视频…" />;
-
   const renderLearningContent = (tab: LearningTab) => {
     if (tab === "notes")
       return (
@@ -1368,17 +1350,39 @@ export function VideosView({
   };
 
   return (
-    <main className="video-workbench">
+    <main
+      className="video-workbench"
+      aria-busy={loading || undefined}
+      data-state={
+        loading
+          ? "loading"
+          : permissionDenied
+            ? "permission-denied"
+            : error
+              ? "error"
+              : videos.length === 0
+                ? "empty"
+                : "ready"
+      }
+    >
       <section className="video-course-toolbar" aria-label="课程与视频来源">
         <div className="video-course-heading">
           <span>当前课程</span>
-          <CoursePicker
-            value={courseId}
-            options={courseOptions}
-            fallback={courseName}
-            onChange={onCourseChange}
-          />
-          <span className="video-course-count">{videos.length} 节录像</span>
+          {loading && !courseId ? (
+            <div className="video-course-placeholder" aria-label="正在确认课程">
+              <span className="video-skeleton-line" />
+            </div>
+          ) : (
+            <CoursePicker
+              value={courseId}
+              options={courseOptions}
+              fallback={courseName}
+              onChange={onCourseChange}
+            />
+          )}
+          <span className="video-course-count">
+            {loading ? "正在加载…" : `${videos.length} 节录像`}
+          </span>
         </div>
         <Tabs
           value={source}
@@ -1450,7 +1454,7 @@ export function VideosView({
 
       <section className="video-learning-grid" aria-label="课程视频学习工作台">
         <div className="video-player-column">
-          <div className="video-player-shell">
+          <div className="video-player-shell" data-testid="video-player-shell">
             {playbackUrl ? (
               <video
                 key={playbackUrl}
@@ -1474,6 +1478,27 @@ export function VideosView({
                   />
                 )}
               </video>
+            ) : loading ? (
+              <div
+                className="video-player-empty video-player-loading"
+                role="status"
+              >
+                <LoaderCircle aria-hidden="true" />
+                <strong>正在准备视频工作台</strong>
+                <span>课程与录像会在这里原位载入</span>
+              </div>
+            ) : permissionDenied ? (
+              <div className="video-player-empty" role="status">
+                <CircleAlert aria-hidden="true" />
+                <strong>需要视频访问权限</strong>
+                <span>完成视频平台登录或联系课程教师开通权限</span>
+              </div>
+            ) : error ? (
+              <div className="video-player-empty" role="status">
+                <CircleAlert aria-hidden="true" />
+                <strong>课程视频暂时无法载入</strong>
+                <span>{error}</span>
+              </div>
             ) : selected ? (
               <div className="video-player-empty" role="status">
                 <Play aria-hidden="true" />
@@ -1686,8 +1711,61 @@ export function VideosView({
               </label>
             )}
           </div>
-          {videos.length === 0 ? (
-            <div className="video-list-empty">暂无课程视频</div>
+          {loading ? (
+            <div className="video-list-skeleton" aria-label="正在加载录像列表">
+              {[0, 1, 2, 3].map((item) => (
+                <div className="video-recording-skeleton" key={item}>
+                  <span />
+                  <div>
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : permissionDenied ? (
+            <div className="video-list-empty">
+              <strong>当前账号无权查看课程录像</strong>
+              <span>请检查视频平台登录状态或课程成员身份。</span>
+              {onRetry && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onRetry()}
+                >
+                  重新检查登录
+                </Button>
+              )}
+            </div>
+          ) : error ? (
+            <div className="video-list-empty">
+              <strong>录像列表加载失败</strong>
+              <span>{error}</span>
+              {onRetry && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onRetry()}
+                >
+                  重新加载
+                </Button>
+              )}
+            </div>
+          ) : videos.length === 0 ? (
+            <div className="video-list-empty">
+              <strong>这门课程还没有录像</strong>
+              <span>同步课程后可再次检查，或向教师确认录制状态。</span>
+              {onRetry && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onRetry()}
+                >
+                  重新加载
+                </Button>
+              )}
+            </div>
           ) : filtered.length === 0 ? (
             <div className="video-list-empty">
               <span>当前来源没有视频</span>

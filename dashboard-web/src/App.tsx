@@ -93,6 +93,7 @@ const baseViews: ViewName[] = [
   "messages",
   "assignments",
   "materials",
+  "videos",
   "backup",
   "ai-chat",
   "settings",
@@ -127,9 +128,6 @@ function courseNumber(course: CourseCapabilities | undefined) {
 
 function availableViewsFor(capabilities: AppCapabilities | null): ViewName[] {
   const courses = courseCapabilities(capabilities);
-  const learnerCourses = courses.filter((course) =>
-    course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
-  );
   const staffCourses = courses.filter(
     (course) =>
       course.roles.some((role) => role === "teacher" || role === "ta") &&
@@ -137,7 +135,6 @@ function availableViewsFor(capabilities: AppCapabilities | null): ViewName[] {
   );
   return [
     ...baseViews,
-    ...(learnerCourses.length ? (["videos"] as ViewName[]) : []),
     ...(staffCourses.length
       ? (["grades", "roster", "grading"] as ViewName[])
       : []),
@@ -643,11 +640,19 @@ function VideosAdapter({
   courseName,
   courseOptions,
   onCourseChange,
+  courseResolved,
+  courseResolutionFailed,
+  onResolveCourseRetry,
+  refreshVersion,
 }: {
   courseId: number | null;
   courseName: string;
   courseOptions: Array<{ id: number; name: string }>;
   onCourseChange: (courseId: number) => void;
+  courseResolved: boolean;
+  courseResolutionFailed: boolean;
+  onResolveCourseRetry: () => void;
+  refreshVersion: number;
 }) {
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
@@ -689,7 +694,7 @@ function VideosAdapter({
     } finally {
       setLoading(false);
     }
-  }, [courseId]);
+  }, [courseId, refreshVersion]);
   useEffect(() => void load(), [load]);
   useEffect(() => {
     if (!courseId) {
@@ -720,10 +725,14 @@ function VideosAdapter({
       courseOptions={courseOptions}
       onCourseChange={onCourseChange}
       transcriptJobs={transcriptJobs}
-      loading={loading}
-      error={error}
-      permissionDenied={!courseId}
-      onRetry={load}
+      loading={!courseResolved || loading}
+      error={
+        courseResolutionFailed
+          ? "暂时无法确认课程视频权限，请重新检查。"
+          : error
+      }
+      permissionDenied={courseResolved && !courseResolutionFailed && !courseId}
+      onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
       onStartTranscript={async (selectedVideos) => {
         if (!courseId) throw new Error("请先选择课程。");
         const batch = await startTranscriptBatch(
@@ -808,6 +817,8 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<AppCapabilities | null>(
     null,
   );
+  const [capabilitiesInitialized, setCapabilitiesInitialized] = useState(false);
+  const [capabilitiesFailed, setCapabilitiesFailed] = useState(false);
   const { showToast } = useToast();
   const shouldReduceMotion = useReducedMotion();
   const availableViews = useMemo(
@@ -886,12 +897,21 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    setCapabilitiesInitialized(false);
+    setCapabilitiesFailed(false);
     void invoke<AppCapabilities>("capabilities")
       .then((result) => {
-        if (active) setCapabilities(result);
+        if (active) {
+          setCapabilities(result);
+          setCapabilitiesInitialized(true);
+        }
       })
       .catch(() => {
-        if (active) setCapabilities(null);
+        if (active) {
+          setCapabilities(null);
+          setCapabilitiesFailed(true);
+          setCapabilitiesInitialized(true);
+        }
       });
     return () => {
       active = false;
@@ -1033,7 +1053,6 @@ export default function App() {
         )}
         {view === "videos" && (
           <VideosAdapter
-            key={`${dataVersion}:${learnerCourseId}`}
             courseId={learnerCourseId}
             courseName={
               learnerCourses.find(
@@ -1052,6 +1071,10 @@ export default function App() {
                 : [];
             })}
             onCourseChange={setLearnerCourseId}
+            courseResolved={capabilitiesInitialized}
+            courseResolutionFailed={capabilitiesFailed}
+            onResolveCourseRetry={() => setDataVersion((value) => value + 1)}
+            refreshVersion={dataVersion}
           />
         )}
         {view === "backup" && <BackupView />}
