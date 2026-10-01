@@ -8329,6 +8329,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-list-panel {
   max-height: min(620px, calc(100vh - 200px));
+  scroll-margin-top: 80px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

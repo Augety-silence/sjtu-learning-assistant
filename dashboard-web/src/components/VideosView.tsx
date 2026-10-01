@@ -1315,6 +1315,12 @@ export function VideosView({
     }
     playRequest.current += 1;
     autoPlaySourceId.current = null;
+    const invalidatedBusy =
+      busy === `play:${selected.id}` || busy === `subtitle:${selected.id}`;
+    if (invalidatedBusy) {
+      busyRef.current = false;
+      setBusy(null);
+    }
     revokeSubtitleBlob();
     setSelected(null);
     setPlaybackUrl(null);
@@ -1370,13 +1376,15 @@ export function VideosView({
     setSubtitleMessage(result.subtitleMessage ?? null);
   };
 
-  const loadSubtitles = (video: CourseVideoItem) =>
-    run(`subtitle:${video.id}`, "字幕状态已更新。", async () => {
+  const loadSubtitles = (video: CourseVideoItem) => {
+    const request = playRequest.current;
+    return run(`subtitle:${video.id}`, "字幕状态已更新。", async () => {
       setSelected(video);
       setLearningTab("transcript");
       const result = await onLoadSubtitles?.(video);
-      if (result) useSubtitleResult(result);
+      if (result && playRequest.current === request) useSubtitleResult(result);
     });
+  };
 
   const play = async (video: CourseVideoItem, shouldAutoPlay = true) => {
     if (video.playable === false || busy) return;
@@ -1866,6 +1874,17 @@ export function VideosView({
                 controls
                 preload="metadata"
                 aria-label={selected ? `播放 ${selected.title}` : "课程视频"}
+                onPlay={() =>
+                  setPreservedAcrossSource(
+                    Boolean(
+                      selected &&
+                        source !== "all" &&
+                        selected.source !== source,
+                    ),
+                  )
+                }
+                onPause={() => setPreservedAcrossSource(false)}
+                onEnded={() => setPreservedAcrossSource(false)}
                 onLoadedMetadata={(event) => {
                   playerLoadedRef.current = true;
                   event.currentTarget.playbackRate = playbackRateRef.current;
@@ -1955,12 +1974,18 @@ export function VideosView({
             variant="outline"
             size="sm"
             className="video-list-jump"
-            onClick={() =>
-              listPanelRef.current?.scrollIntoView({
-                behavior: "smooth",
+            onClick={() => {
+              const list = listPanelRef.current;
+              if (!list) return;
+              const reduceMotion =
+                window.matchMedia?.("(prefers-reduced-motion: reduce)")
+                  .matches ?? false;
+              list.scrollIntoView({
+                behavior: reduceMotion ? "auto" : "smooth",
                 block: "start",
-              })
-            }
+              });
+              list.focus({ preventScroll: true });
+            }}
           >
             查看录像列表
           </Button>
@@ -2118,6 +2143,7 @@ export function VideosView({
           ref={listPanelRef}
           className="video-list-panel"
           aria-label="课程录像"
+          tabIndex={-1}
         >
           <div className="video-list-header">
             <div>

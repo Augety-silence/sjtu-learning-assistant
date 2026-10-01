@@ -439,7 +439,7 @@ export function TranscriptDetailDrawer({
 
         {isTranscriptQualityRisk(phase1List?.quality ?? job.quality) && (
           <details className="transcript-quality-diagnostics">
-            <summary>质量诊断</summary>
+            <summary>质量诊断：AI 校对未通过</summary>
             <TranscriptQualityWarning
               quality={phase1List?.quality ?? job.quality}
             />

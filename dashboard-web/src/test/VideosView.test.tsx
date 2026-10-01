@@ -293,6 +293,61 @@ describe("VideosView", () => {
     expect(screen.getByText("尚未选择播放内容")).toBeTruthy();
   });
 
+  it("来源切换会清除失效播放地址请求的 busy 状态", async () => {
+    let resolvePlayback: ((value: { url: string }) => void) | undefined;
+    const onPlay = vi.fn(
+      () =>
+        new Promise<{ url: string }>((resolve) => {
+          resolvePlayback = resolve;
+        }),
+    );
+    render(<VideosView videos={videos} onPlay={onPlay} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const remainingPlay = screen.getByRole("button", { name: "播放" });
+    expect((remainingPlay as HTMLButtonElement).disabled).toBe(false);
+    await act(async () =>
+      resolvePlayback?.({ url: "https://example.test/stale.mp4" }),
+    );
+    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+  });
+
+  it("来源切换会清除失效字幕请求的 busy 状态并忽略迟到结果", async () => {
+    let resolveSubtitle: ((value: { subtitleUrl: string }) => void) | undefined;
+    const onLoadSubtitles = vi.fn(
+      () =>
+        new Promise<{ subtitleUrl: string }>((resolve) => {
+          resolveSubtitle = resolve;
+        }),
+    );
+    render(
+      <VideosView
+        videos={videos}
+        onPlay={async () => ({ url: "https://example.test/third.mp4" })}
+        onLoadSubtitles={onLoadSubtitles}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[2]);
+    await waitFor(() => expect(onLoadSubtitles).toHaveBeenCalledOnce());
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const remainingPlay = screen.getByRole("button", { name: "播放" });
+    expect((remainingPlay as HTMLButtonElement).disabled).toBe(false);
+    await act(async () =>
+      resolveSubtitle?.({ subtitleUrl: "https://example.test/stale.vtt" }),
+    );
+    expect(document.querySelector("video track")).toBeNull();
+  });
+
   it("跨来源切换时保留正在播放的视频并显示原来源", async () => {
     render(
       <VideosView
@@ -317,25 +372,43 @@ describe("VideosView", () => {
     expect(screen.getByLabelText("播放 第一讲")).toBe(media);
     expect(screen.getByText(/正在播放 · Canvas/)).toBeTruthy();
     expect(screen.getByText("第三讲")).toBeTruthy();
+
+    fireEvent.pause(media);
+    expect(screen.queryByText(/正在播放 · Canvas/)).toBeNull();
+    fireEvent.play(media);
+    expect(screen.getByText(/正在播放 · Canvas/)).toBeTruthy();
+    fireEvent.ended(media);
+    expect(screen.queryByText(/正在播放 · Canvas/)).toBeNull();
   });
 
-  it("窄窗录像列表入口可聚焦并滚动到列表", () => {
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-    render(<VideosView videos={videos} />);
+  it.each([
+    { reduceMotion: false, behavior: "smooth" },
+    { reduceMotion: true, behavior: "auto" },
+  ] as const)(
+    "窄窗录像列表入口转移焦点并在 reduced-motion=$reduceMotion 时使用 $behavior 滚动",
+    ({ reduceMotion, behavior }) => {
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: scrollIntoView,
+      });
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({ matches: reduceMotion })),
+      );
+      render(<VideosView videos={videos} />);
 
-    const jump = screen.getByRole("button", { name: "查看录像列表" });
-    jump.focus();
-    expect(document.activeElement).toBe(jump);
-    fireEvent.click(jump);
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      behavior: "smooth",
-      block: "start",
-    });
-  });
+      const jump = screen.getByRole("button", { name: "查看录像列表" });
+      fireEvent.click(jump);
+      const list = screen.getByLabelText("课程录像");
+      expect(document.activeElement).toBe(list);
+      expect(list.getAttribute("tabindex")).toBe("-1");
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior,
+        block: "start",
+      });
+    },
+  );
 
   it("一键整理仅提交未完成且非处理中录像，并防止重复点击", async () => {
     let finish: (() => void) | undefined;

@@ -444,7 +444,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     });
     const { container } = renderDrawer();
 
-    const summary = await screen.findByText("质量诊断");
+    const summary = await screen.findByText("质量诊断：AI 校对未通过");
     const details = summary.closest("details");
     expect(details?.hasAttribute("open")).toBe(false);
     expect(details?.querySelector(".transcript-quality-warning")).toBeTruthy();
