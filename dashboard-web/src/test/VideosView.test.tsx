@@ -458,6 +458,9 @@ describe("VideosView", () => {
     expect(css).toMatch(/\.video-more-menu \{\s*position: fixed;/);
     expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
 
+    fireEvent.scroll(menu);
+    expect(screen.getByRole("menu")).toBe(menu);
+
     fireEvent.resize(window);
     expect(screen.queryByRole("menu")).toBeNull();
 

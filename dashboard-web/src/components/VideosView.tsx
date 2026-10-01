@@ -1036,7 +1036,15 @@ export function VideosView({
     if (!openMenuId) return;
     const trigger = menuTriggerRefs.current.get(openMenuId);
     const closeFromOutside = () => closeVideoMenu();
-    const closeFromViewportChange = () => closeVideoMenu();
+    const closeFromViewportChange = (event: Event) => {
+      if (
+        event.type === "scroll" &&
+        event.target instanceof Node &&
+        menuRef.current?.contains(event.target)
+      )
+        return;
+      closeVideoMenu();
+    };
     const closeFromKeyboard = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
