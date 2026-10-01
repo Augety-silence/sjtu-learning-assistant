@@ -5,9 +5,11 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
-import userAvatar from "@/assets/user-avatar.webp";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { AIChatMessage } from "@/lib/types";
+
+const genericUserAvatar =
+  "data:image/svg+xml;name=user-avatar,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23eef2ff'/%3E%3Ccircle cx='16' cy='12' r='5' fill='%236366f1'/%3E%3Cpath d='M7 28c.8-6 4-9 9-9s8.2 3 9 9' fill='%236366f1'/%3E%3C/svg%3E";
 
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
@@ -77,7 +79,7 @@ export function AIChatMessageBubble({
     >
       <span className="ai-message-avatar">
         <img
-          src={message.role === "user" ? userAvatar : aiAgentLogo}
+          src={message.role === "user" ? genericUserAvatar : aiAgentLogo}
           alt=""
           aria-hidden="true"
         />
