@@ -15,7 +15,7 @@ from sjtu_learning_assistant.video_service import (
 )
 
 
-TOKEN = "header.payload.signature"
+FAKE_JWT = "header.payload.signature"
 
 
 class CanvasLaunchClient:
@@ -73,13 +73,13 @@ class VideoServiceTests(unittest.TestCase):
                     headers={
                         "location": (
                             "https://v.sjtu.edu.cn/app/#/course?"
-                            f"jwt_token={TOKEN}"
+                            f"jwt_token={FAKE_JWT}"
                         )
                     },
                     request=request,
                 )
             if request.url.path.endswith("/lms/launch-context"):
-                self.assertEqual(TOKEN, request.headers["jwt-token"])
+                self.assertEqual(FAKE_JWT, request.headers["jwt-token"])
                 return httpx.Response(
                     200,
                     json={"data": {"canvasRecord": {"teachingClassId": "456"}}},
@@ -146,7 +146,7 @@ class VideoServiceTests(unittest.TestCase):
 
     def token_service(self, handler, **options) -> SJTUVideoService:
         canvas = CanvasLaunchClient(
-            f"https://v.sjtu.edu.cn/app?jwt_token={TOKEN}"
+            f"https://v.sjtu.edu.cn/app?jwt_token={FAKE_JWT}"
         )
         return SJTUVideoService(
             lambda: canvas,
@@ -172,7 +172,7 @@ class VideoServiceTests(unittest.TestCase):
                 request.url.path,
             )
             self.assertEqual("true", request.url.params["useOriginal"])
-            self.assertEqual(TOKEN, request.headers["jwt-token"])
+            self.assertEqual(FAKE_JWT, request.headers["jwt-token"])
             return httpx.Response(
                 200,
                 json={
@@ -329,7 +329,7 @@ class VideoServiceTests(unittest.TestCase):
 
     def test_playback_accepts_only_approved_https_hosts(self) -> None:
         canvas = CanvasLaunchClient(
-            f"https://v.sjtu.edu.cn/app?jwt_token={TOKEN}"
+            f"https://v.sjtu.edu.cn/app?jwt_token={FAKE_JWT}"
         )
 
         def client_for(url: str) -> httpx.Client:
