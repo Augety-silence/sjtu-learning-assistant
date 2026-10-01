@@ -19,6 +19,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const queryPlayer = (title: string) =>
+  document.querySelector<HTMLVideoElement>(`video[aria-label="播放 ${title}"]`);
+
+const getPlayer = (title: string) => {
+  const player = queryPlayer(title);
+  if (!player) throw new Error(`未找到 ${title} 播放器`);
+  return player;
+};
+
+const findPlayer = (title: string) => waitFor(() => getPlayer(title));
+
 const videos: CourseVideoItem[] = [
   {
     id: "v1",
@@ -220,6 +231,49 @@ describe("VideosView", () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
+  it("整行入口支持鼠标与键盘播放且使用准确名称", async () => {
+    const play = vi.fn();
+    render(<VideosView videos={[videos[0]]} onPlay={play} />);
+
+    const rowPlay = screen.getByRole("button", { name: "播放 第一讲" });
+    expect(rowPlay.classList.contains("video-recording-play-target")).toBe(
+      true,
+    );
+
+    fireEvent.click(rowPlay);
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+
+    rowPlay.focus();
+    fireEvent.keyDown(rowPlay, { key: "Enter" });
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+
+    fireEvent.keyDown(rowPlay, { key: " " });
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(3));
+  });
+
+  it("更多菜单与批量选择不会触发播放，且没有嵌套按钮", async () => {
+    const play = vi.fn();
+    const startTranscript = vi.fn();
+    const { container } = render(
+      <VideosView
+        videos={[videos[0]]}
+        onPlay={play}
+        onStartTranscript={startTranscript}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "第一讲 更多操作" }));
+    expect(play).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "整理学习材料" }));
+    expect(play).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
+    expect(screen.queryByRole("button", { name: "播放 第一讲" })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 第一讲" }));
+    expect(play).not.toHaveBeenCalled();
+    expect(container.querySelector("button button")).toBeNull();
+  });
+
   it("filters sources and marks the playing row as selected", async () => {
     const play = vi.fn(async () => ({ url: "https://example.test/play.mp4" }));
     render(<VideosView videos={videos} onPlay={play} />);
@@ -229,7 +283,7 @@ describe("VideosView", () => {
     });
     expect(screen.getByText("第一讲")).toBeTruthy();
     expect(screen.queryByText("旧版录像")).toBeNull();
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();
     expect(
       screen
@@ -252,9 +306,12 @@ describe("VideosView", () => {
     expect(
       screen.queryByRole("button", { name: "整理本节学习材料" }),
     ).toBeNull();
-    const play = screen.getAllByRole("button", { name: "播放" })[0];
-    expect(play.classList.contains("video-play-action")).toBe(true);
-    expect(play.className).toContain("text-primary");
+    const play = screen.getByRole("button", { name: "播放 第一讲" });
+    expect(play.classList.contains("video-recording-play-target")).toBe(true);
+    expect(container.querySelector(".video-play-action")).toBeNull();
+    expect(container.querySelector(".video-play-state")?.textContent).toBe(
+      "点击行播放",
+    );
     expect(
       container.querySelector(".video-recording-title-row .video-more"),
     ).toBeTruthy();
@@ -530,10 +587,8 @@ describe("VideosView", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperty(media, "paused", { configurable: true, value: true });
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
@@ -541,7 +596,7 @@ describe("VideosView", () => {
       ctrlKey: false,
     });
 
-    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(queryPlayer("第一讲")).toBeNull();
     expect(document.querySelector("video track")).toBeNull();
     expect(screen.getByText("尚未选择播放内容")).toBeTruthy();
   });
@@ -556,18 +611,18 @@ describe("VideosView", () => {
     );
     render(<VideosView videos={videos} onPlay={onPlay} />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
       button: 0,
       ctrlKey: false,
     });
 
-    const remainingPlay = screen.getByRole("button", { name: "播放" });
+    const remainingPlay = screen.getByRole("button", { name: "播放 第三讲" });
     expect((remainingPlay as HTMLButtonElement).disabled).toBe(false);
     await act(async () =>
       resolvePlayback?.({ url: "https://example.test/stale.mp4" }),
     );
-    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(queryPlayer("第一讲")).toBeNull();
   });
 
   it("来源切换会清除失效字幕请求的 busy 状态并忽略迟到结果", async () => {
@@ -586,14 +641,14 @@ describe("VideosView", () => {
       />,
     );
 
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[2]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第三讲" }));
     await waitFor(() => expect(onLoadSubtitles).toHaveBeenCalledOnce());
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
       button: 0,
       ctrlKey: false,
     });
 
-    const remainingPlay = screen.getByRole("button", { name: "播放" });
+    const remainingPlay = screen.getByRole("button", { name: "播放 第一讲" });
     expect((remainingPlay as HTMLButtonElement).disabled).toBe(false);
     await act(async () =>
       resolveSubtitle?.({ subtitleUrl: "https://example.test/stale.vtt" }),
@@ -658,10 +713,8 @@ describe("VideosView", () => {
         onPlay={async () => ({ url: "https://example.test/canvas.mp4" })}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperty(media, "paused", {
       configurable: true,
       value: false,
@@ -672,7 +725,7 @@ describe("VideosView", () => {
       ctrlKey: false,
     });
 
-    expect(screen.getByLabelText("播放 第一讲")).toBe(media);
+    expect(getPlayer("第一讲")).toBe(media);
     expect(screen.getByText(/正在播放 · Canvas/)).toBeTruthy();
     expect(screen.getByText("第三讲")).toBeTruthy();
 
@@ -1095,9 +1148,9 @@ describe("VideosView", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第三讲" }));
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:subtitle-1");
     view.unmount();
@@ -1135,10 +1188,8 @@ describe("VideosView", () => {
 
   it("supports every learning shortcut, case-insensitive keys, clamp and transient feedback", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     let paused = true;
     Object.defineProperties(media, {
       paused: { configurable: true, get: () => paused },
@@ -1202,10 +1253,8 @@ describe("VideosView", () => {
 
   it("treats 349ms as one short seek and ignores key repeat", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperty(media, "duration", {
       configurable: true,
       value: 100,
@@ -1226,10 +1275,8 @@ describe("VideosView", () => {
 
   it("temporarily fast-forwards, adjusts speed and restores the base paused state", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     let paused = true;
     const play = vi.fn(async () => {
       paused = false;
@@ -1270,10 +1317,8 @@ describe("VideosView", () => {
 
   it("continuously rewinds to zero and restores the playing state", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     let paused = false;
     const play = vi.fn(async () => {
       paused = false;
@@ -1316,10 +1361,8 @@ describe("VideosView", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    let media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    let media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperties(media, {
       paused: { configurable: true, value: false },
       duration: { configurable: true, value: 100 },
@@ -1343,9 +1386,9 @@ describe("VideosView", () => {
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     await act(async () => vi.advanceTimersByTimeAsync(350));
     vi.useRealTimers();
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[2]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第三讲" }));
     expect(media.playbackRate).toBe(1);
-    media = (await screen.findByLabelText("播放 第三讲")) as HTMLVideoElement;
+    media = (await findPlayer("第三讲")) as HTMLVideoElement;
     Object.defineProperties(media, {
       paused: { configurable: true, value: false },
       play: { configurable: true, value: vi.fn(async () => undefined) },
@@ -1398,10 +1441,8 @@ describe("VideosView", () => {
 
   it("does not capture shortcuts from controls, editable content or modified keys", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperties(media, {
       duration: { configurable: true, value: 100 },
       play: { configurable: true, value: vi.fn(async () => undefined) },
@@ -1443,10 +1484,8 @@ describe("VideosView", () => {
         })}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    let media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    let media = (await findPlayer("第一讲")) as HTMLVideoElement;
     fireEvent.loadedMetadata(media);
     fireEvent.click(screen.getByRole("button", { name: "播放速度 1×" }));
     const options = screen.getAllByRole("menuitemradio");
@@ -1465,12 +1504,12 @@ describe("VideosView", () => {
       screen.getByText("1.25×", { selector: ".video-player-feedback" }),
     ).toBeTruthy();
 
-    const thirdPlay = screen.getAllByRole("button", {
-      name: "播放",
-    })[2] as HTMLButtonElement;
+    const thirdPlay = screen.getByRole("button", {
+      name: "播放 第三讲",
+    }) as HTMLButtonElement;
     await waitFor(() => expect(thirdPlay.disabled).toBe(false));
     fireEvent.click(thirdPlay);
-    media = (await screen.findByLabelText("播放 第三讲")) as HTMLVideoElement;
+    media = (await findPlayer("第三讲")) as HTMLVideoElement;
     fireEvent.loadedMetadata(media);
     expect(media.playbackRate).toBe(1.25);
     expect(screen.getByRole("button", { name: "播放速度 1.25×" })).toBeTruthy();
@@ -1487,10 +1526,8 @@ describe("VideosView", () => {
 
   it("turns rejected play promises into understandable in-player feedback", async () => {
     render(<VideosView videos={videos} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const media = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const media = (await findPlayer("第一讲")) as HTMLVideoElement;
     Object.defineProperties(media, {
       paused: { configurable: true, value: true },
       play: {
@@ -1803,10 +1840,8 @@ describe("VideosView", () => {
       />,
     );
 
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    const firstMedia = (await screen.findByLabelText(
-      "播放 第一讲",
-    )) as HTMLVideoElement;
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const firstMedia = (await findPlayer("第一讲")) as HTMLVideoElement;
     fireEvent.loadedMetadata(firstMedia);
     await waitFor(() => expect(playMedia).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
@@ -1837,7 +1872,7 @@ describe("VideosView", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     await screen.findByLabelText("播放 第一讲");
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "查看学习材料" }));
@@ -1847,7 +1882,7 @@ describe("VideosView", () => {
       screen.getByText("第三讲 无法载入").closest('[role="alert"]')
         ?.textContent,
     ).toContain("地址已失效");
-    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(queryPlayer("第一讲")).toBeNull();
   });
 
   it("PDF 成功后显示临时文件状态、打开与重新生成", async () => {
@@ -1863,7 +1898,7 @@ describe("VideosView", () => {
         onPlay={async (video) => ({ url: video.playbackUrl })}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     await screen.findByLabelText("播放 第一讲");
     fireEvent.mouseDown(screen.getByRole("tab", { name: "课件" }), {
       button: 0,
@@ -1911,7 +1946,7 @@ describe("VideosView", () => {
     expect(document.querySelector(".video-course-count")?.textContent).toBe(
       "共 1 节，已整理 0 节",
     );
-    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     await screen.findByLabelText("播放 第一讲");
     expect(
       screen.getByText("AI 校对未通过，关键术语、数字和公式请对照视频核实"),
@@ -1935,8 +1970,10 @@ describe("VideosView 课程隔离", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 第一讲" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "退出选择" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    expect(await findPlayer("第一讲")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     expect(document.querySelector("video track")?.getAttribute("src")).toBe(
       "https://example.test/a.vtt",
     );
@@ -1944,7 +1981,7 @@ describe("VideosView 课程隔离", () => {
 
     view.rerender(<VideosView videos={[]} courseId={13} loading />);
 
-    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(queryPlayer("第一讲")).toBeNull();
     expect(screen.queryByLabelText("批量操作")).toBeNull();
     expect(screen.queryByText("第一讲")).toBeNull();
     expect(document.querySelector("video track")).toBeNull();

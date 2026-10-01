@@ -2489,6 +2489,24 @@ export function VideosView({
                     className={isCurrent ? "is-current" : ""}
                     aria-current={isCurrent ? "true" : undefined}
                   >
+                    {!selectionMode && (
+                      <button
+                        type="button"
+                        className="video-recording-play-target"
+                        aria-label={`播放 ${video.title}`}
+                        disabled={
+                          video.playable === false ||
+                          Boolean(busy && busy !== `play:${video.id}`)
+                        }
+                        onClick={() => void play(video)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ")
+                            return;
+                          event.preventDefault();
+                          void play(video);
+                        }}
+                      />
+                    )}
                     {selectionMode && (
                       <input
                         type="checkbox"
@@ -2773,20 +2791,18 @@ export function VideosView({
                             <StatusBadge status={learningState.status} />
                           )}
                         </div>
-                        <Button
-                          className="video-play-action"
-                          variant="link"
-                          size="sm"
-                          loading={busy === `play:${video.id}`}
-                          disabled={
-                            video.playable === false ||
-                            Boolean(busy && busy !== `play:${video.id}`)
-                          }
-                          onClick={() => void play(video)}
-                        >
-                          <Play aria-hidden="true" />
-                          播放
-                        </Button>
+                        <span className="video-play-state" aria-hidden="true">
+                          {busy === `play:${video.id}` ? (
+                            <LoaderCircle className="is-loading" />
+                          ) : (
+                            <Play />
+                          )}
+                          {busy === `play:${video.id}`
+                            ? "正在加载"
+                            : video.playable === false
+                              ? "不可播放"
+                              : "点击行播放"}
+                        </span>
                       </div>
                     </div>
                   </li>

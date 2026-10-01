@@ -8447,6 +8447,35 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   border-bottom: 0;
 }
 
+.video-recording-play-target {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.video-recording-play-target:disabled {
+  cursor: not-allowed;
+}
+
+.video-recording-list > li > input,
+.video-recording-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.video-recording-list > li > input,
+.video-recording-title-row .video-more {
+  pointer-events: auto;
+}
+
+.video-recording-copy {
+  pointer-events: none;
+}
+
 .video-recording-list > li:hover,
 .video-recording-list > li:focus-within {
   background: var(--surface-hover);
@@ -9341,28 +9370,27 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   flex: 0 0 auto;
 }
 
-.video-play-action.inline-flex {
+.video-play-state {
   min-height: 28px;
   padding: 2px 4px;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
-  color: var(--action-primary);
-  font-size: 12px;
-  text-decoration: none;
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
-.video-play-action.inline-flex:hover {
-  background: transparent;
-  color: var(--action-hover);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.video-play-action.inline-flex svg {
-  width: 14px;
-  height: 14px;
+.video-play-state svg {
+  width: 13px;
+  height: 13px;
   fill: currentColor;
   stroke-width: 1.5;
+}
+
+.video-play-state svg.is-loading {
+  fill: none;
+  animation: video-status-spin 1.2s linear infinite;
 }
 
 .video-more {

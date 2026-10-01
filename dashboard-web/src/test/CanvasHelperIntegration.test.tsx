@@ -220,7 +220,7 @@ describe("Canvas Helper 页面集成", () => {
     expect(screen.getByRole("option", { name: "文本分析" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "大模型导论" })).toBeTruthy();
     fireEvent.click(screen.getByRole("option", { name: "文本分析" }));
-    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    fireEvent.click(screen.getByRole("button", { name: /^播放 / }));
 
     await waitFor(() =>
       expect(getVideoPlayback).toHaveBeenCalledWith("sjtu-video:12:99"),
