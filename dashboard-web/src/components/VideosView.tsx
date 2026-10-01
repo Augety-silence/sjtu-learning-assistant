@@ -735,6 +735,7 @@ export function VideosView({
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [preservedAcrossSource, setPreservedAcrossSource] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [playerFeedback, setPlayerFeedback] = useState<{
     id: number;
@@ -744,6 +745,7 @@ export function VideosView({
   const playRequest = useRef(0);
   const autoPlaySourceId = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const listPanelRef = useRef<HTMLElement>(null);
   const playerToolsRef = useRef<HTMLDivElement>(null);
   const speedTriggerRef = useRef<HTMLButtonElement>(null);
   const speedOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -942,6 +944,7 @@ export function VideosView({
     setPlaybackError(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
+    setPreservedAcrossSource(false);
     setBusy(null);
     busyRef.current = false;
     setLearningTab("summary");
@@ -1297,6 +1300,30 @@ export function VideosView({
       subtitleBlobUrl.current = null;
     }
   };
+  const changeSource = (nextSource: "all" | VideoSource) => {
+    setSource(nextSource);
+    if (!selected || nextSource === "all" || selected.source === nextSource) {
+      setPreservedAcrossSource(false);
+      return;
+    }
+    const isPlaying = Boolean(
+      playbackUrl && videoRef.current && !videoRef.current.paused,
+    );
+    if (isPlaying) {
+      setPreservedAcrossSource(true);
+      return;
+    }
+    playRequest.current += 1;
+    autoPlaySourceId.current = null;
+    revokeSubtitleBlob();
+    setSelected(null);
+    setPlaybackUrl(null);
+    setPlaybackError(null);
+    setSubtitleUrl(null);
+    setSubtitleMessage(null);
+    setPreservedAcrossSource(false);
+    setLearningTab("summary");
+  };
   useEffect(
     () => () => {
       playRequest.current += 1;
@@ -1359,6 +1386,7 @@ export function VideosView({
     const request = ++playRequest.current;
     revokeSubtitleBlob();
     setSelected(video);
+    setPreservedAcrossSource(false);
     autoPlaySourceId.current = shouldAutoPlay ? video.id : null;
     setPlaybackUrl(null);
     setPlaybackError(null);
@@ -1817,7 +1845,7 @@ export function VideosView({
         </div>
         <Tabs
           value={source}
-          onValueChange={(value) => setSource(value as "all" | VideoSource)}
+          onValueChange={(value) => changeSource(value as "all" | VideoSource)}
         >
           <TabsList aria-label="视频来源">
             <TabsTrigger value="all">全部</TabsTrigger>
@@ -1827,57 +1855,6 @@ export function VideosView({
           </TabsList>
         </Tabs>
       </section>
-
-      {selectionMode && (
-        <section className="video-batch-bar" aria-label="批量操作">
-          <strong>已选择 {selectedIds.size} 项</strong>
-          <div>
-            <Button
-              size="sm"
-              loading={busy === "transcript:batch"}
-              disabled={
-                !onStartTranscript ||
-                transcriptEligible.length === 0 ||
-                Boolean(busy)
-              }
-              onClick={() =>
-                void startTranscript(
-                  transcriptEligible,
-                  "transcript:batch",
-                  `开始整理 ${transcriptEligible.length} 节，跳过 ${selectedVideos.length - transcriptEligible.length} 节已完成/处理中。`,
-                )
-              }
-            >
-              <NotebookPen aria-hidden="true" />
-              整理所选学习材料
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              loading={busy === "pdf:batch"}
-              disabled={
-                !onCreateSlidesPdf || pdfEligible.length === 0 || Boolean(busy)
-              }
-              onClick={() => void createPdfs()}
-            >
-              <FileText aria-hidden="true" />
-              导出所选课件 PDF
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSelectionMode(false);
-                setSelectedIds(new Set());
-              }}
-            >
-              <X aria-hidden="true" />
-              退出选择
-            </Button>
-          </div>
-          <p>已整理和处理中的录像会自动跳过，避免重复创建任务。</p>
-        </section>
-      )}
 
       <section className="video-learning-grid" aria-label="课程视频学习工作台">
         <div className="video-player-column">
@@ -1974,12 +1951,28 @@ export function VideosView({
               </div>
             )}
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="video-list-jump"
+            onClick={() =>
+              listPanelRef.current?.scrollIntoView({
+                behavior: "smooth",
+                block: "start",
+              })
+            }
+          >
+            查看录像列表
+          </Button>
           {selected && (
             <div className="video-player-meta-row">
               <div className="video-now-playing">
                 <strong>{selected.title}</strong>
                 <span>
                   {[
+                    preservedAcrossSource
+                      ? `正在播放 · ${sourceLabels[selected.source]}`
+                      : null,
                     selected.classroom,
                     formatRecordedAt(selected.recordedAt),
                     formatDuration(selected.duration),
@@ -2121,7 +2114,11 @@ export function VideosView({
           </Tabs>
         </div>
 
-        <aside className="video-list-panel" aria-label="课程录像">
+        <aside
+          ref={listPanelRef}
+          className="video-list-panel"
+          aria-label="课程录像"
+        >
           <div className="video-list-header">
             <div>
               <strong>课程录像</strong>
@@ -2138,6 +2135,58 @@ export function VideosView({
               {selectionMode ? "退出选择" : "批量选择"}
             </Button>
           </div>
+          {selectionMode && (
+            <section className="video-batch-bar" aria-label="批量操作">
+              <strong>已选择 {selectedIds.size} 项</strong>
+              <div>
+                <Button
+                  size="sm"
+                  loading={busy === "transcript:batch"}
+                  disabled={
+                    !onStartTranscript ||
+                    transcriptEligible.length === 0 ||
+                    Boolean(busy)
+                  }
+                  onClick={() =>
+                    void startTranscript(
+                      transcriptEligible,
+                      "transcript:batch",
+                      `开始整理 ${transcriptEligible.length} 节，跳过 ${selectedVideos.length - transcriptEligible.length} 节已完成/处理中。`,
+                    )
+                  }
+                >
+                  <NotebookPen aria-hidden="true" />
+                  整理所选学习材料
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={busy === "pdf:batch"}
+                  disabled={
+                    !onCreateSlidesPdf ||
+                    pdfEligible.length === 0 ||
+                    Boolean(busy)
+                  }
+                  onClick={() => void createPdfs()}
+                >
+                  <FileText aria-hidden="true" />
+                  导出所选课件 PDF
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectionMode(false);
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  <X aria-hidden="true" />
+                  退出选择
+                </Button>
+              </div>
+              <p>已整理和处理中的录像会自动跳过，避免重复创建任务。</p>
+            </section>
+          )}
           <div
             className="video-status-filters"
             role="group"

@@ -7817,7 +7817,7 @@ select {
   padding: 3px 8px;
   align-items: center;
   border: 1px solid var(--border-default);
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--surface-page);
   color: var(--text-secondary);
   font-size: 12px;
@@ -7845,7 +7845,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   overflow: auto;
   border-left: 1px solid var(--border-default);
   background: var(--surface-page);
-  box-shadow: -12px 0 36px var(--shadow-ai-drawer);
 }
 .transcript-drawer-header,
 .transcript-drawer-actions,
@@ -7860,16 +7859,19 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   padding: 3px 8px;
   align-items: center;
   border: 1px solid color-mix(in srgb, var(--status-warning) 42%, transparent);
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--status-warning-bg);
   color: var(--status-warning);
   font-size: 12px;
   line-height: 16px;
 }
 .transcript-drawer-actions { margin: 12px 0 16px; color: var(--text-secondary); font-size: 12px; }
-.transcript-drawer-actions > summary { width: fit-content; cursor: pointer; }
+.transcript-drawer-actions > summary,
+.transcript-quality-diagnostics > summary { width: fit-content; cursor: pointer; }
 .transcript-drawer-actions > div { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
 .transcript-progress-block { color: var(--text-secondary); font-size: 12px; }
+.transcript-quality-diagnostics { margin: 0 0 16px; color: var(--text-secondary); font-size: 12px; }
+.transcript-quality-diagnostics .transcript-quality-warning { margin: 8px 0 0; }
 .transcript-progress-track { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: var(--surface-hover); }
 .transcript-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--action-primary); }
 .transcript-detail-drawer [role="tablist"] { max-width: 100%; overflow-x: auto; }
@@ -8184,15 +8186,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-batch-bar {
-  margin-top: -12px;
-  padding: 12px 14px;
+  padding: 10px 14px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px 18px;
-  border: 1px solid var(--border-accent-soft);
-  border-radius: 12px;
-  background: var(--surface-accent-soft);
+  gap: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-subtle);
 }
 
 .video-batch-bar > div {
@@ -8229,7 +8229,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--border-workspace-strong);
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--surface-video-player);
 }
 
@@ -8332,8 +8332,8 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border-workspace);
-  border-radius: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
   background: var(--surface-page);
 }
 
@@ -8507,23 +8507,23 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-source-badge {
   max-width: 84px;
-  padding: 1px 6px;
+  padding: 1px 2px;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--surface-control);
+  border-radius: 3px;
+  background: transparent;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .video-status {
-  min-height: 22px;
-  padding: 2px 7px;
+  min-height: 20px;
+  padding: 1px 2px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border-radius: 999px;
+  border-radius: 3px;
   color: var(--text-secondary);
-  background: var(--surface-control);
+  background: transparent;
   font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
@@ -8536,18 +8536,15 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-status-completed {
   color: var(--status-success);
-  background: var(--status-success-bg);
 }
 
 .video-status-processing,
 .video-status-partial {
   color: var(--status-warning);
-  background: var(--status-warning-bg);
 }
 
 .video-status-failed {
   color: var(--status-danger);
-  background: var(--status-danger-bg);
 }
 
 .video-status-processing svg {
@@ -8728,6 +8725,10 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   background: var(--action-primary);
 }
 
+.video-list-jump {
+  display: none;
+}
+
 @media (max-width: 1120px) {
   .video-course-toolbar {
     grid-template-columns: minmax(0, 1fr);
@@ -8739,6 +8740,12 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
   .video-list-panel {
     max-height: 460px;
+  }
+
+  .video-list-jump {
+    width: fit-content;
+    margin-top: 10px;
+    display: inline-flex;
   }
 }
 
@@ -8859,7 +8866,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   border-radius: 8px;
   color: var(--text-video-player);
   background: color-mix(in srgb, var(--surface-video-player) 82%, transparent);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--text-primary) 24%, transparent);
   font-size: 12px;
   font-weight: 600;
   text-align: center;
@@ -8943,12 +8949,12 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-speed-menu {
-  width: 120px;
+  width: 96px;
 }
 
 .video-speed-menu button {
   width: 100%;
-  min-height: 34px;
+  min-height: 29px;
   padding: 0 8px;
   display: flex;
   align-items: center;
@@ -8979,16 +8985,16 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-shortcuts-popover {
-  width: 260px;
+  width: 220px;
   display: grid;
-  gap: 3px;
+  gap: 1px;
   color: var(--text-secondary);
   font-size: 11px;
 }
 
 .video-shortcuts-popover span {
-  min-height: 28px;
-  padding: 0 6px;
+  min-height: 24px;
+  padding: 2px 5px;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -9088,7 +9094,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
   .video-shortcuts-popover {
     right: 0;
-    width: min(260px, calc(100vw - 48px));
+    width: min(220px, calc(100vw - 48px));
   }
 
   .video-jobs-summary {
@@ -9168,7 +9174,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .video-status-queued,
 .video-status-transcribing,
 .video-status-generating,
-.video-status-reviewing { color: var(--action-primary); background: var(--surface-accent-soft); }
+.video-status-reviewing { color: var(--action-primary); background: transparent; }
 .video-status-queued svg,
 .video-status-transcribing svg,
 .video-status-generating svg,
@@ -9213,5 +9219,5 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .transcript-practice details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
 .transcript-practice summary { width: max-content; color: var(--action-primary); cursor: pointer; font-weight: 600; }
 .video-pdf-state small { margin-top: 2px; display: block; color: var(--text-tertiary); }
-.video-state-label { min-height: 22px; padding: 2px 7px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 11px; line-height: 16px; white-space: nowrap; }
-.video-state-label-failed { color: var(--status-danger); background: var(--status-danger-bg); }
+.video-state-label { min-height: 20px; padding: 1px 2px; display: inline-flex; align-items: center; border-radius: 3px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.video-state-label-failed { color: var(--status-danger); background: transparent; }

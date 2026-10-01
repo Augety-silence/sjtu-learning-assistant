@@ -258,6 +258,85 @@ describe("VideosView", () => {
     expect(screen.queryByLabelText("批量操作")).toBeNull();
   });
 
+  it("批量操作栏位于录像列表内且不进入主网格前的文档流", () => {
+    const { container } = render(<VideosView videos={videos} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
+    const batch = screen.getByLabelText("批量操作");
+    expect(batch.closest(".video-list-panel")).toBeTruthy();
+    expect(container.querySelector(":scope > .video-batch-bar")).toBeNull();
+  });
+
+  it("切换来源时清理未播放的跨来源选择、地址与字幕", async () => {
+    render(
+      <VideosView
+        videos={videos}
+        onPlay={async () => ({
+          url: "https://example.test/canvas.mp4",
+          subtitleUrl: "https://example.test/canvas.vtt",
+        })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    const media = (await screen.findByLabelText(
+      "播放 第一讲",
+    )) as HTMLVideoElement;
+    Object.defineProperty(media, "paused", { configurable: true, value: true });
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(document.querySelector("video track")).toBeNull();
+    expect(screen.getByText("尚未选择播放内容")).toBeTruthy();
+  });
+
+  it("跨来源切换时保留正在播放的视频并显示原来源", async () => {
+    render(
+      <VideosView
+        videos={videos}
+        onPlay={async () => ({ url: "https://example.test/canvas.mp4" })}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    const media = (await screen.findByLabelText(
+      "播放 第一讲",
+    )) as HTMLVideoElement;
+    Object.defineProperty(media, "paused", {
+      configurable: true,
+      value: false,
+    });
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.getByLabelText("播放 第一讲")).toBe(media);
+    expect(screen.getByText(/正在播放 · Canvas/)).toBeTruthy();
+    expect(screen.getByText("第三讲")).toBeTruthy();
+  });
+
+  it("窄窗录像列表入口可聚焦并滚动到列表", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    render(<VideosView videos={videos} />);
+
+    const jump = screen.getByRole("button", { name: "查看录像列表" });
+    jump.focus();
+    expect(document.activeElement).toBe(jump);
+    fireEvent.click(jump);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+
   it("一键整理仅提交未完成且非处理中录像，并防止重复点击", async () => {
     let finish: (() => void) | undefined;
     const start = vi.fn(

@@ -426,6 +426,36 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(document.querySelector(".transcript-status-failed")).toBeNull();
   });
 
+  it("将质量警告默认折叠在进度和操作之后的质量诊断中", async () => {
+    getV2.mockResolvedValue({
+      ...v2List(),
+      quality: {
+        score: 0,
+        passed: false,
+        metrics: {},
+        warnings: [],
+        schema_pass: false,
+        critic_pass_rate: 0,
+        uncertain_rate: 0.8,
+        numeric_change_count: 1,
+        unsupported_change_count: 1,
+        status: "failed",
+      },
+    });
+    const { container } = renderDrawer();
+
+    const summary = await screen.findByText("质量诊断");
+    const details = summary.closest("details");
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(details?.querySelector(".transcript-quality-warning")).toBeTruthy();
+    const progress = container.querySelector(".transcript-progress-block");
+    expect(
+      progress &&
+        progress.compareDocumentPosition(details as Node) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("从 summary/study_guide/practice_items 读取自编练习并默认折叠答案", async () => {
     getV2.mockResolvedValue({
       available: false,

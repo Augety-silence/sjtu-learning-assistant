@@ -384,10 +384,6 @@ export function TranscriptDetailDrawer({
           </Button>
         </header>
 
-        <TranscriptQualityWarning
-          quality={phase1List?.quality ?? job.quality}
-        />
-
         <div className="transcript-progress-block" aria-live="polite">
           <div>
             <span>{job.message || "等待处理"}</span>
@@ -438,6 +434,15 @@ export function TranscriptDetailDrawer({
                 </Button>
               )}
             </div>
+          </details>
+        )}
+
+        {isTranscriptQualityRisk(phase1List?.quality ?? job.quality) && (
+          <details className="transcript-quality-diagnostics">
+            <summary>质量诊断</summary>
+            <TranscriptQualityWarning
+              quality={phase1List?.quality ?? job.quality}
+            />
           </details>
         )}
 
