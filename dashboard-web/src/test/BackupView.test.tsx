@@ -237,7 +237,8 @@ describe("BackupView", () => {
             source: "mail",
             name: "附件.zip",
             remote_path: "学习资料/邮件/附件.zip",
-            error: "读取 /Users/student/private.zip 失败 token=super-secret",
+            error:
+              "读取 /Users/student name/private notes.zip 失败 token=super-secret",
           },
         ],
       },
@@ -248,6 +249,9 @@ describe("BackupView", () => {
     expect(screen.getByText("附件.zip")).toBeTruthy();
     expect(screen.getByText("mail")).toBeTruthy();
     expect(screen.getByText("学习资料/邮件/附件.zip")).toBeTruthy();
+    expect(document.body.textContent).toContain(
+      "读取 ~/private notes.zip 失败",
+    );
     expect(document.body.textContent).not.toContain("/Users/");
     expect(document.body.textContent).not.toContain("super-secret");
     expect(document.body.textContent).not.toContain("token=");

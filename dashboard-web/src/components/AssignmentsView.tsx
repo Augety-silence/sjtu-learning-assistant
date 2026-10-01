@@ -1,6 +1,7 @@
 import { ExternalLink, Upload } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import assignmentSubmittedIllustration from "@/assets/empty-states/assignment-submitted.webp";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -111,14 +112,22 @@ function sameAssignment(left: AssignmentItem, right: AssignmentItem) {
 function VerificationDetails({ result }: { result: SubmissionResult }) {
   return (
     <div className="submission-success" role="status">
-      <strong>提交已由 Canvas 验证</strong>
-      <span>提交 ID：{result.submission_id ?? "—"}</span>
-      <span>状态：{getWorkflowMeta(result.workflow_state).label}</span>
-      <span>时间：{formatDateTime(result.submitted_at)}</span>
-      <span>尝试次数：{result.attempt ?? "—"}</span>
-      {result.attachments.map((item) => (
-        <span key={String(item.id)}>文件：{item.name || item.id}</span>
-      ))}
+      <img
+        className="submission-success-illustration"
+        src={assignmentSubmittedIllustration}
+        alt=""
+        aria-hidden="true"
+      />
+      <div className="submission-success-content">
+        <strong>提交已由 Canvas 验证</strong>
+        <span>提交 ID：{result.submission_id ?? "—"}</span>
+        <span>状态：{getWorkflowMeta(result.workflow_state).label}</span>
+        <span>时间：{formatDateTime(result.submitted_at)}</span>
+        <span>尝试次数：{result.attempt ?? "—"}</span>
+        {result.attachments.map((item) => (
+          <span key={String(item.id)}>文件：{item.name || item.id}</span>
+        ))}
+      </div>
     </div>
   );
 }

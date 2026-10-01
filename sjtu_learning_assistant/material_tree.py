@@ -28,6 +28,7 @@ IMAGE_MEDIA_TYPES = frozenset(
 TEXT_EXTENSIONS = frozenset(
     {".txt", ".md", ".markdown", ".csv", ".json", ".log", ".yaml", ".yml"}
 )
+STRUCTURED_PREVIEW_EXTENSIONS = frozenset({".docx", ".pptx", ".xlsx", ".ipynb", ".zip"})
 
 
 def material_preview_kind(filename: str, content_type: str | None = None) -> str | None:
@@ -39,6 +40,8 @@ def material_preview_kind(filename: str, content_type: str | None = None) -> str
         return "image"
     if extension in TEXT_EXTENSIONS or media_type.startswith("text/") or media_type == "application/json":
         return "text"
+    if extension in STRUCTURED_PREVIEW_EXTENSIONS:
+        return "structured"
     return None
 
 

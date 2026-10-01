@@ -35,6 +35,22 @@ describe("shared states", () => {
     expect(clear).toHaveBeenCalledOnce();
   });
 
+  it("EmptyState 可选插图不改变状态语义", () => {
+    const { container } = render(
+      <EmptyState
+        title="暂无内容"
+        description="稍后再试"
+        illustration={<img src="illustration.webp" alt="" />}
+      />,
+    );
+    expect(container.querySelector(".state-illustration img")).toBeTruthy();
+    expect(
+      container
+        .querySelector(".state-illustration")
+        ?.getAttribute("aria-hidden"),
+    ).toBe("true");
+  });
+
   it("ErrorState 在异步重试期间 busy 且防重复提交", async () => {
     let resolveRetry: (() => void) | undefined;
     const retry = vi.fn(

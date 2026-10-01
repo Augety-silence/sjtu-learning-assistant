@@ -44,7 +44,7 @@ class DashboardFileSafetyTests(unittest.TestCase):
         self.set_local_path(document)
         result = self.service.open_material("42")
         self.assertEqual("opened", result["status"])
-        self.assertEqual([["/usr/bin/open", str(document.resolve())]], self.commands)
+        self.assertEqual([["/usr/bin/open", "--", str(document.resolve())]], self.commands)
 
     def test_rejects_outside_missing_directory_and_symlink(self) -> None:
         outside = Path(self.temp.name) / "outside.pdf"
@@ -160,6 +160,33 @@ class DashboardActionTests(unittest.TestCase):
         self.assertIn("--canvas-only", launches[0][0])
         self.assertTrue(launches[0][1]["start_new_session"])
 
+
+
+class DashboardTranscriptPhase1Tests(unittest.TestCase):
+    def test_v2_read_only_facade_preserves_absent_contract(self) -> None:
+        class FakeTranscript:
+            def list_v2_artifacts(self, job_id):
+                return {"available": False, "status": None, "items": [], "job_id": job_id}
+
+            def read_artifact(self, artifact_id):
+                return {"id": artifact_id, "kind": "quality", "content": "{}", "data": {}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "archive"
+            root.mkdir()
+            service = DashboardService(
+                SimpleNamespace(),
+                archive_root=root,
+                transcript_service=FakeTranscript(),
+            )
+            job_id = "a" * 32
+            opaque_id = "b" * 32
+            absent = service.transcript_v2_artifacts(job_id)
+            self.assertFalse(absent["available"])
+            read = service.transcript_v2_artifact_read(f"{job_id}:v2:{opaque_id}")
+            self.assertEqual({}, read["data"])
+            with self.assertRaises(DashboardError):
+                service.transcript_v2_artifact_read(f"{job_id}:quality")
 
 
 if __name__ == "__main__":

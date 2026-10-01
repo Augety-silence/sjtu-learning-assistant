@@ -3,6 +3,7 @@ from pathlib import Path
 
 from PyInstaller.building.osx import BUNDLE
 from PyInstaller.utils import osx as pyinstaller_osx
+from PyInstaller.utils.hooks import collect_data_files
 
 from sjtu_learning_assistant import __version__
 
@@ -31,11 +32,13 @@ class PostSignedBundle(BUNDLE):
 
 datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
+    (str(ROOT / "resources" / "seed_glossary"), "resources/seed_glossary"),
     (str(ROOT / "LICENSE"), "licenses"),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),
     (str(ROOT / "agent_presets"), "agent_presets"),
     (str(ROOT / "migrations"), "migrations"),
+    *collect_data_files("imageio_ffmpeg"),
 ]
 
 hiddenimports = [
@@ -44,6 +47,10 @@ hiddenimports = [
     "keyring.backends.fail",
     "keyring.backends.macOS",
     "keyring.backends.macOS.api",
+    "imageio_ffmpeg",
+    "PIL",
+    "PIL.Image",
+    "pypdf",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

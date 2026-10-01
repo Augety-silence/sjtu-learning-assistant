@@ -103,7 +103,7 @@ describe("AppShell 移动导航", () => {
     expect(sidebar).toBeTruthy();
     expect(workspace).toBeTruthy();
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
-    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(7);
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(11);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
     const overviewButton = within(mainNavigation).getByRole("button", {
       name: "概览",
@@ -112,6 +112,18 @@ describe("AppShell 移动导航", () => {
     expect(overviewButton.getAttribute("title")).toBe("概览");
     expect(
       within(mainNavigation).queryByRole("button", { name: "设置" }),
+    ).toBeNull();
+    expect(
+      within(mainNavigation).getByRole("button", { name: "日程" }),
+    ).toBeTruthy();
+    expect(
+      within(mainNavigation).getByRole("button", { name: "AI 助手" }),
+    ).toBeTruthy();
+    expect(
+      within(mainNavigation).queryByRole("button", { name: "截止事项" }),
+    ).toBeNull();
+    expect(
+      within(mainNavigation).queryByRole("button", { name: "Canvas Agent" }),
     ).toBeNull();
     expect(
       within(utilityNavigation).getByRole("button", { name: "设置" }),

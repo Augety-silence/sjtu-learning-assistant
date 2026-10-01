@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import aiChatNewIllustration from "@/assets/empty-states/ai-chat-new.webp";
 import { AIChatComposer } from "@/components/AIChatComposer";
 import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
@@ -26,6 +27,7 @@ import {
   sendAiChatMessage,
   updateSettings,
 } from "@/lib/api";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAgentPreset,
   AIChatMessage,
@@ -64,6 +66,12 @@ const depths: Array<{
   { value: "deep", label: "深度", detail: "更多推理步骤" },
 ];
 
+const thinkingStages = [
+  "正在规划检索步骤",
+  "正在调用本地只读工具",
+  "正在整理检索结果",
+] as const;
+
 const defaultPreferences: AIChatPreferences = {
   ai_chat_send_shortcut: "enter",
   ai_reply_language: "auto",
@@ -71,6 +79,16 @@ const defaultPreferences: AIChatPreferences = {
   ai_auto_open_activity: true,
   ai_code_line_numbers: false,
 };
+
+interface PendingChatRequest {
+  sessionId: string;
+  text: string;
+  optimisticId: string;
+  attachments: AIManagedAttachment[];
+  model: AIModel;
+  depth: AIThinkingDepth;
+  presetId: string;
+}
 
 function chatPreferences(settings: AIChatPreferences): AIChatPreferences {
   return {
@@ -91,6 +109,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
   const [busy, setBusy] = useState(false);
+  const [busyStage, setBusyStage] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -102,12 +121,16 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
+  const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() =>
-    typeof window === "undefined" ? true : window.innerWidth > 1180,
+    typeof window === "undefined" ? true : window.innerWidth >= 1280,
   );
   const wideActivityRef = useRef(
-    typeof window === "undefined" ? true : window.innerWidth > 1180,
+    typeof window === "undefined" ? true : window.innerWidth >= 1280,
   );
+  const pendingQueueRef = useRef<PendingChatRequest[]>([]);
+  const pendingMessageCounterRef = useRef(0);
+  const restoreComposerFocusRef = useRef(false);
   const shouldReduceMotion = useReducedMotion();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -228,18 +251,29 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => {
+    if (!busy) {
+      setBusyStage(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setBusyStage((stage) => (stage + 1) % thinkingStages.length);
+    }, 1400);
+    return () => window.clearInterval(timer);
+  }, [busy]);
+
+  useEffect(() => {
     const handleWorkspaceResize = () => {
-      const isWide = window.innerWidth > 1180;
+      const isWide = window.innerWidth >= 1280;
       if (isWide !== wideActivityRef.current) {
         wideActivityRef.current = isWide;
         setActivityOpen(isWide);
       }
-      if (window.innerWidth >= 800) setHistoryOpen(false);
+      if (window.innerWidth >= 1050) setHistoryOpen(false);
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setHistoryOpen(false);
-        if (window.innerWidth <= 1180) setActivityOpen(false);
+        if (window.innerWidth < 850) setActivityOpen(false);
       }
     };
     window.addEventListener("resize", handleWorkspaceResize);
@@ -303,7 +337,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   };
 
   const ingestDroppedFiles = async (files: File[]) => {
-    if (busy || attachmentBusy || files.length === 0) return;
+    if (attachmentBusy || files.length === 0) return;
     const availableSlots = 20 - attachments.length;
     if (availableSlots <= 0) {
       setError("一次最多添加 20 个附件，请先移除部分附件。");
@@ -355,7 +389,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   };
 
   const pickAttachment = async () => {
-    if (busy || attachmentBusy || attachments.length >= 20) return;
+    if (attachmentBusy || attachments.length >= 20) return;
     setAttachmentBusy(true);
     setError(null);
     try {
@@ -385,88 +419,152 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const submit = async (content: string) => {
-    const text =
-      content.trim() ||
-      (attachments.length > 0 ? "请总结并分析这些附件。" : "");
-    if (!text || busy || attachmentBusy || !active || !selectedPresetId) return;
-    if (preferences.ai_auto_open_activity) setActivityOpen(true);
-    const sessionId = active.id;
-    const selectedAttachments = attachments;
-    const attachmentIds = selectedAttachments.map(
+  async function runSubmission(request: PendingChatRequest) {
+    const attachmentIds = request.attachments.map(
       (attachment) => attachment.id,
     );
-    const optimistic: AIChatMessage = {
-      id: `pending-${Date.now()}`,
-      role: "user",
-      content: text,
-      attachments: selectedAttachments,
-    };
-    setMotionMessageIds([optimistic.id]);
-    setActive((current) =>
-      current?.id === sessionId
-        ? { ...current, messages: [...current.messages, optimistic] }
-        : current,
+    setQueuedMessageIds((current) =>
+      current.filter((id) => id !== request.optimisticId),
     );
-    setDraft("");
-    setError(null);
     setBusy(true);
     try {
       const result =
         attachmentIds.length > 0
           ? await sendAiChatMessage(
-              sessionId,
-              text,
-              model,
-              depth,
-              selectedPresetId,
+              request.sessionId,
+              request.text,
+              request.model,
+              request.depth,
+              request.presetId,
               attachmentIds,
             )
           : await sendAiChatMessage(
-              sessionId,
-              text,
-              model,
-              depth,
-              selectedPresetId,
+              request.sessionId,
+              request.text,
+              request.model,
+              request.depth,
+              request.presetId,
             );
       setMotionMessageIds([result.assistant_message.id]);
-      setActive((current) =>
-        current?.id === sessionId
-          ? {
-              ...current,
-              ...result.session,
-              messages: [
-                ...current.messages.filter((item) => item.id !== optimistic.id),
-                result.user_message,
-                result.assistant_message,
-              ],
-              traces: [...current.traces, result.trace],
-            }
-          : current,
-      );
-      setAttachments([]);
+      setActive((current) => {
+        if (current?.id !== request.sessionId) return current;
+        const messages = [...current.messages];
+        const optimisticIndex = messages.findIndex(
+          (item) => item.id === request.optimisticId,
+        );
+        if (optimisticIndex >= 0) {
+          messages.splice(
+            optimisticIndex,
+            1,
+            result.user_message,
+            result.assistant_message,
+          );
+        } else {
+          messages.push(result.user_message, result.assistant_message);
+        }
+        return {
+          ...current,
+          ...result.session,
+          messages,
+          traces: [...current.traces, result.trace],
+        };
+      });
       await refreshSessions();
     } catch (reason) {
       setMotionMessageIds([]);
       setActive((current) =>
-        current?.id === sessionId
+        current?.id === request.sessionId
           ? {
               ...current,
               messages: current.messages.filter(
-                (item) => item.id !== optimistic.id,
+                (item) => item.id !== request.optimisticId,
               ),
             }
           : current,
       );
-      setDraft(text);
+      setDraft((current) => current || request.text);
+      setAttachments((current) => {
+        const restored = [...current];
+        for (const attachment of request.attachments) {
+          if (!restored.some((item) => item.id === attachment.id)) {
+            restored.push(attachment);
+          }
+        }
+        return restored;
+      });
       setError(
         reason instanceof Error
           ? reason.message
           : "Agent 暂时无法完成检索，请稍后重试。",
       );
     } finally {
-      setBusy(false);
+      const next = pendingQueueRef.current.shift();
+      if (next) {
+        void runSubmission(next);
+      } else {
+        setBusy(false);
+        window.setTimeout(() => textareaRef.current?.focus(), 0);
+      }
+    }
+  }
+
+  const submit = (content: string) => {
+    const text =
+      content.trim() ||
+      (attachments.length > 0 ? "请总结并分析这些附件。" : "");
+    if (!text || attachmentBusy || !active || !selectedPresetId) return;
+    if (preferences.ai_auto_open_activity) setActivityOpen(true);
+
+    pendingMessageCounterRef.current += 1;
+    const optimisticId = `pending-${Date.now()}-${pendingMessageCounterRef.current}`;
+    const selectedAttachments = attachments;
+    const optimistic: AIChatMessage = {
+      id: optimisticId,
+      role: "user",
+      content: text,
+      attachments: selectedAttachments,
+    };
+    const request: PendingChatRequest = {
+      sessionId: active.id,
+      text,
+      optimisticId,
+      attachments: selectedAttachments,
+      model,
+      depth,
+      presetId: selectedPresetId,
+    };
+
+    setMotionMessageIds([optimisticId]);
+    setActive((current) =>
+      current?.id === request.sessionId
+        ? { ...current, messages: [...current.messages, optimistic] }
+        : current,
+    );
+    setDraft("");
+    setAttachments([]);
+    setError(null);
+
+    if (busy) {
+      pendingQueueRef.current.push(request);
+      setQueuedMessageIds((current) => [...current, optimisticId]);
       window.setTimeout(() => textareaRef.current?.focus(), 0);
+      return;
+    }
+    void runSubmission(request);
+  };
+
+  const toggleActivity = () => {
+    const input = textareaRef.current;
+    const selectionStart = input?.selectionStart ?? null;
+    const selectionEnd = input?.selectionEnd ?? null;
+    setActivityOpen((open) => !open);
+    if (restoreComposerFocusRef.current) {
+      window.requestAnimationFrame(() => {
+        input?.focus();
+        if (selectionStart !== null && selectionEnd !== null) {
+          input?.setSelectionRange(selectionStart, selectionEnd);
+        }
+      });
     }
   };
 
@@ -490,9 +588,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   return (
     <motion.main
       className="ai-workspace"
-      initial={{ opacity: 0.01 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+      initial={shouldReduceMotion ? false : { opacity: 0.72, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: motionDuration.enter, ease: motionEase.out }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -548,7 +646,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.16 }}
+              transition={{ duration: motionDuration.control }}
               onClick={() => setHistoryOpen(false)}
             />
           )}
@@ -586,7 +684,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               size="sm"
               aria-expanded={activityOpen}
               aria-label="切换 Activity 检索轨迹"
-              onClick={() => setActivityOpen((open) => !open)}
+              onPointerDown={() => {
+                restoreComposerFocusRef.current =
+                  document.activeElement === textareaRef.current;
+              }}
+              onClick={toggleActivity}
             >
               {activityOpen ? (
                 <Activity aria-hidden="true" />
@@ -617,19 +719,22 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               <motion.div
                 className="ai-thinking ai-initial-loading"
                 role="status"
-                initial={{ opacity: 0.01 }}
+                initial={shouldReduceMotion ? false : { opacity: 0.72 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                transition={{ duration: 0.18 }}
+                transition={{ duration: motionDuration.enter }}
               >
                 <span aria-hidden="true" />
                 正在准备本地学习 Agent…
               </motion.div>
             ) : !hasMessages ? (
               <div className="ai-chat-empty">
-                <span className="ai-chat-mark">
-                  <img src={aiAgentLogo} alt="学习 Agent" />
-                </span>
+                <img
+                  className="ai-chat-empty-illustration"
+                  src={aiChatNewIllustration}
+                  alt=""
+                  aria-hidden="true"
+                />
                 <h1>今天想从学习数据里查什么？</h1>
                 <p>
                   {selectedPreset?.name ?? "学习 Agent"}
@@ -659,6 +764,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                     onRevealAttachment={(id) => void revealAttachment(id)}
                     showCodeLineNumbers={preferences.ai_code_line_numbers}
                     animateEntry={motionMessageIds.includes(message.id)}
+                    queued={queuedMessageIds.includes(message.id)}
                   />
                 ))}
                 <AnimatePresence>
@@ -666,13 +772,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                     <motion.div
                       className="ai-thinking"
                       role="status"
-                      initial={{ opacity: 0.01, y: 3 }}
+                      initial={
+                        shouldReduceMotion ? false : { opacity: 0.72, y: 3 }
+                      }
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: 2 }}
-                      transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                      transition={{
+                        duration: motionDuration.control,
+                        ease: motionEase.out,
+                      }}
                     >
                       <span aria-hidden="true" />
-                      Agent 正在检索本地学习数据…
+                      <span className="ai-thinking-copy">
+                        <strong>Agent 正在检索本地学习数据…</strong>
+                        <small>{thinkingStages[busyStage]}</small>
+                      </span>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -684,7 +798,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           <AIChatComposer
             draft={draft}
             error={error}
-            busy={busy}
             attachmentBusy={attachmentBusy}
             attachments={attachments}
             active={Boolean(active)}
@@ -730,21 +843,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           <span aria-hidden="true" />
         </div>
 
-        <AnimatePresence>
-          {activityOpen && (
-            <motion.button
-              type="button"
-              className="ai-drawer-backdrop ai-activity-backdrop"
-              aria-label="关闭 Activity"
-              tabIndex={-1}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16 }}
-              onClick={() => setActivityOpen(false)}
-            />
-          )}
-        </AnimatePresence>
         <AIChatTracePanel
           open={activityOpen}
           onClose={() => setActivityOpen(false)}
