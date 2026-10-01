@@ -44,7 +44,7 @@ from sjtu_learning_assistant.sqlite_recovery import (
     sqlite_migration_guard,
 )
 
-SCHEMA_VERSION = "0019"
+SCHEMA_VERSION = "0020"
 LEGACY_SQLITE_BASELINE = "0016"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (

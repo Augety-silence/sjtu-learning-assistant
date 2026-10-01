@@ -132,11 +132,10 @@ def _lesson_rows(payload: object) -> list[Mapping[str, Any]]:
 def parse_sjtu_lessons(
     payload: object,
 ) -> tuple[list[ParsedCourse], list[ParsedSession], list[str]]:
-    """Keep each official weekly occurrence; do not infer recurring rules."""
-    courses: list[ParsedCourse] = []
-    sessions: list[ParsedSession] = []
-    warnings: list[str] = []
-    for index, lesson in enumerate(_lesson_rows(payload)):
+    """Validate a complete snapshot and merge only byte-for-byte-equivalent IDs."""
+    courses_by_id: dict[str, ParsedCourse] = {}
+    sessions_by_id: dict[tuple[str, str], ParsedSession] = {}
+    for course_index, lesson in enumerate(_lesson_rows(payload), start=1):
         course_data = (
             lesson.get("course")
             if isinstance(lesson.get("course"), Mapping)
@@ -148,61 +147,89 @@ def parse_sjtu_lessons(
         name = _text(course_data.get("name") or lesson.get("courseName"))
         code = _text(course_data.get("code") or lesson.get("courseCode"), 128)
         if not source_id or not name:
-            warnings.append(f"第 {index + 1} 门课程缺少标识或名称，已跳过。")
-            continue
-        courses.append(
-            ParsedCourse(
-                source_id, code, name, _text(lesson.get("term"), 128), dict(lesson)
+            raise TimetableError(
+                f"第 {course_index} 门课程缺少标识或名称，快照不完整。"
             )
+        course = ParsedCourse(
+            source_id,
+            code,
+            name,
+            _text(lesson.get("term"), 128),
+            dict(lesson),
         )
-        occurrences = lesson.get("schedules", lesson.get("sessions", []))
+        previous_course = courses_by_id.get(source_id)
+        if previous_course is not None and previous_course != course:
+            raise TimetableError(f"课程 source_id={source_id} 在快照中内容冲突。")
+        courses_by_id.setdefault(source_id, course)
+
+        if "schedules" in lesson:
+            occurrences = lesson["schedules"]
+        elif "sessions" in lesson:
+            occurrences = lesson["sessions"]
+        else:
+            raise TimetableError(f"课程 {name} 缺少上课安排，快照不完整。")
         if not isinstance(occurrences, list):
-            warnings.append(f"课程 {name} 的上课安排格式无效，已跳过。")
-            continue
-        for occurrence in occurrences:
+            raise TimetableError(f"课程 {name} 的上课安排不是列表，快照不完整。")
+        for session_index, occurrence in enumerate(occurrences, start=1):
             if not isinstance(occurrence, Mapping):
-                continue
-            start = _datetime(
-                occurrence.get("startAt") or occurrence.get("start"),
-                occurrence.get("date"),
-            )
-            finish = _datetime(
-                occurrence.get("finishAt")
-                or occurrence.get("endAt")
-                or occurrence.get("end"),
-                occurrence.get("date"),
-            )
-            if finish <= start:
-                raise TimetableError("课表结束时间必须晚于开始时间。")
+                raise TimetableError(
+                    f"课程 {name} 的第 {session_index} 个上课安排不是对象，"
+                    "快照不完整。"
+                )
+            try:
+                start_at = _datetime(
+                    occurrence.get("startAt") or occurrence.get("start"),
+                    occurrence.get("date"),
+                )
+                finish_at = _datetime(
+                    occurrence.get("finishAt")
+                    or occurrence.get("endAt")
+                    or occurrence.get("end"),
+                    occurrence.get("date"),
+                )
+            except TimetableError as exc:
+                raise TimetableError(
+                    f"课程 {name} 的第 {session_index} 个上课安排无效：{exc}"
+                ) from exc
+            if finish_at <= start_at:
+                raise TimetableError(
+                    f"课程 {name} 的第 {session_index} 个上课安排结束时间"
+                    "必须晚于开始时间。"
+                )
             stable = _text(occurrence.get("id") or occurrence.get("sourceId"), 512)
             if not stable:
                 identity = "|".join(
                     (
                         source_id,
-                        start.isoformat(),
-                        finish.isoformat(),
+                        start_at.isoformat(),
+                        finish_at.isoformat(),
                         _text(occurrence.get("classroom") or occurrence.get("location"))
                         or "",
                     )
                 )
                 stable = hashlib.sha256(identity.encode()).hexdigest()
-            sessions.append(
-                ParsedSession(
-                    source_id,
-                    stable,
-                    _integer(occurrence.get("week")),
-                    _integer(occurrence.get("day") or occurrence.get("weekday")),
-                    _integer(occurrence.get("period")),
-                    _integer(occurrence.get("duration")),
-                    start,
-                    finish,
-                    _text(occurrence.get("classroom") or occurrence.get("location")),
-                    dict(occurrence),
-                )
+            parsed_session = ParsedSession(
+                source_id,
+                stable,
+                _integer(occurrence.get("week")),
+                _integer(occurrence.get("day") or occurrence.get("weekday")),
+                _integer(occurrence.get("period")),
+                _integer(occurrence.get("duration")),
+                start_at,
+                finish_at,
+                _text(occurrence.get("classroom") or occurrence.get("location")),
+                dict(occurrence),
             )
-    if not courses:
+            session_key = (source_id, stable)
+            previous_session = sessions_by_id.get(session_key)
+            if previous_session is not None and previous_session != parsed_session:
+                raise TimetableError(
+                    f"课程 {name} 的 session source_id={stable} 在快照中内容冲突。"
+                )
+            sessions_by_id.setdefault(session_key, parsed_session)
+    if not courses_by_id:
         raise TimetableError("文件中没有可导入的课程。")
-    return courses, sessions, warnings
+    return list(courses_by_id.values()), list(sessions_by_id.values()), []
 
 
 def _unfold(text: str) -> list[str]:
@@ -477,6 +504,7 @@ class TimetableService:
                     )
                     db.add(record)
                     db.flush()
+                    existing_courses[item.source_id] = record
                     imported_courses += 1
                     action = "inserted"
                 else:

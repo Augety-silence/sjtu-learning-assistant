@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import Session
 
@@ -149,6 +151,76 @@ class TimetableTests(unittest.TestCase):
         with self.assertRaises(TimetableError):
             self.service.commit_preview(preview["previewId"])
 
+    def test_incomplete_reimport_fails_before_snapshot_cleanup(self):
+        self.commit_payload([lesson("a", "课程 A", [occurrence("a-1", 5)])])
+        invalid_payloads = [
+            [lesson("a", "课程 A", "not-a-list")],
+            [lesson("a", "课程 A", ["not-an-object"])],
+            [lesson("a", "课程 A", [{"id": "a-1", "startAt": "bad"}])],
+        ]
+        for lessons in invalid_payloads:
+            with self.subTest(lessons=lessons):
+                with tempfile.NamedTemporaryFile(
+                    suffix=".json", mode="w", encoding="utf-8"
+                ) as file:
+                    json.dump({"data": {"lessons": lessons}}, file)
+                    file.flush()
+                    with self.assertRaisesRegex(TimetableError, "快照不完整|无效"):
+                        self.service.preview_local_file(file.name)
+                with Session(self.engine) as db:
+                    self.assertEqual(
+                        ["a-1"],
+                        list(db.scalars(select(TimetableSession.source_id))),
+                    )
+
+    def test_duplicate_identical_source_ids_are_merged(self):
+        repeated = occurrence("a-1", 5)
+        courses, sessions, warnings = parse_sjtu_lessons(
+            {
+                "data": {
+                    "lessons": [
+                        lesson("a", "课程 A", [repeated, repeated]),
+                        lesson("a", "课程 A", [repeated, repeated]),
+                    ]
+                }
+            }
+        )
+        self.assertEqual((1, 1, []), (len(courses), len(sessions), warnings))
+        result = self.commit_payload(
+            [
+                lesson("a", "课程 A", [repeated, repeated]),
+                lesson("a", "课程 A", [repeated, repeated]),
+            ]
+        )
+        self.assertEqual((1, 1), (result["importedCourses"], result["importedSessions"]))
+
+    def test_duplicate_conflicting_source_ids_are_rejected(self):
+        with self.assertRaisesRegex(TimetableError, "课程 source_id=a.*内容冲突"):
+            parse_sjtu_lessons(
+                {
+                    "data": {
+                        "lessons": [
+                            lesson("a", "课程 A", [occurrence("a-1", 5)]),
+                            lesson("a", "课程 A（冲突）", [occurrence("a-1", 5)]),
+                        ]
+                    }
+                }
+            )
+        with self.assertRaisesRegex(TimetableError, "session source_id=a-1.*内容冲突"):
+            parse_sjtu_lessons(
+                {
+                    "data": {
+                        "lessons": [
+                            lesson(
+                                "a",
+                                "课程 A",
+                                [occurrence("a-1", 5), occurrence("a-1", 6)],
+                            )
+                        ]
+                    }
+                }
+            )
+
     def test_reimport_replaces_source_snapshot_and_audits_deletions(self):
         first = self.commit_payload(
             [
@@ -263,8 +335,8 @@ END:VCALENDAR
             engine = create_engine(
                 "sqlite+pysqlite:///" + str(Path(directory) / "migration.db")
             )
-            self.assertEqual("0019", SCHEMA_VERSION)
-            self.assertEqual("0019", bootstrap_sqlite(engine))
+            self.assertEqual("0020", SCHEMA_VERSION)
+            self.assertEqual("0020", bootstrap_sqlite(engine))
             tables = set(inspect(engine).get_table_names())
             self.assertTrue(
                 {
@@ -276,8 +348,66 @@ END:VCALENDAR
                     "timetable_import_audit",
                 }.issubset(tables)
             )
-            run_columns = {column["name"] for column in inspect(engine).get_columns("timetable_import_runs")}
-            self.assertTrue({"deleted_courses", "deleted_sessions"}.issubset(run_columns))
+            run_columns = {
+                column["name"]: column
+                for column in inspect(engine).get_columns("timetable_import_runs")
+            }
+            self.assertTrue(
+                {"deleted_courses", "deleted_sessions"}.issubset(run_columns)
+            )
+            for name in ("deleted_courses", "deleted_sessions"):
+                self.assertFalse(run_columns[name]["nullable"])
+                self.assertIn("0", str(run_columns[name]["default"]))
+            engine.dispose()
+
+    def test_real_0019_database_upgrades_to_0020_without_data_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "released-0019.db"
+            engine = create_engine("sqlite+pysqlite:///" + str(path))
+            config = Config()
+            config.set_main_option(
+                "script_location", str(Path(__file__).parent.parent / "migrations")
+            )
+            config.set_main_option("sqlalchemy.url", str(engine.url))
+            self.assertEqual("0020", bootstrap_sqlite(engine))
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                command.downgrade(config, "0019")
+            columns_0019 = {
+                column["name"]
+                for column in inspect(engine).get_columns("timetable_import_runs")
+            }
+            self.assertNotIn("deleted_courses", columns_0019)
+            self.assertNotIn("deleted_sessions", columns_0019)
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO timetable_import_runs "
+                    "(provider, source_format, source_digest, status, "
+                    "imported_courses, imported_sessions, updated_sessions, warnings) "
+                    "VALUES ('local', 'ics', 'digest', 'committed', 1, 2, 3, '[]')"
+                )
+                run_id = connection.exec_driver_sql(
+                    "SELECT id FROM timetable_import_runs"
+                ).scalar_one()
+                connection.exec_driver_sql(
+                    "INSERT INTO timetable_import_audit "
+                    "(import_run_id, entity_type, source_id, action, details) "
+                    "VALUES (?, 'session', 'old-session', 'unchanged', '{}')",
+                    (run_id,),
+                )
+            self.assertEqual("0020", bootstrap_sqlite(engine))
+            with engine.begin() as connection:
+                row = connection.exec_driver_sql(
+                    "SELECT imported_courses, imported_sessions, updated_sessions, "
+                    "deleted_courses, deleted_sessions FROM timetable_import_runs"
+                ).one()
+                self.assertEqual((1, 2, 3, 0, 0), tuple(row))
+                connection.exec_driver_sql(
+                    "INSERT INTO timetable_import_audit "
+                    "(import_run_id, entity_type, source_id, action, details) "
+                    "VALUES (?, 'session', 'removed-session', 'deleted', '{}')",
+                    (run_id,),
+                )
             engine.dispose()
 
     def test_canvas_calendar_and_local_schedule_are_separate(self):

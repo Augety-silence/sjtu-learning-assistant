@@ -996,8 +996,12 @@ class TimetableImportRun(TimestampMixin, Base):
     imported_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     imported_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    deleted_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    deleted_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_courses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    deleted_sessions: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     warnings: Mapped[list[Any]] = mapped_column(JSON_TYPE, nullable=False, default=list)
     __table_args__ = (CheckConstraint("status IN (\x27committed\x27, \x27failed\x27)", name="ck_timetable_import_status"),)
 
