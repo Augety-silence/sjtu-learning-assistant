@@ -200,4 +200,12 @@ describe("responsive and motion regression rules", () => {
       /\.video-now-playing strong \{[^}]*overflow-wrap: anywhere[^}]*white-space: normal/,
     );
   });
+
+  it("keeps recording more actions visible on touch and keyboard-only layouts", () => {
+    expect(css).toMatch(/\.video-more \{[^}]*opacity: 1/);
+    expect(css).toMatch(
+      /@media \(hover: hover\) \{[\s\S]*?\.video-more \{[^}]*opacity: 0[^}]*\}[\s\S]*?\.video-recording-list > li:focus-within \.video-more \{ opacity: 1; \}/,
+    );
+    expect(css).not.toContain("@media (hover: none)");
+  });
 });

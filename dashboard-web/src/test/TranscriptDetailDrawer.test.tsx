@@ -145,24 +145,41 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(more.closest("details")?.hasAttribute("open")).toBe(false);
   });
 
-  it("presents partial and failed-at-100 states without claiming total failure", async () => {
-    getV2.mockResolvedValue(v2List());
-    const view = renderDrawer({ ...job, status: "partial", progress: 100 });
+  it("keeps failed at 100% failed when no artifact is available", async () => {
+    getV1.mockResolvedValue({ items: [] });
+    getV2.mockResolvedValue({
+      available: false,
+      status: "failed",
+      pipeline_status: "failed",
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+
+    renderDrawer({ ...job, status: "failed", progress: 100 });
+
+    expect(await screen.findByText("暂无可用结果")).toBeTruthy();
+    expect(document.querySelector(".transcript-status-failed")).toBeTruthy();
+    expect(screen.getByText("100%")).toBeTruthy();
+    expect(screen.queryByText("已有可用结果")).toBeNull();
+  });
+
+  it("presents failed at 100% as partial only when an artifact is available", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: "failed",
+      pipeline_status: "failed",
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+
+    renderDrawer({ ...job, status: "failed", progress: 100 });
 
     expect(await screen.findByText("已有可用结果")).toBeTruthy();
+    expect(document.querySelector(".transcript-status-partial")).toBeTruthy();
     expect(document.querySelector(".transcript-status-failed")).toBeNull();
-
-    view.rerender(
-      <TranscriptDetailDrawer
-        job={{ ...job, status: "failed", progress: 100 }}
-        onClose={vi.fn()}
-        onRetry={vi.fn()}
-        onCancel={vi.fn()}
-        onReveal={vi.fn()}
-      />,
-    );
-    expect(await screen.findByText("已有可用结果")).toBeTruthy();
-    expect(screen.getByText("99%")).toBeTruthy();
+    expect(screen.getByText("100%")).toBeTruthy();
     expect(screen.queryByText("暂无可用结果")).toBeNull();
   });
 

@@ -310,16 +310,15 @@ export function TranscriptDetailDrawer({
         (warning): warning is string => typeof warning === "string",
       )
     : [];
-  const progress =
-    job.status === "failed" && job.progress >= 100
-      ? 99
-      : Math.max(0, Math.min(100, job.progress));
+  const progress = Math.max(0, Math.min(100, job.progress));
   const hasAvailableResult = artifacts.length > 0 || phase1Available;
+  const showPhase1Warning =
+    phase1Warning && (job.status !== "failed" || hasAvailableResult);
   const resultTone = active
     ? "processing"
     : ["partial", "completed_with_warnings"].includes(job.status) ||
-        phase1Warning ||
-        (job.status === "failed" && (hasAvailableResult || job.progress >= 100))
+        showPhase1Warning ||
+        (job.status === "failed" && hasAvailableResult)
       ? "partial"
       : job.status === "failed" || job.status === "interrupted"
         ? "failed"
@@ -361,7 +360,7 @@ export function TranscriptDetailDrawer({
               >
                 {resultLabel}
               </span>
-              {phase1Warning && (
+              {showPhase1Warning && (
                 <span className="transcript-phase1-warning" role="status">
                   深度校对部分完成
                 </span>

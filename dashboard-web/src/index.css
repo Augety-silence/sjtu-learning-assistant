@@ -8502,11 +8502,15 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-more {
   position: relative;
-  opacity: 0;
+  opacity: 1;
   transition: opacity var(--motion-fast) var(--ease-motion-out);
 }
-.video-recording-list > li:hover .video-more,
-.video-recording-list > li:focus-within .video-more { opacity: 1; }
+
+@media (hover: hover) {
+  .video-more { opacity: 0; }
+  .video-recording-list > li:hover .video-more,
+  .video-recording-list > li:focus-within .video-more { opacity: 1; }
+}
 
 .video-more-menu {
   position: absolute;
@@ -8714,10 +8718,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   .video-course-heading {
     grid-template-columns: minmax(0, 1fr);
   }
-
-@media (hover: none) {
-  .video-more { opacity: 1; }
-}
 
   .video-course-count {
     justify-self: start;

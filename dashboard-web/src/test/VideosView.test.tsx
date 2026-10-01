@@ -378,7 +378,7 @@ describe("VideosView", () => {
     expect(screen.getByRole("tab", { name: "学习笔记" })).toBeTruthy();
   });
 
-  it("does not present a failed transcript at 100% as a total failure", () => {
+  it("keeps a failed transcript at 100% failed without artifact evidence", () => {
     const { container } = render(
       <VideosView
         videos={[videos[2]]}
@@ -397,10 +397,8 @@ describe("VideosView", () => {
       />,
     );
 
-    expect(
-      container.querySelectorAll(".video-status-partial").length,
-    ).toBeGreaterThan(0);
-    expect(container.querySelector(".video-status-failed")).toBeNull();
+    expect(container.querySelector(".video-status-failed")).toBeTruthy();
+    expect(container.querySelector(".video-status-partial")).toBeNull();
   });
 
   it("keeps low-frequency recording actions behind progressive disclosure", () => {

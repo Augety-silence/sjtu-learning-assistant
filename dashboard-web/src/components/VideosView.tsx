@@ -226,11 +226,7 @@ function compactJobTitle(title: string, courseName: string) {
   return compact || title;
 }
 
-function transcriptStatus(
-  status?: TranscriptJob["status"],
-  progress?: number,
-): UnifiedStatus {
-  if (status === "failed" && (progress ?? 0) >= 100) return "partial";
+function transcriptStatus(status?: TranscriptJob["status"]): UnifiedStatus {
   if (status === "completed") return "completed";
   if (status === "completed_with_warnings" || status === "partial")
     return "partial";
@@ -590,7 +586,7 @@ export function VideosView({
         sourceId: job.source_id,
         title: compactJobTitle(job.title, courseName),
         kind: "字幕与 AI 整理",
-        status: transcriptStatus(job.status, job.progress),
+        status: transcriptStatus(job.status),
         rawStatus: job.status,
         progress: job.progress,
         category: jobCategory(job.status),
@@ -1309,9 +1305,7 @@ export function VideosView({
     }
     return (
       <div className="video-tool-summary">
-        <StatusBadge
-          status={transcriptStatus(selectedJob?.status, selectedJob?.progress)}
-        />
+        <StatusBadge status={transcriptStatus(selectedJob?.status)} />
         <span>
           {subtitleMessage || selectedJob?.message || "尚无可查看的字幕内容。"}
         </span>
@@ -1739,9 +1733,7 @@ export function VideosView({
                           {sourceLabels[video.source]}
                         </span>
                         <span>{formatDuration(video.duration)}</span>
-                        <StatusBadge
-                          status={transcriptStatus(job?.status, job?.progress)}
-                        />
+                        <StatusBadge status={transcriptStatus(job?.status)} />
                       </div>
                     </div>
                     <div className="video-recording-actions">
