@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { TranscriptQualityWarning } from "@/components/TranscriptPhase1Panels";
@@ -144,6 +145,11 @@ type UnifiedStatus =
   | "partial"
   | "failed";
 type LearningTab = "transcript" | "summary" | "pdf" | "notes";
+type VideoMenuPosition = {
+  top: number;
+  left: number;
+  direction: "up" | "down";
+};
 type OrganizationFilter =
   | "all"
   | "pending"
@@ -728,6 +734,9 @@ export function VideosView({
   } | null>(null);
   const [summaryRequestSettled, setSummaryRequestSettled] = useState(0);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<VideoMenuPosition | null>(
+    null,
+  );
   const [busy, setBusy] = useState<string | null>(null);
   const [pdfResults, setPdfResults] = useState<Map<string, SlidesPdfResult>>(
     () => new Map(),
@@ -747,6 +756,7 @@ export function VideosView({
   const videoRef = useRef<HTMLVideoElement>(null);
   const listPanelRef = useRef<HTMLElement>(null);
   const menuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const menuRef = useRef<HTMLDivElement>(null);
   const playerToolsRef = useRef<HTMLDivElement>(null);
   const speedTriggerRef = useRef<HTMLButtonElement>(null);
   const speedOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -786,7 +796,12 @@ export function VideosView({
       const state = stateForVideo(video.id);
       if (organizationFilter === "all") return true;
       if (organizationFilter === "pending")
-        return !state.complete && !state.processing && !state.failed;
+        return (
+          !state.complete &&
+          !state.processing &&
+          !state.partial &&
+          !state.failed
+        );
       if (organizationFilter === "processing") return state.processing;
       if (organizationFilter === "completed") return state.complete;
       if (organizationFilter === "partial") return state.partial;
@@ -794,14 +809,16 @@ export function VideosView({
     },
     [organizationFilter, stateForVideo],
   );
-  const filtered = useMemo(
+  const sourceVideos = useMemo(
     () =>
-      videos.filter(
-        (video) =>
-          (source === "all" || video.source === source) &&
-          matchesOrganizationFilter(video),
-      ),
-    [matchesOrganizationFilter, source, videos],
+      source === "all"
+        ? videos
+        : videos.filter((video) => video.source === source),
+    [source, videos],
+  );
+  const filtered = useMemo(
+    () => sourceVideos.filter(matchesOrganizationFilter),
+    [matchesOrganizationFilter, sourceVideos],
   );
   const selectedVideos = useMemo(
     () => videos.filter((video) => selectedIds.has(video.id)),
@@ -832,6 +849,26 @@ export function VideosView({
       pending: videos.length - completed - processing - partial - failed,
     };
   }, [stateForVideo, videos]);
+  const sourceOrganizationCounts = useMemo(() => {
+    let completed = 0;
+    let processing = 0;
+    let partial = 0;
+    let failed = 0;
+    for (const video of sourceVideos) {
+      const state = stateForVideo(video.id);
+      if (state.complete) completed += 1;
+      else if (state.processing) processing += 1;
+      else if (state.failed) failed += 1;
+      else if (state.partial) partial += 1;
+    }
+    return {
+      completed,
+      processing,
+      partial,
+      failed,
+      pending: sourceVideos.length - completed - processing - partial - failed,
+    };
+  }, [sourceVideos, stateForVideo]);
   const unfinishedVideos = useMemo(
     () =>
       videos.filter((video) => {
@@ -953,28 +990,70 @@ export function VideosView({
     setSelectionMode(false);
     setDetailJob(null);
     setOpenMenuId(null);
+    setMenuPosition(null);
     setPendingSummarySourceId(null);
     setSummaryRequestError(null);
     summaryRequestedJobId.current = null;
     summaryAwaitsNewJob.current = false;
   }, [courseId]);
+  const positionVideoMenu = useCallback((videoId: string) => {
+    const trigger = menuTriggerRefs.current.get(videoId);
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const edge = 8;
+    const gap = 4;
+    const width = 210;
+    const height = menuRef.current?.getBoundingClientRect().height || 260;
+    const availableBelow = window.innerHeight - rect.bottom - edge;
+    const direction =
+      availableBelow >= Math.min(height, 220) || availableBelow >= rect.top
+        ? "down"
+        : "up";
+    const top =
+      direction === "down"
+        ? Math.min(rect.bottom + gap, window.innerHeight - height - edge)
+        : Math.max(edge, rect.top - height - gap);
+    setMenuPosition({
+      top: Math.max(edge, top),
+      left: Math.max(
+        edge,
+        Math.min(
+          Math.max(edge, rect.right - width),
+          window.innerWidth - width - edge,
+        ),
+      ),
+      direction,
+    });
+  }, []);
+  const closeVideoMenu = useCallback(() => {
+    setOpenMenuId(null);
+    setMenuPosition(null);
+  }, []);
+  useLayoutEffect(() => {
+    if (openMenuId && menuPosition) positionVideoMenu(openMenuId);
+  }, [openMenuId, menuPosition?.direction, positionVideoMenu]);
   useEffect(() => {
     if (!openMenuId) return;
     const trigger = menuTriggerRefs.current.get(openMenuId);
-    const closeFromOutside = () => setOpenMenuId(null);
+    const closeFromOutside = () => closeVideoMenu();
+    const closeFromViewportChange = () => closeVideoMenu();
     const closeFromKeyboard = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      setOpenMenuId(null);
+      closeVideoMenu();
       window.queueMicrotask(() => trigger?.focus());
     };
     document.addEventListener("mousedown", closeFromOutside);
     document.addEventListener("keydown", closeFromKeyboard);
+    window.addEventListener("resize", closeFromViewportChange);
+    window.addEventListener("scroll", closeFromViewportChange, true);
     return () => {
       document.removeEventListener("mousedown", closeFromOutside);
       document.removeEventListener("keydown", closeFromKeyboard);
+      window.removeEventListener("resize", closeFromViewportChange);
+      window.removeEventListener("scroll", closeFromViewportChange, true);
     };
-  }, [openMenuId]);
+  }, [closeVideoMenu, openMenuId]);
   useEffect(() => {
     if (!detailJob) return;
     const latest = transcriptJobs.find((job) => job.id === detailJob.id);
@@ -2167,7 +2246,7 @@ export function VideosView({
           <div className="video-list-header">
             <div>
               <strong>课程录像</strong>
-              <span>{filtered.length} 节</span>
+              <span>{sourceVideos.length} 节</span>
             </div>
             <Button
               variant="ghost"
@@ -2240,12 +2319,12 @@ export function VideosView({
           >
             {(
               [
-                ["all", "全部", videos.length],
-                ["pending", "未整理", organizationCounts.pending],
-                ["processing", "处理中", organizationCounts.processing],
-                ["completed", "已整理", organizationCounts.completed],
-                ["partial", "部分完成", organizationCounts.partial],
-                ["failed", "失败", organizationCounts.failed],
+                ["all", "全部", sourceVideos.length],
+                ["pending", "未整理", sourceOrganizationCounts.pending],
+                ["processing", "处理中", sourceOrganizationCounts.processing],
+                ["completed", "已整理", sourceOrganizationCounts.completed],
+                ["partial", "部分完成", sourceOrganizationCounts.partial],
+                ["failed", "失败", sourceOrganizationCounts.failed],
               ] as const
             ).map(([value, label, count]) => (
               <button
@@ -2365,7 +2444,7 @@ export function VideosView({
                 ].filter(Boolean);
                 const isCurrent =
                   selected?.id === video.id && selected.source === video.source;
-                const canShowTranscript = Boolean(
+                const canShowTranscriptDetails = Boolean(
                   job && onRetryTranscript && onRevealTranscript,
                 );
                 const rowSummaryPending = pendingSummarySourceId === video.id;
@@ -2388,7 +2467,7 @@ export function VideosView({
                     onRetryTranscript ||
                     learningState.complete ||
                     showSummaryAction ||
-                    canShowTranscript ||
+                    canShowTranscriptDetails ||
                     (video.supportsSubtitle &&
                       (onLoadSubtitles ||
                         onDownloadSubtitle ||
@@ -2415,6 +2494,12 @@ export function VideosView({
                         <strong title={video.originalTitle || video.title}>
                           {video.title}
                         </strong>
+                        {busy === `organize:${video.id}` && (
+                          <span className="video-row-organizing" role="status">
+                            <LoaderCircle aria-hidden="true" />
+                            正在整理…
+                          </span>
+                        )}
                         {hasMenu && (
                           <div className="video-more">
                             <Button
@@ -2433,209 +2518,233 @@ export function VideosView({
                                 if (event.key !== "ArrowDown") return;
                                 event.preventDefault();
                                 setOpenMenuId(video.id);
+                                positionVideoMenu(video.id);
                                 window.queueMicrotask(() =>
-                                  document
-                                    .querySelector<HTMLElement>(
-                                      `[data-video-menu="${video.id}"] [role="menuitem"]:not(:disabled)`,
+                                  menuRef.current
+                                    ?.querySelector<HTMLElement>(
+                                      '[role="menuitem"]:not(:disabled)',
                                     )
                                     ?.focus(),
                                 );
                               }}
-                              onClick={() =>
-                                setOpenMenuId((current) =>
-                                  current === video.id ? null : video.id,
-                                )
-                              }
+                              onClick={() => {
+                                if (openMenuId === video.id) {
+                                  closeVideoMenu();
+                                  return;
+                                }
+                                setOpenMenuId(video.id);
+                                positionVideoMenu(video.id);
+                              }}
                             >
                               <MoreHorizontal aria-hidden="true" />
                             </Button>
-                            {openMenuId === video.id && (
-                              <div
-                                className="video-more-menu"
-                                data-video-menu={video.id}
-                                role="menu"
-                                aria-label={`${video.title} 操作`}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onKeyDown={(event) => {
-                                  if (
-                                    ![
-                                      "ArrowDown",
-                                      "ArrowUp",
-                                      "Home",
-                                      "End",
-                                    ].includes(event.key)
-                                  )
-                                    return;
-                                  const items = Array.from(
-                                    event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                                      '[role="menuitem"]:not(:disabled)',
-                                    ),
-                                  );
-                                  if (!items.length) return;
-                                  event.preventDefault();
-                                  const current = items.indexOf(
-                                    document.activeElement as HTMLButtonElement,
-                                  );
-                                  const next =
-                                    event.key === "Home"
-                                      ? 0
-                                      : event.key === "End"
-                                        ? items.length - 1
-                                        : event.key === "ArrowUp"
-                                          ? (current - 1 + items.length) %
-                                            items.length
-                                          : (current + 1) % items.length;
-                                  items[next]?.focus();
-                                }}
-                              >
-                                {(onStartTranscript || onRetryTranscript) && (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={
-                                      learningState.complete ||
-                                      rowSummaryProcessing ||
-                                      Boolean(busy) ||
-                                      !(job && transcriptNeedsRetry(job)
-                                        ? onRetryTranscript
-                                        : onStartTranscript)
-                                    }
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      void organizeVideo(video, job);
-                                    }}
-                                  >
-                                    <NotebookPen aria-hidden="true" />
-                                    {rowSummaryFailed
-                                      ? "重试整理学习材料"
-                                      : "整理学习材料"}
-                                  </button>
-                                )}
-                                {canShowTranscript ? (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      setDetailInitialTab("cleaned");
-                                      setDetailJob(job || null);
-                                      setOpenMenuId(null);
-                                    }}
-                                  >
-                                    <Captions aria-hidden="true" />
-                                    查看字幕
-                                  </button>
-                                ) : video.supportsSubtitle &&
-                                  onLoadSubtitles ? (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={Boolean(busy)}
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      void loadSubtitles(video);
-                                    }}
-                                  >
-                                    <Captions aria-hidden="true" />
-                                    查看字幕
-                                  </button>
-                                ) : null}
-                                {showSummaryAction && (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={
-                                      Boolean(busy) || rowSummaryProcessing
-                                    }
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      setSelected(video);
-                                      setLearningTab("summary");
-                                      if (rowSummaryReady && job) {
-                                        setDetailInitialTab("summary");
-                                        setDetailJob(job);
-                                      } else void requestSummary(video, job);
-                                    }}
-                                  >
-                                    <FileText aria-hidden="true" />
-                                    {rowSummaryReady
-                                      ? "查看 AI 总结"
-                                      : rowSummaryFailed
-                                        ? "重试生成 AI 总结"
-                                        : rowSummaryProcessing
-                                          ? "AI 总结生成中"
-                                          : "生成 AI 总结"}
-                                  </button>
-                                )}
-                                {learningState.complete && (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={Boolean(busy)}
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      void viewLearningMaterials(video);
-                                    }}
-                                  >
-                                    <NotebookPen aria-hidden="true" />
-                                    查看学习材料
-                                  </button>
-                                )}
-                                {onCreateSlidesPdf &&
-                                  video.supportsSlidesPdf && (
+                            {openMenuId === video.id &&
+                              menuPosition &&
+                              createPortal(
+                                <div
+                                  ref={menuRef}
+                                  className={`video-more-menu is-open-${menuPosition.direction}`}
+                                  style={{
+                                    top: menuPosition.top,
+                                    left: menuPosition.left,
+                                  }}
+                                  data-video-menu={video.id}
+                                  role="menu"
+                                  aria-label={`${video.title} 操作`}
+                                  onMouseDown={(event) =>
+                                    event.stopPropagation()
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (
+                                      ![
+                                        "ArrowDown",
+                                        "ArrowUp",
+                                        "Home",
+                                        "End",
+                                      ].includes(event.key)
+                                    )
+                                      return;
+                                    const items = Array.from(
+                                      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                                        '[role="menuitem"]:not(:disabled)',
+                                      ),
+                                    );
+                                    if (!items.length) return;
+                                    event.preventDefault();
+                                    const current = items.indexOf(
+                                      document.activeElement as HTMLButtonElement,
+                                    );
+                                    const next =
+                                      event.key === "Home"
+                                        ? 0
+                                        : event.key === "End"
+                                          ? items.length - 1
+                                          : event.key === "ArrowUp"
+                                            ? (current - 1 + items.length) %
+                                              items.length
+                                            : (current + 1) % items.length;
+                                    items[next]?.focus();
+                                  }}
+                                >
+                                  {(onStartTranscript || onRetryTranscript) && (
                                     <button
                                       type="button"
                                       role="menuitem"
-                                      disabled={Boolean(busy)}
+                                      disabled={
+                                        learningState.complete ||
+                                        rowSummaryProcessing ||
+                                        Boolean(busy) ||
+                                        !(job && transcriptNeedsRetry(job)
+                                          ? onRetryTranscript
+                                          : onStartTranscript)
+                                      }
                                       onClick={() => {
                                         setOpenMenuId(null);
-                                        void createPdf(video);
+                                        void organizeVideo(video, job);
+                                      }}
+                                    >
+                                      {busy === `organize:${video.id}` ? (
+                                        <LoaderCircle aria-hidden="true" />
+                                      ) : (
+                                        <NotebookPen aria-hidden="true" />
+                                      )}
+                                      {busy === `organize:${video.id}`
+                                        ? "正在整理…"
+                                        : rowSummaryFailed
+                                          ? "重试整理学习材料"
+                                          : "整理学习材料"}
+                                    </button>
+                                  )}
+                                  {canShowTranscriptDetails && (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setDetailInitialTab("cleaned");
+                                        setDetailJob(job || null);
+                                        closeVideoMenu();
+                                      }}
+                                    >
+                                      <Captions aria-hidden="true" />
+                                      {rowSummaryReady
+                                        ? "查看字幕详情"
+                                        : "查看处理详情"}
+                                    </button>
+                                  )}
+                                  {video.supportsSubtitle &&
+                                    onLoadSubtitles && (
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={Boolean(busy)}
+                                        onClick={() => {
+                                          closeVideoMenu();
+                                          void loadSubtitles(video);
+                                        }}
+                                      >
+                                        <Captions aria-hidden="true" />
+                                        载入播放器字幕
+                                      </button>
+                                    )}
+                                  {showSummaryAction && (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      disabled={
+                                        Boolean(busy) || rowSummaryProcessing
+                                      }
+                                      onClick={() => {
+                                        setOpenMenuId(null);
+                                        setSelected(video);
+                                        setLearningTab("summary");
+                                        if (rowSummaryReady && job) {
+                                          setDetailInitialTab("summary");
+                                          setDetailJob(job);
+                                        } else void requestSummary(video, job);
                                       }}
                                     >
                                       <FileText aria-hidden="true" />
-                                      生成课件 PDF
+                                      {rowSummaryReady
+                                        ? "查看 AI 总结"
+                                        : rowSummaryFailed
+                                          ? "重试生成 AI 总结"
+                                          : rowSummaryProcessing
+                                            ? "AI 总结生成中"
+                                            : "生成 AI 总结"}
                                     </button>
                                   )}
-                                {video.supportsSubtitle &&
-                                  !onLoadSubtitles &&
-                                  onDownloadSubtitle &&
-                                  video.subtitleId && (
+                                  {learningState.complete && (
                                     <button
                                       type="button"
                                       role="menuitem"
                                       disabled={Boolean(busy)}
                                       onClick={() => {
                                         setOpenMenuId(null);
-                                        void run(
-                                          `subtitle:${video.id}`,
-                                          "字幕下载任务已创建。",
-                                          () => onDownloadSubtitle(video),
-                                        );
+                                        void viewLearningMaterials(video);
                                       }}
                                     >
-                                      <Download aria-hidden="true" />
-                                      下载字幕
+                                      <NotebookPen aria-hidden="true" />
+                                      查看学习材料
                                     </button>
                                   )}
-                                {onDownload && video.downloadable !== false && (
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={Boolean(busy)}
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      void run(
-                                        `video:${video.id}`,
-                                        "视频下载任务已创建。",
-                                        () => onDownload(video),
-                                      );
-                                    }}
-                                  >
-                                    <Download aria-hidden="true" />
-                                    下载视频
-                                  </button>
-                                )}
-                              </div>
-                            )}
+                                  {onCreateSlidesPdf &&
+                                    video.supportsSlidesPdf && (
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={Boolean(busy)}
+                                        onClick={() => {
+                                          setOpenMenuId(null);
+                                          void createPdf(video);
+                                        }}
+                                      >
+                                        <FileText aria-hidden="true" />
+                                        生成课件 PDF
+                                      </button>
+                                    )}
+                                  {video.supportsSubtitle &&
+                                    !onLoadSubtitles &&
+                                    onDownloadSubtitle &&
+                                    video.subtitleId && (
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={Boolean(busy)}
+                                        onClick={() => {
+                                          setOpenMenuId(null);
+                                          void run(
+                                            `subtitle:${video.id}`,
+                                            "字幕下载任务已创建。",
+                                            () => onDownloadSubtitle(video),
+                                          );
+                                        }}
+                                      >
+                                        <Download aria-hidden="true" />
+                                        下载字幕
+                                      </button>
+                                    )}
+                                  {onDownload &&
+                                    video.downloadable !== false && (
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        disabled={Boolean(busy)}
+                                        onClick={() => {
+                                          setOpenMenuId(null);
+                                          void run(
+                                            `video:${video.id}`,
+                                            "视频下载任务已创建。",
+                                            () => onDownload(video),
+                                          );
+                                        }}
+                                      >
+                                        <Download aria-hidden="true" />
+                                        下载视频
+                                      </button>
+                                    )}
+                                </div>,
+                                document.body,
+                              )}
                           </div>
                         )}
                       </div>

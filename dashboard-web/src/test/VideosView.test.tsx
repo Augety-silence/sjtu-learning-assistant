@@ -275,7 +275,9 @@ describe("VideosView", () => {
     const trigger = screen.getByRole("button", { name: "第三讲 更多操作" });
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
     expect(screen.getByRole("menuitem", { name: "整理学习材料" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "查看字幕" })).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "载入播放器字幕" }),
+    ).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "生成 AI 总结" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "生成课件 PDF" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "下载视频" })).toBeTruthy();
@@ -288,7 +290,7 @@ describe("VideosView", () => {
       key: "ArrowDown",
     });
     expect(document.activeElement).toBe(
-      screen.getByRole("menuitem", { name: "查看字幕" }),
+      screen.getByRole("menuitem", { name: "载入播放器字幕" }),
     );
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
@@ -296,6 +298,172 @@ describe("VideosView", () => {
 
     fireEvent.click(trigger);
     fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("状态计数和列表标题跟随当前视频来源", () => {
+    const { container } = render(
+      <VideosView
+        videos={videos}
+        transcriptJobs={[
+          {
+            id: "canvas-complete",
+            batch_id: "batch",
+            source_id: "v1",
+            title: "第一讲",
+            status: "completed",
+            stage: "completed",
+            progress: 100,
+            attempts: 1,
+          },
+          {
+            id: "space-processing",
+            batch_id: "batch",
+            source_id: "v3",
+            title: "第三讲",
+            status: "organizing",
+            stage: "reviewing",
+            progress: 60,
+            attempts: 1,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "视频空间" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(
+      container.querySelector(".video-list-header span")?.textContent,
+    ).toBe("1 节");
+    for (const name of [
+      "全部 1",
+      "未整理 0",
+      "处理中 1",
+      "已整理 0",
+      "部分完成 0",
+      "失败 0",
+    ]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(
+      container.querySelector(".video-list-header span")?.textContent,
+    ).toBe("1 节");
+    expect(screen.getByRole("button", { name: "全部 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "已整理 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "处理中 0" })).toBeTruthy();
+  });
+
+  it("已有 transcript job 时同时保留详情与载入播放器字幕", async () => {
+    const loadSubtitles = vi.fn(async () => ({
+      subtitleUrl: "https://example.test/subtitle.vtt",
+    }));
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "production-job",
+            batch_id: "batch",
+            source_id: "v3",
+            title: "第三讲",
+            status: "completed",
+            stage: "completed",
+            progress: 100,
+            attempts: 1,
+            phase1_status: "completed",
+          },
+        ]}
+        onStartTranscript={vi.fn(async () => undefined)}
+        onRetryTranscript={vi.fn(async () => undefined)}
+        onRevealTranscript={vi.fn(async () => undefined)}
+        onLoadSubtitles={loadSubtitles}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
+    expect(screen.getByRole("menuitem", { name: "查看字幕详情" })).toBeTruthy();
+    const load = screen.getByRole("menuitem", { name: "载入播放器字幕" });
+    expect(load).toBeTruthy();
+    fireEvent.click(load);
+    await waitFor(() => expect(loadSubtitles).toHaveBeenCalledWith(videos[2]));
+  });
+
+  it("单节整理在行内和菜单中显示明确 loading 反馈", async () => {
+    let finish: (() => void) | undefined;
+    const start = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<VideosView videos={[videos[2]]} onStartTranscript={start} />);
+
+    const trigger = screen.getByRole("button", { name: "第三讲 更多操作" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "整理学习材料" }));
+    expect(await screen.findByText("正在整理…")).toBeTruthy();
+
+    fireEvent.click(trigger);
+    const loadingItem = screen.getByRole("menuitem", { name: "正在整理…" });
+    expect((loadingItem as HTMLButtonElement).disabled).toBe(true);
+    expect(loadingItem.querySelector(".lucide-loader-circle")).toBeTruthy();
+
+    await act(async () => finish?.());
+    await waitFor(() => expect(screen.queryByText("正在整理…")).toBeNull());
+  });
+
+  it("录像菜单通过 fixed portal 向上翻转，并在 viewport 变化时关闭", () => {
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        onStartTranscript={vi.fn(async () => undefined)}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "第三讲 更多操作" });
+    Object.defineProperty(trigger, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 900,
+        y: 730,
+        top: 730,
+        right: 980,
+        bottom: 760,
+        left: 950,
+        width: 30,
+        height: 30,
+        toJSON: () => ({}),
+      }),
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 768,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu");
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.classList.contains("is-open-up")).toBe(true);
+    const css = readFileSync("src/index.css", "utf8");
+    expect(css).toMatch(/\.video-more-menu \{\s*position: fixed;/);
+    expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
+
+    fireEvent.resize(window);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    fireEvent.scroll(window);
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
@@ -454,7 +622,7 @@ describe("VideosView", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "查看字幕" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "载入播放器字幕" }));
     await waitFor(() => expect(onLoadSubtitles).toHaveBeenCalledOnce());
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
       button: 0,
@@ -466,7 +634,7 @@ describe("VideosView", () => {
     expect(onStartTranscript).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole("button", { name: "第一讲 更多操作" }));
-    const organize = screen.getByRole("menuitem", { name: "整理学习材料" });
+    const organize = screen.getByRole("menuitem", { name: "正在整理…" });
     expect((organize as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () =>

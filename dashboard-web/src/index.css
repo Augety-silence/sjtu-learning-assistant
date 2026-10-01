@@ -9427,3 +9427,59 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     transition: none;
   }
 }
+
+
+/* Viewport-bound recording menu: portal positioning avoids list clipping. */
+.video-recording-title-row {
+  grid-template-columns: minmax(0, 1fr) auto 30px;
+}
+
+.video-recording-title-row .video-more {
+  grid-column: 3;
+}
+
+.video-row-organizing {
+  grid-column: 2;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--action-primary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.video-row-organizing svg,
+.video-more-menu button[disabled] svg {
+  width: 13px;
+  height: 13px;
+}
+
+.video-row-organizing svg,
+.video-more-menu button[disabled] .lucide-loader-circle {
+  animation: video-status-spin 1.2s linear infinite;
+}
+
+.video-more-menu {
+  position: fixed;
+  right: auto;
+  z-index: 100;
+  width: min(210px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
+.video-more-menu.is-open-up {
+  transform-origin: bottom right;
+}
+
+.video-more-menu.is-open-down {
+  transform-origin: top right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-row-organizing svg,
+  .video-more-menu button[disabled] .lucide-loader-circle {
+    animation: none;
+  }
+}
