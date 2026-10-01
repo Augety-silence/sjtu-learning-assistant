@@ -272,9 +272,9 @@ class TranscriptServiceTests(unittest.TestCase):
         service.run_pending()
         recovered = next(iter(service.get_batch(retry.get("id")).get("jobs")))
         self.assertEqual(0, client.calls)
-        self.assertEqual("completed", recovered.get("status"))
-        self.assertEqual("字幕已存储并完成 AI 规整。", recovered.get("message"))
-        self.assertEqual("completed", service.get_batch(retry.get("id")).get("status"))
+        self.assertEqual("completed_with_warnings", recovered.get("status"))
+        self.assertTrue(recovered.get("partial_warning"))
+        self.assertEqual("completed_with_warnings", service.get_batch(retry.get("id")).get("status"))
         video_dir = service._video_dir(VIDEO.get("source_id"))
         manifest = json.loads((video_dir / "manifest.json").read_text())
         self.assertEqual(2, manifest.get("schema_version"))
@@ -416,7 +416,7 @@ class TranscriptServiceTests(unittest.TestCase):
         reused = next(iter(service.get_batch(second_retry.get("id")).get("jobs")))
         self.assertEqual(0, client.calls)
         self.assertTrue(reused.get("reused"))
-        self.assertEqual("completed", reused.get("status"))
+        self.assertEqual("completed_with_warnings", reused.get("status"))
         self.assertEqual(1, self.fetches)
 
 

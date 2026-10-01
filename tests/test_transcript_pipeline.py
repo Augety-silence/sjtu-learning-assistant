@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -11,12 +12,14 @@ from sjtu_learning_assistant.transcript_pipeline import (
     REDUCE_FALLBACK_WARNING,
     SUMMARY_EMPTY_WARNING,
     Cue,
+    TranscriptChunk,
     TranscriptAIFormatError,
     TranscriptPipeline,
     _validated_json,
     _validated_map_response,
     _normalize_study_guide,
     _fallback_study_guide,
+    _audit_guide,
     chunk_cues,
     deterministic_summary,
     normalize_cues,
@@ -128,7 +131,18 @@ class FakeAI:
         self.calls.append(messages)
         prompt = messages[-1]["content"]
         if "阶段2" in prompt:
-            payload = dict(issues=[], revised_study_guide=study_guide_payload())
+            transcript = prompt.split("本段字幕：\n", 1)[1]
+            rows = re.findall(r"\[([^ ]+) (\d+)-(\d+)\] (.+)", transcript)
+            first, last = rows[0], rows[-1]
+            chunk_index = len([call for call in self.calls[:-1] if "阶段2" in call[-1]["content"]])
+            evidence = [dict(cue_id=first[0], quote=first[3][:20])]
+            payload = dict(
+                chunk_index=chunk_index,
+                time_range=dict(start_ms=int(first[1]), end_ms=int(last[2])),
+                coverage_confirmation=dict(confirmed=True, evidence=evidence),
+                issues=[],
+                revised_study_guide=study_guide_payload(),
+            )
             return {"content": json.dumps(payload, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
         if "阶段1" in prompt:
             return {"content": json.dumps({"study_guide": study_guide_payload()}, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
@@ -502,7 +516,7 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertTrue(all("当前讲义" in prompt and "本段字幕" in prompt for prompt in audit_prompts))
         ledger = result.summary["review"]["coverage_ledger"]
         self.assertEqual(list(range(len(ledger))), [row["chunk_index"] for row in ledger])
-        self.assertTrue(all(row["status"] == "audited" for row in ledger))
+        self.assertTrue(all(row["status"] == "audited" and row["coverage_evidence"] for row in ledger))
 
     def test_audit_failure_keeps_stage_one_guide_with_warning(self):
         class AuditFailureAI(FakeAI):
@@ -541,13 +555,72 @@ class TranscriptPipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _normalize_study_guide(guide, cues)
 
+    def test_local_audit_cannot_drop_prior_theme_and_requires_current_chunk_coverage(self):
+        cues = [Cue(0, 1000, "第一主题证据", "cue-a"), Cue(1000, 2000, "第二主题证据", "cue-b")]
+        chunks = [TranscriptChunk(index, (cue,)) for index, cue in enumerate(cues)]
+
+        def theme(title, cue):
+            return dict(
+                title=title, conclusion=cue.text, principle_and_context="用于对应字幕片段。",
+                why_and_consequences="遗漏会失去前序课程信息。", steps=["定位", "核对", "保留"],
+                classroom_example=None, boundaries="仅限引文。", connections="关系待核实。",
+                source="课堂明确讲述",
+                evidence=[dict(cue_id=cue.cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=cue.text)],
+            )
+
+        guide = dict(
+            course_map=["第一", "第二", "第三待核实", "第四待核实"],
+            themes=[theme("第一主题", cues[0]), theme("第二主题", cues[1])],
+            checklist=["逐段核对"],
+            questions=[dict(type="recall", prompt=f"题目{i}", answer=f"答案{i}", source="自编练习或例子") for i in range(5)],
+            extensions=["关系一？", "关系二？"],
+        )
+
+        class LocalAuditAI:
+            def __init__(inner_self, wrong_second=False):
+                inner_self.index = 0
+                inner_self.wrong_second = wrong_second
+
+            def chat_completion(inner_self, messages, **kwargs):
+                index = inner_self.index
+                inner_self.index += 1
+                cue = cues[index]
+                evidence_cue = cues[0] if inner_self.wrong_second and index == 1 else cue
+                revised = dict(guide)
+                revised["themes"] = [theme("第二主题", cues[1])] if index == 1 else list(guide["themes"])
+                payload = dict(
+                    chunk_index=index,
+                    time_range=dict(start_ms=cue.start_ms, end_ms=cue.end_ms),
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id=evidence_cue.cue_id, quote=evidence_cue.text)],
+                    ),
+                    issues=[],
+                    revised_study_guide=revised,
+                )
+                return dict(content=json.dumps(payload, ensure_ascii=False))
+
+        audited, review = _audit_guide(LocalAuditAI(), guide, chunks, cues)
+        self.assertEqual(["第一主题", "第二主题"], [item["title"] for item in audited["themes"]])
+        self.assertTrue(all(row["status"] == "audited" and row["coverage_evidence"] for row in review["coverage_ledger"]))
+
+        _audited, failed_review = _audit_guide(LocalAuditAI(wrong_second=True), guide, chunks, cues)
+        self.assertEqual("audit_failed", failed_review["coverage_ledger"][1]["status"])
+        self.assertEqual([], failed_review["coverage_ledger"][1]["coverage_evidence"])
+
     def test_fallback_is_structured_questions_are_answered_and_markdown_ordered(self):
         cues = normalize_cues(parse_vtt(VTT))
         summary = deterministic_summary([validate_map(map_payload(), cues)])
         summary["study_guide"] = _fallback_study_guide(summary, cues)
         summary["review"] = dict(status="completed", issues=[], coverage_ledger=[])
         guide = summary["study_guide"]
-        self.assertTrue(5 <= len(guide["questions"]) <= 8)
+        self.assertTrue(guide["incomplete"])
+        self.assertLess(len(guide["questions"]), 5)
+        prompts = [item["prompt"] for item in guide["questions"]]
+        self.assertEqual(len(prompts), len(set(prompts)))
+        encoded = json.dumps(guide, ensure_ascii=False)
+        for unrelated in ("问卷", "现有量表", "漏斗式", "调研伦理", "管理会计"):
+            self.assertNotIn(unrelated, encoded)
         self.assertTrue(all(item["answer"] for item in guide["questions"]))
         markdown = render_summary(summary)
         headings = ["## 课程地图", "## 分主题讲义", "## 一页检查清单", "## 题目", "## 延伸问题", "## 参考答案", "## 审校记录"]

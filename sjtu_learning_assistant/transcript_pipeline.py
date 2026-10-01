@@ -7,8 +7,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-PROMPT_VERSION = "transcript-v6-two-stage-study-guide"
-PIPELINE_VERSION = "transcript-pipeline-v7"
+PROMPT_VERSION = "transcript-v7-protected-study-guide-audit"
+PIPELINE_VERSION = "transcript-pipeline-v8"
 TARGET_CHUNK_CHARS = 5200
 MAX_CHUNK_CHARS = 6000
 MAX_CHUNK_CUES = 120
@@ -1405,52 +1405,81 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
 
 
 def _fallback_study_guide(summary: Mapping[str, Any], cues: Sequence[Cue]) -> dict[str, Any]:
+    """Build a source-only minimum guide; never inject course-domain knowledge."""
     evidence_items = list(summary.get("knowledge_points", ()))
     if not evidence_items:
         evidence_items = [
             dict(
-                concept="字幕内容",
+                concept=f"{_time_label(cue.start_ms)} 字幕片段",
                 statement=cue.text[:240],
                 evidence=[dict(cue_id=cue.cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=cue.text[:240])],
+                source="字幕存疑",
             )
-            for cue in cues[:4]
+            for cue in cues[:6]
         ]
-    themes = []
-    for item in evidence_items[:6]:
-        statement = _clean_learning_text(item.get("statement"), "依据字幕识别课程陈述。")
-        concept = _clean_learning_text(item.get("concept"), "课程陈述")
+    themes: list[dict[str, Any]] = []
+    seen_themes: set[str] = set()
+    for item in evidence_items:
+        statement = _clean_learning_text(item.get("statement"))
+        concept = _clean_learning_text(item.get("concept"))
         evidence = list(item.get("evidence", ()))
+        key = _canonical_learning_key(concept + statement)
+        if not concept or not statement or not evidence or key in seen_themes:
+            continue
+        first = evidence[0]
         themes.append(dict(
             title=concept,
             conclusion=statement,
-            principle_and_context="在处理课程任务时，以对应时间段的字幕陈述为判断依据。",
-            why_and_consequences="若脱离字幕扩写，会把推断误当成教师结论并影响复习准确性。",
-            steps=["定位对应时间段", "核对原句与结论", "标明内容性质", "只保留证据支持的改写"],
+            principle_and_context=f"仅用于复习 {_time_label(first.get('start_ms'))} 附近的字幕陈述。",
+            why_and_consequences="若离开所列时间戳扩写，可能把未核实内容误当成课堂结论。",
+            steps=["打开所列时间戳", "逐字核对引文", "确认结论未超出引文", "存疑时保留原字幕"],
             classroom_example=None,
-            boundaries="仅覆盖字幕可验证的内容；无法确认时标为“字幕存疑”。",
-            connections="从课程整体目标进入具体表述检查，再回到可执行的研究问题。",
-            source="课堂明确讲述" if evidence else "字幕存疑",
+            boundaries="只覆盖所列字幕引文，不推断未出现的定义、案例或领域规则。",
+            connections="与其他主题的关系尚未获得足够字幕证据。",
+            source=_clean_learning_text(item.get("source"), "课堂明确讲述"),
             evidence=evidence,
         ))
-    map_rows = [
-        "先明确问卷整体设计与决策目标。",
-        "再检查单题与选项是否准确、易懂且编码一致。",
-        "随后评估提问目的、受访者负担与调研伦理。",
-        "最后把决策问题改写为可回答、可测量的研究问题。",
+        seen_themes.add(key)
+        if len(themes) >= 6:
+            break
+    course_map = [
+        f"{_time_label(theme['evidence'][0].get('start_ms'))} · {theme['title']}：{theme['conclusion']}"
+        for theme in themes
     ]
-    concepts = [theme["title"] for theme in themes]
-    while len(concepts) < 5:
-        concepts.append("字幕证据")
-    questions = [
-        dict(type="recall" if index < 2 else "application", prompt=f"如何核验“{concept}”并避免无证据扩写？", answer="定位时间戳，核对原句，区分课堂明确讲述、课堂归纳、自编练习和字幕存疑，再给出可执行修改。", source="自编练习或例子")
-        for index, concept in enumerate(concepts[:5])
-    ]
+    questions: list[dict[str, str]] = []
+    seen_prompts: set[str] = set()
+    seen_bases: set[tuple[str, str]] = set()
+    for index, theme in enumerate(themes):
+        if index % 2:
+            prompt = f"根据 {_time_label(theme['evidence'][0].get('start_ms'))} 的字幕，如何应用“{theme['title']}”？"
+            item_type = "application"
+        else:
+            prompt = f"{_time_label(theme['evidence'][0].get('start_ms'))} 的字幕对“{theme['title']}”作了什么陈述？"
+            item_type = "recall"
+        key = _canonical_learning_key(prompt)
+        basis = (str(theme["evidence"][0].get("cue_id")), item_type)
+        if key in seen_prompts or basis in seen_bases:
+            continue
+        seen_prompts.add(key)
+        seen_bases.add(basis)
+        questions.append(dict(type=item_type, prompt=prompt, answer=theme["conclusion"], source="根据课堂内容归纳"))
+    incomplete_reasons = []
+    if len(course_map) < 4:
+        incomplete_reasons.append("可验证主题不足4个，课程地图未达到完整讲义规模。")
+    if len(questions) < 5:
+        incomplete_reasons.append("可生成的实质不同练习不足5题，未使用重复题凑数。")
+    extensions = [f"“{theme['title']}”与后续字幕主题之间还有哪些待核实关系？" for theme in themes[:3]]
     return dict(
-        course_map=map_rows,
+        course_map=course_map,
         themes=themes,
-        checklist=["目标与研究问题对应", "问卷长度与受访者负担可接受", "优先检查可复用的现有量表", "题目使用通俗语言并解释提问目的", "选项边界逐一核对且编码一致", "题目按漏斗式从一般到具体排序", "发布前由目标人群试填并据反馈修改", "伦理风险、隐私和退出机制已评估"],
+        checklist=[
+            f"复核 {_time_label(theme['evidence'][0].get('start_ms'))} 的引文是否支持“{theme['title']}”。"
+            for theme in themes
+        ],
         questions=questions,
-        extensions=["如何用试填结果判断问卷长度是否需要缩短？", "怎样把一个管理决策拆成可测量的研究问题？"],
+        extensions=extensions,
+        incomplete=bool(incomplete_reasons),
+        warnings=incomplete_reasons,
     )
 
 
@@ -1474,6 +1503,81 @@ def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> st
     )
 
 
+def _evidence_in_chunk(rows: Sequence[Mapping[str, Any]], chunk: TranscriptChunk) -> bool:
+    cue_ids = {cue.cue_id for cue in chunk.cues}
+    return bool(rows) and all(row.get("cue_id") in cue_ids for row in rows)
+
+
+def _audit_issue_supports(identity: str, issues: Sequence[Mapping[str, Any]]) -> bool:
+    key = _canonical_learning_key(identity)
+    return bool(key) and any(
+        key in _canonical_learning_key(str(issue.get("problem", "")) + str(issue.get("fix", "")))
+        and issue.get("evidence")
+        for issue in issues
+    )
+
+
+def _protected_audit_merge(
+    current: Mapping[str, Any],
+    revised: Mapping[str, Any],
+    issues: Sequence[Mapping[str, Any]],
+    chunk: TranscriptChunk,
+) -> dict[str, Any]:
+    """Merge local audit output without permitting unsupported deletion or rewrite."""
+    merged = dict(current)
+    current_themes = list(current.get("themes", ()))
+    revised_themes = {
+        _canonical_learning_key(item.get("title")): item for item in revised.get("themes", ())
+    }
+    themes = []
+    known_theme_keys = set()
+    for old in current_themes:
+        key = _canonical_learning_key(old.get("title"))
+        candidate = revised_themes.get(key)
+        if candidate is not None and candidate != old and _audit_issue_supports(str(old.get("title")), issues):
+            themes.append(candidate)
+        else:
+            themes.append(old)
+        known_theme_keys.add(key)
+    for candidate in revised.get("themes", ()):
+        key = _canonical_learning_key(candidate.get("title"))
+        if key not in known_theme_keys and _evidence_in_chunk(candidate.get("evidence", ()), chunk):
+            themes.append(candidate)
+            known_theme_keys.add(key)
+    merged["themes"] = themes
+
+    current_questions = list(current.get("questions", ()))
+    revised_questions = {
+        _canonical_learning_key(item.get("prompt")): item for item in revised.get("questions", ())
+    }
+    questions = []
+    known_question_keys = set()
+    for old in current_questions:
+        key = _canonical_learning_key(old.get("prompt"))
+        candidate = revised_questions.get(key)
+        if candidate is not None and candidate != old and _audit_issue_supports(str(old.get("prompt")), issues):
+            questions.append(candidate)
+        else:
+            questions.append(old)
+        known_question_keys.add(key)
+    for candidate in revised.get("questions", ()):
+        key = _canonical_learning_key(candidate.get("prompt"))
+        if key not in known_question_keys and _audit_issue_supports(str(candidate.get("prompt")), issues):
+            questions.append(candidate)
+            known_question_keys.add(key)
+    merged["questions"] = questions[:8]
+
+    for field, limit in (("course_map", 6), ("checklist", 16), ("extensions", 3)):
+        values = list(current.get(field, ()))
+        if issues:
+            _merge_normalized_strings(values, revised.get(field, ()), limit)
+        merged[field] = values
+    if current.get("incomplete"):
+        merged["incomplete"] = True
+        merged["warnings"] = list(current.get("warnings", ()))
+    return merged
+
+
 def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[TranscriptChunk], cues: Sequence[Cue]) -> tuple[dict[str, Any], dict[str, Any]]:
     issues: list[dict[str, str]] = []
     ledger: list[dict[str, Any]] = []
@@ -1482,32 +1586,70 @@ def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[Transcr
     for chunk in chunks:
         prompt = (
             "阶段2：对照这一连续时间段字幕审校完整讲义。按遗漏、错配、来源混淆、学习效果、冗余检查。"
-            "返回 JSON：issues（每项 type/problem/evidence/fix）和 revised_study_guide（修订后的完整讲义）。"
-            "不得只审开头；不得把自编练习写成课堂案例。当前讲义："
+            "返回 JSON：chunk_index；time_range（start_ms/end_ms，必须等于本段）；coverage_confirmation"
+            "（confirmed=true，evidence 至少一条且只能引用本段 cue）；issues（每项 type/problem/evidence/fix，"
+            "涉及删除或改写时 evidence 必须引用本段 cue）；revised_study_guide（修订后的完整讲义）。"
+            "即使无需修改也必须用本段证据确认覆盖。不得把自编练习写成课堂案例。当前讲义："
             + json.dumps(current, ensure_ascii=False, separators=(",", ":"))
             + "\n本段字幕：\n" + chunk.as_prompt_text()
         )
         def validate(value: object) -> dict[str, Any]:
             if type(value) is not dict:
                 _schema_fail("audit", "object", value)
+            if value.get("chunk_index") != chunk.index:
+                _schema_fail("audit.chunk_index", "current chunk index", value.get("chunk_index"))
+            time_range = value.get("time_range")
+            expected_range = dict(start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms)
+            if type(time_range) is not dict or time_range != expected_range:
+                _schema_fail("audit.time_range", "exact current chunk range", time_range)
+            confirmation = value.get("coverage_confirmation")
+            if type(confirmation) is not dict or confirmation.get("confirmed") is not True:
+                _schema_fail("audit.coverage_confirmation", "explicit true confirmation", confirmation)
+            confirmation_evidence = _normalize_evidence(
+                confirmation.get("evidence"), chunk.cues, "audit.coverage_confirmation.evidence"
+            )
+            if not _evidence_in_chunk(confirmation_evidence, chunk):
+                _schema_fail("audit.coverage_confirmation.evidence", "evidence from current chunk", confirmation_evidence)
             revised = _normalize_study_guide(value.get("revised_study_guide"), cues)
             rows = []
             for raw in _coerce_items(value.get("issues"), "issues", 20):
                 if type(raw) is not dict:
                     continue
-                rows.append({key: _clean_learning_text(raw.get(key)) for key in ("type", "problem", "evidence", "fix")})
-            return dict(issues=rows, revised_study_guide=revised)
+                issue_evidence = _normalize_evidence(raw.get("evidence"), chunk.cues, "audit.issues.evidence")
+                if not _evidence_in_chunk(issue_evidence, chunk):
+                    continue
+                rows.append({
+                    "type": _clean_learning_text(raw.get("type")),
+                    "problem": _clean_learning_text(raw.get("problem")),
+                    "evidence": issue_evidence,
+                    "fix": _clean_learning_text(raw.get("fix")),
+                })
+            return dict(
+                issues=rows,
+                revised_study_guide=revised,
+                coverage_evidence=confirmation_evidence,
+            )
         try:
             if len(prompt) >= MAX_MESSAGE_CHARS:
                 raise ValueError("讲义审校请求超过单次消息安全限制。")
-            result = _json_content(ai_client, prompt, validate, schema_hint="issues 与 revised_study_guide")
-            current = result["revised_study_guide"]
+            result = _json_content(ai_client, prompt, validate, schema_hint="chunk_index、time_range、coverage_confirmation、issues 与 revised_study_guide")
+            current = _protected_audit_merge(
+                current, result["revised_study_guide"], result["issues"], chunk
+            )
             issues.extend(result["issues"])
             status = "audited"
+            coverage_evidence = result["coverage_evidence"]
         except Exception:
             failed = True
             status = "audit_failed"
-        ledger.append(dict(chunk_index=chunk.index, start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms, status=status))
+            coverage_evidence = []
+        ledger.append(dict(
+            chunk_index=chunk.index,
+            start_ms=chunk.cues[0].start_ms,
+            end_ms=chunk.cues[-1].end_ms,
+            status=status,
+            coverage_evidence=coverage_evidence,
+        ))
     status = "completed_with_warnings" if failed else "completed"
     if failed:
         issues.append(dict(type="审校失败", problem="至少一个连续时间段未完成模型审校。", evidence="覆盖账本保留了失败时间段。", fix="保留上一版完整讲义并继续审校后续时间段。"))
@@ -1602,6 +1744,8 @@ class TranscriptPipeline:
                 )
         summary["study_guide"] = study_guide
         summary["review"] = review
+        if study_guide.get("incomplete"):
+            warnings.extend(str(item) for item in study_guide.get("warnings", ()))
         summary_empty = not summary_has_content(summary) and not study_guide.get("themes")
         if summary_empty:
             warnings.append(SUMMARY_EMPTY_WARNING)
