@@ -1055,6 +1055,8 @@ class TranscriptService:
             )
             return
         orchestrator = self._phase1_orchestrator(context)
+        job.update(status="organizing", stage="reviewing", progress=max(95, int(job.get("progress") or 0)))
+        self._save_batch(batch)
         result = orchestrator.orchestrate(
             course_id=course_id,
             video_id=video_id,
@@ -1129,7 +1131,7 @@ class TranscriptService:
 
     def _run_phase1_safely(
         self,
-        batch: Mapping[str, Any],
+        batch: dict[str, Any],
         job: dict[str, Any],
         video_dir: Path,
         raw: str,
@@ -1137,6 +1139,7 @@ class TranscriptService:
     ) -> None:
         if not self.enable_phase1:
             return
+        final_state = (job.get("status"), job.get("stage"), job.get("progress"))
         try:
             self._run_phase1(batch, job, video_dir, raw, context)
         except Exception as exc:
@@ -1170,6 +1173,10 @@ class TranscriptService:
                     "artifacts": {},
                     "updated_at": _now(),
                 })
+        finally:
+            if job.get("stage") == "reviewing":
+                job.update(status=final_state[0], stage=final_state[1], progress=final_state[2])
+                self._save_batch(batch)
 
     def _validated_cached_chunks(
         self,
