@@ -234,7 +234,15 @@ function jobTimestamp(job: TimestampedJob) {
 function isActiveTranscriptStatus(status: string, progress: number) {
   return (
     progress < 100 &&
-    ["queued", "fetching", "saved", "organizing", "reviewing"].includes(status)
+    Array.of(
+      "queued",
+      "fetching",
+      "saved",
+      "waiting_remote",
+      "waiting_for_ai",
+      "organizing",
+      "reviewing",
+    ).includes(status)
   );
 }
 
@@ -245,6 +253,8 @@ function jobCategory(status: string, progress = 0): JobCategory {
       "queued",
       "fetching",
       "saved",
+      "waiting_remote",
+      "waiting_for_ai",
       "organizing",
       "reviewing",
       "running",
@@ -260,13 +270,11 @@ function jobCategory(status: string, progress = 0): JobCategory {
     return "attention";
   return "history";
 }
-
 function compareTranscriptJobs(left: TranscriptJob, right: TranscriptJob) {
-  return (
-    jobTimestamp(right as TranscriptJobWithTime) -
-      jobTimestamp(left as TranscriptJobWithTime) ||
-    right.id.localeCompare(left.id)
-  );
+  const leftTimestamp = jobTimestamp(left as TranscriptJobWithTime);
+  const rightTimestamp = jobTimestamp(right as TranscriptJobWithTime);
+  if (!leftTimestamp || !rightTimestamp) return 0;
+  return rightTimestamp - leftTimestamp;
 }
 
 export function latestTranscriptJobs(jobs: TranscriptJob[]) {

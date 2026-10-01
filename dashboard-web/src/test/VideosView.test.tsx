@@ -339,6 +339,43 @@ describe("VideosView", () => {
     expect(screen.queryByText("已完整整理 1/1")).toBeNull();
   });
 
+  it.each(Array.of("waiting_remote", "waiting_for_ai"))(
+    "%s 计为处理中、显示阶段文案且不会重复创建任务",
+    async (status) => {
+      const start = vi.fn(async () => undefined);
+      const { container } = render(
+        <VideosView
+          videos={videos}
+          transcriptJobs={Array.of({
+            id: `active-${status}`,
+            batch_id: "active-batch",
+            source_id: "v3",
+            title: "第三讲",
+            status: status as TranscriptJob["status"],
+            stage: status,
+            progress: 20,
+            attempts: 1,
+          })}
+          onStartTranscript={start}
+        />,
+      );
+
+      expect(container.textContent).toContain("1 项进行中");
+      expect(
+        screen.getAllByText(/正在生成字幕|正在生成讲义/).length,
+      ).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole("button", { name: "处理中" }));
+      expect(screen.getAllByText("第三讲").length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole("button", { name: "全部" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "一键整理未完成 2 节" }),
+      );
+      await waitFor(() =>
+        expect(start).toHaveBeenCalledWith(Array.of(videos[0], videos[1])),
+      );
+    },
+  );
+
   it("partial 加 reused 仍进入一键整理未完成并可重试", async () => {
     const start = vi.fn(async () => undefined);
     const retry = vi.fn(async () => undefined);
@@ -1204,6 +1241,41 @@ describe("VideosView", () => {
     expect(screen.getByText("已有材料 · 更新失败")).toBeTruthy();
     expect(screen.getByText("0 项进行中 · 1 项需关注")).toBeTruthy();
     expect(screen.queryByText("旧完整讲义")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "失败" }));
+    expect(screen.getByText("第三讲")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "已完整整理" }));
+    expect(document.querySelector(".video-recording-list")).toBeNull();
+  });
+
+  it("无时间戳时严格保留 API 首项作为每个 source_id 的最新任务", () => {
+    const jobs: TranscriptJob[] = Array.of(
+      {
+        id: "19d8c850-2b06-4bb8-8dc8-0a58c41820f1",
+        batch_id: "new-batch",
+        source_id: "v3",
+        title: "API 首项失败",
+        status: "failed",
+        stage: "reviewing",
+        progress: 100,
+        attempts: 2,
+      },
+      {
+        id: "f65a7b80-4ea0-48ce-b92d-fca9a21a98a4",
+        batch_id: "old-batch",
+        source_id: "v3",
+        title: "API 后项旧完成",
+        status: "completed",
+        stage: "completed",
+        progress: 100,
+        attempts: 1,
+      },
+    );
+    render(<VideosView videos={Array.of(videos[2])} transcriptJobs={jobs} />);
+
+    expect(screen.getByText("已有材料 · 更新失败")).toBeTruthy();
+    expect(screen.getByText("0 项进行中 · 1 项需关注")).toBeTruthy();
+    expect(screen.getByText("API 首项失败")).toBeTruthy();
+    expect(screen.queryByText("API 后项旧完成")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "失败" }));
     expect(screen.getByText("第三讲")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "已完整整理" }));
