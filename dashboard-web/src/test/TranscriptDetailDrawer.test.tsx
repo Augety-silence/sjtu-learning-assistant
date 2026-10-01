@@ -127,6 +127,93 @@ afterEach(() => {
 });
 
 describe("TranscriptDetailDrawer Phase1", () => {
+  it("shows the job message once and keeps low-frequency actions collapsed", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: null,
+      pipeline_status: null,
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+
+    renderDrawer({ ...job, status: "partial" });
+
+    await screen.findByText(job.message as string);
+    expect(screen.getAllByText(job.message as string)).toHaveLength(1);
+    const more = screen.getByText("更多操作");
+    expect(more.closest("details")?.hasAttribute("open")).toBe(false);
+  });
+
+  it("presents partial and failed-at-100 states without claiming total failure", async () => {
+    getV2.mockResolvedValue(v2List());
+    const view = renderDrawer({ ...job, status: "partial", progress: 100 });
+
+    expect(await screen.findByText("已有可用结果")).toBeTruthy();
+    expect(document.querySelector(".transcript-status-failed")).toBeNull();
+
+    view.rerender(
+      <TranscriptDetailDrawer
+        job={{ ...job, status: "failed", progress: 100 }}
+        onClose={vi.fn()}
+        onRetry={vi.fn()}
+        onCancel={vi.fn()}
+        onReveal={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("已有可用结果")).toBeTruthy();
+    expect(screen.getByText("99%")).toBeTruthy();
+    expect(screen.queryByText("暂无可用结果")).toBeNull();
+  });
+
+  it("adapts structured summaries into a knowledge-example-training flow", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: null,
+      pipeline_status: null,
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+    readV1.mockResolvedValue({
+      id: `${job.id}:summary`,
+      kind: "summary",
+      content: JSON.stringify({
+        knowledge_points: ["理解机会成本"],
+        classroom_examples: [{ title: "定价决策", content: "比较相关成本" }],
+        auxiliary_training: [{ question: "哪些成本与决策相关？" }],
+      }),
+    });
+
+    renderDrawer();
+
+    expect(await screen.findByRole("heading", { name: "知识点" })).toBeTruthy();
+    expect(await screen.findByText("理解机会成本")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "课堂例子" })).toBeTruthy();
+    expect(screen.getByText("比较相关成本")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "辅助训练" })).toBeTruthy();
+    expect(screen.getByText("哪些成本与决策相关？")).toBeTruthy();
+  });
+
+  it("falls back from legacy summary text for all learning-flow sections", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: null,
+      pipeline_status: null,
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+
+    renderDrawer();
+
+    expect(await screen.findByRole("heading", { name: "知识点" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "课堂例子" })).toBeTruthy();
+    expect(screen.getByText(/旧版小结未单独标注课堂例子/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "辅助训练" })).toBeTruthy();
+    expect(screen.getByText(/暂无配套训练/)).toBeTruthy();
+  });
+
   it("keeps legacy records usable and explains that deep correction is absent", async () => {
     getV2.mockResolvedValue({
       available: false,
@@ -318,7 +405,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     });
 
     expect(await screen.findByText("深度校对部分完成")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-completed")).toBeTruthy();
+    expect(document.querySelector(".transcript-status-partial")).toBeTruthy();
     expect(document.querySelector(".transcript-status-failed")).toBeNull();
   });
 });

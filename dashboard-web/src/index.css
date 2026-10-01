@@ -7828,8 +7828,8 @@ button.transcript-status { cursor: pointer; }
 button.transcript-status:hover { background: var(--surface-hover); }
 button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .transcript-status-completed { color: var(--status-success); border-color: var(--status-success); }
-.transcript-status-partial,
-.transcript-status-failed { color: var(--status-danger); border-color: var(--status-danger); }
+.transcript-status-partial { color: var(--status-warning); border-color: var(--status-warning); background: var(--status-warning-bg); }
+.transcript-status-failed { color: var(--status-danger); border-color: var(--status-danger); background: var(--status-danger-bg); }
 .transcript-status-organizing,
 .transcript-status-fetching { color: var(--action-primary); border-color: var(--border-info); }
 .transcript-status-waiting_remote,
@@ -7866,7 +7866,9 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   font-size: 12px;
   line-height: 16px;
 }
-.transcript-drawer-actions { justify-content: flex-start; margin: 12px 0 16px; flex-wrap: wrap; }
+.transcript-drawer-actions { margin: 12px 0 16px; color: var(--text-secondary); font-size: 12px; }
+.transcript-drawer-actions > summary { width: fit-content; cursor: pointer; }
+.transcript-drawer-actions > div { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
 .transcript-progress-block { color: var(--text-secondary); font-size: 12px; }
 .transcript-progress-track { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: var(--surface-hover); }
 .transcript-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--action-primary); }
@@ -7895,6 +7897,15 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .phase1-readonly-note { margin-top: 0; }
 .phase1-inline-state { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
 .transcript-drawer-content { min-height: 180px; padding: 20px 2px; }
+.learning-flow { max-width: 72ch; display: grid; }
+.learning-flow > section { min-width: 0; padding: 18px 0; border-top: 1px solid var(--border-subtle); }
+.learning-flow > section:first-child { padding-top: 0; border-top: 0; }
+.learning-flow h4 { margin: 0 0 10px; font-size: 15px; line-height: 22px; }
+.learning-flow-items { display: grid; gap: 12px; }
+.learning-flow-items .transcript-markdown { min-width: 0; }
+.learning-flow-items .transcript-markdown > :first-child { margin-top: 0; }
+.learning-flow-items .transcript-markdown > :last-child { margin-bottom: 0; }
+.learning-flow-fallback { margin: 0; color: var(--text-secondary); line-height: 1.7; overflow-wrap: anywhere; }
 .transcript-muted { color: var(--text-secondary); }
 .transcript-inline-error { color: var(--status-danger); }
 .transcript-raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -8045,9 +8056,10 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .video-course-trigger > span,
 .video-course-readonly {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
+.video-course-trigger > span { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
 .video-course-trigger svg {
   width: 17px;
@@ -8106,8 +8118,8 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-course-popup button > span {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .video-course-popup button:hover,
@@ -8243,8 +8255,9 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .video-now-playing span {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.video-now-playing strong { overflow-wrap: anywhere; white-space: normal; }
+.video-now-playing span { white-space: nowrap; }
 
 .video-now-playing strong {
   font-size: 15px;
@@ -8389,14 +8402,19 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .video-recording-copy > span {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .video-recording-copy > strong {
   color: var(--text-primary);
   font-size: 13px;
   line-height: 20px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
+.video-recording-copy > span { white-space: nowrap; }
 
 .video-recording-copy > span,
 .video-recording-copy > div > span:not(.video-status) {
@@ -8484,7 +8502,11 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-more {
   position: relative;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-motion-out);
 }
+.video-recording-list > li:hover .video-more,
+.video-recording-list > li:focus-within .video-more { opacity: 1; }
 
 .video-more-menu {
   position: absolute;
@@ -8692,6 +8714,10 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   .video-course-heading {
     grid-template-columns: minmax(0, 1fr);
   }
+
+@media (hover: none) {
+  .video-more { opacity: 1; }
+}
 
   .video-course-count {
     justify-self: start;

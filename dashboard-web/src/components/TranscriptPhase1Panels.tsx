@@ -22,6 +22,11 @@ type Phase1PanelKind =
 
 type UnknownRecord = Record<string, unknown>;
 type ParsedUncertainSpan = Phase1UncertainSpan & { candidateTotal: number };
+type LearningSummary = {
+  knowledgePoints: string[];
+  classroomExamples: string[];
+  auxiliaryTraining: string[];
+};
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -48,6 +53,140 @@ function asStringArray(value: unknown) {
           typeof item === "string" && Boolean(item.trim()),
       )
     : [];
+}
+
+function readLearningItems(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : value == null ? [] : [value];
+  return values
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      const row = asRecord(item);
+      if (!row) return "";
+      const heading =
+        asString(row.title) ?? asString(row.name) ?? asString(row.topic);
+      const body =
+        asString(row.content) ??
+        asString(row.text) ??
+        asString(row.description) ??
+        asString(row.example) ??
+        asString(row.question) ??
+        asString(row.prompt);
+      if (heading && body) return `**${heading}**\n\n${body}`;
+      return heading ?? body ?? "";
+    })
+    .filter(Boolean);
+}
+
+function firstLearningItems(record: UnknownRecord, keys: string[]) {
+  for (const key of keys) {
+    const items = readLearningItems(record[key]);
+    if (items.length) return items;
+  }
+  return [];
+}
+
+function parseLearningSummary(content: string): LearningSummary {
+  let source: UnknownRecord | null = null;
+  try {
+    source = asRecord(JSON.parse(content));
+  } catch {
+    source = null;
+  }
+  if (!source) {
+    return {
+      knowledgePoints: content.trim() ? [content.trim()] : [],
+      classroomExamples: [],
+      auxiliaryTraining: [],
+    };
+  }
+  const nested =
+    asRecord(source.learning_flow) ??
+    asRecord(source.learningFlow) ??
+    asRecord(source.summary) ??
+    source;
+  const knowledgePoints = firstLearningItems(nested, [
+    "knowledge_points",
+    "knowledgePoints",
+    "key_points",
+    "keyPoints",
+    "points",
+  ]);
+  return {
+    knowledgePoints: knowledgePoints.length
+      ? knowledgePoints
+      : readLearningItems(source.summary ?? source.content ?? source.text),
+    classroomExamples: firstLearningItems(nested, [
+      "classroom_examples",
+      "classroomExamples",
+      "class_examples",
+      "examples",
+    ]),
+    auxiliaryTraining: firstLearningItems(nested, [
+      "auxiliary_training",
+      "auxiliaryTraining",
+      "training",
+      "practice",
+      "exercises",
+    ]),
+  };
+}
+
+function LearningItems({ items }: { items: string[] }) {
+  return (
+    <div className="learning-flow-items">
+      {items.map((item, index) => (
+        <div
+          className="ai-markdown transcript-markdown"
+          key={`${index}:${item.slice(0, 24)}`}
+        >
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeSanitize]}
+          >
+            {item}
+          </ReactMarkdown>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function TranscriptLearningFlow({ content }: { content: string }) {
+  const summary = parseLearningSummary(content);
+  return (
+    <div className="learning-flow" aria-label="本节学习流">
+      <section aria-labelledby="learning-knowledge-title">
+        <h4 id="learning-knowledge-title">知识点</h4>
+        {summary.knowledgePoints.length ? (
+          <LearningItems items={summary.knowledgePoints} />
+        ) : (
+          <p className="learning-flow-fallback">
+            本节暂未整理出知识点，可先查看规整字幕。
+          </p>
+        )}
+      </section>
+      <section aria-labelledby="learning-examples-title">
+        <h4 id="learning-examples-title">课堂例子</h4>
+        {summary.classroomExamples.length ? (
+          <LearningItems items={summary.classroomExamples} />
+        ) : (
+          <p className="learning-flow-fallback">
+            旧版小结未单独标注课堂例子，可结合规整字幕回看讲解。
+          </p>
+        )}
+      </section>
+      <section aria-labelledby="learning-training-title">
+        <h4 id="learning-training-title">辅助训练</h4>
+        {summary.auxiliaryTraining.length ? (
+          <LearningItems items={summary.auxiliaryTraining} />
+        ) : (
+          <p className="learning-flow-fallback">
+            暂无配套训练，建议根据知识点完成一次复述或自测。
+          </p>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function artifactData(artifact: Phase1ArtifactRead): unknown {

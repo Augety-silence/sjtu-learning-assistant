@@ -216,12 +216,9 @@ describe("VideosView", () => {
     );
     expect(screen.getByText("正在进行 AI 校对")).toBeTruthy();
     expect(
-      screen
-        .getByRole("button", {
-          name: "第三讲：正在规整字幕和 AI 校对，随后生成总结",
-        })
-        .getAttribute("aria-busy"),
-    ).toBe("true");
+      screen.getByRole("button", { name: "第三讲 更多操作" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("menu")).toBeNull();
 
     view.rerender(
       <VideosView
@@ -379,6 +376,46 @@ describe("VideosView", () => {
     expect(screen.getByRole("tab", { name: "AI 总结" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "课件 PDF" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "学习笔记" })).toBeTruthy();
+  });
+
+  it("does not present a failed transcript at 100% as a total failure", () => {
+    const { container } = render(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "contradictory-job",
+            batch_id: "batch",
+            source_id: "v3",
+            title: "第三讲",
+            status: "failed",
+            stage: "phase1",
+            progress: 100,
+            attempts: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      container.querySelectorAll(".video-status-partial").length,
+    ).toBeGreaterThan(0);
+    expect(container.querySelector(".video-status-failed")).toBeNull();
+  });
+
+  it("keeps low-frequency recording actions behind progressive disclosure", () => {
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        onStartTranscript={vi.fn(async () => undefined)}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "生成 AI 总结" })).toBeNull();
+    const more = screen.getByRole("button", { name: "第三讲 更多操作" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    fireEvent.click(more);
+    expect(screen.getByRole("menuitem", { name: "生成 AI 总结" })).toBeTruthy();
   });
 
   it("keeps the no-task state compact and honest about local notes", () => {

@@ -3,7 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { TranscriptPhase1Panel } from "@/components/TranscriptPhase1Panels";
+import {
+  TranscriptLearningFlow,
+  TranscriptPhase1Panel,
+} from "@/components/TranscriptPhase1Panels";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import {
@@ -307,6 +310,31 @@ export function TranscriptDetailDrawer({
         (warning): warning is string => typeof warning === "string",
       )
     : [];
+  const progress =
+    job.status === "failed" && job.progress >= 100
+      ? 99
+      : Math.max(0, Math.min(100, job.progress));
+  const hasAvailableResult = artifacts.length > 0 || phase1Available;
+  const resultTone = active
+    ? "processing"
+    : ["partial", "completed_with_warnings"].includes(job.status) ||
+        phase1Warning ||
+        (job.status === "failed" && (hasAvailableResult || job.progress >= 100))
+      ? "partial"
+      : job.status === "failed" || job.status === "interrupted"
+        ? "failed"
+        : job.status === "completed"
+          ? "completed"
+          : "pending";
+  const resultLabel = active
+    ? "正在处理"
+    : resultTone === "partial"
+      ? "已有可用结果"
+      : resultTone === "failed"
+        ? "暂无可用结果"
+        : resultTone === "completed"
+          ? "处理完成"
+          : "等待处理";
 
   return (
     <div className="transcript-overlay" data-modal-layer>
@@ -329,9 +357,9 @@ export function TranscriptDetailDrawer({
           <div>
             <div className="transcript-heading-statuses">
               <span
-                className={`transcript-status transcript-status-${job.status}`}
+                className={`transcript-status transcript-status-${resultTone}`}
               >
-                {job.message || "字幕任务"}
+                {resultLabel}
               </span>
               {phase1Warning && (
                 <span className="transcript-phase1-warning" role="status">
@@ -355,7 +383,7 @@ export function TranscriptDetailDrawer({
         <div className="transcript-progress-block" aria-live="polite">
           <div>
             <span>{job.message || "等待处理"}</span>
-            <strong>{Math.max(0, Math.min(100, job.progress))}%</strong>
+            <strong>{progress}%</strong>
           </div>
           <div
             className="transcript-progress-track"
@@ -363,44 +391,47 @@ export function TranscriptDetailDrawer({
             aria-label="字幕整理进度"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={Math.max(0, Math.min(100, job.progress))}
+            aria-valuenow={progress}
           >
-            <span
-              style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }}
-            />
+            <span style={{ width: `${progress}%` }} />
           </div>
         </div>
 
-        <div className="transcript-drawer-actions">
-          {active && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void runJobAction(onCancel)}
-            >
-              取消任务
-            </Button>
-          )}
-          {retryable && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void runJobAction(onRetry)}
-            >
-              <RefreshCw aria-hidden="true" />
-              重试
-            </Button>
-          )}
-          {currentV1Artifact && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void onReveal(currentV1Artifact)}
-            >
-              <ExternalLink aria-hidden="true" />在 Finder 中显示
-            </Button>
-          )}
-        </div>
+        {(active || retryable || currentV1Artifact) && (
+          <details className="transcript-drawer-actions">
+            <summary>更多操作</summary>
+            <div>
+              {active && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runJobAction(onCancel)}
+                >
+                  取消任务
+                </Button>
+              )}
+              {retryable && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runJobAction(onRetry)}
+                >
+                  <RefreshCw aria-hidden="true" />
+                  重试
+                </Button>
+              )}
+              {currentV1Artifact && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onReveal(currentV1Artifact)}
+                >
+                  <ExternalLink aria-hidden="true" />在 Finder 中显示
+                </Button>
+              )}
+            </div>
+          </details>
+        )}
 
         <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)}>
           <TabsList aria-label="字幕结果">
@@ -501,6 +532,10 @@ export function TranscriptDetailDrawer({
               <pre className="transcript-raw">
                 {v1Content[currentV1Artifact.id] ?? ""}
               </pre>
+            ) : tab === "summary" ? (
+              <TranscriptLearningFlow
+                content={v1Content[currentV1Artifact.id] ?? ""}
+              />
             ) : (
               <div className="ai-markdown transcript-markdown">
                 <ReactMarkdown

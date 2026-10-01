@@ -226,7 +226,11 @@ function compactJobTitle(title: string, courseName: string) {
   return compact || title;
 }
 
-function transcriptStatus(status?: TranscriptJob["status"]): UnifiedStatus {
+function transcriptStatus(
+  status?: TranscriptJob["status"],
+  progress?: number,
+): UnifiedStatus {
+  if (status === "failed" && (progress ?? 0) >= 100) return "partial";
   if (status === "completed") return "completed";
   if (status === "completed_with_warnings" || status === "partial")
     return "partial";
@@ -586,7 +590,7 @@ export function VideosView({
         sourceId: job.source_id,
         title: compactJobTitle(job.title, courseName),
         kind: "字幕与 AI 整理",
-        status: transcriptStatus(job.status),
+        status: transcriptStatus(job.status, job.progress),
         rawStatus: job.status,
         progress: job.progress,
         category: jobCategory(job.status),
@@ -1305,7 +1309,9 @@ export function VideosView({
     }
     return (
       <div className="video-tool-summary">
-        <StatusBadge status={transcriptStatus(selectedJob?.status)} />
+        <StatusBadge
+          status={transcriptStatus(selectedJob?.status, selectedJob?.progress)}
+        />
         <span>
           {subtitleMessage || selectedJob?.message || "尚无可查看的字幕内容。"}
         </span>
@@ -1700,7 +1706,8 @@ export function VideosView({
                   rowSummaryProcessing ||
                   canRequestRowSummary;
                 const hasMenu = Boolean(
-                  canShowTranscript ||
+                  showSummaryAction ||
+                    canShowTranscript ||
                     (video.supportsSubtitle &&
                       (onLoadSubtitles ||
                         onDownloadSubtitle ||
@@ -1732,7 +1739,9 @@ export function VideosView({
                           {sourceLabels[video.source]}
                         </span>
                         <span>{formatDuration(video.duration)}</span>
-                        <StatusBadge status={transcriptStatus(job?.status)} />
+                        <StatusBadge
+                          status={transcriptStatus(job?.status, job?.progress)}
+                        />
                       </div>
                     </div>
                     <div className="video-recording-actions">
@@ -1749,41 +1758,6 @@ export function VideosView({
                         <Play aria-hidden="true" />
                         播放
                       </Button>
-                      {showSummaryAction && (
-                        <Button
-                          variant="link"
-                          size="sm"
-                          loading={rowSummaryProcessing}
-                          loadingLabel={
-                            busy === `summary:${video.id}`
-                              ? "正在启动…"
-                              : "正在生成…"
-                          }
-                          disabled={Boolean(busy) || rowSummaryProcessing}
-                          aria-label={
-                            rowSummaryReady
-                              ? `${video.title}：查看 AI 总结`
-                              : rowSummaryProcessing
-                                ? `${video.title}：正在规整字幕和 AI 校对，随后生成总结`
-                                : `${video.title}：生成 AI 总结（先规整字幕并完成 AI 校对）`
-                          }
-                          onClick={() => {
-                            setSelected(video);
-                            setLearningTab("summary");
-                            if (rowSummaryReady && job) {
-                              setDetailInitialTab("summary");
-                              setDetailJob(job);
-                            } else void requestSummary(video, job);
-                          }}
-                        >
-                          <FileText aria-hidden="true" />
-                          {rowSummaryReady
-                            ? "AI 总结"
-                            : rowSummaryFailed
-                              ? "重试总结"
-                              : "生成总结"}
-                        </Button>
-                      )}
                       {hasMenu && (
                         <div className="video-more">
                           <Button
@@ -1807,6 +1781,33 @@ export function VideosView({
                               role="menu"
                               onMouseDown={(event) => event.stopPropagation()}
                             >
+                              {showSummaryAction && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={
+                                    Boolean(busy) || rowSummaryProcessing
+                                  }
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setSelected(video);
+                                    setLearningTab("summary");
+                                    if (rowSummaryReady && job) {
+                                      setDetailInitialTab("summary");
+                                      setDetailJob(job);
+                                    } else void requestSummary(video, job);
+                                  }}
+                                >
+                                  <FileText aria-hidden="true" />
+                                  {rowSummaryReady
+                                    ? "查看 AI 总结"
+                                    : rowSummaryFailed
+                                      ? "重试生成 AI 总结"
+                                      : rowSummaryProcessing
+                                        ? "AI 总结生成中"
+                                        : "生成 AI 总结"}
+                                </button>
+                              )}
                               {canShowTranscript && (
                                 <button
                                   type="button"

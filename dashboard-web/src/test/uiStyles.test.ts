@@ -188,4 +188,16 @@ describe("responsive and motion regression rules", () => {
     );
     expect(css).toContain("width: min(336px, calc(100% - 16px))");
   });
+
+  it("allows critical course and recording titles to wrap without horizontal overflow", () => {
+    expect(css).toMatch(
+      /\.video-course-trigger > span,[\s\S]*?\.video-course-readonly \{[^}]*overflow-wrap: anywhere[^}]*white-space: normal/,
+    );
+    expect(css).toMatch(
+      /\.video-recording-copy > strong \{[^}]*overflow-wrap: anywhere[^}]*white-space: normal/,
+    );
+    expect(css).toMatch(
+      /\.video-now-playing strong \{[^}]*overflow-wrap: anywhere[^}]*white-space: normal/,
+    );
+  });
 });
