@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeArchiveRoot,
+  commitTimetableImport,
   createAiChatSession,
   createVideoSlidesPdf,
   deleteBackupToken,
@@ -14,6 +15,8 @@ import {
   getBackupStatus,
   getMessageResource,
   getSettings,
+  getTimetableSchedule,
+  getTimetableStatus,
   getTranscriptBatch,
   getTranscriptV2Artifacts,
   getVideoSubtitles,
@@ -21,7 +24,10 @@ import {
   invoke,
   openExternal,
   openMailAttachment,
+  pickTimetableFile,
   planRestore,
+  previewTimetableFile,
+  previewTimetableSample,
   readTranscriptArtifact,
   readTranscriptV2Artifact,
   retryArchive,
@@ -309,6 +315,30 @@ describe("cloud archive bridge payloads", () => {
       job_id: "restore-1",
       conflict_policy: "compare",
       confirm_create_dirs: true,
+    });
+  });
+
+  it("uses the schedule bridge contract without renderer-side file reads", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: {} });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getTimetableStatus();
+    expect(bridge).toHaveBeenLastCalledWith("schedule_status", {});
+    await getTimetableSchedule();
+    expect(bridge).toHaveBeenLastCalledWith("schedule", {});
+    await pickTimetableFile();
+    expect(bridge).toHaveBeenLastCalledWith("schedule_import_pick", {
+      extensions: ["json", "ics"],
+    });
+    await previewTimetableFile("/tmp/class.ics");
+    expect(bridge).toHaveBeenLastCalledWith("schedule_import_preview", {
+      path: "/tmp/class.ics",
+    });
+    await previewTimetableSample();
+    expect(bridge).toHaveBeenLastCalledWith("schedule_import_sample", {});
+    await commitTimetableImport("opaque-preview-id");
+    expect(bridge).toHaveBeenLastCalledWith("schedule_import_commit", {
+      preview_id: "opaque-preview-id",
     });
   });
 

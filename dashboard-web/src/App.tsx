@@ -11,10 +11,7 @@ import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
-import {
-  type CalendarEventItem,
-  CalendarView,
-} from "@/components/CalendarView";
+import type { CalendarEventItem } from "@/components/CalendarView";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
   type GradeAssignment,
@@ -31,6 +28,7 @@ import {
   type RosterMember,
   RosterView,
 } from "@/components/RosterView";
+import { ScheduleView } from "@/components/ScheduleView";
 import { SettingsView } from "@/components/SettingsView";
 import { useToast } from "@/components/Toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
@@ -173,6 +171,8 @@ function adaptCalendarEvent(
         : event.workflow_state === "submitted"
           ? "submitted"
           : undefined,
+    eventType: "assignment",
+    source: "canvas",
     url:
       typeof event.html_url === "string"
         ? event.html_url
@@ -182,12 +182,10 @@ function adaptCalendarEvent(
   };
 }
 
-function CalendarAdapter({
+function ScheduleAdapter({
   onNavigateAssignments,
-  embedded = false,
 }: {
   onNavigateAssignments: () => void;
-  embedded?: boolean;
 }) {
   const [month, setMonth] = useState(
     () => new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -195,7 +193,7 @@ function CalendarAdapter({
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const loadCanvas = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -214,34 +212,13 @@ function CalendarAdapter({
           ),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "课程日历加载失败"));
+      setError(messageFrom(reason, "Canvas 日历加载失败"));
     } finally {
       setLoading(false);
     }
   }, [month]);
-  useEffect(() => void load(), [load]);
-  return (
-    <CalendarView
-      events={events}
-      month={month}
-      embedded={embedded}
-      loading={loading}
-      error={error}
-      onRetry={load}
-      onMonthChange={setMonth}
-      onOpenEvent={(event) => {
-        if (event.url) void openExternal(event.url);
-        else onNavigateAssignments();
-      }}
-    />
-  );
-}
+  useEffect(() => void loadCanvas(), [loadCanvas]);
 
-function ScheduleAdapter({
-  onNavigateAssignments,
-}: {
-  onNavigateAssignments: () => void;
-}) {
   return (
     <div className="section-stack">
       <Tabs defaultValue="calendar">
@@ -252,9 +229,17 @@ function ScheduleAdapter({
           </TabsList>
         </div>
         <TabsContent value="calendar">
-          <CalendarAdapter
-            embedded
-            onNavigateAssignments={onNavigateAssignments}
+          <ScheduleView
+            canvasEvents={events}
+            canvasLoading={loading}
+            canvasError={error}
+            month={month}
+            onMonthChange={setMonth}
+            onRetryCanvas={loadCanvas}
+            onOpenCanvasEvent={(event) => {
+              if (event.url) void openExternal(event.url);
+              else onNavigateAssignments();
+            }}
           />
         </TabsContent>
         <TabsContent value="deadlines">

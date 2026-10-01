@@ -590,6 +590,62 @@ export interface CalendarResult {
   upcoming_events: CalendarEventDto[];
 }
 
+export type TimetableConnectionState =
+  | "loading"
+  | "empty"
+  | "awaiting_configuration"
+  | "connected"
+  | "local"
+  | "offline";
+
+export interface TimetableStatus {
+  state: TimetableConnectionState;
+  provider: string;
+  lastSyncedAt: string | null;
+  message: string | null;
+  supportsOAuth: boolean;
+  hasLocalData: boolean;
+}
+
+export interface TimetableEvent {
+  id: string;
+  title: string;
+  courseName: string;
+  startAt: string;
+  endAt: string | null;
+  location: string | null;
+  periodLabel: string | null;
+  eventType: "course";
+  source: string;
+  canonicalCourseId: string | null;
+}
+
+export interface TimetableSchedule {
+  events: TimetableEvent[];
+}
+
+export interface TimetablePreviewCourse {
+  id?: string;
+  name: string;
+  location?: string | null;
+  sessions?: number;
+}
+
+export interface TimetableImportPreview {
+  previewId: string;
+  format: "json" | "ics" | string;
+  courses: number | Array<string | TimetablePreviewCourse>;
+  sessions: number;
+  warnings: string[];
+}
+
+export interface TimetableImportCommit {
+  status: string;
+  importedCourses: number;
+  importedSessions: number;
+  updatedSessions: number;
+}
+
 export interface GradebookAssignmentDto extends Record<string, unknown> {
   id: string | number;
   name?: string;
