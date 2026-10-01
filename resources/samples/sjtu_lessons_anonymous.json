@@ -1,0 +1,16 @@
+{
+  "data": {
+    "lessons": [
+      {
+        "id": "lesson-demo-001",
+        "term": "2026-2027-1",
+        "course": {"code": "DEMO101", "name": "匿名示例课程"},
+        "schedules": [
+          {"id": "demo-w1", "week": 1, "day": 1, "period": 1, "duration": 2, "startAt": "2026-09-07T08:00:00+08:00", "finishAt": "2026-09-07T09:40:00+08:00", "classroom": "东区示例楼 101"},
+          {"id": "demo-w3", "week": 3, "day": 1, "period": 1, "duration": 2, "startAt": "2026-09-21T08:00:00+08:00", "finishAt": "2026-09-21T09:40:00+08:00", "classroom": "东区示例楼 101"},
+          {"id": "demo-w4", "week": 4, "day": 1, "period": 1, "duration": 2, "startAt": "2026-09-28T08:00:00+08:00", "finishAt": "2026-09-28T09:40:00+08:00", "classroom": "西区示例楼 202"}
+        ]
+      }
+    ]
+  }
+}

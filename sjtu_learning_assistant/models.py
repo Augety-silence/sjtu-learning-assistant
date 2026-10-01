@@ -918,3 +918,98 @@ class ArchiveEvent(Base):
         Index("ix_archive_events_job_created", "job_id", "created_at"),
         Index("ix_archive_events_entry", "entry_id"),
     )
+
+
+class CanonicalCourse(TimestampMixin, Base):
+    __tablename__ = "canonical_courses"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    course_code: Mapped[str | None] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    mapping_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    __table_args__ = (
+        UniqueConstraint("course_code", "normalized_name", name="uq_canonical_course_identity"),
+        CheckConstraint("mapping_status IN (\x27mapped\x27, \x27pending\x27)", name="ck_canonical_course_mapping_status"),
+    )
+
+
+class TimetableProviderConnection(TimestampMixin, Base):
+    __tablename__ = "timetable_provider_connections"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        CheckConstraint("state IN (\x27awaiting_configuration\x27, \x27ready\x27, \x27error\x27)", name="ck_timetable_provider_state"),
+    )
+
+
+class TimetableCourse(TimestampMixin, Base):
+    __tablename__ = "timetable_courses"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider_connection_id: Mapped[int | None] = mapped_column(ForeignKey("timetable_provider_connections.id", ondelete="SET NULL"))
+    canonical_course_id: Mapped[int | None] = mapped_column(ForeignKey("canonical_courses.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    course_code: Mapped[str | None] = mapped_column(String(128))
+    course_name: Mapped[str] = mapped_column(Text, nullable=False)
+    term: Mapped[str | None] = mapped_column(String(128))
+    mapping_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_timetable_course_source"),
+        CheckConstraint("mapping_status IN (\x27mapped\x27, \x27pending\x27)", name="ck_timetable_course_mapping_status"),
+    )
+
+
+class TimetableSession(TimestampMixin, Base):
+    __tablename__ = "timetable_sessions"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    timetable_course_id: Mapped[int] = mapped_column(ForeignKey("timetable_courses.id", ondelete="CASCADE"), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    week: Mapped[int | None] = mapped_column(Integer)
+    day: Mapped[int | None] = mapped_column(Integer)
+    period: Mapped[int | None] = mapped_column(Integer)
+    duration: Mapped[int | None] = mapped_column(Integer)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    classroom: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        UniqueConstraint("timetable_course_id", "source_id", name="uq_timetable_session_source"),
+        CheckConstraint("week IS NULL OR week > 0", name="ck_timetable_session_week"),
+        CheckConstraint("day IS NULL OR (day >= 1 AND day <= 7)", name="ck_timetable_session_day"),
+        CheckConstraint("duration IS NULL OR duration > 0", name="ck_timetable_session_duration"),
+        CheckConstraint("finish_at > start_at", name="ck_timetable_session_times"),
+        Index("ix_timetable_sessions_range", "start_at", "finish_at"),
+    )
+
+
+class TimetableImportRun(TimestampMixin, Base):
+    __tablename__ = "timetable_import_runs"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    imported_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    imported_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warnings: Mapped[list[Any]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    __table_args__ = (CheckConstraint("status IN (\x27committed\x27, \x27failed\x27)", name="ck_timetable_import_status"),)
+
+
+class TimetableImportAudit(Base):
+    __tablename__ = "timetable_import_audit"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(ForeignKey("timetable_import_runs.id", ondelete="CASCADE"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (
+        CheckConstraint("action IN (\x27inserted\x27, \x27updated\x27, \x27unchanged\x27)", name="ck_timetable_audit_action"),
+        Index("ix_timetable_audit_run", "import_run_id"),
+    )

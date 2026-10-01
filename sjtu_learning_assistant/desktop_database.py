@@ -44,7 +44,7 @@ from sjtu_learning_assistant.sqlite_recovery import (
     sqlite_migration_guard,
 )
 
-SCHEMA_VERSION = "0018"
+SCHEMA_VERSION = "0019"
 LEGACY_SQLITE_BASELINE = "0016"
 SCHEMA_VERSION_TABLE = "desktop_schema_version"
 BUSINESS_TABLES = (
@@ -63,6 +63,12 @@ BUSINESS_TABLES = (
     "course_module_items",
     "items",
     "notification_events",
+    "canonical_courses",
+    "timetable_provider_connections",
+    "timetable_courses",
+    "timetable_sessions",
+    "timetable_import_runs",
+    "timetable_import_audit",
 )
 
 metadata = MetaData()
