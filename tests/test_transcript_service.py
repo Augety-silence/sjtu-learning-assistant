@@ -76,7 +76,11 @@ class TranscriptServiceTests(unittest.TestCase):
         batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
         service.run_pending()
         job = service.get_batch(batch["id"])["jobs"][0]
-        self.assertEqual("waiting_for_ai", job["status"])
+        self.assertEqual("completed_with_warnings", job["status"])
+        summary = next(item for item in service.list_artifacts(job["id"])["items"] if item["kind"] == "summary_json")
+        summary_data = json.loads(service.read_artifact(summary["id"])["content"])
+        self.assertIn("study_guide", summary_data)
+        self.assertTrue(summary_data["study_guide"]["themes"])
         raw = next(item for item in service.list_artifacts(job["id"])["items"] if item["kind"] == "raw_vtt")
         self.assertIn("WEBVTT", service.read_artifact(raw["id"])["content"])
         kinds = {item["kind"] for item in service.list_artifacts(job["id"])["items"]}
@@ -106,7 +110,7 @@ class TranscriptServiceTests(unittest.TestCase):
         observer.run_pending()
         self.assertEqual("queued", observer.get_batch(batch.get("id")).get("status"))
         owner.run_pending()
-        self.assertEqual("waiting_for_ai", owner.get_batch(batch.get("id")).get("status"))
+        self.assertEqual("completed_with_warnings", owner.get_batch(batch.get("id")).get("status"))
 
     def test_dead_or_reused_pid_owner_is_recovered_and_retry_can_cancel(self):
         service = self.service()
@@ -335,9 +339,9 @@ class TranscriptServiceTests(unittest.TestCase):
         service.ai_context_provider = lambda: AIContext(client, "qwen", "endpoint-hash", True)
         retry = service.retry(job.get("id"))
         service.run_pending()
-        self.assertEqual(1, client.calls)
+        self.assertGreaterEqual(client.calls, 3)
         retried_job = next(iter(service.get_batch(retry.get("id")).get("jobs")))
-        self.assertEqual("completed", retried_job.get("status"))
+        self.assertEqual("completed_with_warnings", retried_job.get("status"))
 
     def test_summary_empty_is_partial_not_completed(self):
         class EmptySummaryPipeline:

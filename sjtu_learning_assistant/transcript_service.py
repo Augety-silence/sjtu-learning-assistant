@@ -1418,17 +1418,9 @@ class TranscriptService:
             cached = dict()
             manifest["chunks"] = dict()
             manifest["chunk_context"] = self._current_chunk_context(manifest, job, context)
-        if not context.enabled or context.client is None:
-            if not offline_recovery:
-                job["status"] = "waiting_for_ai"
-                job["stage"] = "waiting_for_ai"
-                job["progress"] = 45
-                job["message"] = "原始字幕已保存；启用 AI 后可继续规整。"
-                manifest.update(dict(status="waiting_for_ai", stage="waiting_for_ai", progress=45, updated_at=_now()))
-                self._write_json(manifest_path, manifest)
-                return
+        deterministic_only = not context.enabled or context.client is None
         job["status"] = "organizing"
-        job["stage"] = "offline_reduce" if offline_recovery else "map_reduce"
+        job["stage"] = "deterministic_handout" if deterministic_only else ("offline_reduce" if offline_recovery else "map_reduce")
         job["progress"] = 85 if offline_recovery else 55
         cached = cached or dict()
         chunks_dir = video_dir / "chunks"
@@ -1466,6 +1458,8 @@ class TranscriptService:
             )
             if offline_recovery:
                 run_options["offline_only"] = True
+            elif deterministic_only:
+                run_options["deterministic_only"] = True
             result = self.pipeline.run(raw, context.client, **run_options)
             artifacts = {
                 "cues": ("cues.json", _json_bytes(result.cues)),

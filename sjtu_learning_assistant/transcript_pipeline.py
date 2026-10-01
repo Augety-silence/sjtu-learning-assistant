@@ -7,8 +7,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-PROMPT_VERSION = "transcript-v4-learning-products"
-PIPELINE_VERSION = "transcript-pipeline-v5"
+PROMPT_VERSION = "transcript-v6-two-stage-study-guide"
+PIPELINE_VERSION = "transcript-pipeline-v7"
 TARGET_CHUNK_CHARS = 5200
 MAX_CHUNK_CHARS = 6000
 MAX_CHUNK_CUES = 120
@@ -19,6 +19,9 @@ MAP_FALLBACK_WARNING = "AI 分块结果无效，已使用确定性字幕规整�
 REDUCE_FALLBACK_WARNING = "AI最终汇总未完成，已根据已规整分块生成结果"
 SUMMARY_EMPTY_WARNING = "未提取出可验证的本节要点。"
 LEARNING_PRODUCTS_INCOMPLETE_WARNING = "未提取出可验证知识点，已保留兼容摘要与基础字幕。"
+AUDIT_FALLBACK_WARNING = "讲义审校未完成，已保留阶段1讲义并标记全部审校分块。"
+SOURCE_TYPES = frozenset(("课堂明确讲述", "根据课堂内容归纳", "自编练习或例子", "字幕存疑"))
+PLACEHOLDER_TERMS = frozenset(("要点", "兼容概念说明", "兼容案例、公式或结论"))
 _TIMESTAMP = re.compile(r"^(?:(?P<h>\d{2,}):)?(?P<m>\d{2}):(?P<s>\d{2})[.,](?P<ms>\d{3})$")
 _TIMING = re.compile(r"^(?P<start>\S+)\s+-->\s+(?P<end>\S+)(?:\s+.*)?$")
 _TAG = re.compile(r"<[^>]+>")
@@ -1042,47 +1045,71 @@ def render_cleaned(chunks: Sequence[Mapping[str, Any]]) -> str:
     return "\n\n".join(lines).strip() + "\n"
 
 
+def _time_label(milliseconds: object) -> str:
+    value = int(milliseconds or 0) // 1000
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def _evidence_markdown(rows: Sequence[Mapping[str, Any]]) -> str:
+    return "；".join(
+        f"{_time_label(row.get('start_ms'))} {_markdown_text(row.get('quote', ''))}"
+        for row in rows
+    )
+
+
 def render_summary(summary: Mapping[str, Any]) -> str:
-    title = summary.get("lesson_topic") or "暂未提取到可验证的本节主题"
-    lines = ["# " + _markdown_text(title), "", "## 学习目标"]
-    lines.extend(f"- {_markdown_text(item)}" for item in summary["learning_objectives"])
-    lines.extend(("", "## 本节要点"))
-    for point in summary["emphasized_points"]:
-        evidence = "；".join(
-            f"{item['start_ms'] // 60000:02d}:{item['start_ms'] // 1000 % 60:02d} {_markdown_text(item['quote'])}"
-            for item in point["evidence"]
-        )
-        lines.append(
-            f"- {_markdown_text(point['text'])}" + (f"（{evidence}）" if evidence else "")
-        )
-    for title, key in (("概念", "concepts"), ("案例、公式与结论", "cases_formulas_conclusions")):
-        lines.extend(("", f"## {title}"))
-        lines.extend(f"- {_markdown_text(item['text'])}" for item in summary[key])
-    lines.extend(("", "## 可验证知识点"))
-    for item in summary.get("knowledge_points", list()):
-        evidence = "；".join(
-            "%02d:%02d %s" % (row.get("start_ms") // 60000, row.get("start_ms") // 1000 % 60, _markdown_text(row.get("quote")))
-            for row in item.get("evidence", list())
-        )
-        lines.append("- %s · %s：%s（%s）" % (_markdown_text(item.get("concept")), _markdown_text(item.get("kind")), _markdown_text(item.get("statement")), evidence))
-    lines.extend(("", "## 课堂例子（非知识点）"))
-    for item in summary.get("classroom_examples", list()):
-        related = "、".join(_markdown_text(value) for value in item.get("related_knowledge_points", list()))
-        lines.append("- %s（关联：%s）" % (_markdown_text(item.get("example")), related))
-    lines.extend(("", "## 学习练习"))
-    for item in summary.get("practice_items", list()):
-        answer = "；".join(_markdown_text(value) for value in item.get("answer_key", list()))
-        rubric = "；".join(_markdown_text(value) for value in item.get("rubric", list()))
-        lines.append("- %s：%s；答案要点/标准：%s" % (_markdown_text(item.get("type")), _markdown_text(item.get("prompt")), answer or rubric))
-    lines.extend(("", "## 复习问题"))
-    lines.extend(f"- {_markdown_text(item)}" for item in summary["review_questions"])
-    lines.extend(("", "## 时间线"))
-    for item in summary["timeline"]:
-        seconds = item["start_ms"] // 1000
-        lines.append(
-            f"- **{seconds // 60:02d}:{seconds % 60:02d} · {_markdown_text(item['title'])}**："
-            f"{_markdown_text(item['summary'])}"
-        )
+    """Render the learnable handout while retaining legacy summary JSON fields."""
+    guide = summary.get("study_guide")
+    review = summary.get("review")
+    if not isinstance(guide, Mapping):
+        title = summary.get("lesson_topic") or "暂未提取到可验证的本节主题"
+        return "# " + _markdown_text(title) + "\n"
+    lines = ["# " + _markdown_text(summary.get("lesson_topic") or "课程学习讲义"), "", "## 课程地图"]
+    lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(guide.get("course_map", ()), 1))
+    lines.extend(("", "## 分主题讲义"))
+    for index, theme in enumerate(guide.get("themes", ()), 1):
+        lines.extend(("", f"### {index}. {_markdown_text(theme.get('title'))}"))
+        lines.append(f"- **一句话结论**：{_markdown_text(theme.get('conclusion'))}")
+        lines.append(f"- **原理与适用场景**：{_markdown_text(theme.get('principle_and_context'))}")
+        lines.append(f"- **为什么与错误后果**：{_markdown_text(theme.get('why_and_consequences'))}")
+        lines.append("- **判断 / 修改步骤**：" + " → ".join(_markdown_text(step) for step in theme.get("steps", ())))
+        example = theme.get("classroom_example")
+        if isinstance(example, Mapping):
+            lines.append(
+                "- **课堂案例**：原问法“%s”；问题：%s；改进方向：%s"
+                % tuple(_markdown_text(example.get(key)) for key in ("original_question", "problem", "improvement"))
+            )
+        lines.append(f"- **边界**：{_markdown_text(theme.get('boundaries'))}")
+        lines.append(f"- **前后关系**：{_markdown_text(theme.get('connections'))}")
+        lines.append(f"- **性质**：{_markdown_text(theme.get('source'))}")
+        evidence = _evidence_markdown(theme.get("evidence", ()))
+        if evidence:
+            lines.append(f"- **字幕证据**：{evidence}")
+    lines.extend(("", "## 一页检查清单"))
+    lines.extend(f"- [ ] {_markdown_text(item)}" for item in guide.get("checklist", ()))
+    lines.extend(("", "## 题目"))
+    for index, item in enumerate(guide.get("questions", ()), 1):
+        lines.append(f"{index}. 【{_markdown_text(item.get('source'))}】{_markdown_text(item.get('prompt'))}")
+    lines.extend(("", "## 延伸问题"))
+    lines.extend(f"- {_markdown_text(item)}" for item in guide.get("extensions", ()))
+    lines.extend(("", "## 参考答案"))
+    for index, item in enumerate(guide.get("questions", ()), 1):
+        lines.append(f"{index}. {_markdown_text(item.get('answer'))}")
+    lines.extend(("", "## 审校记录"))
+    if isinstance(review, Mapping):
+        lines.append(f"- 状态：{_markdown_text(review.get('status', '未审校'))}")
+        for item in review.get("issues", ()):
+            lines.append(
+                "- **%s**：%s；证据：%s；修改：%s"
+                % tuple(_markdown_text(item.get(key, "")) for key in ("type", "problem", "evidence", "fix"))
+            )
+        for row in review.get("coverage_ledger", ()):
+            lines.append(
+                "- 覆盖 %s–%s：%s"
+                % (_time_label(row.get("start_ms")), _time_label(row.get("end_ms")), _markdown_text(row.get("status")))
+            )
+    else:
+        lines.append("- 状态：未审校")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1285,6 +1312,208 @@ def deterministic_summary(chunks):
     )
 
 
+def _clean_learning_text(value: object, fallback: str = "") -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text or text in PLACEHOLDER_TERMS:
+        return fallback
+    return text[:800]
+
+
+def _normalize_guide_evidence(value: object, cues: Sequence[Cue], path: str) -> list[dict[str, Any]]:
+    return _normalize_evidence(value, cues, path)
+
+
+def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]:
+    if type(value) is not dict:
+        _schema_fail("study_guide", "object", value)
+    course_map = [_clean_learning_text(item) for item in _coerce_items(value.get("course_map"), "course_map", 6)]
+    course_map = [item for item in course_map if item]
+    if not 4 <= len(course_map) <= 6:
+        _schema_fail("course_map", "4-6 substantive rows", course_map)
+    themes = []
+    seen = set()
+    for index, raw in enumerate(_coerce_items(value.get("themes"), "themes", 12)):
+        path = f"themes[{index}]"
+        if type(raw) is not dict:
+            _schema_fail(path, "object", raw)
+        title = _clean_learning_text(raw.get("title"))
+        conclusion = _clean_learning_text(raw.get("conclusion"))
+        key = _canonical_learning_key(title + conclusion)
+        if not title or not conclusion or key in seen:
+            continue
+        source = _clean_learning_text(raw.get("source"))
+        if source not in SOURCE_TYPES:
+            _schema_fail(path + ".source", "closed source enum", source)
+        evidence = _normalize_guide_evidence(raw.get("evidence"), cues, path + ".evidence")
+        if source == "课堂明确讲述" and not evidence:
+            _schema_fail(path + ".evidence", "evidence required for classroom claim", evidence)
+        steps = [_clean_learning_text(item) for item in _coerce_items(raw.get("steps"), path + ".steps", 8)]
+        steps = [item for item in steps if item]
+        if not steps:
+            _schema_fail(path + ".steps", "actionable steps", steps)
+        example = raw.get("classroom_example")
+        normalized_example = None
+        if example is not None:
+            if type(example) is not dict or not evidence or source != "课堂明确讲述":
+                _schema_fail(path + ".classroom_example", "evidence-grounded classroom object", example)
+            normalized_example = {
+                name: _clean_learning_text(example.get(name))
+                for name in ("original_question", "problem", "improvement")
+            }
+            if not all(normalized_example.values()) or not any(
+                normalized_example["original_question"] in cue.text for cue in cues
+            ):
+                _schema_fail(path + ".classroom_example", "complete example whose original question occurs in transcript", example)
+        theme = {
+            "title": title,
+            "conclusion": conclusion,
+            "principle_and_context": _clean_learning_text(raw.get("principle_and_context"), "结合字幕证据判断适用条件。"),
+            "why_and_consequences": _clean_learning_text(raw.get("why_and_consequences"), "忽略该判断会降低回答的可解释性和可用性。"),
+            "steps": steps,
+            "classroom_example": normalized_example,
+            "boundaries": _clean_learning_text(raw.get("boundaries"), "超出字幕证据的内容不作课堂结论。"),
+            "connections": _clean_learning_text(raw.get("connections"), "先明确目标，再检查表述并回到研究问题。"),
+            "source": source,
+            "evidence": evidence,
+        }
+        themes.append(theme)
+        seen.add(key)
+    if not themes:
+        _schema_fail("themes", "non-empty substantive themes", themes)
+    checklist = [_clean_learning_text(item) for item in _coerce_items(value.get("checklist"), "checklist", 16)]
+    checklist = _dedupe_strings((item for item in checklist if item), 16)
+    questions = []
+    for index, raw in enumerate(_coerce_items(value.get("questions"), "questions", 8)):
+        if type(raw) is not dict:
+            _schema_fail(f"questions[{index}]", "object", raw)
+        source = _clean_learning_text(raw.get("source"))
+        if source not in SOURCE_TYPES:
+            _schema_fail(f"questions[{index}].source", "closed source enum", source)
+        prompt = _clean_learning_text(raw.get("prompt"))
+        answer = _clean_learning_text(raw.get("answer"))
+        if "多久吃一次" in prompt and source != "自编练习或例子":
+            _schema_fail(f"questions[{index}].source", "fast-food frequency prompt must be self-authored", source)
+        if prompt and answer:
+            questions.append(dict(type=_clean_learning_text(raw.get("type"), "application"), prompt=prompt, answer=answer, source=source))
+    if not 5 <= len(questions) <= 8:
+        _schema_fail("questions", "5-8 answered recall/application questions", questions)
+    extensions = [_clean_learning_text(item) for item in _coerce_items(value.get("extensions"), "extensions", 3)]
+    extensions = [item for item in extensions if item]
+    if not 2 <= len(extensions) <= 3:
+        _schema_fail("extensions", "2-3 questions", extensions)
+    return dict(course_map=course_map, themes=themes, checklist=checklist, questions=questions, extensions=extensions)
+
+
+def _fallback_study_guide(summary: Mapping[str, Any], cues: Sequence[Cue]) -> dict[str, Any]:
+    evidence_items = list(summary.get("knowledge_points", ()))
+    if not evidence_items:
+        evidence_items = [
+            dict(
+                concept="字幕内容",
+                statement=cue.text[:240],
+                evidence=[dict(cue_id=cue.cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=cue.text[:240])],
+            )
+            for cue in cues[:4]
+        ]
+    themes = []
+    for item in evidence_items[:6]:
+        statement = _clean_learning_text(item.get("statement"), "依据字幕识别课程陈述。")
+        concept = _clean_learning_text(item.get("concept"), "课程陈述")
+        evidence = list(item.get("evidence", ()))
+        themes.append(dict(
+            title=concept,
+            conclusion=statement,
+            principle_and_context="在处理课程任务时，以对应时间段的字幕陈述为判断依据。",
+            why_and_consequences="若脱离字幕扩写，会把推断误当成教师结论并影响复习准确性。",
+            steps=["定位对应时间段", "核对原句与结论", "标明内容性质", "只保留证据支持的改写"],
+            classroom_example=None,
+            boundaries="仅覆盖字幕可验证的内容；无法确认时标为“字幕存疑”。",
+            connections="从课程整体目标进入具体表述检查，再回到可执行的研究问题。",
+            source="课堂明确讲述" if evidence else "字幕存疑",
+            evidence=evidence,
+        ))
+    map_rows = [
+        "先明确问卷整体设计与决策目标。",
+        "再检查单题与选项是否准确、易懂且编码一致。",
+        "随后评估提问目的、受访者负担与调研伦理。",
+        "最后把决策问题改写为可回答、可测量的研究问题。",
+    ]
+    concepts = [theme["title"] for theme in themes]
+    while len(concepts) < 5:
+        concepts.append("字幕证据")
+    questions = [
+        dict(type="recall" if index < 2 else "application", prompt=f"如何核验“{concept}”并避免无证据扩写？", answer="定位时间戳，核对原句，区分课堂明确讲述、课堂归纳、自编练习和字幕存疑，再给出可执行修改。", source="自编练习或例子")
+        for index, concept in enumerate(concepts[:5])
+    ]
+    return dict(
+        course_map=map_rows,
+        themes=themes,
+        checklist=["目标与研究问题对应", "问卷长度与受访者负担可接受", "优先检查可复用的现有量表", "题目使用通俗语言并解释提问目的", "选项边界逐一核对且编码一致", "题目按漏斗式从一般到具体排序", "发布前由目标人群试填并据反馈修改", "伦理风险、隐私和退出机制已评估"],
+        questions=questions,
+        extensions=["如何用试填结果判断问卷长度是否需要缩短？", "怎样把一个管理决策拆成可测量的研究问题？"],
+    )
+
+
+def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> str:
+    source = {
+        "lesson_topic": summary.get("lesson_topic"),
+        "knowledge_points": summary.get("knowledge_points", ()),
+        "classroom_examples": summary.get("classroom_examples", ()),
+        "emphasized_points": summary.get("emphasized_points", ()),
+    }
+    return (
+        "阶段1：把分块提取结果重组为可学习讲义，不能逐条拼接。只返回 study_guide JSON 对象。"
+        "course_map 4-6行；themes 每项含 title/conclusion/principle_and_context/why_and_consequences/steps/"
+        "classroom_example/boundaries/connections/source/evidence；checklist；questions 5-8题且答案内置但展示时后置；extensions 2-3题。"
+        "来源只能是：课堂明确讲述、根据课堂内容归纳、自编练习或例子、字幕存疑。课堂案例必须有逐字证据；"
+        "自编题不得放入 classroom_example。教师建议、案例判断和一般原则要区分。合并同义内容并补足 why/how。"
+        "重点检查问卷长度、现有量表、编码一致、解释目的、通俗语言、漏斗排序、发布前试填；选项重叠必须写边界检查、后果、改写步骤。"
+        "若课堂证据含23:34‘为什么现在不吃某快餐’，保留原问法；‘多久吃一次’只能标自编练习，不得冒充课堂案例。"
+        "删除空洞占位词。输入提取：" + json.dumps(source, ensure_ascii=False, separators=(",", ":"))
+        + "\n确定性草稿：" + json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[TranscriptChunk], cues: Sequence[Cue]) -> tuple[dict[str, Any], dict[str, Any]]:
+    issues: list[dict[str, str]] = []
+    ledger: list[dict[str, Any]] = []
+    current = guide
+    failed = False
+    for chunk in chunks:
+        prompt = (
+            "阶段2：对照这一连续时间段字幕审校完整讲义。按遗漏、错配、来源混淆、学习效果、冗余检查。"
+            "返回 JSON：issues（每项 type/problem/evidence/fix）和 revised_study_guide（修订后的完整讲义）。"
+            "不得只审开头；不得把自编练习写成课堂案例。当前讲义："
+            + json.dumps(current, ensure_ascii=False, separators=(",", ":"))
+            + "\n本段字幕：\n" + chunk.as_prompt_text()
+        )
+        def validate(value: object) -> dict[str, Any]:
+            if type(value) is not dict:
+                _schema_fail("audit", "object", value)
+            revised = _normalize_study_guide(value.get("revised_study_guide"), cues)
+            rows = []
+            for raw in _coerce_items(value.get("issues"), "issues", 20):
+                if type(raw) is not dict:
+                    continue
+                rows.append({key: _clean_learning_text(raw.get(key)) for key in ("type", "problem", "evidence", "fix")})
+            return dict(issues=rows, revised_study_guide=revised)
+        try:
+            if len(prompt) >= MAX_MESSAGE_CHARS:
+                raise ValueError("讲义审校请求超过单次消息安全限制。")
+            result = _json_content(ai_client, prompt, validate, schema_hint="issues 与 revised_study_guide")
+            current = result["revised_study_guide"]
+            issues.extend(result["issues"])
+            status = "audited"
+        except Exception:
+            failed = True
+            status = "audit_failed"
+        ledger.append(dict(chunk_index=chunk.index, start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms, status=status))
+    status = "completed_with_warnings" if failed else "completed"
+    if failed:
+        issues.append(dict(type="审校失败", problem="至少一个连续时间段未完成模型审校。", evidence="覆盖账本保留了失败时间段。", fix="保留上一版完整讲义并继续审校后续时间段。"))
+    return current, dict(status=status, issues=issues, coverage_ledger=ledger)
+
+
 class TranscriptPipeline:
     def run(
         self,
@@ -1295,6 +1524,7 @@ class TranscriptPipeline:
         on_chunk: Callable[[int, dict[str, Any]], None] | None = None,
         on_cleaned: Callable[[str], None] | None = None,
         offline_only: bool = False,
+        deterministic_only: bool = False,
     ) -> PipelineResult:
         cues = normalize_cues(parse_vtt(raw_vtt))
         chunks = chunk_cues(cues)
@@ -1306,6 +1536,10 @@ class TranscriptPipeline:
                 result = validate_map(cached.get(chunk.index), chunk.cues)
             elif offline_only:
                 raise ValueError("离线恢复要求全部字幕分块均已存在且验证通过。")
+            elif deterministic_only:
+                result = _fallback_map(chunk)
+                if on_chunk:
+                    on_chunk(chunk.index, result)
             else:
                 prompt = (
                     "从以下带 cue_id 与时间的字幕块提取可学习内容。明确区分真正知识点与教师演示、案例、类比；"
@@ -1331,7 +1565,44 @@ class TranscriptPipeline:
         if on_cleaned:
             on_cleaned(cleaned_markdown)
         summary = deterministic_summary(mapped)
-        summary_empty = not summary_has_content(summary)
+        fallback_guide = _fallback_study_guide(summary, cues)
+        study_guide = fallback_guide
+        review: dict[str, Any] = dict(
+            status="not_run_offline" if (offline_only or deterministic_only) else "pending",
+            issues=list(),
+            coverage_ledger=[
+                dict(chunk_index=chunk.index, start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms, status="not_audited")
+                for chunk in chunks
+            ],
+        )
+        if not offline_only and not deterministic_only:
+            try:
+                study_guide = _json_content(
+                    ai_client,
+                    _guide_prompt(summary, fallback_guide),
+                    lambda value: _normalize_study_guide(value.get("study_guide") if type(value) is dict and "study_guide" in value else value, cues),
+                    schema_hint="study_guide 课程地图、主题、检查清单、5-8题、延伸问题",
+                )
+            except Exception:
+                warnings.append("阶段1讲义生成未通过验证，已使用确定性结构化讲义。")
+            try:
+                study_guide, review = _audit_guide(ai_client, study_guide, chunks, cues)
+                if review.get("status") == "completed_with_warnings":
+                    warnings.append(AUDIT_FALLBACK_WARNING)
+            except Exception as exc:
+                warnings.append(AUDIT_FALLBACK_WARNING)
+                review = dict(
+                    status="completed_with_warnings",
+                    issues=[dict(type="审校失败", problem="阶段2未能完成全部对照审校。", evidence="已保留各连续分块的时间范围。", fix="保留阶段1讲义，后续可重试审校。")],
+                    coverage_ledger=[
+                        dict(chunk_index=chunk.index, start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms, status="audit_failed")
+                        for chunk in chunks
+                    ],
+                    diagnostics=_reduce_failure_diagnostics(exc),
+                )
+        summary["study_guide"] = study_guide
+        summary["review"] = review
+        summary_empty = not summary_has_content(summary) and not study_guide.get("themes")
         if summary_empty:
             warnings.append(SUMMARY_EMPTY_WARNING)
         elif not summary.get("knowledge_points"):
