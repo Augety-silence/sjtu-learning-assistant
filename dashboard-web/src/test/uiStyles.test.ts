@@ -222,4 +222,11 @@ describe("responsive and motion regression rules", () => {
     );
     expect(css).not.toContain("@media (hover: none)");
   });
+
+  it("styles quality warnings, folded practice answers and temporary PDF state", () => {
+    expect(css).toMatch(/\.transcript-quality-warning \{[^}]*border:/);
+    expect(css).toMatch(/\.transcript-practice details \{[^}]*border-top:/);
+    expect(css).toMatch(/\.video-pdf-state small \{[^}]*display: block/);
+    expect(css).toMatch(/\.video-state-label-failed \{[^}]*status-danger/);
+  });
 });

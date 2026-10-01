@@ -856,6 +856,12 @@ function VideosAdapter({
             ? await createVideoSlidesPdf(video.id)
             : await createVideoScreenshotPdf(video.id);
         await revealAcademicExport(result.reveal_token);
+        return {
+          scope: "video" as const,
+          open: async () => {
+            await revealAcademicExport(result.reveal_token);
+          },
+        };
       }}
     />
   );

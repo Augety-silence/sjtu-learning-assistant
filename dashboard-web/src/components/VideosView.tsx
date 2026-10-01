@@ -26,6 +26,7 @@ import {
 } from "react";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
+import { TranscriptQualityWarning } from "@/components/TranscriptPhase1Panels";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import type { TranscriptArtifact, TranscriptJob } from "@/lib/types";
@@ -81,6 +82,13 @@ export interface VideoPlaybackResult {
   subtitleMessage?: string | null;
 }
 
+export interface SlidesPdfResult {
+  url?: string | null;
+  fileUrl?: string | null;
+  scope?: "video" | "course";
+  open?: () => void | Promise<void>;
+}
+
 export interface VideosViewProps {
   videos: CourseVideoItem[];
   tasks?: VideoTaskItem[];
@@ -105,7 +113,9 @@ export interface VideosViewProps {
   ) => VideoPlaybackResult | Promise<VideoPlaybackResult>;
   onDownload?: (video: CourseVideoItem) => void | Promise<void>;
   onDownloadSubtitle?: (video: CourseVideoItem) => void | Promise<void>;
-  onCreateSlidesPdf?: (video: CourseVideoItem) => void | Promise<void>;
+  onCreateSlidesPdf?: (
+    video: CourseVideoItem,
+  ) => void | SlidesPdfResult | Promise<void | SlidesPdfResult>;
   onCancelTask?: (task: VideoTaskItem) => void | Promise<void>;
   onStartTranscript?: (videos: CourseVideoItem[]) => void | Promise<void>;
   onRetryTranscript?: (job: TranscriptJob) => void | Promise<void>;
@@ -139,6 +149,7 @@ type OrganizationFilter =
   | "pending"
   | "processing"
   | "completed"
+  | "partial"
   | "failed";
 const statusCopy: Record<UnifiedStatus, string> = {
   completed: "已整理",
@@ -191,6 +202,21 @@ type UnifiedJobItem = {
   task?: VideoTaskItem;
 };
 
+type TranscriptJobWithTime = TranscriptJob & {
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type VideoLearningState = {
+  status: UnifiedStatus;
+  complete: boolean;
+  processing: boolean;
+  partial: boolean;
+  failed: boolean;
+  hasHistoricalComplete: boolean;
+  label?: string;
+};
+
 function jobTimestamp(job: TimestampedJob) {
   for (const value of [
     job.updatedAt,
@@ -205,11 +231,114 @@ function jobTimestamp(job: TimestampedJob) {
   return 0;
 }
 
-function jobCategory(status: string): JobCategory {
-  if (["completed", "cancelled", "interrupted"].includes(status))
+function isActiveTranscriptStatus(status: string, progress: number) {
+  return (
+    progress < 100 &&
+    ["queued", "fetching", "saved", "organizing", "reviewing"].includes(status)
+  );
+}
+
+function jobCategory(status: string, progress = 0): JobCategory {
+  if (
+    progress < 100 &&
+    [
+      "queued",
+      "fetching",
+      "saved",
+      "organizing",
+      "reviewing",
+      "running",
+      "cancelling",
+    ].includes(status)
+  )
+    return "active";
+  if (["completed", "cancelled", "canceled", "interrupted"].includes(status))
     return "history";
-  if (["failed", "partial", "saved"].includes(status)) return "attention";
-  return "active";
+  if (
+    ["failed", "partial", "saved", "completed_with_warnings"].includes(status)
+  )
+    return "attention";
+  return "history";
+}
+
+function compareTranscriptJobs(left: TranscriptJob, right: TranscriptJob) {
+  return (
+    jobTimestamp(right as TranscriptJobWithTime) -
+      jobTimestamp(left as TranscriptJobWithTime) ||
+    right.id.localeCompare(left.id)
+  );
+}
+
+export function latestTranscriptJobs(jobs: TranscriptJob[]) {
+  const latest = new Map<string, TranscriptJob>();
+  for (const job of [...jobs].sort(compareTranscriptJobs)) {
+    if (!latest.has(job.source_id)) latest.set(job.source_id, job);
+  }
+  return latest;
+}
+
+export function transcriptQualityRisk(job?: TranscriptJob) {
+  const quality = job?.quality;
+  if (!quality) return false;
+  const unresolvedRate =
+    quality.metrics.unresolved_rate ??
+    quality.metrics.pending_confirmation_rate ??
+    quality.uncertain_rate;
+  return (
+    quality.schema_pass === false ||
+    quality.critic_pass_rate === 0 ||
+    unresolvedRate >= 0.8
+  );
+}
+
+export function deriveVideoLearningState(
+  job?: TranscriptJob,
+  history: TranscriptJob[] = job ? [job] : [],
+): VideoLearningState {
+  const hasHistoricalComplete = history.some(
+    (item) => item.id !== job?.id && item.status === "completed",
+  );
+  if (!job)
+    return {
+      status: "pending",
+      complete: false,
+      processing: false,
+      partial: false,
+      failed: false,
+      hasHistoricalComplete,
+    };
+  const rawStatus = job.status as string;
+  const phase1Status = job.phase1_status ?? job.pipeline_status;
+  const failed = ["failed", "interrupted"].includes(rawStatus);
+  const processing = isActiveTranscriptStatus(rawStatus, job.progress);
+  const partial =
+    !failed &&
+    !processing &&
+    (rawStatus === "completed_with_warnings" ||
+      rawStatus === "partial" ||
+      phase1Status === "completed_with_warnings" ||
+      phase1Status === "partial" ||
+      phase1Status === "failed" ||
+      job.partial_warning === true ||
+      transcriptQualityRisk(job));
+  const complete = rawStatus === "completed" && !partial;
+  return {
+    status: failed
+      ? "failed"
+      : partial
+        ? "partial"
+        : complete
+          ? "completed"
+          : processing
+            ? transcriptStatus(job)
+            : "pending",
+    complete,
+    processing,
+    partial,
+    failed,
+    hasHistoricalComplete,
+    label: failed && hasHistoricalComplete ? "已有材料 · 更新失败" : undefined,
+  };
 }
 
 function isInteractiveTarget(target: EventTarget | null) {
@@ -241,18 +370,14 @@ function compactJobTitle(title: string, courseName: string) {
 }
 
 function isCompletedForBatch(job?: TranscriptJob) {
-  return Boolean(
-    job &&
-      (job.status === "completed" ||
-        job.status === "completed_with_warnings" ||
-        (job.status as string) === "reused"),
-  );
+  return deriveVideoLearningState(job).complete;
 }
 
 function transcriptStatus(job?: TranscriptJob): UnifiedStatus {
   if (!job) return "pending";
+  if (transcriptQualityRisk(job)) return "partial";
   if (job.status === "completed_with_warnings") return "partial";
-  if (isCompletedForBatch(job)) return "completed";
+  if (job.status === "completed") return "completed";
   if (["partial"].includes(job.status)) return "partial";
   if (["failed", "interrupted"].includes(job.status)) return "failed";
   if (job.status === "queued" || job.stage === "queued") return "queued";
@@ -273,9 +398,7 @@ function transcriptStatus(job?: TranscriptJob): UnifiedStatus {
 }
 
 function transcriptIsProcessing(job?: TranscriptJob) {
-  return ["queued", "transcribing", "generating", "reviewing"].includes(
-    transcriptStatus(job),
-  );
+  return Boolean(job && isActiveTranscriptStatus(job.status, job.progress));
 }
 
 function transcriptIsComplete(job?: TranscriptJob) {
@@ -291,10 +414,34 @@ function transcriptNeedsRetry(job?: TranscriptJob) {
   if (!job) return false;
   const phase1Status = job.phase1_status ?? job.pipeline_status;
   return (
-    ["partial", "failed", "interrupted"].includes(job.status) ||
+    ["partial", "failed", "interrupted", "completed_with_warnings"].includes(
+      job.status,
+    ) ||
     phase1Status === "partial" ||
-    phase1Status === "failed"
+    phase1Status === "failed" ||
+    transcriptQualityRisk(job)
   );
+}
+
+function taskPdfResult(task?: VideoTaskItem): SlidesPdfResult | undefined {
+  if (!task || task.kind !== "slides_pdf" || task.status !== "completed")
+    return undefined;
+  const value = task as VideoTaskItem & {
+    result?: { url?: string; file_url?: string; scope?: "video" | "course" };
+    url?: string;
+    fileUrl?: string;
+    file_url?: string;
+    scope?: "video" | "course";
+  };
+  return {
+    url:
+      value.result?.url ??
+      value.result?.file_url ??
+      value.url ??
+      value.fileUrl ??
+      value.file_url,
+    scope: value.result?.scope ?? value.scope ?? "video",
+  };
 }
 
 function taskStatus(status: VideoTaskStatus): UnifiedStatus {
@@ -553,6 +700,7 @@ export function VideosView({
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null);
   const [learningTab, setLearningTab] = useState<LearningTab>("summary");
@@ -561,7 +709,7 @@ export function VideosView({
   const [selectionMode, setSelectionMode] = useState(false);
   const [detailJob, setDetailJob] = useState<TranscriptJob | null>(null);
   const [detailInitialTab, setDetailInitialTab] = useState<
-    "summary" | "cleaned"
+    "summary" | "practice" | "cleaned"
   >("summary");
   const [pendingSummarySourceId, setPendingSummarySourceId] = useState<
     string | null
@@ -573,6 +721,9 @@ export function VideosView({
   const [summaryRequestSettled, setSummaryRequestSettled] = useState(0);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [pdfResults, setPdfResults] = useState<Map<string, SlidesPdfResult>>(
+    () => new Map(),
+  );
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -583,6 +734,7 @@ export function VideosView({
   } | null>(null);
   const subtitleBlobUrl = useRef<string | null>(null);
   const playRequest = useRef(0);
+  const autoPlaySourceId = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerToolsRef = useRef<HTMLDivElement>(null);
   const speedTriggerRef = useRef<HTMLButtonElement>(null);
@@ -597,23 +749,39 @@ export function VideosView({
   const temporaryPlaybackRef = useRef<TemporaryPlaybackState | null>(null);
   const { showToast } = useToast();
 
-  const jobsByVideo = useMemo(() => {
-    const result = new Map<string, TranscriptJob>();
-    for (const job of transcriptJobs)
-      if (!result.has(job.source_id)) result.set(job.source_id, job);
+  const jobsByVideo = useMemo(
+    () => latestTranscriptJobs(transcriptJobs),
+    [transcriptJobs],
+  );
+  const jobsHistoryByVideo = useMemo(() => {
+    const result = new Map<string, TranscriptJob[]>();
+    for (const job of transcriptJobs) {
+      const history = result.get(job.source_id) ?? [];
+      history.push(job);
+      result.set(job.source_id, history);
+    }
     return result;
   }, [transcriptJobs]);
+  const stateForVideo = useCallback(
+    (videoId: string) =>
+      deriveVideoLearningState(
+        jobsByVideo.get(videoId),
+        jobsHistoryByVideo.get(videoId),
+      ),
+    [jobsByVideo, jobsHistoryByVideo],
+  );
   const matchesOrganizationFilter = useCallback(
     (video: CourseVideoItem) => {
-      const job = jobsByVideo.get(video.id);
+      const state = stateForVideo(video.id);
       if (organizationFilter === "all") return true;
-      if (organizationFilter === "pending") return !job;
-      if (organizationFilter === "processing")
-        return transcriptIsProcessing(job);
-      if (organizationFilter === "completed") return isCompletedForBatch(job);
-      return Boolean(job && transcriptNeedsRetry(job));
+      if (organizationFilter === "pending")
+        return !state.complete && !state.processing && !state.failed;
+      if (organizationFilter === "processing") return state.processing;
+      if (organizationFilter === "completed") return state.complete;
+      if (organizationFilter === "partial") return state.partial;
+      return state.failed;
     },
-    [jobsByVideo, organizationFilter],
+    [organizationFilter, stateForVideo],
   );
   const filtered = useMemo(
     () =>
@@ -636,27 +804,30 @@ export function VideosView({
   const organizationCounts = useMemo(() => {
     let completed = 0;
     let processing = 0;
+    let partial = 0;
     let failed = 0;
     for (const video of videos) {
-      const job = jobsByVideo.get(video.id);
-      if (isCompletedForBatch(job)) completed += 1;
-      else if (transcriptIsProcessing(job)) processing += 1;
-      else if (job && transcriptNeedsRetry(job)) failed += 1;
+      const state = stateForVideo(video.id);
+      if (state.complete) completed += 1;
+      else if (state.processing) processing += 1;
+      else if (state.failed) failed += 1;
+      else if (state.partial) partial += 1;
     }
     return {
       completed,
       processing,
+      partial,
       failed,
-      pending: videos.length - completed - processing - failed,
+      pending: videos.length - completed - processing - partial - failed,
     };
-  }, [jobsByVideo, videos]);
+  }, [stateForVideo, videos]);
   const unfinishedVideos = useMemo(
     () =>
       videos.filter((video) => {
-        const job = jobsByVideo.get(video.id);
-        return !isCompletedForBatch(job) && !transcriptIsProcessing(job);
+        const state = stateForVideo(video.id);
+        return !state.complete && !state.processing;
       }),
-    [jobsByVideo, videos],
+    [stateForVideo, videos],
   );
   const skippedOrganizationCount = videos.length - unfinishedVideos.length;
   const selectedJob = selected ? jobsByVideo.get(selected.id) : undefined;
@@ -673,15 +844,18 @@ export function VideosView({
     : [];
   const derivedJobs = useMemo(() => {
     const combined: UnifiedJobItem[] = [
-      ...transcriptJobs.map((job, order) => ({
+      ...[...jobsByVideo.values()].map((job, order) => ({
         id: job.id,
         sourceId: job.source_id,
         title: compactJobTitle(job.title, courseName),
         kind: "字幕与 AI 整理",
-        status: transcriptStatus(job),
+        status: deriveVideoLearningState(
+          job,
+          jobsHistoryByVideo.get(job.source_id),
+        ).status,
         rawStatus: job.status,
         progress: job.progress,
-        category: jobCategory(job.status),
+        category: jobCategory(job.status, job.progress),
         timestamp: jobTimestamp(job as TranscriptJob & TimestampedJob),
         order,
         transcript: job,
@@ -694,7 +868,7 @@ export function VideosView({
         status: taskStatus(task.status),
         rawStatus: task.status,
         progress: task.progress ?? 0,
-        category: jobCategory(task.status),
+        category: jobCategory(task.status, task.progress ?? 0),
         timestamp: jobTimestamp(task),
         order: transcriptJobs.length + index,
         task,
@@ -713,7 +887,13 @@ export function VideosView({
       sourceCategories.add(sourceCategory);
       return true;
     });
-  }, [courseName, tasks, transcriptJobs]);
+  }, [
+    courseName,
+    jobsByVideo,
+    jobsHistoryByVideo,
+    tasks,
+    transcriptJobs.length,
+  ]);
   const activeJobs = derivedJobs.filter((job) => job.category === "active");
   const attentionJobs = derivedJobs
     .filter((job) => job.category === "attention")
@@ -733,6 +913,7 @@ export function VideosView({
   }, [videos, selected]);
   useLayoutEffect(() => {
     playRequest.current += 1;
+    autoPlaySourceId.current = null;
     if (subtitleBlobUrl.current) {
       URL.revokeObjectURL(subtitleBlobUrl.current);
       subtitleBlobUrl.current = null;
@@ -750,6 +931,7 @@ export function VideosView({
     setSelected(null);
     setSelectedIds(new Set());
     setPlaybackUrl(null);
+    setPlaybackError(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
     setBusy(null);
@@ -1161,34 +1343,40 @@ export function VideosView({
       if (result) useSubtitleResult(result);
     });
 
-  const play = async (video: CourseVideoItem) => {
+  const play = async (video: CourseVideoItem, shouldAutoPlay = true) => {
     if (video.playable === false || busy) return;
     stopTemporaryPlayback();
+    videoRef.current?.pause();
     playerLoadedRef.current = false;
     const request = ++playRequest.current;
     revokeSubtitleBlob();
     setSelected(video);
+    autoPlaySourceId.current = shouldAutoPlay ? video.id : null;
     setPlaybackUrl(null);
+    setPlaybackError(null);
     setSubtitleUrl(null);
     setSubtitleMessage(video.supportsSubtitle ? "正在加载字幕…" : null);
     setBusy(`play:${video.id}`);
     try {
       const result = await onPlay?.(video);
       if (playRequest.current !== request) return;
+      let nextUrl: string | null = null;
       if (typeof result === "string") {
-        setPlaybackUrl(result);
+        nextUrl = result;
         setSubtitleMessage(null);
       } else if (result) {
-        setPlaybackUrl(result.url ?? video.playbackUrl ?? null);
+        nextUrl = result.url ?? video.playbackUrl ?? null;
         useSubtitleResult({
           ...result,
           subtitleUrl: result.subtitleUrl ?? video.subtitleUrl,
         });
       } else {
-        setPlaybackUrl(video.playbackUrl ?? null);
+        nextUrl = video.playbackUrl ?? null;
         setSubtitleUrl(video.subtitleUrl ?? null);
         setSubtitleMessage(null);
       }
+      setPlaybackUrl(nextUrl);
+      if (!nextUrl) setPlaybackError("该节录像未返回可播放地址。");
       if (
         video.source === "video_space" &&
         video.supportsSubtitle &&
@@ -1198,14 +1386,22 @@ export function VideosView({
         if (playRequest.current === request) useSubtitleResult(subtitleResult);
       }
     } catch (reason) {
-      if (playRequest.current === request)
-        showToast({
-          kind: "error",
-          message: reason instanceof Error ? reason.message : "无法播放视频",
-        });
+      if (playRequest.current === request) {
+        const message =
+          reason instanceof Error ? reason.message : "无法播放该节录像";
+        setPlaybackUrl(null);
+        autoPlaySourceId.current = null;
+        setPlaybackError(message);
+        showToast({ kind: "error", message });
+      }
     } finally {
       if (playRequest.current === request) setBusy(null);
     }
+  };
+
+  const viewLearningMaterials = async (video: CourseVideoItem) => {
+    setLearningTab("summary");
+    await play(video, false);
   };
 
   const toggleVideo = (videoId: string) =>
@@ -1290,9 +1486,26 @@ export function VideosView({
     }
     setSummaryRequestSettled((value) => value + 1);
   };
+  const rememberPdfResult = (
+    video: CourseVideoItem,
+    result: void | SlidesPdfResult,
+  ) => {
+    const value = result ?? {};
+    const key =
+      value.scope === "course" ? `course:${courseId ?? courseName}` : video.id;
+    setPdfResults((current) => new Map(current).set(key, value));
+  };
+  const createPdf = (video: CourseVideoItem, key = `pdf:${video.id}`) =>
+    run(key, "课件已生成（临时文件）。", async () => {
+      const result = await onCreateSlidesPdf?.(video);
+      rememberPdfResult(video, result);
+    });
   const createPdfs = () =>
-    run("pdf:batch", "课件 PDF 已生成。", async () => {
-      for (const video of pdfEligible) await onCreateSlidesPdf?.(video);
+    run("pdf:batch", "所选课件已生成（临时文件）。", async () => {
+      for (const video of pdfEligible) {
+        const result = await onCreateSlidesPdf?.(video);
+        rememberPdfResult(video, result);
+      }
       setSelectedIds(new Set());
     });
 
@@ -1301,7 +1514,13 @@ export function VideosView({
       return (
         <p className="video-tool-empty">选择右侧录像后，这里会显示学习材料。</p>
       );
-    if (!selectedJob && selectedTasks.length === 0 && !subtitleMessage)
+    if (
+      tab !== "pdf" &&
+      tab !== "notes" &&
+      !selectedJob &&
+      selectedTasks.length === 0 &&
+      !subtitleMessage
+    )
       return (
         <div className="video-learning-empty">
           <div>
@@ -1319,42 +1538,84 @@ export function VideosView({
           </Button>
         </div>
       );
-    if (tab === "notes")
-      return (
-        <div className="video-tool-empty">
-          <NotebookPen aria-hidden="true" />
-          <span>主动练习会根据本节讲义生成，便于课后自测。</span>
-        </div>
+    if (tab === "notes") {
+      const canOpenPractice = Boolean(
+        selectedJob && phase1IsReady(selectedJob),
       );
-    if (tab === "pdf") {
-      const pdfTask = selectedTasks.find((task) => task.kind === "slides_pdf");
       return (
         <div className="video-tool-summary">
+          <NotebookPen aria-hidden="true" />
+          <span>
+            {canOpenPractice
+              ? "题目与答案分开呈现，答案默认折叠。来源：【自编练习】"
+              : "完成本节讲义后，将根据 summary、study_guide 与 practice_items 生成自测。"}
+          </span>
+          {canOpenPractice && selectedJob && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetailInitialTab("practice");
+                setDetailJob(selectedJob);
+              }}
+            >
+              开始练习
+            </Button>
+          )}
+        </div>
+      );
+    }
+    if (tab === "pdf") {
+      const pdfTask = [...selectedTasks]
+        .filter((task) => task.kind === "slides_pdf")
+        .sort((left, right) => jobTimestamp(right) - jobTimestamp(left))[0];
+      const coursePdf = pdfResults.get(`course:${courseId ?? courseName}`);
+      const videoPdf = pdfResults.get(selected.id);
+      const persistedPdf = taskPdfResult(pdfTask);
+      const pdfResult = videoPdf ?? coursePdf ?? persistedPdf;
+      const generated = Boolean(pdfResult) || pdfTask?.status === "completed";
+      const courseScoped = pdfResult?.scope === "course";
+      const openPdf = pdfResult?.open
+        ? pdfResult.open
+        : pdfResult?.fileUrl || pdfResult?.url
+          ? () =>
+              window.open(pdfResult.fileUrl ?? pdfResult.url ?? "", "_blank")
+          : undefined;
+      return (
+        <div className="video-tool-summary video-pdf-state">
           <StatusBadge
-            status={pdfTask ? taskStatus(pdfTask.status) : "pending"}
+            status={
+              generated
+                ? "completed"
+                : pdfTask
+                  ? taskStatus(pdfTask.status)
+                  : "pending"
+            }
           />
           <span>
-            {pdfTask?.message ||
-              (selected.supportsSlidesPdf
-                ? "可从录像更多操作中生成课件 PDF。"
-                : "该录像暂不支持课件 PDF。")}
+            {generated
+              ? `${courseScoped ? "课程课件已生成" : "课件已生成"}（临时文件）`
+              : pdfTask?.message ||
+                (selected.supportsSlidesPdf
+                  ? "可从录像更多操作中生成课件 PDF。"
+                  : "该录像暂不支持课件 PDF。")}
+            {generated && <small>位于临时目录，需另存长期保留。</small>}
           </span>
+          {generated && openPdf && (
+            <Button variant="outline" size="sm" onClick={() => void openPdf()}>
+              打开
+            </Button>
+          )}
           {onCreateSlidesPdf && selected.supportsSlidesPdf && (
             <Button
               variant="outline"
               size="sm"
               loading={busy === `pdf:${selected.id}`}
               disabled={Boolean(busy)}
-              onClick={() =>
-                void run(
-                  `pdf:${selected.id}`,
-                  "课件 PDF 已生成并在 Finder 中定位。",
-                  () => onCreateSlidesPdf(selected),
-                )
-              }
+              onClick={() => void createPdf(selected)}
             >
               <FileText aria-hidden="true" />
-              生成课件 PDF
+              {generated ? "重新生成" : "生成课件 PDF"}
             </Button>
           )}
         </div>
@@ -1510,12 +1771,13 @@ export function VideosView({
           <span className="video-course-count">
             {loading
               ? "正在加载…"
-              : `${organizationCounts.completed}/${videos.length} 已整理`}
+              : `已完整整理 ${organizationCounts.completed}/${videos.length}`}
           </span>
         </div>
         <div className="video-course-progress" aria-label="课程整理进度">
           <span>
-            待整理 {organizationCounts.pending} · 处理中{" "}
+            待整理 {organizationCounts.pending} · 部分完成{" "}
+            {organizationCounts.partial} · 处理中{" "}
             {organizationCounts.processing} · 失败 {organizationCounts.failed}
           </span>
           <Button
@@ -1622,6 +1884,16 @@ export function VideosView({
                 onLoadedMetadata={(event) => {
                   playerLoadedRef.current = true;
                   event.currentTarget.playbackRate = playbackRateRef.current;
+                  if (selected && autoPlaySourceId.current === selected.id) {
+                    autoPlaySourceId.current = null;
+                    try {
+                      Promise.resolve(event.currentTarget.play()).catch(
+                        () => undefined,
+                      );
+                    } catch {
+                      // Native controls remain available when autoplay is blocked.
+                    }
+                  }
                 }}
               >
                 <source src={playbackUrl} />
@@ -1655,6 +1927,12 @@ export function VideosView({
                 <CircleAlert aria-hidden="true" />
                 <strong>课程视频暂时无法载入</strong>
                 <span>{error}</span>
+              </div>
+            ) : playbackError && selected ? (
+              <div className="video-player-empty" role="alert">
+                <CircleAlert aria-hidden="true" />
+                <strong>{selected.title} 无法载入</strong>
+                <span>{playbackError}</span>
               </div>
             ) : selected ? (
               <div className="video-player-empty" role="status">
@@ -1822,6 +2100,9 @@ export function VideosView({
               <TabsTrigger value="notes">主动练习</TabsTrigger>
               <TabsTrigger value="pdf">课件</TabsTrigger>
             </TabsList>
+            {selectedJob && (
+              <TranscriptQualityWarning quality={selectedJob.quality} />
+            )}
             {(["transcript", "summary", "pdf", "notes"] as LearningTab[]).map(
               (tab) => (
                 <TabsContent key={tab} value={tab} className="video-tool-panel">
@@ -1859,7 +2140,8 @@ export function VideosView({
                 ["all", "全部"],
                 ["pending", "未整理"],
                 ["processing", "处理中"],
-                ["completed", "已整理"],
+                ["completed", "已完整整理"],
+                ["partial", "部分完成"],
                 ["failed", "失败"],
               ] as const
             ).map(([value, label]) => (
@@ -1968,6 +2250,7 @@ export function VideosView({
             <ul className="video-recording-list">
               {filtered.map((video) => {
                 const job = jobsByVideo.get(video.id);
+                const learningState = stateForVideo(video.id);
                 const meta = [
                   video.teachingClass?.trim() &&
                   video.teachingClass.trim() !== video.courseName.trim()
@@ -2032,11 +2315,17 @@ export function VideosView({
                           {sourceLabels[video.source]}
                         </span>
                         <span>{formatDuration(video.duration)}</span>
-                        <StatusBadge status={transcriptStatus(job)} />
+                        {learningState.label ? (
+                          <span className="video-state-label video-state-label-failed">
+                            {learningState.label}
+                          </span>
+                        ) : (
+                          <StatusBadge status={learningState.status} />
+                        )}
                       </div>
                     </div>
                     <div className="video-recording-actions">
-                      {!isCompletedForBatch(job) && !rowSummaryProcessing ? (
+                      {!learningState.complete && !rowSummaryProcessing ? (
                         <Button
                           size="sm"
                           loading={busy === `organize:${video.id}`}
@@ -2050,14 +2339,15 @@ export function VideosView({
                           <NotebookPen aria-hidden="true" />
                           整理本节学习材料
                         </Button>
-                      ) : isCompletedForBatch(job) ? (
+                      ) : learningState.complete ? (
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
-                            setSelected(video);
-                            setLearningTab("summary");
-                          }}
+                          loading={busy === `play:${video.id}`}
+                          disabled={Boolean(
+                            busy && busy !== `play:${video.id}`,
+                          )}
+                          onClick={() => void viewLearningMaterials(video)}
                         >
                           查看学习材料
                         </Button>
@@ -2172,11 +2462,7 @@ export function VideosView({
                                   role="menuitem"
                                   onClick={() => {
                                     setOpenMenuId(null);
-                                    void run(
-                                      `pdf:${video.id}`,
-                                      "课件 PDF 已生成并在 Finder 中定位。",
-                                      () => onCreateSlidesPdf(video),
-                                    );
+                                    void createPdf(video);
                                   }}
                                 >
                                   <FileText aria-hidden="true" />

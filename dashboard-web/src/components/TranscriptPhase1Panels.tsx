@@ -22,10 +22,15 @@ type Phase1PanelKind =
 
 type UnknownRecord = Record<string, unknown>;
 type ParsedUncertainSpan = Phase1UncertainSpan & { candidateTotal: number };
+type PracticeItem = {
+  question: string;
+  answer: string | null;
+};
 type LearningSummary = {
   knowledgePoints: string[];
   classroomExamples: string[];
   auxiliaryTraining: string[];
+  practiceItems: PracticeItem[];
 };
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -85,6 +90,40 @@ function firstLearningItems(record: UnknownRecord, keys: string[]) {
   return [];
 }
 
+function readPracticeItems(value: unknown): PracticeItem[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string" && item.trim())
+        return { question: item.trim(), answer: null };
+      const row = asRecord(item);
+      if (!row) return null;
+      const question =
+        asString(row.question) ??
+        asString(row.prompt) ??
+        asString(row.title) ??
+        asString(row.content);
+      if (!question) return null;
+      return {
+        question,
+        answer:
+          asString(row.answer) ??
+          asString(row.reference_answer) ??
+          asString(row.referenceAnswer) ??
+          asString(row.solution),
+      };
+    })
+    .filter((item): item is PracticeItem => item !== null);
+}
+
+function firstPracticeItems(record: UnknownRecord, keys: string[]) {
+  for (const key of keys) {
+    const items = readPracticeItems(record[key]);
+    if (items.length) return items;
+  }
+  return [];
+}
+
 function parseLearningSummary(content: string): LearningSummary {
   let source: UnknownRecord | null = null;
   try {
@@ -97,13 +136,18 @@ function parseLearningSummary(content: string): LearningSummary {
       knowledgePoints: content.trim() ? [content.trim()] : [],
       classroomExamples: [],
       auxiliaryTraining: [],
+      practiceItems: [],
     };
   }
   const nested =
     asRecord(source.learning_flow) ??
     asRecord(source.learningFlow) ??
+    asRecord(source.study_guide) ??
+    asRecord(source.studyGuide) ??
     asRecord(source.summary) ??
     source;
+  const studyGuide =
+    asRecord(source.study_guide) ?? asRecord(source.studyGuide) ?? nested;
   const knowledgePoints = firstLearningItems(nested, [
     "knowledge_points",
     "knowledgePoints",
@@ -128,6 +172,16 @@ function parseLearningSummary(content: string): LearningSummary {
       "practice",
       "exercises",
     ]),
+    practiceItems: firstPracticeItems(studyGuide, [
+      "practice_items",
+      "practiceItems",
+      "practice",
+      "exercises",
+    ]).concat(
+      studyGuide === source
+        ? []
+        : firstPracticeItems(source, ["practice_items", "practiceItems"]),
+    ),
   };
 }
 
@@ -148,6 +202,48 @@ function LearningItems({ items }: { items: string[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+export function TranscriptPractice({ content }: { content: string }) {
+  const items = parseLearningSummary(content).practiceItems;
+  if (!items.length) return <p className="phase1-empty">本节暂无自编练习。</p>;
+  return (
+    <section className="transcript-practice" aria-labelledby="practice-title">
+      <div className="transcript-practice-heading">
+        <h4 id="practice-title">主动练习</h4>
+        <span>【自编练习】</span>
+      </div>
+      <ol>
+        {items.map((item, index) => (
+          <li key={`${index}:${item.question}`}>
+            <div className="ai-markdown transcript-markdown">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeSanitize]}
+              >
+                {item.question}
+              </ReactMarkdown>
+            </div>
+            {item.answer ? (
+              <details>
+                <summary>查看答案</summary>
+                <div className="ai-markdown transcript-markdown">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeSanitize]}
+                  >
+                    {item.answer}
+                  </ReactMarkdown>
+                </div>
+              </details>
+            ) : (
+              <p className="transcript-muted">本题暂未提供参考答案。</p>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -256,6 +352,42 @@ function readUncertain(value: unknown): ParsedUncertainSpan | null {
 function formatPercent(value: number | null) {
   if (value === null || value < 0 || value > 1) return "未提供";
   return `${Math.round(value * 100)}%`;
+}
+
+function unresolvedRate(quality: UnknownRecord) {
+  const metrics = asRecord(quality.metrics);
+  return (
+    asNumber(quality.uncertain_rate) ??
+    asNumber(quality.unresolved_rate) ??
+    asNumber(quality.pending_confirmation_rate) ??
+    asNumber(metrics?.unresolved_rate) ??
+    asNumber(metrics?.pending_confirmation_rate)
+  );
+}
+
+export function isTranscriptQualityRisk(value: unknown) {
+  const quality = asRecord(value);
+  return Boolean(
+    quality &&
+      (asBoolean(quality.schema_pass) === false ||
+        asNumber(quality.critic_pass_rate) === 0 ||
+        (unresolvedRate(quality) ?? 0) >= 0.8),
+  );
+}
+
+export function TranscriptQualityWarning({ quality }: { quality: unknown }) {
+  const value = asRecord(quality);
+  if (!value || !isTranscriptQualityRisk(value)) return null;
+  return (
+    <div className="transcript-quality-warning" role="alert">
+      <strong>AI 校对未通过，关键术语、数字和公式请对照视频核实</strong>
+      <span>
+        Schema {asBoolean(value.schema_pass) === false ? "未通过" : "通过"} ·
+        Critic 通过率 {formatPercent(asNumber(value.critic_pass_rate))} ·
+        待确认占比 {formatPercent(unresolvedRate(value))}
+      </span>
+    </div>
+  );
 }
 
 function Metadata({
@@ -450,7 +582,7 @@ function QualityPanel({
           : "未通过",
     ],
     ["Critic 通过率", formatPercent(asNumber(quality.critic_pass_rate))],
-    ["待确认占比", formatPercent(asNumber(quality.uncertain_rate))],
+    ["待确认占比", formatPercent(unresolvedRate(quality))],
     [
       "数字修改",
       asNumber(quality.numeric_change_count)?.toLocaleString("zh-CN") ??
@@ -465,6 +597,7 @@ function QualityPanel({
   ];
   return (
     <div className="phase1-quality">
+      <TranscriptQualityWarning quality={quality} />
       <dl className="phase1-quality-grid">
         {metrics.map(([label, value]) => (
           <div key={label}>

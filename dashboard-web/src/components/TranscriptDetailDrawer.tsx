@@ -4,8 +4,11 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import {
+  isTranscriptQualityRisk,
   TranscriptLearningFlow,
   TranscriptPhase1Panel,
+  TranscriptPractice,
+  TranscriptQualityWarning,
 } from "@/components/TranscriptPhase1Panels";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
@@ -24,7 +27,7 @@ import type {
 } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
-type V1DetailTab = "summary" | "cleaned" | "raw_vtt";
+type V1DetailTab = "summary" | "practice" | "cleaned" | "raw_vtt";
 type Phase1DetailTab =
   | "corrected"
   | "correction_diff"
@@ -34,6 +37,7 @@ type DetailTab = V1DetailTab | Phase1DetailTab;
 
 const v1TabLabels: Record<V1DetailTab, string> = {
   summary: "本节要点",
+  practice: "主动练习",
   cleaned: "规整字幕",
   raw_vtt: "原始字幕",
 };
@@ -157,7 +161,10 @@ export function TranscriptDetailDrawer({
     () =>
       isPhase1Tab(tab)
         ? undefined
-        : artifacts.find((artifact) => artifact.kind === tab),
+        : artifacts.find(
+            (artifact) =>
+              artifact.kind === (tab === "practice" ? "summary" : tab),
+          ),
     [artifacts, tab],
   );
   const phase1Artifacts = useMemo(() => {
@@ -280,14 +287,11 @@ export function TranscriptDetailDrawer({
     }
   };
 
-  const active = [
-    "queued",
-    "fetching",
-    "saved",
-    "waiting_remote",
-    "waiting_for_ai",
-    "organizing",
-  ].includes(job.status);
+  const active =
+    job.progress < 100 &&
+    ["queued", "fetching", "saved", "organizing", "reviewing"].includes(
+      job.status,
+    );
   const retryable = [
     "waiting_remote",
     "waiting_for_ai",
@@ -297,6 +301,7 @@ export function TranscriptDetailDrawer({
   ].includes(job.status);
   const phase1Warning =
     job.partial_warning === true ||
+    isTranscriptQualityRisk(phase1List?.quality ?? job.quality) ||
     ["partial", "failed", "completed_with_warnings"].includes(
       job.phase1_status ?? job.pipeline_status ?? phase1List?.status ?? "",
     );
@@ -378,6 +383,10 @@ export function TranscriptDetailDrawer({
             <X aria-hidden="true" />
           </Button>
         </header>
+
+        <TranscriptQualityWarning
+          quality={phase1List?.quality ?? job.quality}
+        />
 
         <div className="transcript-progress-block" aria-live="polite">
           <div>
@@ -533,6 +542,10 @@ export function TranscriptDetailDrawer({
               </pre>
             ) : tab === "summary" ? (
               <TranscriptLearningFlow
+                content={v1Content[currentV1Artifact.id] ?? ""}
+              />
+            ) : tab === "practice" ? (
+              <TranscriptPractice
                 content={v1Content[currentV1Artifact.id] ?? ""}
               />
             ) : (

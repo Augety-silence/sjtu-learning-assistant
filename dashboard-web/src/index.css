@@ -9189,3 +9189,29 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   .video-status-generating svg,
   .video-status-reviewing svg { animation: none; }
 }
+
+
+/* Video learning-material state clarity */
+.transcript-quality-warning {
+  margin: 12px 0;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--status-warning);
+  border-radius: 8px;
+  background: var(--status-warning-bg);
+  color: var(--text-primary);
+}
+.transcript-quality-warning strong { font-size: 13px; line-height: 20px; }
+.transcript-quality-warning span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.transcript-practice-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.transcript-practice-heading h4 { margin: 0; }
+.transcript-practice-heading span { color: var(--status-warning); font-size: 12px; font-weight: 600; }
+.transcript-practice > ol { margin: 14px 0 0; padding: 0; display: grid; gap: 12px; list-style: none; counter-reset: practice; }
+.transcript-practice > ol > li { padding: 14px; border: 1px solid var(--border-subtle); border-radius: 8px; counter-increment: practice; }
+.transcript-practice > ol > li::before { content: counter(practice) "."; color: var(--text-secondary); font-weight: 600; }
+.transcript-practice details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.transcript-practice summary { width: max-content; color: var(--action-primary); cursor: pointer; font-weight: 600; }
+.video-pdf-state small { margin-top: 2px; display: block; color: var(--text-tertiary); }
+.video-state-label { min-height: 22px; padding: 2px 7px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 11px; line-height: 16px; white-space: nowrap; }
+.video-state-label-failed { color: var(--status-danger); background: var(--status-danger-bg); }

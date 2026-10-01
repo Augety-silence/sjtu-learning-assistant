@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CourseVideoItem, VideosView } from "@/components/VideosView";
+import type { TranscriptJob } from "@/lib/types";
 import {
   act,
   cleanup,
@@ -295,16 +296,16 @@ describe("VideosView", () => {
     );
 
     const action = screen.getByRole("button", {
-      name: "一键整理未完成 1 节",
+      name: "一键整理未完成 2 节",
     });
     fireEvent.click(action);
     fireEvent.click(action);
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith([videos[2]]);
+    expect(start).toHaveBeenCalledWith([videos[0], videos[2]]);
     expect(action.getAttribute("aria-busy")).toBe("true");
     await act(async () => finish?.());
     expect(
-      await screen.findByText("开始整理 1 节，跳过 2 节已完成/处理中。"),
+      await screen.findByText("开始整理 2 节，跳过 1 节已完成/处理中。"),
     ).toBeTruthy();
   });
 
@@ -329,13 +330,13 @@ describe("VideosView", () => {
       />,
     );
 
-    expect(screen.getByText("0/1 已整理")).toBeTruthy();
+    expect(screen.getByText("已完整整理 0/1")).toBeTruthy();
     expect(screen.getAllByText("正在生成字幕").length).toBeGreaterThan(0);
     const action = screen.getByRole("button", {
       name: "一键整理未完成 0 节",
     });
     expect((action as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByText("1/1 已整理")).toBeNull();
+    expect(screen.queryByText("已完整整理 1/1")).toBeNull();
   });
 
   it("partial 加 reused 仍进入一键整理未完成并可重试", async () => {
@@ -425,7 +426,7 @@ describe("VideosView", () => {
     const action = screen.getByRole("button", { name: "全部已整理" });
     expect((action as HTMLButtonElement).disabled).toBe(true);
     expect(action.getAttribute("title")).toBe("全部已整理");
-    expect(screen.getByText("3/3 已整理")).toBeTruthy();
+    expect(screen.getByText("已完整整理 3/3")).toBeTruthy();
   });
 
   it("已整理录像仍可从更多菜单打开原有详情抽屉", async () => {
@@ -748,6 +749,9 @@ describe("VideosView", () => {
       pause: { configurable: true, value: pause },
     });
     fireEvent.loadedMetadata(media);
+    media.pause();
+    play.mockClear();
+    pause.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "播放速度 1×" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "1.25×" }));
     expect(media.playbackRate).toBe(1.25);
@@ -789,6 +793,7 @@ describe("VideosView", () => {
       pause: { configurable: true, value: pause },
     });
     fireEvent.loadedMetadata(media);
+    play.mockClear();
     media.currentTime = 0.25;
     vi.useFakeTimers();
 
@@ -1139,6 +1144,243 @@ describe("VideosView", () => {
     expect(screen.getByText("暂无进行中的任务")).toBeTruthy();
     expect(screen.getByRole("button", { name: "历史任务 1" })).toBeTruthy();
     expect(container.querySelector(".video-job-progress")).toBeNull();
+  });
+
+  it("六节中仅两节完整时显示 2/6，并单列四节部分完成", () => {
+    const sixVideos = Array.from({ length: 6 }, (_, index) => ({
+      ...videos[2],
+      id: `lesson-${index}`,
+      title: `第 ${index + 1} 节`,
+    }));
+    const transcriptJobs: TranscriptJob[] = sixVideos.map((video, index) => ({
+      id: `job-${index}`,
+      batch_id: "batch",
+      source_id: video.id,
+      title: video.title,
+      status: index < 2 ? "completed" : "completed_with_warnings",
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+    }));
+    render(<VideosView videos={sixVideos} transcriptJobs={transcriptJobs} />);
+
+    expect(screen.getByText("已完整整理 2/6")).toBeTruthy();
+    expect(screen.getByLabelText("课程整理进度").textContent).toContain(
+      "部分完成 4",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "部分完成" }));
+    expect(
+      document.querySelectorAll(".video-recording-list > li"),
+    ).toHaveLength(4);
+  });
+
+  it("按 source_id 采用稳定最新任务，失败筛选不混入旧完成任务", () => {
+    const history: Array<TranscriptJob & { updated_at: string }> = [
+      {
+        id: "old-complete",
+        batch_id: "batch",
+        source_id: "v3",
+        title: "旧完整讲义",
+        status: "completed",
+        stage: "completed",
+        progress: 100,
+        attempts: 1,
+        updated_at: "2026-09-30T10:00:00+08:00",
+      },
+      {
+        id: "new-failed",
+        batch_id: "batch",
+        source_id: "v3",
+        title: "最新更新失败",
+        status: "failed",
+        stage: "reviewing",
+        progress: 100,
+        attempts: 2,
+        updated_at: "2026-10-01T10:00:00+08:00",
+      },
+    ];
+    render(<VideosView videos={[videos[2]]} transcriptJobs={history} />);
+
+    expect(screen.getByText("已有材料 · 更新失败")).toBeTruthy();
+    expect(screen.getByText("0 项进行中 · 1 项需关注")).toBeTruthy();
+    expect(screen.queryByText("旧完整讲义")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "失败" }));
+    expect(screen.getByText("第三讲")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "已完整整理" }));
+    expect(document.querySelector(".video-recording-list")).toBeNull();
+  });
+
+  it("100% partial 不计进行中且重复历史任务只展示最新一条", () => {
+    const transcriptJobs: Array<TranscriptJob & { updated_at: string }> = [
+      {
+        id: "older-running",
+        batch_id: "batch",
+        source_id: "v3",
+        title: "旧任务不应出现",
+        status: "organizing",
+        stage: "reviewing",
+        progress: 70,
+        attempts: 1,
+        updated_at: "2026-09-30T10:00:00+08:00",
+      },
+      {
+        id: "latest-partial",
+        batch_id: "batch",
+        source_id: "v3",
+        title: "最新部分完成",
+        status: "partial",
+        stage: "reviewing",
+        progress: 100,
+        attempts: 1,
+        updated_at: "2026-10-01T10:00:00+08:00",
+      },
+    ];
+    render(<VideosView videos={[videos[2]]} transcriptJobs={transcriptJobs} />);
+
+    expect(screen.getByText("0 项进行中 · 1 项需关注")).toBeTruthy();
+    expect(screen.getByText("最新部分完成")).toBeTruthy();
+    expect(screen.queryByText("旧任务不应出现")).toBeNull();
+  });
+
+  it("查看学习材料同步播放器资源但保持暂停，播放按钮仍触发播放", async () => {
+    const playMedia = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const learningVideos = [
+      videos[0],
+      { ...videos[2], playbackUrl: "https://example.test/third.mp4" },
+    ];
+    const completed = learningVideos.map((video, index) => ({
+      id: `complete-${index}`,
+      batch_id: "batch",
+      source_id: video.id,
+      title: video.title,
+      status: "completed" as const,
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+      phase1_status: "completed" as const,
+    }));
+    render(
+      <VideosView
+        videos={learningVideos}
+        transcriptJobs={completed}
+        onPlay={async (video) => ({ url: video.playbackUrl })}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    const firstMedia = (await screen.findByLabelText(
+      "播放 第一讲",
+    )) as HTMLVideoElement;
+    fireEvent.loadedMetadata(firstMedia);
+    await waitFor(() => expect(playMedia).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getAllByRole("button", { name: "查看学习材料" })[1]);
+    expect(await screen.findByLabelText("播放 第三讲")).toBeTruthy();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(playMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("新录像地址加载失败时清除旧画面并显示当前节错误", async () => {
+    const completed = [videos[0], videos[2]].map((video, index) => ({
+      id: `done-${index}`,
+      batch_id: "batch",
+      source_id: video.id,
+      title: video.title,
+      status: "completed" as const,
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+    }));
+    render(
+      <VideosView
+        videos={[videos[0], videos[2]]}
+        transcriptJobs={completed}
+        onPlay={async (video) => {
+          if (video.id === "v3") throw new Error("地址已失效");
+          return { url: video.playbackUrl };
+        }}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    await screen.findByLabelText("播放 第一讲");
+    fireEvent.click(screen.getAllByRole("button", { name: "查看学习材料" })[1]);
+
+    expect(await screen.findByText("第三讲 无法载入")).toBeTruthy();
+    expect(
+      screen.getByText("第三讲 无法载入").closest('[role="alert"]')
+        ?.textContent,
+    ).toContain("地址已失效");
+    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+  });
+
+  it("PDF 成功后显示临时文件状态、打开与重新生成", async () => {
+    const createPdf = vi.fn(async () => ({
+      fileUrl: "file:///tmp/lesson.pdf",
+      scope: "video" as const,
+    }));
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <VideosView
+        videos={[videos[0]]}
+        onCreateSlidesPdf={createPdf}
+        onPlay={async (video) => ({ url: video.playbackUrl })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    await screen.findByLabelText("播放 第一讲");
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "课件" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成课件 PDF" }));
+
+    expect(await screen.findByText("课件已生成（临时文件）")).toBeTruthy();
+    expect(screen.getByText("位于临时目录，需另存长期保留。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    expect(open).toHaveBeenCalledWith("file:///tmp/lesson.pdf", "_blank");
+  });
+
+  it("质量高风险显示指标警告且不计完整整理", async () => {
+    const riskyJob: TranscriptJob = {
+      id: "risky",
+      batch_id: "batch",
+      source_id: "v1",
+      title: "第一讲",
+      status: "completed",
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+      quality: {
+        score: 0,
+        passed: false,
+        metrics: {},
+        warnings: [],
+        schema_pass: false,
+        critic_pass_rate: 0,
+        uncertain_rate: 0.8,
+        numeric_change_count: 2,
+        unsupported_change_count: 1,
+        status: "failed",
+      },
+    };
+    render(
+      <VideosView
+        videos={[videos[0]]}
+        transcriptJobs={[riskyJob]}
+        onPlay={async (video) => ({ url: video.playbackUrl })}
+      />,
+    );
+    expect(screen.getByText("已完整整理 0/1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    await screen.findByLabelText("播放 第一讲");
+    expect(
+      screen.getByText("AI 校对未通过，关键术语、数字和公式请对照视频核实"),
+    ).toBeTruthy();
+    expect(screen.getByText(/Critic 通过率 0%/)).toBeTruthy();
+    expect(screen.getByText(/待确认占比 80%/)).toBeTruthy();
   });
 });
 
