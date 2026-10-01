@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
-import re
+import os
 import sys
+
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTHON_KEYRING_BACKEND", "keyring.backends.macOS.Keyring")
+
+import re
 import threading
 from math import isfinite
 from pathlib import Path
