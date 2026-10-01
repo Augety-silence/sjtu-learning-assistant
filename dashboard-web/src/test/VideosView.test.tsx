@@ -229,8 +229,7 @@ describe("VideosView", () => {
     expect(screen.getByText("第一讲")).toBeTruthy();
     expect(screen.queryByText("旧版录像")).toBeNull();
     fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
-    await waitFor(() => expect(play).toHaveBeenCalledWith(videos[0]));
-    expect(screen.getByLabelText("播放 第一讲")).toBeTruthy();
+    expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();
     expect(
       screen
         .getAllByText("第一讲")
@@ -240,161 +239,133 @@ describe("VideosView", () => {
     ).toBe("true");
   });
 
-  it("shows selection-only batch actions and preserves the real combined transcript capability", async () => {
+  it("默认隐藏复选框，进入批量模式后保留批量整理能力", async () => {
     const start = vi.fn(async () => undefined);
     render(<VideosView videos={videos} onStartTranscript={start} />);
+    expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByLabelText("批量操作")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 第三讲" }));
     const batch = screen.getByLabelText("批量操作");
     expect(batch.textContent).toContain("已选择 1 项");
-    expect(
-      (screen.getByRole("button", { name: "AI 整理" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "生成字幕" }));
+    fireEvent.click(screen.getByRole("button", { name: "整理所选学习材料" }));
     await waitFor(() => expect(start).toHaveBeenCalledWith([videos[2]]));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "退出选择" })[0]);
+    expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByLabelText("批量操作")).toBeNull();
   });
 
-  it("generates an AI summary through the transcript flow and opens it after Phase1", async () => {
-    let finishStart: (() => void) | undefined;
+  it("一键整理仅提交未完成且非处理中录像，并防止重复点击", async () => {
+    let finish: (() => void) | undefined;
     const start = vi.fn(
       () =>
         new Promise<void>((resolve) => {
-          finishStart = resolve;
+          finish = resolve;
         }),
     );
-    const callbacks = {
-      onStartTranscript: start,
-      onRetryTranscript: vi.fn(async () => undefined),
-      onRevealTranscript: vi.fn(async () => undefined),
-    };
-    const view = render(<VideosView videos={[videos[2]]} {...callbacks} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "播放" }));
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "AI 总结" }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    expect(
-      screen.getByText("生成前会先规整字幕并完成 AI 校对，再生成总结。"),
-    ).toBeTruthy();
-
-    const generate = screen.getByRole("button", { name: "生成 AI 总结" });
-    await waitFor(() => expect(generate).toHaveProperty("disabled", false));
-    fireEvent.click(generate);
-    fireEvent.click(generate);
-    expect(start).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith([videos[2]]);
-    expect(generate.getAttribute("aria-busy")).toBe("true");
-
-    await act(async () => finishStart?.());
-    const processingJob = {
-      id: "summary-job",
-      batch_id: "summary-batch",
-      source_id: "v3",
-      title: "第三讲",
-      status: "organizing" as const,
-      stage: "phase1",
-      progress: 80,
-      attempts: 1,
-      message: "正在进行 AI 校对",
-    };
-    view.rerender(
+    render(
       <VideosView
-        videos={[videos[2]]}
-        transcriptJobs={[processingJob]}
-        {...callbacks}
-      />,
-    );
-    expect(screen.getByText("正在进行 AI 校对")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "第三讲 更多操作" }),
-    ).toBeTruthy();
-    expect(screen.queryByRole("menu")).toBeNull();
-
-    view.rerender(
-      <VideosView
-        videos={[videos[2]]}
+        videos={videos}
         transcriptJobs={[
           {
-            ...processingJob,
-            status: "completed",
+            id: "done",
+            batch_id: "b",
+            source_id: "v1",
+            title: "第一讲",
+            status: "completed_with_warnings",
             stage: "completed",
             progress: 100,
-            message: "字幕规整完成",
+            attempts: 1,
+          },
+          {
+            id: "running",
+            batch_id: "b",
+            source_id: "v2",
+            title: "旧版录像",
+            status: "organizing",
+            stage: "reviewing",
+            progress: 80,
+            attempts: 1,
           },
         ]}
-        {...callbacks}
+        onStartTranscript={start}
       />,
     );
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(
-      screen.getByText(
-        "字幕已规整，正在等待 AI 校对完成；完成后才能查看总结。",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "查看 AI 总结" })).toBeNull();
 
-    view.rerender(
+    const action = screen.getByRole("button", {
+      name: "一键整理未完成 1 节",
+    });
+    fireEvent.click(action);
+    fireEvent.click(action);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith([videos[2]]);
+    expect(action.getAttribute("aria-busy")).toBe("true");
+    await act(async () => finish?.());
+    expect(
+      await screen.findByText("开始整理 1 节，跳过 2 节已完成/处理中。"),
+    ).toBeTruthy();
+  });
+
+  it("全部完成时禁用一键整理并说明全部已整理", () => {
+    const completed = videos.map((video, index) => ({
+      id: `done-${index}`,
+      batch_id: "b",
+      source_id: video.id,
+      title: video.title,
+      status: "completed" as const,
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+    }));
+    render(
+      <VideosView
+        videos={videos}
+        transcriptJobs={completed}
+        onStartTranscript={vi.fn(async () => undefined)}
+      />,
+    );
+    const action = screen.getByRole("button", { name: "全部已整理" });
+    expect((action as HTMLButtonElement).disabled).toBe(true);
+    expect(action.getAttribute("title")).toBe("全部已整理");
+    expect(screen.getByText("3/3 已整理")).toBeTruthy();
+  });
+
+  it("已整理录像仍可从更多菜单打开原有详情抽屉", async () => {
+    render(
       <VideosView
         videos={[videos[2]]}
         transcriptJobs={[
           {
-            ...processingJob,
+            id: "summary-job",
+            batch_id: "summary-batch",
+            source_id: "v3",
+            title: "第三讲",
             status: "completed",
             stage: "completed",
             progress: 100,
+            attempts: 1,
             phase1_status: "completed",
           },
         ]}
-        {...callbacks}
+        onRetryTranscript={vi.fn(async () => undefined)}
+        onRevealTranscript={vi.fn(async () => undefined)}
       />,
     );
-    const drawer = await screen.findByRole("dialog");
-    expect(drawer).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "查看 AI 总结" }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(
       screen
         .getByRole("tab", { name: "本节要点" })
         .getAttribute("aria-selected"),
     ).toBe("true");
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        drawer.querySelector(
-          '.transcript-drawer-header button[aria-label="关闭字幕详情"]',
-        ),
-      ),
-    );
   });
 
-  it("shows a retryable summary action after start or job failure", async () => {
-    const start = vi
-      .fn<() => Promise<void>>()
-      .mockRejectedValueOnce(new Error("AI 服务暂时不可用"))
-      .mockResolvedValueOnce(undefined);
+  it("失败录像的单节主操作从失败阶段重试", async () => {
     const retry = vi.fn(async () => undefined);
-    const view = render(
-      <VideosView
-        videos={[videos[2]]}
-        onStartTranscript={start}
-        onRetryTranscript={retry}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "播放" }));
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "AI 总结" }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    const generate = screen.getByRole("button", { name: "生成 AI 总结" });
-    await waitFor(() => expect(generate).toHaveProperty("disabled", false));
-    fireEvent.click(generate);
-    expect(
-      await screen.findByText(/AI 服务暂时不可用.*可重试生成/),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "重试生成 AI 总结" }));
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
-
-    view.rerender(
+    render(
       <VideosView
         videos={[videos[2]]}
         transcriptJobs={[
@@ -404,22 +375,17 @@ describe("VideosView", () => {
             source_id: "v3",
             title: "第三讲",
             status: "failed",
-            stage: "phase1",
-            progress: 70,
+            stage: "reviewing",
+            progress: 90,
             attempts: 1,
-            error: "AI 校对失败",
+            error: "AI 服务暂时不可用",
           },
         ]}
-        onStartTranscript={start}
+        onStartTranscript={vi.fn(async () => undefined)}
         onRetryTranscript={retry}
       />,
     );
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "重试生成 AI 总结" }),
-      ).toBeTruthy(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "重试生成 AI 总结" }));
+    fireEvent.click(screen.getByRole("button", { name: "整理本节学习材料" }));
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
   });
 
@@ -461,14 +427,14 @@ describe("VideosView", () => {
         ]}
       />,
     );
-    expect(screen.getAllByText("已完成").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已整理").length).toBeGreaterThan(0);
     expect(screen.getAllByText("部分完成").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("失败").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("待处理").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("失败可重试").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未整理").length).toBeGreaterThan(0);
     expect(screen.getByRole("tab", { name: "字幕" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "AI 总结" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "课件 PDF" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "学习笔记" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "讲义" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "课件" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "主动练习" })).toBeTruthy();
   });
 
   it("keeps a failed transcript at 100% failed without artifact evidence", () => {
@@ -513,11 +479,7 @@ describe("VideosView", () => {
     const { container } = render(<VideosView videos={videos} />);
     expect(container.querySelector(".video-jobs.is-empty")).toBeTruthy();
     expect(screen.getByText("暂无进行中的任务")).toBeTruthy();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "学习笔记" }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    expect(screen.getByText(/本地笔记能力稍后支持/)).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "主动练习" })).toBeTruthy();
   });
 
   it("creates and revokes subtitle Blob URLs when switching videos and unmounting", async () => {
@@ -573,7 +535,9 @@ describe("VideosView", () => {
     expect(screen.getAllByText("管理会计")).toHaveLength(1);
     expect(screen.getByLabelText("课程视频学习工作台")).toBeTruthy();
     expect(screen.getByLabelText("课程录像")).toBeTruthy();
-    expect(screen.getByLabelText("选择当前来源的全部录像")).toBeTruthy();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
+    expect(screen.getByLabelText("选择当前筛选的全部录像")).toBeTruthy();
     expect(screen.getByText(/上院202/)).toBeTruthy();
   });
 
@@ -849,6 +813,7 @@ describe("VideosView", () => {
     fireEvent.loadedMetadata(media);
     media.currentTime = 50;
 
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     const checkbox = screen.getByRole("checkbox", { name: "选择 第一讲" });
     checkbox.focus();
     fireEvent.keyDown(checkbox, { key: "j" });
@@ -942,6 +907,43 @@ describe("VideosView", () => {
     expect(
       await screen.findByText("浏览器阻止播放，请点击播放器继续"),
     ).toBeTruthy();
+  });
+
+  it("映射整理阶段并支持右侧状态筛选", () => {
+    const stageJobs = [
+      ["v1", "queued", "queued"],
+      ["v2", "fetching", "transcribing"],
+      ["v3", "organizing", "reviewing"],
+    ].map(([sourceId, status, stage], index) => ({
+      id: `stage-${index}`,
+      batch_id: "stage-batch",
+      source_id: sourceId,
+      title: videos[index].title,
+      status: status as "queued" | "fetching" | "organizing",
+      stage,
+      progress: 20 + index * 20,
+      attempts: 1,
+    }));
+    render(<VideosView videos={videos} transcriptJobs={stageJobs} />);
+    expect(screen.getAllByText("排队中").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("正在生成字幕").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("正在对照审校").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "未整理" }));
+    expect(document.querySelector(".video-recording-list")).toBeNull();
+    expect(screen.getByText("当前来源没有视频")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "处理中" }));
+    const list = document.querySelector(".video-recording-list");
+    expect(list?.textContent).toContain("第一讲");
+    expect(list?.textContent).toContain("第三讲");
+  });
+
+  it("单节无材料时无需播放即可直接整理", async () => {
+    const start = vi.fn(async () => undefined);
+    render(<VideosView videos={[videos[2]]} onStartTranscript={start} />);
+    fireEvent.click(screen.getByRole("button", { name: "整理本节学习材料" }));
+    expect(screen.getByText("这节录像还没有学习材料")).toBeTruthy();
+    await waitFor(() => expect(start).toHaveBeenCalledWith([videos[2]]));
   });
 
   it("deduplicates and sorts tasks, shows at most three attention items, and folds history", () => {
@@ -1056,6 +1058,7 @@ describe("VideosView 课程隔离", () => {
         })}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 第一讲" }));
     fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
     expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();

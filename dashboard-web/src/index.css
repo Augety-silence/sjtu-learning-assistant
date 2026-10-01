@@ -9105,3 +9105,87 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     transition: none;
   }
 }
+
+
+/* Streamlined course video organization flow. */
+.video-course-progress {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.video-course-progress > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.video-course-toolbar > [data-radix-collection-item],
+.video-course-toolbar > [role="tablist"] { grid-column: 1 / -1; }
+.video-status-filters {
+  min-height: 42px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  scrollbar-width: thin;
+}
+.video-status-filters > button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.video-status-filters > button:hover { background: var(--surface-hover); color: var(--text-primary); }
+.video-status-filters > button[aria-pressed="true"] { background: var(--surface-accent-soft); color: var(--action-primary); font-weight: 600; }
+.video-status-filters > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.video-status-filters .video-select-all { margin-left: auto; white-space: nowrap; }
+.video-recording-list > li { grid-template-columns: minmax(0, 1fr) auto; }
+.video-recording-list > li:has(> input) { grid-template-columns: 18px minmax(0, 1fr) auto; }
+.video-learning-empty {
+  min-height: 88px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px dashed var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-control);
+}
+.video-learning-empty > div { min-width: 0; display: grid; gap: 4px; }
+.video-learning-empty strong { color: var(--text-primary); font-size: 14px; }
+.video-learning-empty span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.video-status-queued,
+.video-status-transcribing,
+.video-status-generating,
+.video-status-reviewing { color: var(--action-primary); background: var(--surface-accent-soft); }
+.video-status-queued svg,
+.video-status-transcribing svg,
+.video-status-generating svg,
+.video-status-reviewing svg { animation: video-status-spin 1.2s linear infinite; }
+@media (max-width: 720px) {
+  .video-course-progress { align-items: stretch; flex-direction: column; }
+  .video-course-progress > span { white-space: normal; }
+  .video-learning-empty { align-items: stretch; flex-direction: column; }
+  .video-recording-list > li,
+  .video-recording-list > li:has(> input) { grid-template-columns: minmax(0, 1fr); }
+  .video-recording-list > li:has(> input) { grid-template-columns: 18px minmax(0, 1fr); }
+  .video-recording-list > li:has(> input) .video-recording-actions { grid-column: 2; }
+  .video-recording-actions { grid-column: 1; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .video-status-queued svg,
+  .video-status-transcribing svg,
+  .video-status-generating svg,
+  .video-status-reviewing svg { animation: none; }
+}

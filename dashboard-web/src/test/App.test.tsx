@@ -336,6 +336,7 @@ describe("课程视频首帧导航", () => {
     render(<App />);
 
     await screen.findByText("A 专属录像");
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 A 专属录像" }));
     expect(screen.getByLabelText("批量操作")).toBeTruthy();
 
@@ -346,8 +347,9 @@ describe("课程视频首帧导航", () => {
     expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
 
     await screen.findByText("B 专属录像");
+    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 B 专属录像" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成字幕" }));
+    fireEvent.click(screen.getByRole("button", { name: "整理所选学习材料" }));
     await waitFor(() =>
       expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
     );
