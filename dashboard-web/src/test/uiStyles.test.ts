@@ -22,6 +22,20 @@ describe("responsive and motion regression rules", () => {
     expect(css.match(/\.workspace \{[^}]*\}/)?.[0]).not.toContain("max-width");
   });
 
+  it("keeps the course picker and popup below the sticky page header", () => {
+    const headerRule = css.match(/\.page-header \{([^}]*)\}/)?.[1] ?? "";
+    const pickerRule =
+      css.match(/\.video-course-picker \{([^}]*)\}/)?.[1] ?? "";
+    const popupRule = css.match(/\.video-course-popup \{([^}]*)\}/)?.[1] ?? "";
+    const headerZIndex = Number(headerRule.match(/z-index:\s*(\d+)/)?.[1]);
+    const popupZIndex = Number(popupRule.match(/z-index:\s*(\d+)/)?.[1]);
+
+    expect(pickerRule).toContain("position: relative");
+    expect(pickerRule).not.toContain("z-index");
+    expect(popupRule).toContain("position: absolute");
+    expect(headerZIndex).toBeGreaterThan(popupZIndex);
+  });
+
   it("keeps the compact sidebar through 1199px", () => {
     expect(css).toMatch(
       /@media \(max-width: 1199px\) and \(min-width: 600px\)[\s\S]*?\.sidebar \{[^}]*width: 72px[^}]*flex-basis: 72px/,

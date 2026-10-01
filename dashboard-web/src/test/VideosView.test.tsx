@@ -79,6 +79,32 @@ describe("VideosView", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("closes the course picker when its workspace scrolls or the window resizes", () => {
+    render(
+      <div className="workspace">
+        <VideosView
+          videos={videos}
+          courseId={1}
+          courseOptions={[
+            { id: 1, name: "数据结构" },
+            { id: 2, name: "文本分析与大语言模型" },
+          ]}
+        />
+      </div>,
+    );
+
+    const trigger = screen.getByRole("combobox", { name: "选择课程" });
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.scroll(document.querySelector(".workspace") as HTMLElement);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.resize(window);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("supports Arrow/Home/End/Enter/Space and Escape in the course picker", async () => {
     const change = vi.fn();
     const courseOptions =

@@ -330,6 +330,16 @@ function formatRecordedAt(value?: string | null) {
   }).format(date);
 }
 
+function findScrollContainer(element: HTMLElement): HTMLElement | Window {
+  let parent = element.parentElement;
+  while (parent) {
+    const { overflow, overflowY } = window.getComputedStyle(parent);
+    if (/(auto|scroll|overlay)/.test(`${overflow} ${overflowY}`)) return parent;
+    parent = parent.parentElement;
+  }
+  return element.closest<HTMLElement>(".workspace") ?? window;
+}
+
 function CoursePicker({
   value,
   options,
@@ -361,6 +371,24 @@ function CoursePicker({
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+  useEffect(() => {
+    if (!open || !rootRef.current) return;
+    const closeOnPositionChange = () => setOpen(false);
+    const scrollContainer = findScrollContainer(rootRef.current);
+    const visualViewport = window.visualViewport;
+    scrollContainer.addEventListener("scroll", closeOnPositionChange, {
+      passive: true,
+    });
+    window.addEventListener("resize", closeOnPositionChange);
+    visualViewport?.addEventListener("resize", closeOnPositionChange);
+    visualViewport?.addEventListener("scroll", closeOnPositionChange);
+    return () => {
+      scrollContainer.removeEventListener("scroll", closeOnPositionChange);
+      window.removeEventListener("resize", closeOnPositionChange);
+      visualViewport?.removeEventListener("resize", closeOnPositionChange);
+      visualViewport?.removeEventListener("scroll", closeOnPositionChange);
+    };
   }, [open]);
   useEffect(() => {
     if (open) optionRefs.current[activeIndex]?.focus();
