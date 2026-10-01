@@ -646,13 +646,41 @@ class TranscriptService:
             return False
         try:
             video_dir = self._video_dir(source_id)
+            manifest = self._read_json(video_dir / "manifest.json")
+            context = self.ai_context_provider()
         except Exception:
             return False
-        for name in ("raw.vtt", "cues.json", "cleaned.md"):
-            path = video_dir / name
-            if path.is_file() and not path.is_symlink() and path.stat().st_size > 0:
-                return True
-        return False
+        source = manifest.get("source")
+        pipeline = manifest.get("pipeline")
+        ai = manifest.get("ai")
+        if (
+            manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION
+            or type(source) is not dict
+            or source.get("source_id") != source_id
+            or type(pipeline) is not dict
+            or pipeline.get("pipeline_version") != PIPELINE_VERSION
+            or pipeline.get("prompt_version") != PROMPT_VERSION
+            or type(ai) is not dict
+            or ai.get("model") != context.model
+            or ai.get("endpoint_fingerprint") != context.endpoint_fingerprint
+            or manifest.get("idempotency_key")
+            != self._idempotency_key(source_id, manifest.get("raw_sha256"), context)
+        ):
+            return False
+        records = manifest.get("artifacts")
+        record = records.get("raw_vtt") if type(records) is dict else None
+        raw_path = video_dir / "raw.vtt"
+        if (
+            type(record) is not dict
+            or record.get("path") != "raw.vtt"
+            or record.get("sha256") != manifest.get("raw_sha256")
+            or not self._hashed_file_valid(raw_path, record.get("sha256"))
+        ):
+            return False
+        try:
+            return bool(normalize_cues(parse_vtt(raw_path.read_text(encoding="utf-8"))))
+        except (OSError, UnicodeError, ValueError):
+            return False
 
     def _process_claimed_batch(self, batch: dict[str, Any]) -> None:
         if batch.get("cancel_requested"):

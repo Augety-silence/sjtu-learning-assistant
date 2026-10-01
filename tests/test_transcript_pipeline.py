@@ -407,6 +407,35 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual(list(("均值是总和除以数量。",)), practice.get("answer_key"))
         self.assertNotIn("ASR", json.dumps(practice, ensure_ascii=False))
 
+    def test_duplicate_practice_merges_complementary_fields_stably(self):
+        evidence_a = dict(cue_id="cue-1", start_ms=0, end_ms=1000, quote="均值与方差")
+        evidence_b = dict(cue_id="cue-2", start_ms=1000, end_ms=2000, quote="比较两组数据")
+        knowledge = list((
+            dict(concept="均值", kind="definition", statement="均值描述中心", evidence=list((evidence_a,))),
+            dict(concept="方差", kind="definition", statement="方差描述离散", evidence=list((evidence_a,))),
+        ))
+        chunks = list((
+            dict(knowledge_points=knowledge, classroom_examples=list(), practice_items=list((dict(
+                type="application", prompt="比较两组数据！",
+                related_knowledge_points=list(("均值",)),
+                answer_key=list(("先计算均值",)), rubric=list(("说明中心位置",)),
+                evidence=list((evidence_a,)),
+            ),))),
+            dict(knowledge_points=knowledge, classroom_examples=list(), practice_items=list((dict(
+                type="application", prompt=" 比较两组数据 ",
+                related_knowledge_points=list(("均 值", "方差")),
+                answer_key=list(("先 计算均值", "再计算方差")),
+                rubric=list(("比较离散程度",)), evidence=list((evidence_b,)),
+            ),))),
+        ))
+        summary = deterministic_summary(chunks)
+        practice = next(iter(summary.get("practice_items")))
+        self.assertEqual(list(("均值", "方差")), practice.get("related_knowledge_points"))
+        self.assertEqual(list(("先计算均值", "再计算方差")), practice.get("answer_key"))
+        self.assertEqual(list(("说明中心位置", "比较离散程度")), practice.get("rubric"))
+        self.assertEqual(list(("cue-1", "cue-2")), list(row.get("cue_id") for row in practice.get("evidence")))
+        self.assertEqual(summary, deterministic_summary(chunks))
+
     def test_learning_product_schema_rejects_unsupported_practice_type_and_unbound_evidence(self):
         cues = normalize_cues(parse_vtt(VTT))
         payload = map_payload()

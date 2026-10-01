@@ -416,7 +416,7 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual(1, self.fetches)
 
 
-    def test_fetch_exception_after_raw_save_is_partial_not_failed(self):
+    def test_unvalidated_nonempty_raw_does_not_prevent_failed_status(self):
         service = self.service()
 
         def save_raw_then_fail(batch, job):
@@ -430,9 +430,44 @@ class TranscriptServiceTests(unittest.TestCase):
         batch = service.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))
         service.run_pending()
         job = next(iter(service.get_batch(batch.get("id")).get("jobs")))
-        self.assertEqual("partial", job.get("status"))
-        self.assertIn("基础字幕已保存", job.get("message"))
-        self.assertEqual("partial", service.get_batch(batch.get("id")).get("status"))
+        self.assertEqual("failed", job.get("status"))
+        self.assertIn("字幕存储失败", job.get("message"))
+        self.assertEqual("failed", service.get_batch(batch.get("id")).get("status"))
+
+
+    def test_usable_subtitle_requires_current_manifest_hash_and_parse_validation(self):
+        service = self.service()
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))
+        service.run_pending()
+        job = next(iter(service.get_batch(batch.get("id")).get("jobs")))
+        video_dir = service._video_dir(VIDEO.get("source_id"))
+        manifest_path = video_dir / "manifest.json"
+        raw_path = video_dir / "raw.vtt"
+        original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        original_raw = raw_path.read_text(encoding="utf-8")
+        self.assertTrue(service._job_has_usable_subtitle(job))
+
+        raw_path.write_text("not vtt", encoding="utf-8")
+        self.assertFalse(service._job_has_usable_subtitle(job))
+        malformed = json.loads(json.dumps(original_manifest))
+        malformed_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+        malformed.update(raw_sha256=malformed_hash)
+        malformed.get("artifacts").get("raw_vtt").update(sha256=malformed_hash)
+        context = service.ai_context_provider()
+        malformed.update(idempotency_key=service._idempotency_key(VIDEO.get("source_id"), malformed_hash, context))
+        service._write_json(manifest_path, malformed)
+        self.assertFalse(service._job_has_usable_subtitle(job))
+        raw_path.write_text(original_raw, encoding="utf-8")
+
+        stale = json.loads(json.dumps(original_manifest))
+        stale.get("pipeline").update(prompt_version="stale-prompt")
+        service._write_json(manifest_path, stale)
+        self.assertFalse(service._job_has_usable_subtitle(job))
+
+        mismatched = json.loads(json.dumps(original_manifest))
+        mismatched.get("artifacts").get("raw_vtt").update(sha256="0".ljust(64, "0"))
+        service._write_json(manifest_path, mismatched)
+        self.assertFalse(service._job_has_usable_subtitle(job))
 
 
 if __name__ == "__main__":

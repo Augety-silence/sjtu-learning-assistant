@@ -1131,6 +1131,16 @@ def _canonical_learning_key(value):
     return "".join(character for character in normalized if character.isalnum())
 
 
+def _merge_normalized_strings(target, values, limit):
+    seen = set(_canonical_learning_key(value) for value in target)
+    for value in values:
+        key = _canonical_learning_key(value)
+        if key and key not in seen and len(target) < limit:
+            target.append(value.strip())
+            seen.add(key)
+    return target
+
+
 def _merge_evidence(target, rows):
     known = set((item.get("cue_id"), item.get("quote")) for item in target)
     for evidence in rows:
@@ -1182,15 +1192,25 @@ def _merge_learning_products(chunks):
                 target["related_knowledge_points"] = _dedupe_strings(target.get("related_knowledge_points") + related, 12)
             _merge_evidence(target.get("evidence"), item.get("evidence", list()))
         for item in chunk.get("practice_items", list()):
-            related = _dedupe_strings((ref for ref in item.get("related_knowledge_points", list()) if _canonical_learning_key(ref) in known_concepts), 12)
+            related = _merge_normalized_strings(list(), (
+                ref for ref in item.get("related_knowledge_points", list())
+                if _canonical_learning_key(ref) in known_concepts
+            ), 12)
             key = (item.get("type"), _canonical_learning_key(item.get("prompt")))
             if not all(key) or not related or not item.get("evidence") or not (item.get("answer_key") or item.get("rubric")):
                 continue
             target = practice_by_key.get(key)
             if target is None:
-                target = dict(type=item.get("type"), prompt=item.get("prompt"), related_knowledge_points=related, answer_key=list(item.get("answer_key", list())), rubric=list(item.get("rubric", list())), evidence=list())
+                target = dict(
+                    type=item.get("type"), prompt=item.get("prompt"),
+                    related_knowledge_points=list(), answer_key=list(), rubric=list(),
+                    evidence=list(),
+                )
                 practice_by_key[key] = target
                 practices.append(target)
+            _merge_normalized_strings(target.get("related_knowledge_points"), related, 12)
+            _merge_normalized_strings(target.get("answer_key"), item.get("answer_key", list()), 12)
+            _merge_normalized_strings(target.get("rubric"), item.get("rubric", list()), 12)
             _merge_evidence(target.get("evidence"), item.get("evidence", list()))
     examples.sort(key=lambda item: (_first_evidence_start(item), _canonical_learning_key(item.get("example"))))
     practices.sort(key=lambda item: (_first_evidence_start(item), item.get("type"), _canonical_learning_key(item.get("prompt"))))
