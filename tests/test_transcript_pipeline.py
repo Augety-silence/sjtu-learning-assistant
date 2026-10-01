@@ -139,6 +139,7 @@ class FakeAI:
             payload = dict(
                 chunk_index=chunk_index,
                 time_range=dict(start_ms=int(first[1]), end_ms=int(last[2])),
+                reviewed_cue_ids=list(dict.fromkeys(row[0] for row in rows)),
                 coverage_confirmation=dict(confirmed=True, evidence=evidence),
                 issues=[],
                 revised_study_guide=study_guide_payload(),
@@ -529,7 +530,7 @@ class TranscriptPipelineTests(unittest.TestCase):
         result = TranscriptPipeline().run(VTT, AuditFailureAI())
         self.assertTrue(result.summary["study_guide"]["themes"])
         self.assertEqual("completed_with_warnings", result.summary["review"]["status"])
-        self.assertTrue(all(row["status"] == "audit_failed" for row in result.summary["review"]["coverage_ledger"]))
+        self.assertTrue(all(row["status"] == "not_audited" for row in result.summary["review"]["coverage_ledger"]))
 
     def test_source_evidence_examples_placeholders_and_fast_food_case(self):
         cues = [Cue(1_414_000, 1_416_000, "为什么现在不吃某快餐", "cue-fast-food")]
@@ -561,6 +562,7 @@ class TranscriptPipelineTests(unittest.TestCase):
 
         def theme(title, cue):
             return dict(
+                topic_id="topic-" + cue.cue_id,
                 title=title, conclusion=cue.text, principle_and_context="用于对应字幕片段。",
                 why_and_consequences="遗漏会失去前序课程信息。", steps=["定位", "核对", "保留"],
                 classroom_example=None, boundaries="仅限引文。", connections="关系待核实。",
@@ -591,6 +593,7 @@ class TranscriptPipelineTests(unittest.TestCase):
                 payload = dict(
                     chunk_index=index,
                     time_range=dict(start_ms=cue.start_ms, end_ms=cue.end_ms),
+                    reviewed_cue_ids=[cue.cue_id],
                     coverage_confirmation=dict(
                         confirmed=True,
                         evidence=[dict(cue_id=evidence_cue.cue_id, quote=evidence_cue.text)],
@@ -605,8 +608,63 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "audited" and row["coverage_evidence"] for row in review["coverage_ledger"]))
 
         _audited, failed_review = _audit_guide(LocalAuditAI(wrong_second=True), guide, chunks, cues)
-        self.assertEqual("audit_failed", failed_review["coverage_ledger"][1]["status"])
+        self.assertEqual("not_audited", failed_review["coverage_ledger"][1]["status"])
         self.assertEqual([], failed_review["coverage_ledger"][1]["coverage_evidence"])
+
+        class PartialCoverageAI:
+            def chat_completion(inner_self, messages, **kwargs):
+                payload = dict(
+                    chunk_index=0,
+                    time_range=dict(start_ms=0, end_ms=2000),
+                    reviewed_cue_ids=["cue-a"],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id="cue-a", quote="第一主题证据")],
+                    ),
+                    issues=[],
+                    revised_study_guide=guide,
+                )
+                return dict(content=json.dumps(payload, ensure_ascii=False))
+
+        _partial_guide, partial_review = _audit_guide(
+            PartialCoverageAI(), guide, [TranscriptChunk(0, tuple(cues))], cues
+        )
+        partial_row = partial_review["coverage_ledger"][0]
+        self.assertEqual("partial", partial_row["status"])
+        self.assertEqual(["cue-b"], partial_row["missing_cue_ids"])
+
+        class RenameTopicAI:
+            def chat_completion(inner_self, messages, **kwargs):
+                renamed = dict(guide)
+                renamed_theme = dict(guide["themes"][0], title="第一主题（修订）")
+                renamed["themes"] = [renamed_theme, guide["themes"][1]]
+                payload = dict(
+                    chunk_index=0,
+                    time_range=dict(start_ms=0, end_ms=1000),
+                    reviewed_cue_ids=["cue-a"],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id="cue-a", quote="第一主题证据")],
+                    ),
+                    issues=[dict(
+                        type="标题修正",
+                        target_topic_id="topic-cue-a",
+                        problem="第一主题标题需要修正",
+                        evidence=[dict(cue_id="cue-a", quote="第一主题证据")],
+                        fix="改为第一主题（修订）",
+                    )],
+                    revised_study_guide=renamed,
+                )
+                return dict(content=json.dumps(payload, ensure_ascii=False))
+
+        renamed, renamed_review = _audit_guide(
+            RenameTopicAI(), guide, [TranscriptChunk(0, (cues[0],))], cues
+        )
+        self.assertEqual("completed", renamed_review["status"])
+        self.assertEqual(
+            ["第一主题（修订）", "第二主题"],
+            [item["title"] for item in renamed["themes"]],
+        )
 
     def test_fallback_is_structured_questions_are_answered_and_markdown_ordered(self):
         cues = normalize_cues(parse_vtt(VTT))
