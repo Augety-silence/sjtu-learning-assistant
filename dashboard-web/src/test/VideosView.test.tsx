@@ -308,6 +308,102 @@ describe("VideosView", () => {
     ).toBeTruthy();
   });
 
+  it("saved 加 reused 只表示字幕复用，仍保持处理中而非已整理", () => {
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "saved-reused",
+            batch_id: "b",
+            source_id: "v3",
+            title: "第三讲",
+            status: "saved",
+            stage: "transcribing",
+            progress: 45,
+            attempts: 1,
+            reused: true,
+          },
+        ]}
+        onStartTranscript={vi.fn(async () => undefined)}
+      />,
+    );
+
+    expect(screen.getByText("0/1 已整理")).toBeTruthy();
+    expect(screen.getAllByText("正在生成字幕").length).toBeGreaterThan(0);
+    const action = screen.getByRole("button", {
+      name: "一键整理未完成 0 节",
+    });
+    expect((action as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("1/1 已整理")).toBeNull();
+  });
+
+  it("partial 加 reused 仍进入一键整理未完成并可重试", async () => {
+    const start = vi.fn(async () => undefined);
+    const retry = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "partial-reused",
+            batch_id: "b",
+            source_id: "v3",
+            title: "第三讲",
+            status: "partial",
+            stage: "reviewing",
+            progress: 88,
+            attempts: 1,
+            reused: true,
+          },
+        ]}
+        onStartTranscript={start}
+        onRetryTranscript={retry}
+      />,
+    );
+
+    expect(screen.getAllByText("部分完成").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "整理本节学习材料" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    fireEvent.click(
+      screen.getByRole("button", { name: "一键整理未完成 1 节" }),
+    );
+    await waitFor(() => expect(start).toHaveBeenCalledWith([videos[2]]));
+  });
+
+  it("failed 加 reused 仍进入一键整理未完成并可重试", async () => {
+    const start = vi.fn(async () => undefined);
+    const retry = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[videos[2]]}
+        transcriptJobs={[
+          {
+            id: "failed-reused",
+            batch_id: "b",
+            source_id: "v3",
+            title: "第三讲",
+            status: "failed",
+            stage: "reviewing",
+            progress: 92,
+            attempts: 1,
+            reused: true,
+          },
+        ]}
+        onStartTranscript={start}
+        onRetryTranscript={retry}
+      />,
+    );
+
+    expect(screen.getAllByText("失败可重试").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "整理本节学习材料" }));
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
+    fireEvent.click(
+      screen.getByRole("button", { name: "一键整理未完成 1 节" }),
+    );
+    await waitFor(() => expect(start).toHaveBeenCalledWith([videos[2]]));
+  });
+
   it("全部完成时禁用一键整理并说明全部已整理", () => {
     const completed = videos.map((video, index) => ({
       id: `done-${index}`,

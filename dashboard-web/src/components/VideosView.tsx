@@ -243,8 +243,7 @@ function compactJobTitle(title: string, courseName: string) {
 function isCompletedForBatch(job?: TranscriptJob) {
   return Boolean(
     job &&
-      (job.reused ||
-        job.status === "completed" ||
+      (job.status === "completed" ||
         job.status === "completed_with_warnings" ||
         (job.status as string) === "reused"),
   );
