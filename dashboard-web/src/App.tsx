@@ -4,6 +4,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { AIChatView } from "@/components/AIChatView";
@@ -655,25 +656,54 @@ function VideosAdapter({
   refreshVersion: number;
 }) {
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
+  const [loadedCourseId, setLoadedCourseId] = useState<number | null>(null);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
   const [transcriptJobs, setTranscriptJobs] = useState<TranscriptJob[]>([]);
+  const [transcriptCourseId, setTranscriptCourseId] = useState<number | null>(
+    null,
+  );
+  const mediaRequestSequence = useRef(0);
+  const activeCourseId = useRef(courseId);
+  activeCourseId.current = courseId;
   const load = useCallback(async () => {
-    if (!courseId) return;
-    setLoading(true);
+    const request = ++mediaRequestSequence.current;
+    setVideos([]);
+    setSlidesPdfAvailable(false);
     setError(null);
+    if (!courseId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const result = await getCourseMedia(courseId);
+      if (
+        mediaRequestSequence.current !== request ||
+        activeCourseId.current !== courseId
+      )
+        return;
       let canCreateSlides = false;
       try {
         const mediaCapabilities = await getMediaCapabilities();
+        if (
+          mediaRequestSequence.current !== request ||
+          activeCourseId.current !== courseId
+        )
+          return;
         canCreateSlides = Boolean(
           mediaCapabilities.video_screenshot_pdf?.available,
         );
       } catch {
         // Optional local tooling must not prevent the course video list loading.
       }
+      if (
+        mediaRequestSequence.current !== request ||
+        activeCourseId.current !== courseId
+      )
+        return;
+      setLoadedCourseId(courseId);
       setSlidesPdfAvailable(canCreateSlides);
       setVideos(
         result.items
@@ -690,13 +720,22 @@ function VideosAdapter({
           }),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "课程视频加载失败"));
+      if (
+        mediaRequestSequence.current === request &&
+        activeCourseId.current === courseId
+      )
+        setError(messageFrom(reason, "课程视频加载失败"));
     } finally {
-      setLoading(false);
+      if (
+        mediaRequestSequence.current === request &&
+        activeCourseId.current === courseId
+      )
+        setLoading(false);
     }
   }, [courseId, refreshVersion]);
   useEffect(() => void load(), [load]);
   useEffect(() => {
+    setTranscriptCourseId(null);
     if (!courseId) {
       setTranscriptJobs([]);
       return;
@@ -705,7 +744,10 @@ function VideosAdapter({
     const refresh = async () => {
       try {
         const result = await getTranscriptJobs(courseId);
-        if (active) setTranscriptJobs(result.items);
+        if (active) {
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs(result.items);
+        }
       } catch {
         // Video loading and playback stay available if transcript recovery fails.
       }
@@ -717,15 +759,19 @@ function VideosAdapter({
       window.clearInterval(timer);
     };
   }, [courseId]);
+  const visibleVideos = loadedCourseId === courseId ? videos : [];
   return (
     <VideosView
-      videos={videos}
+      videos={visibleVideos}
       courseId={courseId}
       courseName={courseName}
       courseOptions={courseOptions}
       onCourseChange={onCourseChange}
-      transcriptJobs={transcriptJobs}
-      loading={!courseResolved || loading}
+      transcriptJobs={transcriptCourseId === courseId ? transcriptJobs : []}
+      loading={
+        !courseResolved ||
+        (Boolean(courseId) && (loading || loadedCourseId !== courseId))
+      }
       error={
         courseResolutionFailed
           ? "暂时无法确认课程视频权限，请重新检查。"
@@ -735,6 +781,14 @@ function VideosAdapter({
       onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
       onStartTranscript={async (selectedVideos) => {
         if (!courseId) throw new Error("请先选择课程。");
+        if (
+          loadedCourseId !== courseId ||
+          selectedVideos.some(
+            (selectedVideo) =>
+              !visibleVideos.some((video) => video.id === selectedVideo.id),
+          )
+        )
+          throw new Error("课程已切换，请在当前课程重新选择录像。");
         const batch = await startTranscriptBatch(
           courseId,
           selectedVideos.map((video) => video.id),
@@ -834,7 +888,18 @@ export default function App() {
     course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
   );
   const [staffCourseId, setStaffCourseId] = useState<number | null>(null);
-  const [learnerCourseId, setLearnerCourseId] = useState<number | null>(null);
+  const [selectedLearnerCourseId, setSelectedLearnerCourseId] = useState<
+    number | null
+  >(null);
+  const learnerCourseIds = learnerCourses.flatMap((course) => {
+    const id = courseNumber(course);
+    return id ? [id] : [];
+  });
+  const learnerCourseId =
+    selectedLearnerCourseId &&
+    learnerCourseIds.includes(selectedLearnerCourseId)
+      ? selectedLearnerCourseId
+      : (learnerCourseIds[0] ?? null);
 
   useEffect(() => {
     const available = staffCourses.flatMap((course) => {
@@ -844,14 +909,6 @@ export default function App() {
     if (!staffCourseId || !available.includes(staffCourseId))
       setStaffCourseId(available[0] ?? null);
   }, [capabilities, staffCourseId]);
-  useEffect(() => {
-    const available = learnerCourses.flatMap((course) => {
-      const id = courseNumber(course);
-      return id ? [id] : [];
-    });
-    if (!learnerCourseId || !available.includes(learnerCourseId))
-      setLearnerCourseId(available[0] ?? null);
-  }, [capabilities, learnerCourseId]);
 
   const coursePicker = (
     courses: CourseCapabilities[],
@@ -1070,7 +1127,7 @@ export default function App() {
                   ]
                 : [];
             })}
-            onCourseChange={setLearnerCourseId}
+            onCourseChange={setSelectedLearnerCourseId}
             courseResolved={capabilitiesInitialized}
             courseResolutionFailed={capabilitiesFailed}
             onResolveCourseRetry={() => setDataVersion((value) => value + 1)}

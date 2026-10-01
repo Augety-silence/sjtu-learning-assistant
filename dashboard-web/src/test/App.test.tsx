@@ -4,13 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import {
   getBackupStatus,
+  getCourseMedia,
+  getMediaCapabilities,
   getMessageDetail,
   getMessages,
   getSettings,
+  getTranscriptJobs,
+  getVideoPlayback,
   invoke,
+  startTranscriptBatch,
 } from "@/lib/api";
 import { applyThemeMode } from "@/lib/theme";
 import type {
+  AppCapabilities,
   MessageDetail,
   MessageItem,
   OverviewData,
@@ -23,10 +29,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     getBackupStatus: vi.fn(),
+    getCourseMedia: vi.fn(),
+    getMediaCapabilities: vi.fn(),
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
     getSettings: vi.fn(),
+    getTranscriptJobs: vi.fn(),
+    getVideoPlayback: vi.fn(),
     invoke: vi.fn(),
+    startTranscriptBatch: vi.fn(),
   };
 });
 
@@ -64,6 +75,74 @@ const detail: MessageDetail = {
   url: null,
   is_unread: true,
 };
+
+function learnerCapabilities(): AppCapabilities {
+  return {
+    courses: {
+      items: [
+        {
+          course_id: "12",
+          course_name: "课程 A",
+          roles: ["student"],
+          role_source: "canvas",
+          can_view_calendar: true,
+          can_view_members: true,
+          can_view_submissions: false,
+          can_manage_grades: false,
+          can_comment_submissions: false,
+        },
+        {
+          course_id: "13",
+          course_name: "课程 B",
+          roles: ["student"],
+          role_source: "canvas",
+          can_view_calendar: true,
+          can_view_members: true,
+          can_view_submissions: false,
+          can_manage_grades: false,
+          can_comment_submissions: false,
+        },
+      ],
+    },
+    media: {},
+    update: { check_only: true, automatic_install: false },
+    mcp: { transport: "stdio", read_only: true },
+  };
+}
+
+function courseMedia(courseId: number, title: string) {
+  return {
+    items: [
+      {
+        source_id: `video-${courseId}`,
+        name: title,
+        media_kind: "video",
+        source: "video_space",
+        course_name: `课程 ${courseId === 12 ? "A" : "B"}`,
+        downloadable: false,
+        supports_subtitle: true,
+        supports_slides_pdf: false,
+        playback: {
+          available: true,
+          transport: "dashboard_action",
+          action: "play_remote_video",
+          source_id: `video-${courseId}`,
+        },
+      },
+    ],
+    subtitles: [],
+    unmatched_subtitles: [],
+    counts: { video: 1, audio: 0, subtitle: 0 },
+  } as never;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   window.location.hash = "#/overview";
@@ -106,6 +185,19 @@ beforeEach(() => {
   vi.mocked(getSettings).mockImplementation(
     async () => ({ theme_mode: settingsTheme }) as never,
   );
+  vi.mocked(getCourseMedia).mockResolvedValue(courseMedia(12, "A 专属录像"));
+  vi.mocked(getMediaCapabilities).mockResolvedValue({
+    video_screenshot_pdf: { available: true, reason: null },
+  });
+  vi.mocked(getTranscriptJobs).mockResolvedValue({ items: [] });
+  vi.mocked(getVideoPlayback).mockImplementation(async (sourceId) => ({
+    available: true,
+    transport: "remote_url",
+    action: "play_remote_video",
+    source_id: sourceId,
+    url: `https://example.test/${sourceId}.mp4`,
+  }));
+  vi.mocked(startTranscriptBatch).mockResolvedValue({ jobs: [] } as never);
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
   vi.mocked(getBackupStatus).mockResolvedValue({
@@ -156,6 +248,110 @@ describe("课程视频首帧导航", () => {
       container.querySelector('.video-workbench[data-state="loading"]'),
     ).toBeTruthy();
     expect(screen.queryByText("需要视频访问权限")).toBeNull();
+  });
+
+  it("capabilities 成功后同步决议 learnerCourseId，全程不渲染权限不足", async () => {
+    window.location.hash = "#/videos";
+    const capabilityRequest = deferred<AppCapabilities>();
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return capabilityRequest.promise as never;
+      if (action === "sync_status") {
+        return {
+          status: "idle",
+          last_success_at: null,
+          last_run_status: null,
+          last_run_at: null,
+        } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const { container } = render(<App />);
+    let announcedPermissionDenied = false;
+    const observer = new MutationObserver(() => {
+      announcedPermissionDenied ||=
+        container.textContent?.includes("需要视频访问权限") ?? false;
+    });
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    capabilityRequest.resolve(learnerCapabilities());
+    expect(await screen.findByText("A 专属录像")).toBeTruthy();
+    observer.disconnect();
+
+    expect(announcedPermissionDenied).toBe(false);
+    expect(screen.queryByText("需要视频访问权限")).toBeNull();
+    expect(getCourseMedia).toHaveBeenCalledWith(12);
+  });
+
+  it("A 请求晚返回不会覆盖已切换到 B 的录像", async () => {
+    window.location.hash = "#/videos";
+    const courseARequest = deferred<ReturnType<typeof courseMedia>>();
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") {
+        return {
+          status: "idle",
+          last_success_at: null,
+          last_run_status: null,
+          last_run_at: null,
+        } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getCourseMedia).mockImplementation(async (courseId) =>
+      courseId === 12 ? courseARequest.promise : courseMedia(13, "B 专属录像"),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(getCourseMedia).toHaveBeenCalledWith(12));
+    fireEvent.click(screen.getByRole("combobox", { name: "选择课程" }));
+    fireEvent.click(screen.getByRole("option", { name: "课程 B" }));
+    expect(await screen.findByText("B 专属录像")).toBeTruthy();
+
+    courseARequest.resolve(courseMedia(12, "A 迟到录像"));
+    await waitFor(() => expect(screen.queryByText("A 迟到录像")).toBeNull());
+    expect(screen.getByText("B 专属录像")).toBeTruthy();
+  });
+
+  it("A→B 切换立即隔离选择，并只用 B courseId 与 B videoId 创建任务", async () => {
+    window.location.hash = "#/videos";
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") {
+        return {
+          status: "idle",
+          last_success_at: null,
+          last_run_status: null,
+          last_run_at: null,
+        } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getCourseMedia).mockImplementation(async (courseId) =>
+      courseMedia(courseId, `${courseId === 12 ? "A" : "B"} 专属录像`),
+    );
+    render(<App />);
+
+    await screen.findByText("A 专属录像");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 A 专属录像" }));
+    expect(screen.getByLabelText("批量操作")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "选择课程" }));
+    fireEvent.click(screen.getByRole("option", { name: "课程 B" }));
+    expect(screen.queryByText("A 专属录像")).toBeNull();
+    expect(screen.queryByLabelText("批量操作")).toBeNull();
+    expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
+
+    await screen.findByText("B 专属录像");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 B 专属录像" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成字幕" }));
+    await waitFor(() =>
+      expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
+    );
+    expect(startTranscriptBatch).not.toHaveBeenCalledWith(13, ["video-12"]);
   });
 });
 

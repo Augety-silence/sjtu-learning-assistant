@@ -19,6 +19,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -666,8 +667,31 @@ export function VideosView({
     );
     if (selected && !valid.has(selected.id)) setSelected(null);
   }, [videos, selected]);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    playRequest.current += 1;
+    if (subtitleBlobUrl.current) {
+      URL.revokeObjectURL(subtitleBlobUrl.current);
+      subtitleBlobUrl.current = null;
+    }
+    const temporaryPlayback = temporaryPlaybackRef.current;
+    if (temporaryPlayback) {
+      if (temporaryPlayback.holdTimer !== null)
+        window.clearTimeout(temporaryPlayback.holdTimer);
+      if (temporaryPlayback.rewindTimer !== null)
+        window.clearInterval(temporaryPlayback.rewindTimer);
+      temporaryPlayback.media.playbackRate = temporaryPlayback.basePlaybackRate;
+      temporaryPlaybackRef.current = null;
+    }
+    playerLoadedRef.current = false;
+    setSelected(null);
     setSelectedIds(new Set());
+    setPlaybackUrl(null);
+    setSubtitleUrl(null);
+    setSubtitleMessage(null);
+    setBusy(null);
+    busyRef.current = false;
+    setLearningTab("transcript");
+    setDetailJob(null);
     setOpenMenuId(null);
     setPendingSummarySourceId(null);
     setSummaryRequestError(null);

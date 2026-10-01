@@ -1043,3 +1043,34 @@ describe("VideosView", () => {
     expect(container.querySelector(".video-job-progress")).toBeNull();
   });
 });
+
+describe("VideosView 课程隔离", () => {
+  it("切换 courseId 时清空选择、播放器和字幕状态，同时保留工作台骨架", async () => {
+    const view = render(
+      <VideosView
+        videos={videos}
+        courseId={12}
+        onPlay={async () => ({
+          url: "https://example.test/a.mp4",
+          subtitleUrl: "https://example.test/a.vtt",
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 第一讲" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "播放" })[0]);
+    expect(await screen.findByLabelText("播放 第一讲")).toBeTruthy();
+    expect(document.querySelector("video track")?.getAttribute("src")).toBe(
+      "https://example.test/a.vtt",
+    );
+    expect(screen.getByLabelText("批量操作")).toBeTruthy();
+
+    view.rerender(<VideosView videos={[]} courseId={13} loading />);
+
+    expect(screen.queryByLabelText("播放 第一讲")).toBeNull();
+    expect(screen.queryByLabelText("批量操作")).toBeNull();
+    expect(screen.queryByText("第一讲")).toBeNull();
+    expect(document.querySelector("video track")).toBeNull();
+    expect(view.container.querySelector(".video-player-shell")).toBeTruthy();
+    expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
+  });
+});
