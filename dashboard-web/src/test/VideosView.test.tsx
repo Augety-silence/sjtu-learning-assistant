@@ -348,6 +348,56 @@ describe("VideosView", () => {
     expect(document.querySelector("video track")).toBeNull();
   });
 
+  it("失效的旧字幕请求结束时不会清除后续新操作的 busy", async () => {
+    let resolveSubtitle: ((value: { subtitleUrl: string }) => void) | undefined;
+    let resolveOrganize: (() => void) | undefined;
+    const onLoadSubtitles = vi.fn(
+      () =>
+        new Promise<{ subtitleUrl: string }>((resolve) => {
+          resolveSubtitle = resolve;
+        }),
+    );
+    const onStartTranscript = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveOrganize = resolve;
+        }),
+    );
+    render(
+      <VideosView
+        videos={videos}
+        onLoadSubtitles={onLoadSubtitles}
+        onStartTranscript={onStartTranscript}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "载入播放器字幕" }));
+    await waitFor(() => expect(onLoadSubtitles).toHaveBeenCalledOnce());
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    const organize = screen.getByRole("button", {
+      name: "整理本节学习材料",
+    });
+    fireEvent.click(organize);
+    expect(onStartTranscript).toHaveBeenCalledOnce();
+    expect(organize.getAttribute("aria-busy")).toBe("true");
+    expect((organize as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () =>
+      resolveSubtitle?.({ subtitleUrl: "https://example.test/stale.vtt" }),
+    );
+    expect(organize.getAttribute("aria-busy")).toBe("true");
+    expect((organize as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => resolveOrganize?.());
+    await waitFor(() => expect(organize.getAttribute("aria-busy")).toBeNull());
+    expect((organize as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("跨来源切换时保留正在播放的视频并显示原来源", async () => {
     render(
       <VideosView

@@ -753,7 +753,7 @@ export function VideosView({
   const summaryPriorJobIds = useRef<Set<string>>(new Set());
   const summaryRequestedJobId = useRef<string | null>(null);
   const summaryAwaitsNewJob = useRef(false);
-  const busyRef = useRef(false);
+  const busyRef = useRef<symbol | null>(null);
   const playerLoadedRef = useRef(false);
   const playbackRateRef = useRef<PlaybackRate>(1);
   const temporaryPlaybackRef = useRef<TemporaryPlaybackState | null>(null);
@@ -946,7 +946,7 @@ export function VideosView({
     setSubtitleMessage(null);
     setPreservedAcrossSource(false);
     setBusy(null);
-    busyRef.current = false;
+    busyRef.current = null;
     setLearningTab("summary");
     setOrganizationFilter("all");
     setSelectionMode(false);
@@ -1318,7 +1318,7 @@ export function VideosView({
     const invalidatedBusy =
       busy === `play:${selected.id}` || busy === `subtitle:${selected.id}`;
     if (invalidatedBusy) {
-      busyRef.current = false;
+      busyRef.current = null;
       setBusy(null);
     }
     revokeSubtitleBlob();
@@ -1347,7 +1347,8 @@ export function VideosView({
     onError?: (message: string) => void,
   ) => {
     if (!action || busyRef.current || busy) return false;
-    busyRef.current = true;
+    const operation = Symbol(key);
+    busyRef.current = operation;
     setBusy(key);
     try {
       await action();
@@ -1359,8 +1360,10 @@ export function VideosView({
       showToast({ kind: "error", message });
       return false;
     } finally {
-      busyRef.current = false;
-      setBusy(null);
+      if (busyRef.current === operation) {
+        busyRef.current = null;
+        setBusy((current) => (current === key ? null : current));
+      }
     }
   };
 
