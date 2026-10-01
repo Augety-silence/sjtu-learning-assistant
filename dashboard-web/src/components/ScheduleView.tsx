@@ -16,10 +16,8 @@ import {
   commitTimetableImport,
   getTimetableSchedule,
   getTimetableStatus,
-  pickTimetableFile,
   previewTimetableFile,
   previewTimetableSample,
-  syncTimetable,
 } from "@/lib/api";
 import type { TimetableImportPreview, TimetableStatus } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
@@ -52,6 +50,16 @@ function formatSyncTime(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function visibleCalendarRange(month: Date) {
+  const first = new Date(month.getFullYear(), month.getMonth(), 1);
+  const start = new Date(first);
+  start.setDate(first.getDate() - ((first.getDay() + 6) % 7));
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 42);
+  return { startAt: start.toISOString(), endAt: end.toISOString() };
 }
 
 function courseCount(preview: TimetableImportPreview) {
@@ -239,10 +247,11 @@ export function ScheduleView({
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
+    const range = visibleCalendarRange(month);
     try {
       const [nextStatus, schedule] = await Promise.all([
         getTimetableStatus(),
-        getTimetableSchedule(),
+        getTimetableSchedule(range.startAt, range.endAt),
       ]);
       const nextEvents: CalendarEventItem[] = schedule.events.map((event) => ({
         ...event,
@@ -253,7 +262,7 @@ export function ScheduleView({
       setOffline(false);
       localStorage.setItem(
         CACHE_KEY,
-        JSON.stringify({ status: nextStatus, events: nextEvents }),
+        JSON.stringify({ status: nextStatus, events: nextEvents, range }),
       );
     } catch (reason) {
       const cached = localStorage.getItem(CACHE_KEY);
@@ -262,7 +271,14 @@ export function ScheduleView({
           const parsed = JSON.parse(cached) as {
             status: TimetableStatus;
             events: CalendarEventItem[];
+            range?: { startAt: string; endAt: string };
           };
+          if (
+            parsed.range?.startAt !== range.startAt ||
+            parsed.range?.endAt !== range.endAt
+          ) {
+            throw new Error("缓存月份不匹配");
+          }
           setStatus({
             ...parsed.status,
             state: "offline",
@@ -281,7 +297,7 @@ export function ScheduleView({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [month]);
 
   useEffect(() => void load(), [load]);
 
@@ -296,12 +312,11 @@ export function ScheduleView({
     setImportStep("picking");
     setImportError(null);
     try {
-      const picked = await pickTimetableFile();
-      if (picked.cancelled || !picked.path) {
+      const next = await previewTimetableFile();
+      if ("cancelled" in next) {
         setImportStep(preview ? "preview" : "idle");
         return;
       }
-      const next = await previewTimetableFile(picked.path);
       setPreview(next);
       setImportStep("preview");
     } catch (reason) {
@@ -345,7 +360,6 @@ export function ScheduleView({
     setSyncing(true);
     setNotice("");
     try {
-      await syncTimetable();
       setNotice(
         status?.state === "awaiting_configuration"
           ? "已刷新本地课表。"

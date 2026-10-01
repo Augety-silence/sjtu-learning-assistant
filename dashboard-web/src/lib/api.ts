@@ -566,41 +566,33 @@ export function getCalendar(year: number, month: number, courseIds?: number[]) {
 }
 
 export function getTimetableStatus() {
-  return invoke<import("@/lib/types").TimetableStatus>("schedule_status");
+  return invoke<import("@/lib/types").TimetableStatus>("timetable_status");
 }
 
-export function getTimetableSchedule() {
-  return invoke<import("@/lib/types").TimetableSchedule>("schedule");
-}
-
-export function pickTimetableFile() {
-  return invoke<{ cancelled: boolean; path?: string }>("schedule_import_pick", {
-    extensions: ["json", "ics"],
+export function getTimetableSchedule(startAt: string, endAt: string) {
+  return invoke<import("@/lib/types").TimetableSchedule>("timetable_schedule", {
+    startAt,
+    endAt,
   });
 }
 
-export function previewTimetableFile(path: string) {
-  return invoke<import("@/lib/types").TimetableImportPreview>(
-    "schedule_import_preview",
-    { path },
-  );
+export function previewTimetableFile() {
+  return invoke<
+    import("@/lib/types").TimetableImportPreview | { cancelled: true }
+  >("timetable_preview_local_file");
 }
 
 export function previewTimetableSample() {
   return invoke<import("@/lib/types").TimetableImportPreview>(
-    "schedule_import_sample",
+    "timetable_load_bundled_sample",
   );
 }
 
 export function commitTimetableImport(previewId: string) {
   return invoke<import("@/lib/types").TimetableImportCommit>(
-    "schedule_import_commit",
-    { preview_id: previewId },
+    "timetable_commit_preview",
+    { previewId },
   );
-}
-
-export function syncTimetable() {
-  return invoke<import("@/lib/types").TimetableStatus>("schedule_sync");
 }
 
 export function getGradebook(courseId: number) {

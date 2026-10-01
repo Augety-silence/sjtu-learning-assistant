@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.canvas_client import CanvasError, CanvasNetworkError
 from sjtu_learning_assistant.models import Course
-from sjtu_learning_assistant.timetable import TimetableService
 
 T = TypeVar("T")
 _STAFF_ROLES = frozenset({"teacher", "ta"})
@@ -491,10 +490,7 @@ class AcademicFeatureService:
                     contexts = [f"course_{item}" for item in ids[offset : offset + 10]]
                     raw.extend(self._calendar_batch(contexts, start, end))
             except AcademicFeatureError:
-                # A network failure must not hide the durable local timetable.
                 raw = []
-        if self.engine is not None:
-            raw.extend(TimetableService(self.engine).schedule(start, end)["events"])
 
         deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
         for event in raw:

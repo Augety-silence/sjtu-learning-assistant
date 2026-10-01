@@ -173,6 +173,8 @@ def upgrade() -> None:
         sa.Column("imported_courses", sa.Integer(), nullable=False),
         sa.Column("imported_sessions", sa.Integer(), nullable=False),
         sa.Column("updated_sessions", sa.Integer(), nullable=False),
+        sa.Column("deleted_courses", sa.Integer(), nullable=False),
+        sa.Column("deleted_sessions", sa.Integer(), nullable=False),
         sa.Column("warnings", sa.JSON(), nullable=False),
         *timestamps(),
         sa.CheckConstraint(
@@ -204,7 +206,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "action IN ('inserted', 'updated', 'unchanged')",
+            "action IN ('inserted', 'updated', 'unchanged', 'deleted')",
             name="ck_timetable_audit_action",
         ),
     )

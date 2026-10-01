@@ -6,7 +6,6 @@ import {
   commitTimetableImport,
   getTimetableSchedule,
   getTimetableStatus,
-  pickTimetableFile,
   previewTimetableFile,
   previewTimetableSample,
 } from "@/lib/api";
@@ -19,7 +18,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     commitTimetableImport: vi.fn(),
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
-    pickTimetableFile: vi.fn(),
     previewTimetableFile: vi.fn(),
     previewTimetableSample: vi.fn(),
     syncTimetable: vi.fn(),
@@ -58,10 +56,6 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(getTimetableStatus).mockResolvedValue(awaitingStatus);
   vi.mocked(getTimetableSchedule).mockResolvedValue({ events: [] });
-  vi.mocked(pickTimetableFile).mockResolvedValue({
-    cancelled: false,
-    path: "/tmp/timetable.ics",
-  });
   vi.mocked(previewTimetableFile).mockResolvedValue(preview);
   vi.mocked(previewTimetableSample).mockResolvedValue({
     ...preview,
@@ -93,6 +87,49 @@ describe("ScheduleView", () => {
     expect(screen.queryByLabelText(/密码/)).toBeNull();
   });
 
+  it("loads the full visible calendar grid and merges Canvas with local events once", async () => {
+    const canvasEvent = {
+      id: "canvas-1",
+      title: "Canvas 作业",
+      courseName: "文本分析",
+      startAt: "2026-10-06T12:00:00+08:00",
+      eventType: "assignment" as const,
+    };
+    vi.mocked(getTimetableSchedule).mockResolvedValue({
+      events: [
+        {
+          id: "timetable-1",
+          title: "本地课程",
+          courseName: "本地课程",
+          startAt: "2026-09-28T08:00:00+08:00",
+          endAt: "2026-09-28T09:40:00+08:00",
+          location: null,
+          periodLabel: null,
+          eventType: "course",
+          source: "local",
+          canonicalCourseId: null,
+        },
+      ],
+    });
+    render(
+      <ScheduleView
+        canvasEvents={[canvasEvent, canvasEvent]}
+        month={new Date(2026, 9, 1)}
+        onMonthChange={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(getTimetableSchedule).toHaveBeenCalled());
+    const [startAt, endAt] = vi.mocked(getTimetableSchedule).mock.calls[0];
+    expect(new Date(startAt).getDate()).toBe(28);
+    expect(new Date(startAt).getMonth()).toBe(8);
+    expect(new Date(endAt).getDate()).toBe(9);
+    expect(new Date(endAt).getMonth()).toBe(10);
+    expect(await screen.findByText("本地课程")).toBeTruthy();
+    expect(
+      screen.getByRole("gridcell", { name: "2026-10-06，1 个事项" }),
+    ).toBeTruthy();
+  });
+
   it("previews and commits a selected local timetable", async () => {
     renderView();
     fireEvent.click(
@@ -107,6 +144,7 @@ describe("ScheduleView", () => {
     await waitFor(() =>
       expect(commitTimetableImport).toHaveBeenCalledWith("preview-1"),
     );
+    expect(previewTimetableFile).toHaveBeenCalledWith();
   });
 
   it("loads the anonymous sample and recovers from preview errors", async () => {

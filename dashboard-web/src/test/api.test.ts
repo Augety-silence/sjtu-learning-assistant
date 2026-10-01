@@ -24,7 +24,6 @@ import {
   invoke,
   openExternal,
   openMailAttachment,
-  pickTimetableFile,
   planRestore,
   previewTimetableFile,
   previewTimetableSample,
@@ -323,22 +322,25 @@ describe("cloud archive bridge payloads", () => {
     vi.stubGlobal("pywebview", { api: { invoke: bridge } });
 
     await getTimetableStatus();
-    expect(bridge).toHaveBeenLastCalledWith("schedule_status", {});
-    await getTimetableSchedule();
-    expect(bridge).toHaveBeenLastCalledWith("schedule", {});
-    await pickTimetableFile();
-    expect(bridge).toHaveBeenLastCalledWith("schedule_import_pick", {
-      extensions: ["json", "ics"],
+    expect(bridge).toHaveBeenLastCalledWith("timetable_status", {});
+    await getTimetableSchedule(
+      "2026-09-28T00:00:00.000Z",
+      "2026-11-09T00:00:00.000Z",
+    );
+    expect(bridge).toHaveBeenLastCalledWith("timetable_schedule", {
+      startAt: "2026-09-28T00:00:00.000Z",
+      endAt: "2026-11-09T00:00:00.000Z",
     });
-    await previewTimetableFile("/tmp/class.ics");
-    expect(bridge).toHaveBeenLastCalledWith("schedule_import_preview", {
-      path: "/tmp/class.ics",
-    });
+    await previewTimetableFile();
+    expect(bridge).toHaveBeenLastCalledWith("timetable_preview_local_file", {});
     await previewTimetableSample();
-    expect(bridge).toHaveBeenLastCalledWith("schedule_import_sample", {});
+    expect(bridge).toHaveBeenLastCalledWith(
+      "timetable_load_bundled_sample",
+      {},
+    );
     await commitTimetableImport("opaque-preview-id");
-    expect(bridge).toHaveBeenLastCalledWith("schedule_import_commit", {
-      preview_id: "opaque-preview-id",
+    expect(bridge).toHaveBeenLastCalledWith("timetable_commit_preview", {
+      previewId: "opaque-preview-id",
     });
   });
 

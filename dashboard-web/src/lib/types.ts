@@ -644,6 +644,8 @@ export interface TimetableImportCommit {
   importedCourses: number;
   importedSessions: number;
   updatedSessions: number;
+  deletedCourses?: number;
+  deletedSessions?: number;
 }
 
 export interface GradebookAssignmentDto extends Record<string, unknown> {

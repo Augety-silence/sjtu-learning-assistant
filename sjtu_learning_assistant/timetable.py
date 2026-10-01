@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
@@ -215,14 +215,20 @@ def _unfold(text: str) -> list[str]:
     return lines
 
 
-def _ics_datetime(value: str) -> datetime:
+def _ics_datetime(value: str, tzid: str | None = None) -> datetime:
     utc = value.endswith("Z")
+    if utc and tzid:
+        raise TimetableError("ICS UTC 时间不能同时声明 TZID。")
     raw = value[:-1] if utc else value
+    try:
+        source_timezone = timezone.utc if utc else ZoneInfo(tzid) if tzid else SHANGHAI
+    except ZoneInfoNotFoundError as exc:
+        raise TimetableError(f"ICS 包含未知时区 TZID={tzid}。") from exc
     for fmt in ("%Y%m%dT%H%M%S", "%Y%m%dT%H%M", "%Y%m%d"):
         try:
             return (
                 datetime.strptime(raw, fmt)
-                .replace(tzinfo=timezone.utc if utc else SHANGHAI)
+                .replace(tzinfo=source_timezone)
                 .astimezone(SHANGHAI)
             )
         except ValueError:
@@ -242,10 +248,20 @@ def parse_ics(text: str) -> tuple[list[ParsedCourse], list[ParsedSession], list[
             events.append(current)
             current = None
         elif current is not None:
-            key, separator, value = line.partition(":")
-            key = key.split(";", 1)[0].upper()
+            property_name, separator, value = line.partition(":")
+            parts = property_name.split(";")
+            key = parts[0].upper()
             if separator and key in {"UID", "SUMMARY", "DTSTART", "DTEND", "LOCATION"}:
                 current[key] = value.replace("\\,", ",").replace("\\n", "\n")
+                if key in {"DTSTART", "DTEND"}:
+                    for parameter in parts[1:]:
+                        name, equals, parameter_value = parameter.partition("=")
+                        if equals and name.upper() == "TZID":
+                            normalized_tzid = parameter_value.strip('"')
+                            if not normalized_tzid:
+                                raise TimetableError("ICS TZID 不能为空。")
+                            current[f"{key}_TZID"] = normalized_tzid
+                            break
     courses: dict[str, ParsedCourse] = {}
     sessions: list[ParsedSession] = []
     warnings: list[str] = []
@@ -260,7 +276,10 @@ def parse_ics(text: str) -> tuple[list[ParsedCourse], list[ParsedSession], list[
         courses.setdefault(
             course_id, ParsedCourse(course_id, None, summary, None, dict(event))
         )
-        start, finish = _ics_datetime(event["DTSTART"]), _ics_datetime(event["DTEND"])
+        start, finish = (
+            _ics_datetime(event["DTSTART"], event.get("DTSTART_TZID")),
+            _ics_datetime(event["DTEND"], event.get("DTEND_TZID")),
+        )
         if finish <= start:
             raise TimetableError("ICS 结束时间必须晚于开始时间。")
         sessions.append(
@@ -396,11 +415,27 @@ class TimetableService:
         ):
             raise TimetableError("预览标识无效。")
         with self._lock:
-            preview = self._previews.pop(preview_id, None)
-        if preview is None or preview[0] <= monotonic():
-            raise TimetableError("预览已过期，请重新选择文件。")
-        _, format_name, digest, courses, sessions, warnings = preview
+            preview = self._previews.get(preview_id)
+            if preview is None or preview[0] <= monotonic():
+                self._previews.pop(preview_id, None)
+                raise TimetableError("预览已过期，请重新选择文件。")
+            _, format_name, digest, courses, sessions, warnings = preview
+            result = self._commit_snapshot(
+                format_name, digest, courses, sessions, warnings
+            )
+            self._previews.pop(preview_id, None)
+            return result
+
+    def _commit_snapshot(
+        self,
+        format_name: str,
+        digest: str,
+        courses: list[ParsedCourse],
+        sessions: list[ParsedSession],
+        warnings: list[str],
+    ) -> dict[str, Any]:
         imported_courses = imported_sessions = updated_sessions = 0
+        deleted_courses = deleted_sessions = 0
         with Session(self.engine) as db, db.begin():
             run = TimetableImportRun(
                 provider="local",
@@ -412,13 +447,19 @@ class TimetableService:
             db.add(run)
             db.flush()
             by_source: dict[str, TimetableCourse] = {}
-            for item in courses:
-                record = db.scalar(
-                    select(TimetableCourse).where(
-                        TimetableCourse.source == "local",
-                        TimetableCourse.source_id == item.source_id,
-                    )
+            existing_courses = {
+                item.source_id: item
+                for item in db.scalars(
+                    select(TimetableCourse).where(TimetableCourse.source == "local")
                 )
+            }
+            incoming_sessions: dict[str, set[str]] = {}
+            for item in sessions:
+                incoming_sessions.setdefault(item.course_source_id, set()).add(
+                    item.source_id
+                )
+            for item in courses:
+                record = existing_courses.get(item.source_id)
                 action = "updated"
                 if record is None:
                     canonical = self._canonical(db, item.code, item.name)
@@ -512,21 +553,72 @@ class TimetableService:
                         details={},
                     )
                 )
-            run.imported_courses, run.imported_sessions, run.updated_sessions = (
+            incoming_course_ids = set(by_source)
+            for source_id, course in existing_courses.items():
+                retained_session_ids = incoming_sessions.get(source_id, set())
+                stored_sessions = list(
+                    db.scalars(
+                        select(TimetableSession).where(
+                            TimetableSession.timetable_course_id == course.id
+                        )
+                    )
+                )
+                for stored in stored_sessions:
+                    if (
+                        source_id in incoming_course_ids
+                        and stored.source_id in retained_session_ids
+                    ):
+                        continue
+                    db.add(
+                        TimetableImportAudit(
+                            import_run_id=run.id,
+                            entity_type="session",
+                            source_id=stored.source_id,
+                            action="deleted",
+                            details={"courseSourceId": source_id},
+                        )
+                    )
+                    db.delete(stored)
+                    deleted_sessions += 1
+                if source_id not in incoming_course_ids:
+                    db.add(
+                        TimetableImportAudit(
+                            import_run_id=run.id,
+                            entity_type="course",
+                            source_id=source_id,
+                            action="deleted",
+                            details={},
+                        )
+                    )
+                    db.delete(course)
+                    deleted_courses += 1
+            (
+                run.imported_courses,
+                run.imported_sessions,
+                run.updated_sessions,
+                run.deleted_courses,
+                run.deleted_sessions,
+            ) = (
                 imported_courses,
                 imported_sessions,
                 updated_sessions,
+                deleted_courses,
+                deleted_sessions,
             )
         return {
             "status": "committed",
             "importedCourses": imported_courses,
             "importedSessions": imported_sessions,
             "updatedSessions": updated_sessions,
+            "deletedCourses": deleted_courses,
+            "deletedSessions": deleted_sessions,
         }
 
     def schedule(self, start: datetime, end: datetime) -> dict[str, Any]:
         if start.tzinfo is None or end.tzinfo is None or end <= start:
             raise TimetableError("课表时间范围无效。")
+        start = start.astimezone(SHANGHAI)
+        end = end.astimezone(SHANGHAI)
         with Session(self.engine) as db:
             rows = db.execute(
                 select(TimetableSession, TimetableCourse)
@@ -541,8 +633,16 @@ class TimetableService:
                     "id": f"timetable:{item.id}",
                     "title": course.course_name,
                     "courseName": course.course_name,
-                    "startAt": item.start_at.isoformat(),
-                    "endAt": item.finish_at.isoformat(),
+                    "startAt": (
+                        item.start_at.replace(tzinfo=SHANGHAI)
+                        if item.start_at.tzinfo is None
+                        else item.start_at.astimezone(SHANGHAI)
+                    ).isoformat(),
+                    "endAt": (
+                        item.finish_at.replace(tzinfo=SHANGHAI)
+                        if item.finish_at.tzinfo is None
+                        else item.finish_at.astimezone(SHANGHAI)
+                    ).isoformat(),
                     "location": item.classroom,
                     "periodLabel": f"第{item.period}节" if item.period else None,
                     "eventType": "course",

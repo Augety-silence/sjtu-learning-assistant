@@ -13,9 +13,14 @@ from sqlalchemy.orm import Session
 
 from desktop_app import DesktopBridge
 from sjtu_learning_assistant.academic_features import AcademicFeatureService
-from sjtu_learning_assistant.canvas_client import CanvasNetworkError
 from sjtu_learning_assistant.desktop_database import SCHEMA_VERSION, bootstrap_sqlite
-from sjtu_learning_assistant.models import Base, TimetableCourse, TimetableSession
+from sjtu_learning_assistant.models import (
+    Base,
+    TimetableCourse,
+    TimetableImportAudit,
+    TimetableImportRun,
+    TimetableSession,
+)
 from sjtu_learning_assistant.timetable import (
     SJTUEducationAPIProvider,
     TimetableError,
@@ -28,6 +33,22 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sjtu_lessons_anonymous.json"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+def lesson(source_id: str, name: str, sessions: list[dict]) -> dict:
+    return {
+        "id": source_id,
+        "course": {"code": source_id.upper(), "name": name},
+        "schedules": sessions,
+    }
+
+
+def occurrence(source_id: str, day: int) -> dict:
+    return {
+        "id": source_id,
+        "startAt": f"2026-10-{day:02d}T08:00:00+08:00",
+        "finishAt": f"2026-10-{day:02d}T09:40:00+08:00",
+    }
+
+
 class TimetableTests(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -36,6 +57,15 @@ class TimetableTests(unittest.TestCase):
 
     def tearDown(self):
         self.engine.dispose()
+
+    def commit_payload(self, lessons: list[dict]) -> dict:
+        with tempfile.NamedTemporaryFile(
+            suffix=".json", mode="w", encoding="utf-8"
+        ) as file:
+            json.dump({"data": {"lessons": lessons}}, file)
+            file.flush()
+            preview = self.service.preview_local_file(file.name)
+        return self.service.commit_preview(preview["previewId"])
 
     def test_official_parser_preserves_explicit_week_day_period_and_gaps(self):
         courses, sessions, warnings = parse_sjtu_lessons(
@@ -72,46 +102,127 @@ class TimetableTests(unittest.TestCase):
         self.assertNotIn(str(FIXTURE), str(first))
         committed = self.service.commit_preview(first["previewId"])
         self.assertEqual(
-            (1, 3, 0),
-            (
-                committed["importedCourses"],
-                committed["importedSessions"],
-                committed["updatedSessions"],
+            (1, 3, 0, 0, 0),
+            tuple(
+                committed[key]
+                for key in (
+                    "importedCourses",
+                    "importedSessions",
+                    "updatedSessions",
+                    "deletedCourses",
+                    "deletedSessions",
+                )
             ),
         )
         second = self.service.load_bundled_sample()
         committed_again = self.service.commit_preview(second["previewId"])
         self.assertEqual(
-            (0, 0, 0),
-            (
-                committed_again["importedCourses"],
-                committed_again["importedSessions"],
-                committed_again["updatedSessions"],
+            (0, 0, 0, 0, 0),
+            tuple(
+                committed_again[key]
+                for key in (
+                    "importedCourses",
+                    "importedSessions",
+                    "updatedSessions",
+                    "deletedCourses",
+                    "deletedSessions",
+                )
             ),
         )
         with Session(self.engine) as db:
             self.assertEqual(1, db.scalar(select(func.count(TimetableCourse.id))))
             self.assertEqual(3, db.scalar(select(func.count(TimetableSession.id))))
-        status = self.service.status()
-        self.assertTrue(status["hasLocalData"])
-        self.assertEqual("awaiting_configuration", status["state"])
+        self.assertTrue(self.service.status()["hasLocalData"])
 
-    def test_ics_minimum_fields_timezone_and_uid_upsert(self):
-        ics = """BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:course-event-1\r\nSUMMARY:自然语言处理\r\nDTSTART;TZID=Asia/Shanghai:20261012T080000\r\nDTEND;TZID=Asia/Shanghai:20261012T094000\r\nLOCATION:示例楼 301\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"""
-        _courses, sessions, warnings = parse_ics(ics)
-        self.assertEqual("course-event-1", sessions[0].source_id)
-        self.assertEqual("Asia/Shanghai", str(sessions[0].start_at.tzinfo))
-        self.assertEqual("示例楼 301", sessions[0].classroom)
-        self.assertEqual([], warnings)
-        with tempfile.NamedTemporaryFile(
-            suffix=".ics", mode="w", encoding="utf-8"
-        ) as file:
-            file.write(ics)
-            file.flush()
-            result = self.service.commit_preview(
-                self.service.preview_local_file(file.name)["previewId"]
+    def test_failed_commit_keeps_preview_token_for_retry(self):
+        preview = self.service.load_bundled_sample()
+        original = self.service._commit_snapshot
+        with patch.object(
+            self.service, "_commit_snapshot", side_effect=RuntimeError("db failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "db failed"):
+                self.service.commit_preview(preview["previewId"])
+        with patch.object(self.service, "_commit_snapshot", wraps=original) as commit:
+            result = self.service.commit_preview(preview["previewId"])
+        self.assertEqual("committed", result["status"])
+        commit.assert_called_once()
+        with self.assertRaises(TimetableError):
+            self.service.commit_preview(preview["previewId"])
+
+    def test_reimport_replaces_source_snapshot_and_audits_deletions(self):
+        first = self.commit_payload(
+            [
+                lesson("a", "课程 A", [occurrence("a-1", 5), occurrence("a-2", 12)]),
+                lesson("b", "课程 B", [occurrence("b-1", 6)]),
+            ]
+        )
+        self.assertEqual((2, 3), (first["importedCourses"], first["importedSessions"]))
+        second = self.commit_payload([lesson("a", "课程 A", [occurrence("a-1", 5)])])
+        self.assertEqual((1, 2), (second["deletedCourses"], second["deletedSessions"]))
+        with Session(self.engine) as db:
+            self.assertEqual(["a"], list(db.scalars(select(TimetableCourse.source_id))))
+            self.assertEqual(["a-1"], list(db.scalars(select(TimetableSession.source_id))))
+            latest_run = db.scalar(
+                select(TimetableImportRun).order_by(TimetableImportRun.id.desc())
             )
-        self.assertEqual(1, result["importedSessions"])
+            self.assertEqual((1, 2), (latest_run.deleted_courses, latest_run.deleted_sessions))
+            deleted = list(
+                db.scalars(
+                    select(TimetableImportAudit).where(
+                        TimetableImportAudit.import_run_id == latest_run.id,
+                        TimetableImportAudit.action == "deleted",
+                    )
+                )
+            )
+            self.assertEqual(3, len(deleted))
+        schedule = self.service.schedule(
+            datetime(2026, 10, 1, tzinfo=SHANGHAI),
+            datetime(2026, 11, 1, tzinfo=SHANGHAI),
+        )
+        self.assertEqual(["课程 A"], [event["title"] for event in schedule["events"]])
+
+    def test_ics_preserves_tzid_utc_and_cross_day_times(self):
+        ics = """BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:shanghai\r
+SUMMARY:上海课程\r
+DTSTART;TZID=Asia/Shanghai:20261012T080000\r
+DTEND;TZID=Asia/Shanghai:20261012T094000\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:new-york\r
+SUMMARY:纽约课程\r
+DTSTART;TZID=America/New_York:20261012T200000\r
+DTEND;TZID=America/New_York:20261012T220000\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+UID:utc-cross-day\r
+SUMMARY:UTC 课程\r
+DTSTART:20261012T160000Z\r
+DTEND:20261013T020000Z\r
+END:VEVENT\r
+END:VCALENDAR\r
+"""
+        _courses, sessions, warnings = parse_ics(ics)
+        by_id = {item.source_id: item for item in sessions}
+        self.assertEqual("Asia/Shanghai", str(by_id["shanghai"].start_at.tzinfo))
+        self.assertEqual(datetime(2026, 10, 13, 8, tzinfo=SHANGHAI), by_id["new-york"].start_at)
+        self.assertEqual(datetime(2026, 10, 13, 0, tzinfo=SHANGHAI), by_id["utc-cross-day"].start_at)
+        self.assertEqual(datetime(2026, 10, 13, 10, tzinfo=SHANGHAI), by_id["utc-cross-day"].finish_at)
+        self.assertEqual([], warnings)
+
+    def test_ics_unknown_tzid_is_explicit_error(self):
+        ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bad-zone
+SUMMARY:未知时区
+DTSTART;TZID=Mars/Olympus:20261012T080000
+DTEND;TZID=Mars/Olympus:20261012T090000
+END:VEVENT
+END:VCALENDAR
+"""
+        with self.assertRaisesRegex(TimetableError, "未知时区.*Mars/Olympus"):
+            parse_ics(ics)
 
     def test_schedule_contract_and_range(self):
         self.service.commit_preview(self.service.load_bundled_sample()["previewId"])
@@ -135,7 +246,6 @@ class TimetableTests(unittest.TestCase):
             },
             set(result["events"][0]),
         )
-        self.assertEqual("course", result["events"][0]["eventType"])
 
     def test_rejects_relative_unsupported_and_oversized_files(self):
         with self.assertRaises(TimetableError):
@@ -166,25 +276,39 @@ class TimetableTests(unittest.TestCase):
                     "timetable_import_audit",
                 }.issubset(tables)
             )
+            run_columns = {column["name"] for column in inspect(engine).get_columns("timetable_import_runs")}
+            self.assertTrue({"deleted_courses", "deleted_sessions"}.issubset(run_columns))
             engine.dispose()
 
-    def test_calendar_keeps_local_cache_when_canvas_network_fails(self):
+    def test_canvas_calendar_and_local_schedule_are_separate(self):
         self.service.commit_preview(self.service.load_bundled_sample()["previewId"])
 
-        class OfflineCanvas:
+        class Canvas:
             def calendar_events(self, context_codes, start_date, end_date):
-                raise CanvasNetworkError("offline")
+                return [
+                    {
+                        "id": "canvas-1",
+                        "title": "Canvas 作业",
+                        "context_code": "course_1",
+                        "start_at": "2026-09-21T08:00:00+08:00",
+                    }
+                ]
 
-        academic = AcademicFeatureService(OfflineCanvas(), engine=self.engine)
-        events = academic.events_between(
+        academic = AcademicFeatureService(Canvas(), engine=self.engine)
+        canvas_events = academic.events_between(
             datetime(2026, 9, 1, tzinfo=SHANGHAI),
             datetime(2026, 10, 1, tzinfo=SHANGHAI),
             course_ids=[1],
         )
-        self.assertEqual(3, len(events))
-        self.assertTrue(all(item["eventType"] == "course" for item in events))
+        local_events = self.service.schedule(
+            datetime(2026, 8, 31, tzinfo=SHANGHAI),
+            datetime(2026, 10, 12, tzinfo=SHANGHAI),
+        )["events"]
+        self.assertEqual(["canvas-1"], [event["id"] for event in canvas_events])
+        self.assertEqual(3, len(local_events))
+        self.assertTrue(set(event["id"] for event in canvas_events).isdisjoint(event["id"] for event in local_events))
 
-    def test_desktop_bridge_contracts(self):
+    def test_production_desktop_bridge_contract_table_end_to_end(self):
         class Dashboard:
             pass
 
@@ -193,27 +317,67 @@ class TimetableTests(unittest.TestCase):
             file_picker=lambda: str(FIXTURE.resolve()),
             timetable_service=self.service,
         )
-        status = bridge.invoke("timetable_status", {})
-        self.assertEqual("awaiting_configuration", status["data"]["state"])
-        preview = bridge.invoke("timetable_preview_local_file", {})["data"]
-        self.assertEqual(
-            {"previewId", "format", "courses", "sessions", "warnings"}, set(preview)
-        )
+        contract = [
+            ("timetable_status", {}, {"state", "hasLocalData"}),
+            (
+                "timetable_preview_local_file",
+                {},
+                {"previewId", "format", "courses", "sessions", "warnings"},
+            ),
+            (
+                "timetable_load_bundled_sample",
+                {},
+                {"previewId", "format", "courses", "sessions", "warnings"},
+            ),
+        ]
+        results = {}
+        for action, payload, required_keys in contract:
+            response = bridge.invoke(action, payload)
+            self.assertTrue(response["ok"], (action, response))
+            self.assertTrue(required_keys.issubset(response["data"]), action)
+            results[action] = response["data"]
         commit = bridge.invoke(
-            "timetable_commit_preview", {"previewId": preview["previewId"]}
-        )["data"]
-        self.assertEqual(
-            {"status", "importedCourses", "importedSessions", "updatedSessions"},
-            set(commit),
+            "timetable_commit_preview",
+            {"previewId": results["timetable_preview_local_file"]["previewId"]},
+        )
+        self.assertTrue(commit["ok"])
+        self.assertTrue(
+            {
+                "status",
+                "importedCourses",
+                "importedSessions",
+                "updatedSessions",
+                "deletedCourses",
+                "deletedSessions",
+            }.issubset(commit["data"])
         )
         schedule = bridge.invoke(
             "timetable_schedule",
             {
-                "startAt": "2026-09-01T00:00:00+08:00",
-                "endAt": "2026-10-01T00:00:00+08:00",
+                "startAt": "2026-08-31T00:00:00+08:00",
+                "endAt": "2026-10-12T00:00:00+08:00",
             },
-        )["data"]
-        self.assertEqual(3, len(schedule["events"]))
+        )
+        self.assertTrue(schedule["ok"])
+        self.assertEqual(3, len(schedule["data"]["events"]))
+        self.assertEqual(
+            {
+                "timetable_status",
+                "timetable_schedule",
+                "timetable_preview_local_file",
+                "timetable_commit_preview",
+                "timetable_load_bundled_sample",
+            },
+            set(bridge._handlers).intersection(
+                {
+                    "timetable_status",
+                    "timetable_schedule",
+                    "timetable_preview_local_file",
+                    "timetable_commit_preview",
+                    "timetable_load_bundled_sample",
+                }
+            ),
+        )
 
 
 if __name__ == "__main__":

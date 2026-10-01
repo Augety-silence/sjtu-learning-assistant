@@ -996,6 +996,8 @@ class TimetableImportRun(TimestampMixin, Base):
     imported_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     imported_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warnings: Mapped[list[Any]] = mapped_column(JSON_TYPE, nullable=False, default=list)
     __table_args__ = (CheckConstraint("status IN (\x27committed\x27, \x27failed\x27)", name="ck_timetable_import_status"),)
 
@@ -1010,6 +1012,6 @@ class TimetableImportAudit(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     __table_args__ = (
-        CheckConstraint("action IN (\x27inserted\x27, \x27updated\x27, \x27unchanged\x27)", name="ck_timetable_audit_action"),
+        CheckConstraint("action IN (\x27inserted\x27, \x27updated\x27, \x27unchanged\x27, \x27deleted\x27)", name="ck_timetable_audit_action"),
         Index("ix_timetable_audit_run", "import_run_id"),
     )
