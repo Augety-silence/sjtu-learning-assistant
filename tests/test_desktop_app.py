@@ -32,9 +32,9 @@ class DesktopAppKeyringBackendTests(unittest.TestCase):
         else:
             environment.__setitem__("PYTHON_KEYRING_BACKEND", backend)
         script = (
-            "import os, sys; "
-            "sys.platform = \"darwin\"; "
+            "import os; "
             "import desktop_app; "
+            "desktop_app._configure_keyring_backend(\"darwin\"); "
             "print(os.environ.get(\"PYTHON_KEYRING_BACKEND\"))"
         )
         return subprocess.run(

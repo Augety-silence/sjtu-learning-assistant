@@ -1296,7 +1296,7 @@ describe("VideosView", () => {
     expect(media.playbackRate).toBe(1);
   });
 
-  it("treats 349ms as one short seek and ignores key repeat", async () => {
+  it("treats a sub-threshold press as one short seek and ignores key repeat", async () => {
     render(<VideosView videos={videos} />);
     fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
     const media = (await findPlayer("第一讲")) as HTMLVideoElement;
@@ -1310,7 +1310,7 @@ describe("VideosView", () => {
 
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     fireEvent.keyDown(document.body, { key: "ArrowRight", repeat: true });
-    await act(async () => vi.advanceTimersByTimeAsync(349));
+    await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(media.currentTime).toBe(50);
     fireEvent.keyUp(document.body, { key: "ArrowRight" });
     expect(media.currentTime).toBe(55);

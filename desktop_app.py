@@ -6,8 +6,14 @@ from __future__ import annotations
 import os
 import sys
 
-if sys.platform == "darwin":
-    os.environ.setdefault("PYTHON_KEYRING_BACKEND", "keyring.backends.macOS.Keyring")
+def _configure_keyring_backend(platform_name: str | None = None) -> None:
+    if (platform_name or sys.platform) == "darwin":
+        os.environ.setdefault(
+            "PYTHON_KEYRING_BACKEND", "keyring.backends.macOS.Keyring"
+        )
+
+
+_configure_keyring_backend()
 
 import re
 import threading
