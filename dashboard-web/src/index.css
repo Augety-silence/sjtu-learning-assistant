@@ -9144,9 +9144,9 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 /* Obsidian course compiler */
 .knowledge-page { max-width: 1120px; margin: 0 auto; }
-.knowledge-hero { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 22px; overflow: hidden; padding: 28px; border: 1px solid var(--border-accent-soft); border-radius: 18px; background: linear-gradient(135deg, var(--surface-accent-soft), var(--surface-elevated) 68%); box-shadow: var(--shadow-action-subtle); }
+.knowledge-hero { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 22px; overflow: hidden; padding: 28px; border: 1px solid var(--border-accent-soft); border-radius: 18px; background: var(--surface-accent-soft); box-shadow: 0 1px 2px var(--shadow-action-subtle); }
 .knowledge-hero::after { position: absolute; right: -32px; bottom: -70px; width: 190px; height: 190px; border: 30px solid color-mix(in srgb, var(--action-primary) 9%, transparent); border-radius: 50%; content: ""; }
-.knowledge-hero-mark { z-index: 1; display: grid; width: 58px; height: 58px; place-items: center; border-radius: 16px; color: var(--action-primary); background: var(--surface-elevated); box-shadow: 0 10px 30px #1456f017; }
+.knowledge-hero-mark { z-index: 1; display: grid; width: 58px; height: 58px; place-items: center; border-radius: 16px; color: var(--action-primary); background: var(--surface-elevated); box-shadow: var(--shadow-ai-mark); }
 .knowledge-hero-mark svg { width: 30px; height: 30px; }
 .knowledge-hero > div:last-child { z-index: 1; }
 .knowledge-eyebrow { color: var(--action-primary); font-size: 11px; font-weight: 700; letter-spacing: .13em; }
@@ -9156,7 +9156,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .knowledge-notice svg { flex: 0 0 auto; }
 .knowledge-notice div { display: grid; gap: 2px; }
 .knowledge-notice span { color: var(--text-secondary); font-size: 13px; }
-.knowledge-config, .knowledge-run-card { padding: 22px; border: 1px solid var(--border-workspace); border-radius: 16px; background: var(--surface-elevated); box-shadow: 0 8px 28px #1f232908; }
+.knowledge-config, .knowledge-run-card { padding: 22px; border: 1px solid var(--border-workspace); border-radius: 16px; background: var(--surface-elevated); box-shadow: 0 8px 28px var(--shadow-action-subtle); }
 .knowledge-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .knowledge-path-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 92px; padding: 14px; border: 1px solid var(--border-workspace-strong); border-radius: 12px; background: var(--surface-workspace); }
 .knowledge-path-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 10px; color: var(--action-primary); background: var(--surface-accent-soft); }
@@ -9198,7 +9198,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .knowledge-progress-copy { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 8px; font-size: 13px; }
 .knowledge-progress-copy span { overflow: hidden; color: var(--text-caption); text-overflow: ellipsis; white-space: nowrap; }
 .knowledge-progress { height: 8px; overflow: hidden; border-radius: 999px; background: var(--surface-control); }
-.knowledge-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--action-primary), #7b5cff); transition: width var(--motion-panel) var(--ease-motion-out); }
+.knowledge-progress span { display: block; height: 100%; border-radius: inherit; background: var(--action-primary); }
 .knowledge-events { margin-top: 22px; }
 .knowledge-events h3 { margin: 0 0 10px; font-size: 14px; }
 .knowledge-events ol { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
@@ -9227,6 +9227,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   .knowledge-phase-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .knowledge-run-actions { display: grid; grid-template-columns: repeat(2, 1fr); }
 
+}
 /* Streamlined course video organization flow. */
 .video-course-progress {
   min-width: 0;
