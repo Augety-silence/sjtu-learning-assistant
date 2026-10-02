@@ -414,3 +414,17 @@ interface FilePreviewer {
 
 - 完整 12 轮会产生大量模型请求与 Token 消耗；当前提供安全停止和可追踪状态，但不自动降低重要推理任务模型。
 - 桌面桥接历史整套测试在本机 120 秒内未完成；新增编译器专项与前端专项均已通过，未提交、推送或创建 MR。
+
+## 17. v1.4.0 发布整合记录（2026-10-02）
+
+已完成：
+
+- 合并 phase1a-next-dev 的 28 个视频学习、状态一致性、播放体验和离线课表提交。
+- 逐棵核对其余开发 worktree，所有独立 SHA 均已被当前分支以补丁等价形式包含；连接 v1.3.0 正式发布历史。
+- 新增 Obsidian 知识库编译工作区，恢复 Windows 种子词表打包校验与资源测试，版本更新为 1.4.0。
+- 前端 276 项测试、Biome、TypeScript 与 Vite production build 通过；知识库编译、课程学习编排、媒体安全、词表、语义分块、字幕管线和打包资源专项通过。
+
+发布说明：
+
+- 本机文件提供器环境读取 Python 依赖异常缓慢，全量 Python discovery 与 macOS 图标生成无法在 watchdog 内完成；正式准入以 GitHub 干净 runner 的 CI 和双平台 Release workflow 为准。
+- GitHub Release 成功并核对资产后，清理已合并 worktree、旧 build/dist、重复依赖和临时备份。
