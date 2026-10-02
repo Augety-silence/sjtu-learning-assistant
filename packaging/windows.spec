@@ -9,6 +9,7 @@ ICON = ROOT / "packaging" / "app.ico"
 
 datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
+    (str(ROOT / "resources" / "seed_glossary"), "resources/seed_glossary"),
     (str(ROOT / "migrations"), "migrations"),
     (str(ROOT / "resources" / "samples"), "resources/samples"),
     (str(ROOT / "LICENSE"), "licenses"),
