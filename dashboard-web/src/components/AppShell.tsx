@@ -6,6 +6,7 @@ import {
   FolderOpen,
   GraduationCap,
   Home,
+  LibraryBig,
   type LucideIcon,
   Mail,
   MessageCircle,
@@ -34,6 +35,7 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "grading", label: "作业批改", icon: NotebookPen },
   { id: "videos", label: "课程视频", icon: Video },
   { id: "backup", label: "云盘备份", icon: CloudUpload },
+  { id: "knowledge", label: "知识库编译", icon: LibraryBig },
   { id: "ai-chat", label: "AI 助手", icon: MessageCircle },
   { id: "settings", label: "设置", icon: Settings },
 ];

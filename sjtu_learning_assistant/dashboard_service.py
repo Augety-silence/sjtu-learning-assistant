@@ -64,6 +64,10 @@ from sjtu_learning_assistant.credential_store import (
     save_canvas_token,
     save_mail_password,
 )
+from sjtu_learning_assistant.knowledge_compiler import (
+    KnowledgeCompilerError,
+    KnowledgeCompilerService,
+)
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
@@ -2533,8 +2537,99 @@ class DashboardService:
             self._ai_client_config = None
         self._close_client(client)
 
+    def _knowledge_compiler_service(self) -> KnowledgeCompilerService:
+        service = getattr(self, "_knowledge_compiler_instance", None)
+        if service is None:
+            service = KnowledgeCompilerService(
+                ai_runner=self._run_knowledge_compiler_ai
+            )
+            self._knowledge_compiler_instance = service
+        return service
+
+    def _run_knowledge_compiler_ai(
+        self, model: str, system_prompt: str, user_content: str
+    ) -> str:
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            raise DashboardError("请先在设置中启用并保存 AI 连接。")
+        client: Any | None = None
+        try:
+            key = self.ai_key_loader()
+            if not key:
+                raise DashboardError("未找到已保存的 AI API key。")
+            client = self.ai_client_factory(
+                api_key=key,
+                base_url=settings.ai_base_url,
+                model=model,
+            )
+            result = client.chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=4096,
+                temperature=0.1,
+                system_prompt=False,
+            )
+            content = result.get("content")
+            if type(content) is not str or not content.strip():
+                raise DashboardError("AI 未返回可用的知识库内容。")
+            return content.strip()
+        except (AIKeychainError, AIClassificationError) as exc:
+            raise DashboardError(str(exc)) from None
+        finally:
+            self._close_client(client)
+
+    def knowledge_compiler_pick_folder(self) -> dict[str, Any]:
+        if self.folder_picker is None:
+            raise DashboardError("当前环境不支持选择文件夹。")
+        selected = self.folder_picker()
+        if not selected:
+            return {"cancelled": True}
+        path = Path(selected).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise DashboardError("所选文件夹不可用。")
+        return {
+            "cancelled": False,
+            "path": str(path),
+            "name": path.name,
+        }
+
+    def knowledge_compiler_inspect(self, source_root: object) -> dict[str, Any]:
+        try:
+            return self._knowledge_compiler_service().inspect(source_root)
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_start(
+        self, source_root: object, target_root: object, mode: object
+    ) -> dict[str, Any]:
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            raise DashboardError("请先在设置中启用并保存 AI 连接。")
+        try:
+            return self._knowledge_compiler_service().start(
+                source_root, target_root, mode
+            )
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_status(
+        self, target_root: object | None = None
+    ) -> dict[str, Any]:
+        try:
+            return self._knowledge_compiler_service().status(target_root)
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_cancel(self) -> dict[str, Any]:
+        return self._knowledge_compiler_service().cancel()
+
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        service = getattr(self, "_knowledge_compiler_instance", None)
+        if service is not None:
+            service.cancel()
         with self._client_lock:
             if self._closed:
                 return

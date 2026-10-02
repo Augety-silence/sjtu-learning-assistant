@@ -22,6 +22,7 @@ import {
   type StudentGradeRow,
 } from "@/components/GradesView";
 import { type GradingSubmission, GradingView } from "@/components/GradingView";
+import { KnowledgeCompilerView } from "@/components/KnowledgeCompilerView";
 import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
@@ -84,6 +85,7 @@ const views: ViewName[] = [
   "grading",
   "videos",
   "backup",
+  "knowledge",
   "ai-chat",
   "settings",
 ];
@@ -94,6 +96,7 @@ const baseViews: ViewName[] = [
   "assignments",
   "materials",
   "backup",
+  "knowledge",
   "ai-chat",
   "settings",
 ];
@@ -1055,6 +1058,7 @@ export default function App() {
           />
         )}
         {view === "backup" && <BackupView />}
+        {view === "knowledge" && <KnowledgeCompilerView />}
         {view === "settings" && (
           <SettingsView
             onArchiveChanged={() => setDataVersion((value) => value + 1)}

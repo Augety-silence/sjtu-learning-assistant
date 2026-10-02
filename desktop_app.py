@@ -301,6 +301,11 @@ class DesktopBridge:
             "ai_chat_send": self._ai_chat_send,
             "ai_chat_delete": self._ai_chat_delete,
             "ai_attachment_list": self._ai_attachment_list,
+            "knowledge_compiler_pick_folder": self._knowledge_compiler_pick_folder,
+            "knowledge_compiler_inspect": self._knowledge_compiler_inspect,
+            "knowledge_compiler_start": self._knowledge_compiler_start,
+            "knowledge_compiler_status": self._knowledge_compiler_status,
+            "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
             "ai_attachment_pick": self._ai_attachment_pick,
             "ai_attachment_ingest": self._ai_attachment_ingest,
             "ai_attachment_restore": self._ai_attachment_restore,
@@ -511,6 +516,53 @@ class DesktopBridge:
     def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"session_id"})
         return self._service.ai_chat_delete(self._chat_session_id(payload))
+
+    def _knowledge_compiler_pick_folder(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.knowledge_compiler_pick_folder()
+
+    def _knowledge_compiler_inspect(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"source_root"})
+        source_root = _bounded_id(
+            payload.get("source_root"), limit=4096, label="素材目录"
+        )
+        return self._service.knowledge_compiler_inspect(source_root)
+
+    def _knowledge_compiler_start(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"source_root", "target_root", "mode"})
+        source_root = _bounded_id(
+            payload.get("source_root"), limit=4096, label="素材目录"
+        )
+        target_root = _bounded_id(
+            payload.get("target_root"), limit=4096, label="输出目录"
+        )
+        mode = payload.get("mode")
+        if mode not in {"foundation", "full"}:
+            raise DashboardError("编译范围不受支持。")
+        return self._service.knowledge_compiler_start(
+            source_root, target_root, mode
+        )
+
+    def _knowledge_compiler_status(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"target_root"})
+        target_root = payload.get("target_root")
+        if target_root is not None:
+            target_root = _bounded_id(target_root, limit=4096, label="输出目录")
+        return self._service.knowledge_compiler_status(target_root)
+
+    def _knowledge_compiler_cancel(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.knowledge_compiler_cancel()
 
     def _ai_attachment_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"limit"})

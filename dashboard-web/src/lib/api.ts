@@ -778,3 +778,44 @@ export function revealTranscriptArtifact(artifactId: string) {
     artifact_id: artifactId,
   });
 }
+
+export function pickKnowledgeFolder() {
+  return invoke<{ cancelled: boolean; path?: string; name?: string }>(
+    "knowledge_compiler_pick_folder",
+  );
+}
+
+export function inspectKnowledgeSource(sourceRoot: string) {
+  return invoke<import("@/lib/types").KnowledgeCompilerInspection>(
+    "knowledge_compiler_inspect",
+    { source_root: sourceRoot },
+  );
+}
+
+export function startKnowledgeCompiler(
+  sourceRoot: string,
+  targetRoot: string,
+  mode: import("@/lib/types").KnowledgeCompilerMode,
+) {
+  return invoke<{
+    status: "started" | "already_running";
+    task: import("@/lib/types").KnowledgeCompilerTask;
+  }>("knowledge_compiler_start", {
+    source_root: sourceRoot,
+    target_root: targetRoot,
+    mode,
+  });
+}
+
+export function getKnowledgeCompilerStatus(targetRoot?: string) {
+  return invoke<import("@/lib/types").KnowledgeCompilerTask>(
+    "knowledge_compiler_status",
+    targetRoot ? { target_root: targetRoot } : {},
+  );
+}
+
+export function cancelKnowledgeCompiler() {
+  return invoke<import("@/lib/types").KnowledgeCompilerTask>(
+    "knowledge_compiler_cancel",
+  );
+}

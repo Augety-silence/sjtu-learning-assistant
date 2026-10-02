@@ -9,6 +9,7 @@ export type ViewName =
   | "grading"
   | "videos"
   | "backup"
+  | "knowledge"
   | "ai-chat"
   | "settings";
 
@@ -257,6 +258,61 @@ export interface SettingsStatus {
   ai_auto_open_activity: boolean;
   ai_code_line_numbers: boolean;
   theme_mode: ThemeMode;
+}
+
+export type KnowledgeCompilerMode = "foundation" | "full";
+export type KnowledgeCompilerStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "completed_with_warnings"
+  | "cancelled"
+  | "interrupted"
+  | "failed";
+
+export interface KnowledgeCompilerInspection {
+  source_name: string;
+  markdown_files: number;
+  total_bytes: number;
+  image_references: number;
+  courses: string[];
+  truncated_courses: boolean;
+}
+
+export interface KnowledgeCompilerTask {
+  status: KnowledgeCompilerStatus;
+  task_id: string | null;
+  source_name: string | null;
+  target_name: string | null;
+  mode: KnowledgeCompilerMode | null;
+  phase_index: number;
+  total_phases: number;
+  current_phase: {
+    id: string;
+    label: string;
+    model: string;
+  } | null;
+  progress: {
+    done: number;
+    total: number;
+    current_file: string | null;
+  };
+  counts: {
+    markdown_files: number;
+    processed_files: number;
+    generated_notes: number;
+    warnings: number;
+  };
+  warnings: string[];
+  events: Array<{
+    time: string;
+    level: "info" | "success" | "warning" | "error";
+    message: string;
+  }>;
+  error: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
 }
 
 export interface MaterialMoveResult {
