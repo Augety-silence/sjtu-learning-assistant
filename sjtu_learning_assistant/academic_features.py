@@ -198,8 +198,8 @@ def _iso(value: datetime) -> str:
 def _event_time(event: Mapping[str, Any]) -> datetime | None:
     assignment = _mapping(event.get("assignment"))
     for value in (
-        event.get("end_at"),
-        event.get("start_at"),
+        event.get("end_at") or event.get("endAt"),
+        event.get("start_at") or event.get("startAt"),
         assignment.get("due_at"),
         event.get("created_at"),
     ):
@@ -479,16 +479,32 @@ class AcademicFeatureService:
             raise AcademicValidationError("日历时间必须包含时区。")
         if end <= start:
             raise AcademicValidationError("日历结束时间必须晚于开始时间。")
-        ids = self._course_ids(course_ids)
-        if not ids:
-            return []
+        try:
+            ids = self._course_ids(course_ids)
+        except AcademicFeatureError:
+            ids = []
         raw: list[dict[str, Any]] = []
-        for offset in range(0, len(ids), 10):
-            contexts = [f"course_{item}" for item in ids[offset : offset + 10]]
-            raw.extend(self._calendar_batch(contexts, start, end))
+        if ids:
+            try:
+                for offset in range(0, len(ids), 10):
+                    contexts = [f"course_{item}" for item in ids[offset : offset + 10]]
+                    raw.extend(self._calendar_batch(contexts, start, end))
+            except AcademicFeatureError:
+                raw = []
 
         deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
         for event in raw:
+            if event.get("eventType") != "course":
+                assignment = _mapping(event.get("assignment"))
+                moment_text = event.get("start_at") or event.get("end_at") or assignment.get("due_at")
+                event.setdefault("courseName", event.get("title"))
+                event.setdefault("startAt", moment_text)
+                event.setdefault("endAt", event.get("end_at") or moment_text)
+                event.setdefault("location", event.get("location_name"))
+                event.setdefault("periodLabel", None)
+                event.setdefault("eventType", "canvas")
+                event.setdefault("source", "canvas")
+                event.setdefault("canonicalCourseId", None)
             moment = _event_time(event)
             if moment is not None:
                 comparable_start = start.astimezone(moment.tzinfo)

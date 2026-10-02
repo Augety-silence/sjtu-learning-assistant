@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeArchiveRoot,
+  commitTimetableImport,
   createAiChatSession,
   createVideoSlidesPdf,
   deleteBackupToken,
@@ -14,6 +15,8 @@ import {
   getBackupStatus,
   getMessageResource,
   getSettings,
+  getTimetableSchedule,
+  getTimetableStatus,
   getTranscriptBatch,
   getTranscriptV2Artifacts,
   getVideoSubtitles,
@@ -22,6 +25,8 @@ import {
   openExternal,
   openMailAttachment,
   planRestore,
+  previewTimetableFile,
+  previewTimetableSample,
   readTranscriptArtifact,
   readTranscriptV2Artifact,
   retryArchive,
@@ -309,6 +314,33 @@ describe("cloud archive bridge payloads", () => {
       job_id: "restore-1",
       conflict_policy: "compare",
       confirm_create_dirs: true,
+    });
+  });
+
+  it("uses the schedule bridge contract without renderer-side file reads", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: {} });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getTimetableStatus();
+    expect(bridge).toHaveBeenLastCalledWith("timetable_status", {});
+    await getTimetableSchedule(
+      "2026-09-28T00:00:00.000Z",
+      "2026-11-09T00:00:00.000Z",
+    );
+    expect(bridge).toHaveBeenLastCalledWith("timetable_schedule", {
+      startAt: "2026-09-28T00:00:00.000Z",
+      endAt: "2026-11-09T00:00:00.000Z",
+    });
+    await previewTimetableFile();
+    expect(bridge).toHaveBeenLastCalledWith("timetable_preview_local_file", {});
+    await previewTimetableSample();
+    expect(bridge).toHaveBeenLastCalledWith(
+      "timetable_load_bundled_sample",
+      {},
+    );
+    await commitTimetableImport("opaque-preview-id");
+    expect(bridge).toHaveBeenLastCalledWith("timetable_commit_preview", {
+      previewId: "opaque-preview-id",
     });
   });
 

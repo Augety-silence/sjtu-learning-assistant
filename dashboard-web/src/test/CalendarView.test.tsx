@@ -30,8 +30,8 @@ describe("CalendarView", () => {
     render(
       <CalendarView
         events={events}
-        month="2026-10-01T00:00:00+08:00"
-        now="2026-09-29T00:00:00+08:00"
+        month={new Date(2026, 9, 1)}
+        now={new Date(2026, 8, 29)}
         onOpenEvent={open}
       />,
     );
@@ -41,6 +41,36 @@ describe("CalendarView", () => {
     expect(screen.getAllByRole("gridcell")).toHaveLength(42);
     fireEvent.click(screen.getByRole("button", { name: /项目报告/ }));
     expect(open).toHaveBeenCalledWith(events[0]);
+  });
+
+  it("renders course sessions beside Canvas assignments with course details", () => {
+    render(
+      <CalendarView
+        events={[
+          events[0],
+          {
+            id: "course-1",
+            title: "文本分析与大模型",
+            courseName: "文本分析与大模型",
+            startAt: "2026-10-02T10:00:00+08:00",
+            endAt: "2026-10-02T11:40:00+08:00",
+            location: "东中院 4-201",
+            periodLabel: "第 3–4 节",
+            eventType: "course",
+            source: "local_import",
+          },
+        ]}
+        month={new Date(2026, 9, 1)}
+        now={new Date(2026, 9, 2)}
+        onOpenEvent={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("gridcell", { name: /2026-10-02/ }));
+    expect(screen.getAllByText("项目报告").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("文本分析与大模型").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/东中院 4-201 · 第 3–4 节/).length,
+    ).toBeGreaterThan(0);
   });
 
   it("supports arrow-key date focus and permission state", () => {

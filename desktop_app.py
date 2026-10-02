@@ -3,9 +3,15 @@
 
 from __future__ import annotations
 
-import re
+import os
 import sys
+
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTHON_KEYRING_BACKEND", "keyring.backends.macOS.Keyring")
+
+import re
 import threading
+from datetime import datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -29,6 +35,7 @@ from sjtu_learning_assistant.cloud_storage import (
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
 from sjtu_learning_assistant.update_service import UpdateServiceError
+from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import (
     create_database_engine,
@@ -249,6 +256,7 @@ class DesktopBridge:
         save_file_picker: Callable[[str], str | None] | None = None,
         backup_manager: BackupManager | None = None,
         diagnostic_bundle: DiagnosticBundleService | None = None,
+        timetable_service: TimetableService | None = None,
     ) -> None:
         self._service = service
         self._learning_service = learning_service
@@ -256,6 +264,7 @@ class DesktopBridge:
         self._save_file_picker = save_file_picker
         self._backup_manager = backup_manager
         self._diagnostic_bundle = diagnostic_bundle
+        self._timetable = timetable_service
         self._picked_files: set[str] = set()
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "health": lambda payload: self._without_payload(
@@ -330,6 +339,11 @@ class DesktopBridge:
             "course_capabilities": self._capabilities,
             "calendar": self._calendar,
             "calendar_events": self._calendar,
+            "timetable_status": self._timetable_status,
+            "timetable_schedule": self._timetable_schedule,
+            "timetable_preview_local_file": self._timetable_preview,
+            "timetable_commit_preview": self._timetable_commit,
+            "timetable_load_bundled_sample": self._timetable_sample,
             "gradebook": self._gradebook,
             "gradebook_export": self._gradebook_export,
             "roster": self._roster,
@@ -924,6 +938,41 @@ class DesktopBridge:
             course_ids = self._canvas_ids(course_ids, "课程标识")
         return self._service.calendar(year, month, course_ids=course_ids)
 
+    def _require_timetable(self) -> TimetableService:
+        if self._timetable is None:
+            raise DashboardError("课表服务不可用。")
+        return self._timetable
+
+    def _timetable_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._require_timetable().status()
+
+    def _timetable_schedule(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"startAt", "endAt"})
+        try:
+            start = datetime.fromisoformat(_bounded_text(payload.get("startAt"), limit=64, label="开始时间").replace("Z", "+00:00"))
+            end = datetime.fromisoformat(_bounded_text(payload.get("endAt"), limit=64, label="结束时间").replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise DashboardError("课表时间格式无效。") from exc
+        return self._require_timetable().schedule(start, end)
+
+    def _timetable_preview(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._file_picker is None:
+            raise DashboardError("当前环境不支持本地文件选择。")
+        selected = self._file_picker()
+        if not selected:
+            return {"cancelled": True}
+        return self._require_timetable().preview_local_file(selected)
+
+    def _timetable_commit(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"previewId"})
+        return self._require_timetable().commit_preview(_bounded_id(payload.get("previewId"), limit=32, label="预览标识"))
+
+    def _timetable_sample(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._require_timetable().load_bundled_sample()
+
     def _gradebook(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"course_id"})
         return self._service.gradebook(_positive_id(payload.get("course_id"), "课程标识"))
@@ -1220,6 +1269,7 @@ class DesktopBridge:
             AssignmentServiceError,
             CanvasError,
             CloudStorageError,
+            TimetableError,
         ) as exc:
             return {
                 "ok": False,
@@ -1369,6 +1419,9 @@ def run_desktop_app() -> int:
             save_file_picker=save_file,
             backup_manager=backup_manager,
             diagnostic_bundle=diagnostic_bundle,
+            timetable_service=TimetableService(
+                engine, PROJECT_ROOT / "resources" / "samples" / "sjtu_lessons_anonymous.json"
+            ),
         )
         scheduler = DesktopScheduler(service.trigger_sync)
         webview.create_window(

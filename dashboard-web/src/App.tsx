@@ -4,16 +4,14 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
 import { AssignmentsView } from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
-import {
-  type CalendarEventItem,
-  CalendarView,
-} from "@/components/CalendarView";
+import type { CalendarEventItem } from "@/components/CalendarView";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
   type GradeAssignment,
@@ -31,6 +29,7 @@ import {
   type RosterMember,
   RosterView,
 } from "@/components/RosterView";
+import { ScheduleView } from "@/components/ScheduleView";
 import { SettingsView } from "@/components/SettingsView";
 import { useToast } from "@/components/Toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
@@ -95,6 +94,7 @@ const baseViews: ViewName[] = [
   "messages",
   "assignments",
   "materials",
+  "videos",
   "backup",
   "knowledge",
   "ai-chat",
@@ -130,9 +130,6 @@ function courseNumber(course: CourseCapabilities | undefined) {
 
 function availableViewsFor(capabilities: AppCapabilities | null): ViewName[] {
   const courses = courseCapabilities(capabilities);
-  const learnerCourses = courses.filter((course) =>
-    course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
-  );
   const staffCourses = courses.filter(
     (course) =>
       course.roles.some((role) => role === "teacher" || role === "ta") &&
@@ -140,7 +137,6 @@ function availableViewsFor(capabilities: AppCapabilities | null): ViewName[] {
   );
   return [
     ...baseViews,
-    ...(learnerCourses.length ? (["videos"] as ViewName[]) : []),
     ...(staffCourses.length
       ? (["grades", "roster", "grading"] as ViewName[])
       : []),
@@ -178,6 +174,8 @@ function adaptCalendarEvent(
         : event.workflow_state === "submitted"
           ? "submitted"
           : undefined,
+    eventType: "assignment",
+    source: "canvas",
     url:
       typeof event.html_url === "string"
         ? event.html_url
@@ -187,12 +185,10 @@ function adaptCalendarEvent(
   };
 }
 
-function CalendarAdapter({
+function ScheduleAdapter({
   onNavigateAssignments,
-  embedded = false,
 }: {
   onNavigateAssignments: () => void;
-  embedded?: boolean;
 }) {
   const [month, setMonth] = useState(
     () => new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -200,7 +196,7 @@ function CalendarAdapter({
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const loadCanvas = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -219,34 +215,13 @@ function CalendarAdapter({
           ),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "课程日历加载失败"));
+      setError(messageFrom(reason, "Canvas 日历加载失败"));
     } finally {
       setLoading(false);
     }
   }, [month]);
-  useEffect(() => void load(), [load]);
-  return (
-    <CalendarView
-      events={events}
-      month={month}
-      embedded={embedded}
-      loading={loading}
-      error={error}
-      onRetry={load}
-      onMonthChange={setMonth}
-      onOpenEvent={(event) => {
-        if (event.url) void openExternal(event.url);
-        else onNavigateAssignments();
-      }}
-    />
-  );
-}
+  useEffect(() => void loadCanvas(), [loadCanvas]);
 
-function ScheduleAdapter({
-  onNavigateAssignments,
-}: {
-  onNavigateAssignments: () => void;
-}) {
   return (
     <div className="section-stack">
       <Tabs defaultValue="calendar">
@@ -257,9 +232,17 @@ function ScheduleAdapter({
           </TabsList>
         </div>
         <TabsContent value="calendar">
-          <CalendarAdapter
-            embedded
-            onNavigateAssignments={onNavigateAssignments}
+          <ScheduleView
+            canvasEvents={events}
+            canvasLoading={loading}
+            canvasError={error}
+            month={month}
+            onMonthChange={setMonth}
+            onRetryCanvas={loadCanvas}
+            onOpenCanvasEvent={(event) => {
+              if (event.url) void openExternal(event.url);
+              else onNavigateAssignments();
+            }}
           />
         </TabsContent>
         <TabsContent value="deadlines">
@@ -646,32 +629,69 @@ function VideosAdapter({
   courseName,
   courseOptions,
   onCourseChange,
+  courseResolved,
+  courseResolutionFailed,
+  onResolveCourseRetry,
+  refreshVersion,
 }: {
   courseId: number | null;
   courseName: string;
   courseOptions: Array<{ id: number; name: string }>;
   onCourseChange: (courseId: number) => void;
+  courseResolved: boolean;
+  courseResolutionFailed: boolean;
+  onResolveCourseRetry: () => void;
+  refreshVersion: number;
 }) {
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
+  const [loadedCourseId, setLoadedCourseId] = useState<number | null>(null);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
   const [transcriptJobs, setTranscriptJobs] = useState<TranscriptJob[]>([]);
+  const [transcriptCourseId, setTranscriptCourseId] = useState<number | null>(
+    null,
+  );
+  const mediaRequestSequence = useRef(0);
+  const activeCourseId = useRef(courseId);
+  activeCourseId.current = courseId;
   const load = useCallback(async () => {
-    if (!courseId) return;
-    setLoading(true);
+    const request = ++mediaRequestSequence.current;
+    setVideos([]);
+    setSlidesPdfAvailable(false);
     setError(null);
+    if (!courseId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const result = await getCourseMedia(courseId);
+      if (
+        mediaRequestSequence.current !== request ||
+        activeCourseId.current !== courseId
+      )
+        return;
       let canCreateSlides = false;
       try {
         const mediaCapabilities = await getMediaCapabilities();
+        if (
+          mediaRequestSequence.current !== request ||
+          activeCourseId.current !== courseId
+        )
+          return;
         canCreateSlides = Boolean(
           mediaCapabilities.video_screenshot_pdf?.available,
         );
       } catch {
         // Optional local tooling must not prevent the course video list loading.
       }
+      if (
+        mediaRequestSequence.current !== request ||
+        activeCourseId.current !== courseId
+      )
+        return;
+      setLoadedCourseId(courseId);
       setSlidesPdfAvailable(canCreateSlides);
       setVideos(
         result.items
@@ -688,13 +708,22 @@ function VideosAdapter({
           }),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "课程视频加载失败"));
+      if (
+        mediaRequestSequence.current === request &&
+        activeCourseId.current === courseId
+      )
+        setError(messageFrom(reason, "课程视频加载失败"));
     } finally {
-      setLoading(false);
+      if (
+        mediaRequestSequence.current === request &&
+        activeCourseId.current === courseId
+      )
+        setLoading(false);
     }
-  }, [courseId]);
+  }, [courseId, refreshVersion]);
   useEffect(() => void load(), [load]);
   useEffect(() => {
+    setTranscriptCourseId(null);
     if (!courseId) {
       setTranscriptJobs([]);
       return;
@@ -703,7 +732,10 @@ function VideosAdapter({
     const refresh = async () => {
       try {
         const result = await getTranscriptJobs(courseId);
-        if (active) setTranscriptJobs(result.items);
+        if (active) {
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs(result.items);
+        }
       } catch {
         // Video loading and playback stay available if transcript recovery fails.
       }
@@ -715,20 +747,36 @@ function VideosAdapter({
       window.clearInterval(timer);
     };
   }, [courseId]);
+  const visibleVideos = loadedCourseId === courseId ? videos : [];
   return (
     <VideosView
-      videos={videos}
+      videos={visibleVideos}
       courseId={courseId}
       courseName={courseName}
       courseOptions={courseOptions}
       onCourseChange={onCourseChange}
-      transcriptJobs={transcriptJobs}
-      loading={loading}
-      error={error}
-      permissionDenied={!courseId}
-      onRetry={load}
+      transcriptJobs={transcriptCourseId === courseId ? transcriptJobs : []}
+      loading={
+        !courseResolved ||
+        (Boolean(courseId) && (loading || loadedCourseId !== courseId))
+      }
+      error={
+        courseResolutionFailed
+          ? "暂时无法确认课程视频权限，请重新检查。"
+          : error
+      }
+      permissionDenied={courseResolved && !courseResolutionFailed && !courseId}
+      onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
       onStartTranscript={async (selectedVideos) => {
         if (!courseId) throw new Error("请先选择课程。");
+        if (
+          loadedCourseId !== courseId ||
+          selectedVideos.some(
+            (selectedVideo) =>
+              !visibleVideos.some((video) => video.id === selectedVideo.id),
+          )
+        )
+          throw new Error("课程已切换，请在当前课程重新选择录像。");
         const batch = await startTranscriptBatch(
           courseId,
           selectedVideos.map((video) => video.id),
@@ -796,6 +844,12 @@ function VideosAdapter({
             ? await createVideoSlidesPdf(video.id)
             : await createVideoScreenshotPdf(video.id);
         await revealAcademicExport(result.reveal_token);
+        return {
+          scope: "video" as const,
+          open: async () => {
+            await revealAcademicExport(result.reveal_token);
+          },
+        };
       }}
     />
   );
@@ -811,6 +865,8 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<AppCapabilities | null>(
     null,
   );
+  const [capabilitiesInitialized, setCapabilitiesInitialized] = useState(false);
+  const [capabilitiesFailed, setCapabilitiesFailed] = useState(false);
   const { showToast } = useToast();
   const shouldReduceMotion = useReducedMotion();
   const availableViews = useMemo(
@@ -826,7 +882,18 @@ export default function App() {
     course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
   );
   const [staffCourseId, setStaffCourseId] = useState<number | null>(null);
-  const [learnerCourseId, setLearnerCourseId] = useState<number | null>(null);
+  const [selectedLearnerCourseId, setSelectedLearnerCourseId] = useState<
+    number | null
+  >(null);
+  const learnerCourseIds = learnerCourses.flatMap((course) => {
+    const id = courseNumber(course);
+    return id ? [id] : [];
+  });
+  const learnerCourseId =
+    selectedLearnerCourseId &&
+    learnerCourseIds.includes(selectedLearnerCourseId)
+      ? selectedLearnerCourseId
+      : (learnerCourseIds[0] ?? null);
 
   useEffect(() => {
     const available = staffCourses.flatMap((course) => {
@@ -836,14 +903,6 @@ export default function App() {
     if (!staffCourseId || !available.includes(staffCourseId))
       setStaffCourseId(available[0] ?? null);
   }, [capabilities, staffCourseId]);
-  useEffect(() => {
-    const available = learnerCourses.flatMap((course) => {
-      const id = courseNumber(course);
-      return id ? [id] : [];
-    });
-    if (!learnerCourseId || !available.includes(learnerCourseId))
-      setLearnerCourseId(available[0] ?? null);
-  }, [capabilities, learnerCourseId]);
 
   const coursePicker = (
     courses: CourseCapabilities[],
@@ -889,12 +948,21 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    setCapabilitiesInitialized(false);
+    setCapabilitiesFailed(false);
     void invoke<AppCapabilities>("capabilities")
       .then((result) => {
-        if (active) setCapabilities(result);
+        if (active) {
+          setCapabilities(result);
+          setCapabilitiesInitialized(true);
+        }
       })
       .catch(() => {
-        if (active) setCapabilities(null);
+        if (active) {
+          setCapabilities(null);
+          setCapabilitiesFailed(true);
+          setCapabilitiesInitialized(true);
+        }
       });
     return () => {
       active = false;
@@ -1036,7 +1104,6 @@ export default function App() {
         )}
         {view === "videos" && (
           <VideosAdapter
-            key={`${dataVersion}:${learnerCourseId}`}
             courseId={learnerCourseId}
             courseName={
               learnerCourses.find(
@@ -1054,7 +1121,11 @@ export default function App() {
                   ]
                 : [];
             })}
-            onCourseChange={setLearnerCourseId}
+            onCourseChange={setSelectedLearnerCourseId}
+            courseResolved={capabilitiesInitialized}
+            courseResolutionFailed={capabilitiesFailed}
+            onResolveCourseRetry={() => setDataVersion((value) => value + 1)}
+            refreshVersion={dataVersion}
           />
         )}
         {view === "backup" && <BackupView />}

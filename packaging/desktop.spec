@@ -33,6 +33,7 @@ class PostSignedBundle(BUNDLE):
 datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
     (str(ROOT / "resources" / "seed_glossary"), "resources/seed_glossary"),
+    (str(ROOT / "resources" / "samples"), "resources/samples"),
     (str(ROOT / "LICENSE"), "licenses"),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),

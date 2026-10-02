@@ -565,6 +565,36 @@ export function getCalendar(year: number, month: number, courseIds?: number[]) {
   });
 }
 
+export function getTimetableStatus() {
+  return invoke<import("@/lib/types").TimetableStatus>("timetable_status");
+}
+
+export function getTimetableSchedule(startAt: string, endAt: string) {
+  return invoke<import("@/lib/types").TimetableSchedule>("timetable_schedule", {
+    startAt,
+    endAt,
+  });
+}
+
+export function previewTimetableFile() {
+  return invoke<
+    import("@/lib/types").TimetableImportPreview | { cancelled: true }
+  >("timetable_preview_local_file");
+}
+
+export function previewTimetableSample() {
+  return invoke<import("@/lib/types").TimetableImportPreview>(
+    "timetable_load_bundled_sample",
+  );
+}
+
+export function commitTimetableImport(previewId: string) {
+  return invoke<import("@/lib/types").TimetableImportCommit>(
+    "timetable_commit_preview",
+    { previewId },
+  );
+}
+
 export function getGradebook(courseId: number) {
   return invoke<import("@/lib/types").GradebookResult>("gradebook", {
     course_id: courseId,

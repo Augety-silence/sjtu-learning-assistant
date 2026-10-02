@@ -76,7 +76,11 @@ class TranscriptServiceTests(unittest.TestCase):
         batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
         service.run_pending()
         job = service.get_batch(batch["id"])["jobs"][0]
-        self.assertEqual("waiting_for_ai", job["status"])
+        self.assertEqual("completed_with_warnings", job["status"])
+        summary = next(item for item in service.list_artifacts(job["id"])["items"] if item["kind"] == "summary_json")
+        summary_data = json.loads(service.read_artifact(summary["id"])["content"])
+        self.assertIn("study_guide", summary_data)
+        self.assertTrue(summary_data["study_guide"]["themes"])
         raw = next(item for item in service.list_artifacts(job["id"])["items"] if item["kind"] == "raw_vtt")
         self.assertIn("WEBVTT", service.read_artifact(raw["id"])["content"])
         kinds = {item["kind"] for item in service.list_artifacts(job["id"])["items"]}
@@ -106,7 +110,7 @@ class TranscriptServiceTests(unittest.TestCase):
         observer.run_pending()
         self.assertEqual("queued", observer.get_batch(batch.get("id")).get("status"))
         owner.run_pending()
-        self.assertEqual("waiting_for_ai", owner.get_batch(batch.get("id")).get("status"))
+        self.assertEqual("completed_with_warnings", owner.get_batch(batch.get("id")).get("status"))
 
     def test_dead_or_reused_pid_owner_is_recovered_and_retry_can_cancel(self):
         service = self.service()
@@ -268,9 +272,9 @@ class TranscriptServiceTests(unittest.TestCase):
         service.run_pending()
         recovered = next(iter(service.get_batch(retry.get("id")).get("jobs")))
         self.assertEqual(0, client.calls)
-        self.assertEqual("completed", recovered.get("status"))
-        self.assertEqual("字幕已存储并完成 AI 规整。", recovered.get("message"))
-        self.assertEqual("completed", service.get_batch(retry.get("id")).get("status"))
+        self.assertEqual("completed_with_warnings", recovered.get("status"))
+        self.assertTrue(recovered.get("partial_warning"))
+        self.assertEqual("completed_with_warnings", service.get_batch(retry.get("id")).get("status"))
         video_dir = service._video_dir(VIDEO.get("source_id"))
         manifest = json.loads((video_dir / "manifest.json").read_text())
         self.assertEqual(2, manifest.get("schema_version"))
@@ -335,9 +339,9 @@ class TranscriptServiceTests(unittest.TestCase):
         service.ai_context_provider = lambda: AIContext(client, "qwen", "endpoint-hash", True)
         retry = service.retry(job.get("id"))
         service.run_pending()
-        self.assertEqual(1, client.calls)
+        self.assertGreaterEqual(client.calls, 3)
         retried_job = next(iter(service.get_batch(retry.get("id")).get("jobs")))
-        self.assertEqual("completed", retried_job.get("status"))
+        self.assertEqual("completed_with_warnings", retried_job.get("status"))
 
     def test_summary_empty_is_partial_not_completed(self):
         class EmptySummaryPipeline:
@@ -412,8 +416,75 @@ class TranscriptServiceTests(unittest.TestCase):
         reused = next(iter(service.get_batch(second_retry.get("id")).get("jobs")))
         self.assertEqual(0, client.calls)
         self.assertTrue(reused.get("reused"))
-        self.assertEqual("completed", reused.get("status"))
+        self.assertEqual("completed_with_warnings", reused.get("status"))
         self.assertEqual(1, self.fetches)
+
+
+    def test_phase1_reviewing_stage_is_persisted_and_failure_keeps_v1_result(self):
+        class FailingReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def orchestrate(inner_self, **kwargs):
+                del kwargs
+                visible = service.get_batch(batch["id"])["jobs"][0]
+                stored = json.loads(service._batch_path(batch["id"]).read_text())["jobs"][0]
+                self.assertEqual("reviewing", visible["stage"])
+                self.assertEqual("reviewing", stored["stage"])
+                self.assertEqual("organizing", visible["status"])
+                self.assertGreaterEqual(visible["progress"], 95)
+                raise RuntimeError("review failed")
+
+        service = TranscriptService(
+            self.root, subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            orchestrator=FailingReview(), sleeper=lambda delay: None, autostart_worker=False,
+        )
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service.run_pending()
+        job = service.get_batch(batch["id"])["jobs"][0]
+        self.assertEqual("completed_with_warnings", job["status"])
+        self.assertEqual("completed_with_warnings", job["stage"])
+        self.assertEqual("partial", job["phase1_status"])
+        self.assertNotEqual("failed", service.get_batch(batch["id"])["status"])
+
+    def test_reused_completed_phase1_does_not_review_again(self):
+        class SuccessfulReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def orchestrate(inner_self, **kwargs):
+                inner_self.calls += 1
+                visible = service.get_batch(current_batch["id"])["jobs"][0]
+                self.assertEqual("reviewing", visible["stage"])
+                raw = kwargs["raw_vtt"]
+                return SimpleNamespace(
+                    chunks=(), corrections=(), critics=(), quality={}, warnings=(),
+                    corrected_transcript=raw, uncertain=(), memory_version=None,
+                    events=(), status="completed",
+                    raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                )
+
+        orchestrator = SuccessfulReview()
+        service = TranscriptService(
+            self.root, subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            orchestrator=orchestrator, sleeper=lambda delay: None, autostart_worker=False,
+        )
+        current_batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service.run_pending()
+        self.assertEqual(1, orchestrator.calls)
+        current_batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service.run_pending()
+        reused = service.get_batch(current_batch["id"])["jobs"][0]
+        self.assertTrue(reused["reused"])
+        self.assertTrue(reused["phase1_reused"])
+        self.assertEqual(1, orchestrator.calls)
 
 
     def test_unvalidated_nonempty_raw_does_not_prevent_failed_status(self):

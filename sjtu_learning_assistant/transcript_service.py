@@ -1055,6 +1055,8 @@ class TranscriptService:
             )
             return
         orchestrator = self._phase1_orchestrator(context)
+        job.update(status="organizing", stage="reviewing", progress=max(95, int(job.get("progress") or 0)))
+        self._save_batch(batch)
         result = orchestrator.orchestrate(
             course_id=course_id,
             video_id=video_id,
@@ -1129,7 +1131,7 @@ class TranscriptService:
 
     def _run_phase1_safely(
         self,
-        batch: Mapping[str, Any],
+        batch: dict[str, Any],
         job: dict[str, Any],
         video_dir: Path,
         raw: str,
@@ -1137,6 +1139,7 @@ class TranscriptService:
     ) -> None:
         if not self.enable_phase1:
             return
+        final_state = (job.get("status"), job.get("stage"), job.get("progress"))
         try:
             self._run_phase1(batch, job, video_dir, raw, context)
         except Exception as exc:
@@ -1170,6 +1173,10 @@ class TranscriptService:
                     "artifacts": {},
                     "updated_at": _now(),
                 })
+        finally:
+            if job.get("stage") == "reviewing":
+                job.update(status=final_state[0], stage=final_state[1], progress=final_state[2])
+                self._save_batch(batch)
 
     def _validated_cached_chunks(
         self,
@@ -1418,17 +1425,9 @@ class TranscriptService:
             cached = dict()
             manifest["chunks"] = dict()
             manifest["chunk_context"] = self._current_chunk_context(manifest, job, context)
-        if not context.enabled or context.client is None:
-            if not offline_recovery:
-                job["status"] = "waiting_for_ai"
-                job["stage"] = "waiting_for_ai"
-                job["progress"] = 45
-                job["message"] = "原始字幕已保存；启用 AI 后可继续规整。"
-                manifest.update(dict(status="waiting_for_ai", stage="waiting_for_ai", progress=45, updated_at=_now()))
-                self._write_json(manifest_path, manifest)
-                return
+        deterministic_only = not context.enabled or context.client is None
         job["status"] = "organizing"
-        job["stage"] = "offline_reduce" if offline_recovery else "map_reduce"
+        job["stage"] = "deterministic_handout" if deterministic_only else ("offline_reduce" if offline_recovery else "map_reduce")
         job["progress"] = 85 if offline_recovery else 55
         cached = cached or dict()
         chunks_dir = video_dir / "chunks"
@@ -1466,6 +1465,8 @@ class TranscriptService:
             )
             if offline_recovery:
                 run_options["offline_only"] = True
+            elif deterministic_only:
+                run_options["deterministic_only"] = True
             result = self.pipeline.run(raw, context.client, **run_options)
             artifacts = {
                 "cues": ("cues.json", _json_bytes(result.cues)),

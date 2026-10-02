@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -19,6 +22,40 @@ from sjtu_learning_assistant.cloud_storage import (
     delete_user_token as delete_cloud_user_token,
     save_user_token as save_cloud_user_token,
 )
+
+
+class DesktopAppKeyringBackendTests(unittest.TestCase):
+    def _import_with_platform(self, backend=None):
+        environment = os.environ.copy()
+        if backend is None:
+            environment.pop("PYTHON_KEYRING_BACKEND", None)
+        else:
+            environment.__setitem__("PYTHON_KEYRING_BACKEND", backend)
+        script = (
+            "import os, sys; "
+            "sys.platform = \"darwin\"; "
+            "import desktop_app; "
+            "print(os.environ.get(\"PYTHON_KEYRING_BACKEND\"))"
+        )
+        return subprocess.run(
+            (sys.executable, "-c", script),
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        ).stdout.strip()
+
+    def test_darwin_sets_native_keyring_backend_by_default(self):
+        self.assertEqual(
+            "keyring.backends.macOS.Keyring",
+            self._import_with_platform(),
+        )
+
+    def test_darwin_preserves_existing_keyring_backend(self):
+        self.assertEqual(
+            "custom.backend.Keyring",
+            self._import_with_platform(backend="custom.backend.Keyring"),
+        )
 
 
 class FakeKeyring:

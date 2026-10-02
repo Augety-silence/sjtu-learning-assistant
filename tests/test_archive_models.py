@@ -23,11 +23,11 @@ def test_0018_revision_and_bootstrap_tables():
     spec.loader.exec_module(module)
     assert module.revision == "0018"
     assert module.down_revision == "0017"
-    assert SCHEMA_VERSION == "0018"
+    assert SCHEMA_VERSION == "0020"
 
     with tempfile.TemporaryDirectory() as directory:
         engine = create_engine("sqlite+pysqlite:///" + str(Path(directory) / "archive.db"))
-        assert bootstrap_sqlite(engine) == "0018"
+        assert bootstrap_sqlite(engine) == "0020"
         tables = set(inspect(engine).get_table_names())
         assert {
             "archive_entries", "archive_versions", "archive_authorized_roots",

@@ -425,4 +425,115 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(document.querySelector(".transcript-status-partial")).toBeTruthy();
     expect(document.querySelector(".transcript-status-failed")).toBeNull();
   });
+
+  it("将质量警告默认折叠在进度和操作之后的质量诊断中", async () => {
+    getV2.mockResolvedValue({
+      ...v2List(),
+      quality: {
+        score: 0,
+        passed: false,
+        metrics: {},
+        warnings: [],
+        schema_pass: false,
+        critic_pass_rate: 0,
+        uncertain_rate: 0.8,
+        numeric_change_count: 1,
+        unsupported_change_count: 1,
+        status: "failed",
+      },
+    });
+    const { container } = renderDrawer();
+
+    const summary = await screen.findByText("质量诊断：AI 校对未通过");
+    const details = summary.closest("details");
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(details?.querySelector(".transcript-quality-warning")).toBeTruthy();
+    const progress = container.querySelector(".transcript-progress-block");
+    expect(
+      progress &&
+        progress.compareDocumentPosition(details as Node) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("从 summary/study_guide/practice_items 读取自编练习并默认折叠答案", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: null,
+      pipeline_status: null,
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+    readV1.mockResolvedValue({
+      id: `${job.id}:summary`,
+      kind: "summary",
+      content: JSON.stringify({
+        summary: { knowledge_points: ["边际贡献"] },
+        study_guide: {
+          practice_items: [
+            { question: "边际贡献如何计算？", answer: "销售收入减变动成本。" },
+            {
+              question: "写出保本点公式。",
+              reference_answer: "固定成本除以单位边际贡献。",
+            },
+          ],
+        },
+      }),
+    });
+    renderDrawer();
+    chooseTab("主动练习");
+
+    expect(await screen.findByText("【自编练习】")).toBeTruthy();
+    expect(screen.getByText("边际贡献如何计算？")).toBeTruthy();
+    const answers = screen.getAllByText("查看答案");
+    expect(answers).toHaveLength(2);
+    expect(answers[0].closest("details")?.hasAttribute("open")).toBe(false);
+    expect(screen.queryByText("本节暂无自编练习。")).toBeNull();
+  });
+
+  it("质量页与材料顶部显示高风险警告和具体指标", async () => {
+    getV2.mockResolvedValue({
+      ...v2List(),
+      quality: {
+        score: 0,
+        passed: false,
+        metrics: {},
+        warnings: [],
+        schema_pass: false,
+        critic_pass_rate: 0,
+        uncertain_rate: 0.8,
+        numeric_change_count: 1,
+        unsupported_change_count: 2,
+        status: "failed",
+      },
+    });
+    readV2.mockResolvedValue(
+      v2Read("quality", {
+        schema_pass: false,
+        critic_pass_rate: 0,
+        uncertain_rate: 0.8,
+        numeric_change_count: 1,
+        unsupported_change_count: 2,
+        status: "failed",
+      }),
+    );
+    renderDrawer();
+
+    expect(
+      await screen.findByText(
+        "AI 校对未通过，关键术语、数字和公式请对照视频核实",
+      ),
+    ).toBeTruthy();
+    chooseTab("质量");
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(
+          "AI 校对未通过，关键术语、数字和公式请对照视频核实",
+        ),
+      ).toHaveLength(2),
+    );
+    expect(screen.getAllByText(/Critic 通过率 0%/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/待确认占比 80%/).length).toBeGreaterThan(0);
+  });
 });

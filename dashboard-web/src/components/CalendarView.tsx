@@ -16,6 +16,11 @@ export interface CalendarEventItem {
   endAt?: string | null;
   status?: "upcoming" | "submitted" | "graded" | "overdue";
   url?: string | null;
+  location?: string | null;
+  periodLabel?: string | null;
+  eventType?: "assignment" | "course";
+  source?: string;
+  canonicalCourseId?: string | null;
 }
 
 export interface CalendarViewProps {
@@ -61,14 +66,25 @@ function monthGrid(month: Date) {
   });
 }
 
-function formatEventTime(value: string) {
+function formatEventTime(value: string, includeDate = true) {
   const date = asDate(value);
   return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
+    ...(includeDate ? { month: "numeric", day: "numeric" } : {}),
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function eventMeta(event: CalendarEventItem) {
+  if (event.eventType !== "course") return event.courseName;
+  return [
+    event.courseName,
+    event.location,
+    event.periodLabel,
+    `${formatEventTime(event.startAt, false)}${event.endAt ? `–${formatEventTime(event.endAt, false)}` : ""}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function CalendarView({
@@ -305,10 +321,16 @@ export function CalendarView({
                     <span className="mt-1 grid gap-1">
                       {items.slice(0, 2).map((item) => (
                         <span
-                          className="truncate text-xs text-caption"
-                          key={item.id}
+                          className={`calendar-event-chip ${item.eventType === "course" ? "calendar-event-course" : "calendar-event-assignment"}`}
+                          key={`${item.eventType ?? "assignment"}:${item.id}`}
                         >
-                          {item.title}
+                          {item.eventType === "course" && (
+                            <span
+                              className="calendar-event-dot"
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span className="truncate">{item.title}</span>
                         </span>
                       ))}
                       {items.length > 2 && (
@@ -328,22 +350,24 @@ export function CalendarView({
           <Section title="未来七日">
             {reminders.length === 0 ? (
               <EmptyState
-                title="七日内暂无截止事项"
-                description="当前没有需要优先处理的课程任务。"
+                title="七日内暂无日程"
+                description="当前没有课程或需要优先处理的截止任务。"
               />
             ) : (
               <div className="list-surface">
                 {reminders.map((event) => (
                   <button
                     type="button"
-                    className="list-row list-row-button"
+                    className={`list-row list-row-button calendar-event-row ${event.eventType === "course" ? "calendar-course-row" : ""}`}
                     key={event.id}
                     onClick={() => onOpenEvent?.(event)}
                     disabled={!onOpenEvent}
                   >
                     <div className="min-w-0">
                       <p className="truncate font-medium">{event.title}</p>
-                      <span>{event.courseName}</span>
+                      <span className="calendar-event-meta">
+                        {eventMeta(event)}
+                      </span>
                     </div>
                     <span className="row-time">
                       {formatEventTime(event.startAt)}
@@ -364,14 +388,16 @@ export function CalendarView({
                 {selectedEvents.map((event) => (
                   <button
                     type="button"
-                    className="list-row list-row-button"
+                    className={`list-row list-row-button calendar-event-row ${event.eventType === "course" ? "calendar-course-row" : ""}`}
                     key={event.id}
                     onClick={() => onOpenEvent?.(event)}
                     disabled={!onOpenEvent}
                   >
                     <div className="min-w-0">
                       <p className="truncate font-medium">{event.title}</p>
-                      <span>{event.courseName}</span>
+                      <span className="calendar-event-meta">
+                        {eventMeta(event)}
+                      </span>
                     </div>
                     <span className="row-time">
                       {formatEventTime(event.startAt)}
