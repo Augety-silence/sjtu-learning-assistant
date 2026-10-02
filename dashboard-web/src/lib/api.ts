@@ -849,3 +849,26 @@ export function cancelKnowledgeCompiler() {
     "knowledge_compiler_cancel",
   );
 }
+export function listLocalProjects() {
+  return invoke<import("@/lib/types").LocalProjectList>("local_projects_list");
+}
+
+export function addLocalProject(sourceRoot: string, targetRoot: string) {
+  return invoke<import("@/lib/types").LocalProject>("local_projects_add", {
+    source_root: sourceRoot,
+    target_root: targetRoot,
+  });
+}
+
+export function refreshLocalProject(projectId: string) {
+  return invoke<import("@/lib/types").LocalProject>("local_projects_refresh", {
+    project_id: projectId,
+  });
+}
+
+export function removeLocalProject(projectId: string) {
+  return invoke<{ project_id: string; removed: boolean }>(
+    "local_projects_remove",
+    { project_id: projectId },
+  );
+}

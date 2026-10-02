@@ -198,6 +198,14 @@ class KnowledgeCompilerService:
             raise KnowledgeCompilerError("输出目录必须为空，或是由本功能创建的现有 Vault。")
         return source, target
 
+    def validate_project(
+        self, source_root: object, target_root: object
+    ) -> tuple[Path, Path, dict[str, Any]]:
+        """Validate and inspect a source/Vault pair without changing either tree."""
+        source, target = self._validate_pair(source_root, target_root)
+        inspection = self.inspect(str(source))
+        return source, target, inspection
+
     def start(self, source_root: object, target_root: object, mode: object) -> dict[str, Any]:
         if mode not in {"foundation", "full"}:
             raise KnowledgeCompilerError("编译范围不受支持。")
@@ -232,6 +240,29 @@ class KnowledgeCompilerService:
         path = target / STATE_RELATIVE_PATH
         if not path.is_file():
             return self._public_state(self._state)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise KnowledgeCompilerError("历史编译状态无法读取。") from None
+        if not isinstance(payload, dict):
+            raise KnowledgeCompilerError("历史编译状态格式不正确。")
+        if payload.get("status") == "running":
+            payload["status"] = "interrupted"
+            payload["error"] = "上次任务因应用退出而中断，可以重新开始以继续生成。"
+        return self._public_state(payload)
+
+    def project_status(self, target_root: object) -> dict[str, Any]:
+        """Return the task state for one target instead of the global active job."""
+        target = self._root(target_root, must_exist=True, label="输出目录")
+        with self._lock:
+            if (
+                self._state.get("target_root") == str(target)
+                and self._state.get("status") != "idle"
+            ):
+                return self._public_state(self._state)
+        path = target / STATE_RELATIVE_PATH
+        if not path.is_file():
+            return self._public_state(self._idle_state())
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

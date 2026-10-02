@@ -9,6 +9,7 @@ export type ViewName =
   | "grading"
   | "videos"
   | "backup"
+  | "local-projects"
   | "knowledge"
   | "ai-chat"
   | "settings";
@@ -313,6 +314,31 @@ export interface KnowledgeCompilerTask {
   started_at: string | null;
   updated_at: string | null;
   finished_at: string | null;
+}
+
+export interface LocalProject {
+  id: string;
+  name: string;
+  source_root: string;
+  target_root: string;
+  markdown_files: number;
+  total_bytes: number;
+  image_references: number;
+  courses: string[];
+  truncated_courses: boolean;
+  available: boolean;
+  issue: string | null;
+  compile_status: KnowledgeCompilerStatus;
+  phase_index: number;
+  total_phases: number;
+  last_compiled_at: string | null;
+  compile_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LocalProjectList {
+  items: LocalProject[];
 }
 
 export interface MaterialMoveResult {
