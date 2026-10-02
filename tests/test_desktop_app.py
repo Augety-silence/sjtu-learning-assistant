@@ -122,6 +122,22 @@ class FakeService:
     def ai_attachment_ingest(self, path):
         return {"id": 7, "name": path.rsplit("/", 1)[-1], "status": "local"}
 
+    def local_projects_list(self):
+        return {"items": []}
+
+    def local_projects_add(self, source_root, target_root):
+        return {
+            "id": "0123456789abcdef01234567",
+            "source_root": source_root,
+            "target_root": target_root,
+        }
+
+    def local_projects_refresh(self, project_id):
+        return {"id": project_id, "status": "refreshed"}
+
+    def local_projects_remove(self, project_id):
+        return {"project_id": project_id, "removed": True}
+
     def open_external(self, url):
         return {"url": url, "status": "opened"}
 
@@ -231,6 +247,44 @@ class DesktopBridgeTests(unittest.TestCase):
                 {"source_id": "file-1", "target_node_id": 1},
             )["error"]["code"],
         )
+
+    def test_local_project_actions_are_allowlisted_and_strict(self):
+        listed = self.bridge.invoke("local_projects_list", {})
+        self.assertEqual([], listed["data"]["items"])
+
+        added = self.bridge.invoke(
+            "local_projects_add",
+            {
+                "source_root": "/Users/student/Courses",
+                "target_root": "/Users/student/Vault",
+            },
+        )
+        self.assertTrue(added["ok"])
+        self.assertEqual(
+            "/Users/student/Courses", added["data"]["source_root"]
+        )
+
+        project_id = "0123456789abcdef01234567"
+        refreshed = self.bridge.invoke(
+            "local_projects_refresh", {"project_id": project_id}
+        )
+        self.assertEqual("refreshed", refreshed["data"]["status"])
+        removed = self.bridge.invoke(
+            "local_projects_remove", {"project_id": project_id}
+        )
+        self.assertTrue(removed["data"]["removed"])
+
+        for action, payload in (
+            ("local_projects_list", {"unexpected": True}),
+            ("local_projects_add", {"source_root": "/tmp/source"}),
+            ("local_projects_refresh", {"project_id": ""}),
+            ("local_projects_remove", {"project_id": project_id, "extra": True}),
+        ):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    "operation_failed",
+                    self.bridge.invoke(action, payload)["error"]["code"],
+                )
 
     def test_debug_bundle_export_is_allowlisted_and_does_not_return_path(self):
         bundle = FakeDiagnosticBundle()

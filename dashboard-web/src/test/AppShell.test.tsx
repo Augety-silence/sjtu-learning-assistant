@@ -103,7 +103,7 @@ describe("AppShell 移动导航", () => {
     expect(sidebar).toBeTruthy();
     expect(workspace).toBeTruthy();
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
-    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(12);
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(13);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
     const overviewButton = within(mainNavigation).getByRole("button", {
       name: "概览",
@@ -118,6 +118,9 @@ describe("AppShell 移动导航", () => {
     ).toBeTruthy();
     expect(
       within(mainNavigation).getByRole("button", { name: "AI 助手" }),
+    ).toBeTruthy();
+    expect(
+      within(mainNavigation).getByRole("button", { name: "本地项目" }),
     ).toBeTruthy();
     expect(
       within(mainNavigation).queryByRole("button", { name: "截止事项" }),

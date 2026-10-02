@@ -68,6 +68,11 @@ from sjtu_learning_assistant.knowledge_compiler import (
     KnowledgeCompilerError,
     KnowledgeCompilerService,
 )
+from sjtu_learning_assistant.local_projects import (
+    LocalProjectError,
+    LocalProjectService,
+)
+from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
@@ -233,6 +238,7 @@ class DashboardService:
         transcript_service: Any | None = None,
         update_service: Any | None = None,
         cloud_provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
+        local_projects_path: Path | None = None,
     ) -> None:
         self.engine = engine
         self.settings_store = settings_store or SettingsStore()
@@ -241,6 +247,9 @@ class DashboardService:
         self.archive_root = Path(settings.archive_root)
         self.folder_picker = folder_picker
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self.local_projects_path = Path(
+            local_projects_path or APP_SUPPORT_DIR / "local-projects.json"
+        )
         self.archive_service_factory = archive_service_factory
         self.command_runner = command_runner or subprocess.run
         self.process_launcher = process_launcher or subprocess.Popen
@@ -2546,6 +2555,15 @@ class DashboardService:
             self._knowledge_compiler_instance = service
         return service
 
+    def _local_projects_service(self) -> LocalProjectService:
+        service = getattr(self, "_local_projects_instance", None)
+        if service is None:
+            service = LocalProjectService(
+                self.local_projects_path, self._knowledge_compiler_service()
+            )
+            self._local_projects_instance = service
+        return service
+
     def _run_knowledge_compiler_ai(
         self, model: str, system_prompt: str, user_content: str
     ) -> str:
@@ -2624,6 +2642,32 @@ class DashboardService:
 
     def knowledge_compiler_cancel(self) -> dict[str, Any]:
         return self._knowledge_compiler_service().cancel()
+
+    def local_projects_list(self) -> dict[str, Any]:
+        try:
+            return self._local_projects_service().list()
+        except (KnowledgeCompilerError, LocalProjectError) as exc:
+            raise DashboardError(str(exc)) from None
+
+    def local_projects_add(
+        self, source_root: object, target_root: object
+    ) -> dict[str, Any]:
+        try:
+            return self._local_projects_service().add(source_root, target_root)
+        except (KnowledgeCompilerError, LocalProjectError) as exc:
+            raise DashboardError(str(exc)) from None
+
+    def local_projects_refresh(self, project_id: object) -> dict[str, Any]:
+        try:
+            return self._local_projects_service().refresh(project_id)
+        except (KnowledgeCompilerError, LocalProjectError) as exc:
+            raise DashboardError(str(exc)) from None
+
+    def local_projects_remove(self, project_id: object) -> dict[str, Any]:
+        try:
+            return self._local_projects_service().remove(project_id)
+        except (KnowledgeCompilerError, LocalProjectError) as exc:
+            raise DashboardError(str(exc)) from None
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""

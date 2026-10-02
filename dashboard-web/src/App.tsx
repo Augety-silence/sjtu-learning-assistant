@@ -21,6 +21,7 @@ import {
 } from "@/components/GradesView";
 import { type GradingSubmission, GradingView } from "@/components/GradingView";
 import { KnowledgeCompilerView } from "@/components/KnowledgeCompilerView";
+import { LocalProjectsView } from "@/components/LocalProjectsView";
 import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
@@ -84,6 +85,7 @@ const views: ViewName[] = [
   "grading",
   "videos",
   "backup",
+  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
@@ -96,6 +98,7 @@ const baseViews: ViewName[] = [
   "materials",
   "videos",
   "backup",
+  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
@@ -1129,6 +1132,21 @@ export default function App() {
           />
         )}
         {view === "backup" && <BackupView />}
+        {view === "local-projects" && (
+          <LocalProjectsView
+            onCompile={(project) => {
+              window.localStorage.setItem(
+                "knowledge-compiler-source",
+                project.source_root,
+              );
+              window.localStorage.setItem(
+                "knowledge-compiler-target",
+                project.target_root,
+              );
+              setView("knowledge");
+            }}
+          />
+        )}
         {view === "knowledge" && <KnowledgeCompilerView />}
         {view === "settings" && (
           <SettingsView

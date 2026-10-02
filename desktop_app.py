@@ -321,6 +321,10 @@ class DesktopBridge:
             "knowledge_compiler_start": self._knowledge_compiler_start,
             "knowledge_compiler_status": self._knowledge_compiler_status,
             "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
+            "local_projects_list": self._local_projects_list,
+            "local_projects_add": self._local_projects_add,
+            "local_projects_refresh": self._local_projects_refresh,
+            "local_projects_remove": self._local_projects_remove,
             "ai_attachment_pick": self._ai_attachment_pick,
             "ai_attachment_ingest": self._ai_attachment_ingest,
             "ai_attachment_restore": self._ai_attachment_restore,
@@ -583,6 +587,42 @@ class DesktopBridge:
     ) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.knowledge_compiler_cancel()
+
+    def _local_projects_list(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.local_projects_list()
+
+    def _local_projects_add(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"source_root", "target_root"})
+        source_root = _bounded_id(
+            payload.get("source_root"), limit=4096, label="素材目录"
+        )
+        target_root = _bounded_id(
+            payload.get("target_root"), limit=4096, label="输出目录"
+        )
+        return self._service.local_projects_add(source_root, target_root)
+
+    def _local_projects_refresh(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"project_id"})
+        project_id = _bounded_id(
+            payload.get("project_id"), limit=24, label="项目标识"
+        )
+        return self._service.local_projects_refresh(project_id)
+
+    def _local_projects_remove(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        _only_keys(payload, {"project_id"})
+        project_id = _bounded_id(
+            payload.get("project_id"), limit=24, label="项目标识"
+        )
+        return self._service.local_projects_remove(project_id)
 
     def _ai_attachment_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"limit"})
