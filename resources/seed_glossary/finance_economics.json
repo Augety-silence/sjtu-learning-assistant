@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "pack_id": "finance_economics",
+  "pack_version": "1.0.0",
+  "display_name": "金融与经济学",
+  "domain_keywords": ["finance", "金融学", "economics", "经济学", "macroeconomics", "宏观经济", "microeconomics", "微观经济", "supply and demand", "供给与需求"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "openstax_finance_ch3", "title": "Ch. 3 Key Terms - Principles of Finance 2e | OpenStax", "url": "https://openstax.org/books/principles-finance-2e/pages/3-key-terms"},
+    {"source_id": "openstax_economics_ch1", "title": "Ch. 1 Key Terms - Principles of Economics 3e | OpenStax", "url": "https://openstax.org/books/principles-economics-3e/pages/1-key-terms"},
+    {"source_id": "openstax_economics_ch3", "title": "Ch. 3 Key Terms - Principles of Economics 3e | OpenStax", "url": "https://openstax.org/books/principles-economics-3e/pages/3-key-terms"}
+  ],
+  "terms": [
+    {"id": "finance_economics.business_cycle", "canonical": "business cycle", "zh_name": "经济周期", "aliases": ["economic cycle"], "category": "macroeconomics", "definition_zh": "经济活动在扩张与收缩阶段之间反复波动的过程。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.consumer_price_index", "canonical": "consumer price index", "zh_name": "消费者价格指数", "aliases": ["CPI"], "category": "macroeconomics", "definition_zh": "衡量一篮子消费品和服务价格随时间变化的指数。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.demand", "canonical": "demand", "zh_name": "需求", "aliases": ["market demand"], "category": "market", "definition_zh": "消费者在不同价格下愿意且能够购买的数量关系。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.supply", "canonical": "supply", "zh_name": "供给", "aliases": ["market supply"], "category": "market", "definition_zh": "生产者在不同价格下愿意且能够出售的数量关系。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.equilibrium", "canonical": "equilibrium", "zh_name": "均衡", "aliases": ["market equilibrium"], "category": "market", "definition_zh": "供给量与需求量相等时的市场状态。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.equilibrium_price", "canonical": "equilibrium price", "zh_name": "均衡价格", "aliases": ["market-clearing price"], "category": "market", "definition_zh": "使市场供给量与需求量相等的价格。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.gross_domestic_product", "canonical": "gross domestic product", "zh_name": "国内生产总值", "aliases": ["GDP"], "category": "macroeconomics", "definition_zh": "一国境内一定时期内生产的最终产品与服务的市场价值。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.inflation", "canonical": "inflation", "zh_name": "通货膨胀", "aliases": ["price inflation"], "category": "macroeconomics", "definition_zh": "总体价格水平持续上升、货币购买力下降的现象。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.macroeconomics", "canonical": "macroeconomics", "zh_name": "宏观经济学", "aliases": ["macro"], "category": "foundation", "definition_zh": "研究整体经济增长、就业、通胀等问题的领域。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.microeconomics", "canonical": "microeconomics", "zh_name": "微观经济学", "aliases": ["micro"], "category": "foundation", "definition_zh": "研究个人、企业及具体市场选择与互动的领域。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.nominal_interest_rate", "canonical": "nominal interest rate", "zh_name": "名义利率", "aliases": ["stated interest rate"], "category": "interest_rate", "definition_zh": "未扣除通货膨胀影响的标示利率。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.real_interest_rate", "canonical": "real interest rate", "zh_name": "实际利率", "aliases": ["inflation-adjusted interest rate"], "category": "interest_rate", "definition_zh": "考虑通货膨胀后反映实际购买力变化的利率。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.exchange_rate", "canonical": "exchange rate", "zh_name": "汇率", "aliases": ["foreign exchange rate", "FX rate"], "category": "international_finance", "definition_zh": "一种货币兑换另一种货币的比率。", "asr_variants": [], "source_id": "openstax_finance_ch3"},
+    {"id": "finance_economics.fiscal_policy", "canonical": "fiscal policy", "zh_name": "财政政策", "aliases": ["government fiscal policy"], "category": "policy", "definition_zh": "政府通过税收与支出影响经济活动的政策。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.monetary_policy", "canonical": "monetary policy", "zh_name": "货币政策", "aliases": ["central bank policy"], "category": "policy", "definition_zh": "中央银行通过货币与信贷条件影响经济的政策。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.market_economy", "canonical": "market economy", "zh_name": "市场经济", "aliases": ["market-oriented economy"], "category": "economic_system", "definition_zh": "主要由分散买卖决策和价格机制配置资源的经济制度。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.command_economy", "canonical": "command economy", "zh_name": "计划经济", "aliases": ["centrally planned economy"], "category": "economic_system", "definition_zh": "主要由政府决定生产和资源配置的经济制度。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.scarcity", "canonical": "scarcity", "zh_name": "稀缺性", "aliases": ["resource scarcity"], "category": "foundation", "definition_zh": "有限资源不足以满足全部欲望的基本经济问题。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.specialization", "canonical": "specialization", "zh_name": "专业化", "aliases": ["economic specialization"], "category": "trade", "definition_zh": "个人或经济体集中生产较擅长产品或服务的安排。", "asr_variants": [], "source_id": "openstax_economics_ch1"},
+    {"id": "finance_economics.law_of_demand", "canonical": "law of demand", "zh_name": "需求定律", "aliases": ["demand law"], "category": "market", "definition_zh": "其他条件不变时，价格上升通常使需求量下降。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.law_of_supply", "canonical": "law of supply", "zh_name": "供给定律", "aliases": ["supply law"], "category": "market", "definition_zh": "其他条件不变时，价格上升通常使供给量增加。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.shortage", "canonical": "shortage", "zh_name": "短缺", "aliases": ["excess demand"], "category": "market", "definition_zh": "某价格下需求量超过供给量的状态。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.surplus", "canonical": "surplus", "zh_name": "过剩", "aliases": ["excess supply"], "category": "market", "definition_zh": "某价格下供给量超过需求量的状态。", "asr_variants": [], "source_id": "openstax_economics_ch3"},
+    {"id": "finance_economics.consumer_surplus", "canonical": "consumer surplus", "zh_name": "消费者剩余", "aliases": ["buyers surplus"], "category": "welfare", "definition_zh": "消费者愿付价格与实际支付价格之间的差额。", "asr_variants": [], "source_id": "openstax_economics_ch3"}
+  ]
+}

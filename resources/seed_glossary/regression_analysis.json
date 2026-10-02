@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "pack_id": "regression_analysis",
+  "pack_version": "1.0.0",
+  "display_name": "回归分析",
+  "domain_keywords": ["regression analysis", "回归分析", "regression equation", "回归方程", "ordinary least squares", "最小二乘", "residual", "残差"],
+  "source_note": "来源仅作为术语参考；中文定义均为面向字幕纠错的简短转述。",
+  "sources": [
+    {"source_id": "openstax_stats_ch13_intro", "title": "Introduction - Chapter 13 Linear Regression and Correlation | OpenStax", "url": "https://openstax.org/books/introductory-business-statistics-2e/pages/13-introduction"},
+    {"source_id": "openstax_stats_13_4", "title": "13.4 The Regression Equation | OpenStax", "url": "https://openstax.org/books/introductory-business-statistics-2e/pages/13-4-the-regression-equation"}
+  ],
+  "terms": [
+    {"id": "regression_analysis.regression_analysis", "canonical": "regression analysis", "zh_name": "回归分析", "aliases": ["regression"], "category": "foundation", "definition_zh": "用模型描述变量关系并进行解释或预测的统计方法。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.dependent_variable", "canonical": "dependent variable", "zh_name": "因变量", "aliases": ["response variable", "explained variable"], "category": "variable", "definition_zh": "回归模型试图解释或预测的结果变量。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.independent_variable", "canonical": "independent variable", "zh_name": "自变量", "aliases": ["explanatory variable", "predictor variable"], "category": "variable", "definition_zh": "用于解释或预测因变量变化的输入变量。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.bivariate", "canonical": "bivariate", "zh_name": "双变量", "aliases": ["bivariate data"], "category": "model_scope", "definition_zh": "仅涉及两个变量的分析情形。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.multivariate", "canonical": "multivariate", "zh_name": "多变量", "aliases": ["multivariate data"], "category": "model_scope", "definition_zh": "同时涉及多个变量的分析情形。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.scatter_plot", "canonical": "scatter plot", "zh_name": "散点图", "aliases": ["scatterplot"], "category": "visualization", "definition_zh": "用点展示两个数值变量成对观测关系的图。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.correlation_coefficient", "canonical": "correlation coefficient", "zh_name": "相关系数", "aliases": ["Pearson correlation coefficient", "r"], "category": "statistic", "definition_zh": "衡量两个变量线性关系方向和强度的统计量。", "asr_variants": [], "source_id": "openstax_stats_ch13_intro"},
+    {"id": "regression_analysis.coefficient_of_determination", "canonical": "coefficient of determination", "zh_name": "决定系数", "aliases": ["R-squared", "R2"], "category": "statistic", "definition_zh": "表示回归模型解释因变量变异比例的统计量。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.regression_equation", "canonical": "regression equation", "zh_name": "回归方程", "aliases": ["regression model"], "category": "equation", "definition_zh": "以自变量和参数表示因变量条件关系的方程。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.regression_line", "canonical": "regression line", "zh_name": "回归直线", "aliases": ["line of best fit", "best-fit line"], "category": "equation", "definition_zh": "在二维图上表示估计线性关系的直线。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.intercept", "canonical": "intercept", "zh_name": "截距", "aliases": ["constant term", "y-intercept"], "category": "coefficient", "definition_zh": "自变量取零时回归方程给出的基准值。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.slope", "canonical": "slope", "zh_name": "斜率", "aliases": ["slope coefficient"], "category": "coefficient", "definition_zh": "自变量每变化一单位时预测值的平均变化量。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.estimated_value", "canonical": "estimated value", "zh_name": "估计值", "aliases": ["predicted value", "fitted value"], "category": "prediction", "definition_zh": "由样本回归方程计算出的因变量值。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.residual", "canonical": "residual", "zh_name": "残差", "aliases": ["sample error"], "category": "error", "definition_zh": "观测值与对应拟合值之间的差。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.error_term", "canonical": "error term", "zh_name": "误差项", "aliases": ["disturbance term"], "category": "error", "definition_zh": "总体模型中未被解释因素对因变量的合成影响。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.sum_squared_errors", "canonical": "sum of squared errors", "zh_name": "误差平方和", "aliases": ["SSE", "residual sum of squares", "RSS"], "category": "statistic", "definition_zh": "各残差平方相加得到的拟合误差总量。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.ordinary_least_squares", "canonical": "ordinary least squares", "zh_name": "普通最小二乘法", "aliases": ["OLS", "least squares"], "category": "estimation", "definition_zh": "通过最小化残差平方和来估计回归系数的方法。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.population_regression_equation", "canonical": "population regression equation", "zh_name": "总体回归方程", "aliases": ["population regression function", "PRF"], "category": "equation", "definition_zh": "描述总体中变量平均关系及误差项的理论方程。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.sample_regression_equation", "canonical": "sample regression equation", "zh_name": "样本回归方程", "aliases": ["sample regression function", "SRF"], "category": "equation", "definition_zh": "由样本数据估计得到并用于拟合或预测的方程。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.homoscedasticity", "canonical": "homoscedasticity", "zh_name": "同方差性", "aliases": ["constant variance"], "category": "assumption", "definition_zh": "误差项的条件方差在不同自变量取值下保持不变。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.heteroscedasticity", "canonical": "heteroscedasticity", "zh_name": "异方差性", "aliases": ["nonconstant variance"], "category": "diagnostic", "definition_zh": "误差项的条件方差随自变量取值而变化。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.multicollinearity", "canonical": "multicollinearity", "zh_name": "多重共线性", "aliases": ["collinearity"], "category": "diagnostic", "definition_zh": "多个自变量之间存在较强线性关系的现象。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.linearity", "canonical": "linearity", "zh_name": "线性", "aliases": ["linear relationship"], "category": "assumption", "definition_zh": "因变量条件均值可由参数的线性形式描述的假设。", "asr_variants": [], "source_id": "openstax_stats_13_4"},
+    {"id": "regression_analysis.normality_of_errors", "canonical": "normality of errors", "zh_name": "误差正态性", "aliases": ["normal errors"], "category": "assumption", "definition_zh": "回归误差服从正态分布的推断假设。", "asr_variants": [], "source_id": "openstax_stats_13_4"}
+  ]
+}

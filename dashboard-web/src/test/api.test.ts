@@ -1,19 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  authorizeArchiveRoot,
+  commitTimetableImport,
   createAiChatSession,
+  createVideoSlidesPdf,
   deleteBackupToken,
+  executeRestore,
+  exportDebugBundle,
   getAiPresets,
+  getArchiveDetail,
+  getArchiveJobEvents,
+  getArchiveJobs,
+  getArchiveList,
   getBackupStatus,
   getMessageResource,
   getSettings,
+  getTimetableSchedule,
+  getTimetableStatus,
+  getTranscriptBatch,
+  getTranscriptV2Artifacts,
+  getVideoSubtitles,
   ingestAiAttachment,
   invoke,
   openExternal,
   openMailAttachment,
+  planRestore,
+  previewTimetableFile,
+  previewTimetableSample,
+  readTranscriptArtifact,
+  readTranscriptV2Artifact,
+  retryArchive,
   revealMailAttachment,
   saveBackupToken,
   sendAiChatMessage,
+  startArchive,
   startCloudBackup,
+  startTranscriptBatch,
   updateSettings,
 } from "@/lib/api";
 
@@ -38,6 +60,34 @@ describe("pywebview bridge client", () => {
     });
     expect(bridge).toHaveBeenCalledWith("health", {});
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("exports the debug bundle without renderer-controlled paths", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { status: "created", filename: "debug.zip", size: 321 },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await expect(exportDebugBundle()).resolves.toEqual({
+      status: "created",
+      filename: "debug.zip",
+      size: 321,
+    });
+    expect(bridge).toHaveBeenCalledWith("debug_bundle_export", {});
+  });
+
+  it("dispatches remote subtitle and slide PDF actions with only source_id", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: {} });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await getVideoSubtitles("sjtu-video:12:99");
+    expect(bridge).toHaveBeenLastCalledWith("video_subtitles", {
+      source_id: "sjtu-video:12:99",
+    });
+    await createVideoSlidesPdf("sjtu-video:12:99");
+    expect(bridge).toHaveBeenLastCalledWith("video_slides_pdf", {
+      source_id: "sjtu-video:12:99",
+    });
   });
 
   it("surfaces sanitized bridge errors", async () => {
@@ -189,6 +239,136 @@ describe("pywebview bridge client", () => {
     await openExternal("https://example.edu");
     expect(bridge).toHaveBeenCalledWith("open_external", {
       url: "https://example.edu",
+    });
+  });
+});
+
+describe("cloud archive bridge payloads", () => {
+  it("uses bounded backend pagination and exact detail/job payloads", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: { items: [] } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getArchiveList({
+      limit: 20,
+      query: "week",
+      status: "archived",
+      sort: "size_desc",
+      cursor: "next-20",
+    });
+    expect(bridge).toHaveBeenLastCalledWith("archive_list", {
+      limit: 20,
+      query: "week",
+      status: "archived",
+      sort: "size_desc",
+      cursor: "next-20",
+    });
+    await getArchiveList({ limit: 20, offset: 40 });
+    expect(bridge).toHaveBeenLastCalledWith("archive_list", {
+      limit: 20,
+      offset: 40,
+    });
+    await getArchiveDetail("entry-1");
+    expect(bridge).toHaveBeenLastCalledWith("archive_detail", {
+      entry_id: "entry-1",
+    });
+    await getArchiveJobs(12, "failed");
+    expect(bridge).toHaveBeenLastCalledWith("archive_jobs", {
+      limit: 12,
+      status: "failed",
+    });
+    await getArchiveJobEvents("job-1");
+    expect(bridge).toHaveBeenLastCalledWith("archive_job_events", {
+      job_id: "job-1",
+    });
+  });
+
+  it("keeps native picker and restore payloads allowlisted", async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValue({ ok: true, data: { id: "result" } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await startArchive("request-1");
+    expect(bridge).toHaveBeenLastCalledWith("archive_start", {
+      idempotency_key: "request-1",
+    });
+    await retryArchive("job-1");
+    expect(bridge).toHaveBeenLastCalledWith("archive_retry", {
+      job_id: "job-1",
+    });
+    await authorizeArchiveRoot();
+    expect(bridge).toHaveBeenLastCalledWith("archive_authorize_root", {});
+    await planRestore("entry-1", {
+      versionId: "version-2",
+      mode: "choose_location",
+      authorizedRootId: "root-1",
+    });
+    expect(bridge).toHaveBeenLastCalledWith("restore_plan", {
+      entry_id: "entry-1",
+      version_id: "version-2",
+      mode: "choose_location",
+      authorized_root_id: "root-1",
+    });
+    await executeRestore("restore-1", "compare", true);
+    expect(bridge).toHaveBeenLastCalledWith("restore_execute", {
+      job_id: "restore-1",
+      conflict_policy: "compare",
+      confirm_create_dirs: true,
+    });
+  });
+
+  it("uses the schedule bridge contract without renderer-side file reads", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: {} });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await getTimetableStatus();
+    expect(bridge).toHaveBeenLastCalledWith("timetable_status", {});
+    await getTimetableSchedule(
+      "2026-09-28T00:00:00.000Z",
+      "2026-11-09T00:00:00.000Z",
+    );
+    expect(bridge).toHaveBeenLastCalledWith("timetable_schedule", {
+      startAt: "2026-09-28T00:00:00.000Z",
+      endAt: "2026-11-09T00:00:00.000Z",
+    });
+    await previewTimetableFile();
+    expect(bridge).toHaveBeenLastCalledWith("timetable_preview_local_file", {});
+    await previewTimetableSample();
+    expect(bridge).toHaveBeenLastCalledWith(
+      "timetable_load_bundled_sample",
+      {},
+    );
+    await commitTimetableImport("opaque-preview-id");
+    expect(bridge).toHaveBeenLastCalledWith("timetable_commit_preview", {
+      previewId: "opaque-preview-id",
+    });
+  });
+
+  it("sends only opaque transcript identifiers through the bridge", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: { jobs: [] } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await startTranscriptBatch(12, ["sjtu-video:12:99"]);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_batch_start", {
+      course_id: 12,
+      source_ids: ["sjtu-video:12:99"],
+    });
+    const id = "a".repeat(32);
+    await getTranscriptBatch(id);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_batch_get", {
+      batch_id: id,
+    });
+    await readTranscriptArtifact(`${id}:summary`);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_artifact_read", {
+      artifact_id: `${id}:summary`,
+    });
+    await getTranscriptV2Artifacts(id);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_v2_artifacts", {
+      job_id: id,
+    });
+    const v2ArtifactId = `${id}:v2:${"b".repeat(32)}`;
+    await readTranscriptV2Artifact(v2ArtifactId);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_v2_artifact_read", {
+      artifact_id: v2ArtifactId,
     });
   });
 });

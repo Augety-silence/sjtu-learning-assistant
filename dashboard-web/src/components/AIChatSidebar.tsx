@@ -17,6 +17,7 @@ import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import appLogo from "@/assets/app-logo.png";
 import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
 import { Button } from "@/components/ui/Button";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAgentPreset,
   AIChatPreferences,
@@ -58,8 +59,8 @@ function AgentMenuSurface({ children }: { children: ReactNode }) {
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -3, scale: 0.99 }}
       transition={{
-        duration: isPresent ? 0.17 : 0.13,
-        ease: [0.16, 1, 0.3, 1],
+        duration: isPresent ? motionDuration.enter : motionDuration.control,
+        ease: motionEase.out,
       }}
     >
       {children}
@@ -150,7 +151,7 @@ export function AIChatSidebar({
   return (
     <aside
       className={open ? "ai-sidebar is-open" : "ai-sidebar"}
-      aria-label="AI Chat 导航"
+      aria-label="AI 助手导航"
     >
       <header className="ai-sidebar-brand">
         <button
@@ -194,7 +195,7 @@ export function AIChatSidebar({
           aria-label={`当前 Agent：${selectedPreset?.name ?? "未选择"}`}
           aria-expanded={pickerOpen}
           aria-controls="ai-sidebar-agent-list"
-          disabled={busy}
+          title={selectedPreset?.description}
           onClick={() => setPickerOpen((open) => !open)}
         >
           <span className="ai-current-agent-avatar">
@@ -233,9 +234,6 @@ export function AIChatSidebar({
             </AgentMenuSurface>
           )}
         </AnimatePresence>
-        <p className="ai-current-agent-description">
-          {selectedPreset?.description ?? "选择一个 Agent 开始处理学习任务。"}
-        </p>
         <div className="ai-capability-strip" aria-label="当前 Agent 功能">
           {enabledCapabilities.length > 0 ? (
             enabledCapabilities.map(({ label, icon: Icon }) => (

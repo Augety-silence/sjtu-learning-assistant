@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
 import {
   deleteCredential,
+  exportDebugBundle,
   getSettings,
   openExternal,
   organizeArchive,
@@ -29,6 +30,7 @@ vi.mock("@/lib/api", () => ({
   pickArchiveRoot: vi.fn(),
   saveCredential: vi.fn(),
   deleteCredential: vi.fn(),
+  exportDebugBundle: vi.fn(),
   testAiConnection: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -68,6 +70,12 @@ describe("SettingsView", () => {
     }));
     vi.mocked(saveCredential).mockResolvedValue(status);
     vi.mocked(deleteCredential).mockResolvedValue(status);
+    vi.mocked(exportDebugBundle).mockResolvedValue({
+      status: "created",
+      filename: "debug.zip",
+      size: 1,
+      entry_count: 3,
+    });
     vi.mocked(testAiConnection).mockResolvedValue({
       ok: true,
       model: "deepseek-chat",
@@ -110,7 +118,7 @@ describe("SettingsView", () => {
     expect(screen.getByText("AI 模型")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "打开连接配置指南" }));
     expect(openExternal).toHaveBeenCalledWith(
-      "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f",
+      "https://my.feishu.cn/wiki/S1RywYx2gilgEtkOne0cTsqpnzd",
     );
     const buttons = screen.getAllByRole("button", { name: "修改配置" });
     fireEvent.click(buttons[0]);
@@ -178,6 +186,47 @@ describe("SettingsView", () => {
       "private-password",
       "student@sjtu.edu.cn",
     );
+  });
+
+  it("exports a debug bundle with loading, success, cancel, and failure states", async () => {
+    let finishExport:
+      | ((value: Awaited<ReturnType<typeof exportDebugBundle>>) => void)
+      | undefined;
+    vi.mocked(exportDebugBundle).mockReturnValueOnce(
+      new Promise<Awaited<ReturnType<typeof exportDebugBundle>>>((resolve) => {
+        finishExport = resolve;
+      }),
+    );
+    render(<SettingsView />);
+
+    const button = await screen.findByRole("button", {
+      name: "打包运行日志",
+    });
+    fireEvent.click(button);
+    expect(await screen.findByText("正在打包已脱敏的运行日志…")).toBeTruthy();
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    finishExport?.({
+      status: "created",
+      filename: "sjtu-learning-assistant-debug-20260930_160000.zip",
+      size: 321,
+      entry_count: 4,
+    });
+    expect(
+      await screen.findByText(
+        "调试包已保存：sjtu-learning-assistant-debug-20260930_160000.zip",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(button.getAttribute("aria-busy")).toBeNull());
+
+    vi.mocked(exportDebugBundle).mockResolvedValueOnce({ status: "cancelled" });
+    fireEvent.click(button);
+    expect(await screen.findByText("已取消保存调试包。")).toBeTruthy();
+
+    vi.mocked(exportDebugBundle).mockRejectedValueOnce(
+      new Error("调试包生成失败"),
+    );
+    fireEvent.click(button);
+    expect(await screen.findByText("调试包生成失败")).toBeTruthy();
   });
 
   it("keeps archive controls available", async () => {

@@ -1,5 +1,6 @@
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import overviewAllClearIllustration from "@/assets/empty-states/overview-all-clear.webp";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import {
   EmptyState,
@@ -114,6 +115,8 @@ export function OverviewView({
 
   if (error) return <ErrorState message={error} retry={load} />;
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
+  const overviewAllClear =
+    data.deadlines.length === 0 && data.messages.length === 0;
 
   return (
     <div className="section-stack">
@@ -141,7 +144,7 @@ export function OverviewView({
       <Section
         title="临期事项"
         action={
-          <Button variant="link" onClick={() => navigate("deadlines")}>
+          <Button variant="link" onClick={() => navigate("calendar")}>
             查看全部
           </Button>
         }
@@ -151,6 +154,11 @@ export function OverviewView({
             <EmptyState
               title="近期没有截止事项"
               description="未来 7 天内暂无未完成作业。"
+              illustration={
+                overviewAllClear ? (
+                  <img src={overviewAllClearIllustration} alt="" />
+                ) : undefined
+              }
             />
           ) : (
             prioritizedDeadlines.map((item) => (

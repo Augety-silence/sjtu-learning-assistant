@@ -176,7 +176,7 @@ describe("AIChatView", () => {
       expect(screen.getByText(capability)).toBeTruthy();
     }
     expect(
-      screen.getByText("工具调用会显示在这里", { exact: false }),
+      screen.getByText("简洁时间线展示检索与整理进度", { exact: false }),
     ).toBeTruthy();
   });
 
@@ -202,10 +202,55 @@ describe("AIChatView", () => {
       "deep",
       "general",
     );
-    expect(screen.getByText("查询截止日期")).toBeTruthy();
+    expect(screen.getByText("检索截止日期")).toBeTruthy();
     expect(screen.getByText("命中 3 项")).toBeTruthy();
+    expect(screen.getByText(/已完成 · 调用 1 次 · 命中 3 项/)).toBeTruthy();
+    expect(screen.getByRole("article", { name: "你的消息" })).toBeTruthy();
+    expect(
+      document.querySelector(
+        ".ai-message-user .ai-message-avatar img[src*=user-avatar]",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("你", { exact: true })).toBeNull();
     expect(screen.getByText("预检索")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "复制消息" })).toHaveLength(2);
+  });
+
+  it("keeps generation feedback directly in the conversation flow", async () => {
+    let resolveMessage:
+      | ((value: Awaited<ReturnType<typeof sendAiChatMessage>>) => void)
+      | undefined;
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveMessage = resolve;
+        }),
+    );
+
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "检索本学期课程" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("Agent 正在检索本地学习数据…")).toBeTruthy();
+    expect(
+      container.querySelector(".ai-chat-messages > .ai-thinking"),
+    ).toBeTruthy();
+    expect(screen.getByText("正在规划检索步骤")).toBeTruthy();
+
+    resolveMessage?.({
+      session: {
+        id: "session-1",
+        title: "最近一周待办",
+        model: "auto",
+        thinking_depth: "standard",
+        preset_id: "general",
+      },
+      trace,
+      user_message: { id: "1", role: "user", content: "检索本学期课程" },
+      assistant_message: { id: "2", role: "assistant", content: "检索完成" },
+    });
+    expect(await screen.findByText("检索完成")).toBeTruthy();
   });
 
   it("picks, removes and sends local attachment chips", async () => {
@@ -269,7 +314,7 @@ describe("AIChatView", () => {
 
     render(<AIChatView onBack={vi.fn()} />);
     expect(await screen.findByText("历史回答")).toBeTruthy();
-    fireEvent.click(screen.getByText("查询截止日期"));
+    fireEvent.click(screen.getByText("检索截止日期"));
     expect(screen.getByText("安全参数")).toBeTruthy();
     expect(screen.getByText("结果摘要")).toBeTruthy();
   });
@@ -316,6 +361,93 @@ describe("AIChatView", () => {
     const box = container.querySelector(".ai-composer-box");
     expect(input.classList.contains("ai-composer-input")).toBe(true);
     expect(box?.contains(input)).toBe(true);
+  });
+
+  it("grows and caps the composer, then returns to one line when cleared", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = (await screen.findByRole("textbox", {
+      name: "输入问题",
+    })) as HTMLTextAreaElement;
+    let measuredHeight = 42;
+    Object.defineProperty(input, "scrollHeight", {
+      configurable: true,
+      get: () => measuredHeight,
+    });
+
+    expect(input.style.height).toBe("42px");
+    expect(input.style.overflowY).toBe("hidden");
+
+    fireEvent.change(input, { target: { value: "单行问题" } });
+    expect(input.style.height).toBe("42px");
+    expect(input.style.overflowY).toBe("hidden");
+
+    measuredHeight = 92;
+    fireEvent.change(input, { target: { value: "第一行\n第二行\n第三行" } });
+    expect(input.style.height).toBe("92px");
+    expect(input.style.overflowY).toBe("hidden");
+
+    measuredHeight = 240;
+    fireEvent.change(input, { target: { value: "很多行\n".repeat(20) } });
+    expect(input.style.height).toBe("160px");
+    expect(input.style.overflowY).toBe("auto");
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input.style.height).toBe("42px");
+    expect(input.style.overflowY).toBe("hidden");
+  });
+
+  it("uses 32vh as the textarea cap in a short viewport", async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 400,
+    });
+
+    try {
+      render(<AIChatView onBack={vi.fn()} />);
+      const input = (await screen.findByRole("textbox", {
+        name: "输入问题",
+      })) as HTMLTextAreaElement;
+      Object.defineProperty(input, "scrollHeight", {
+        configurable: true,
+        value: 240,
+      });
+
+      fireEvent.change(input, {
+        target: { value: "短窗口中的多行内容\n".repeat(20) },
+      });
+      expect(input.style.height).toBe("128px");
+      expect(input.style.overflowY).toBe("auto");
+    } finally {
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
+  it("keeps avatar, message body and copy action in one stable row", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "检查消息布局" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect((input as HTMLTextAreaElement).value).toBe("");
+      expect((input as HTMLTextAreaElement).style.height).toBe("42px");
+    });
+    const article = await screen.findByRole("article", { name: "你的消息" });
+    expect(article.children[0].classList.contains("ai-message-avatar")).toBe(
+      true,
+    );
+    expect(article.children[1].classList.contains("ai-message-body")).toBe(
+      true,
+    );
+    expect(
+      article.querySelector(
+        ".ai-message-body > footer button[aria-label='复制消息']",
+      ),
+    ).toBeTruthy();
   });
 
   it("ingests dropped desktop files and sends a default attachment intent", async () => {
@@ -366,7 +498,7 @@ describe("AIChatView", () => {
     const input = await screen.findByRole("textbox", { name: "输入问题" });
     fireEvent.click(screen.getByRole("button", { name: "个性化设置" }));
     expect(
-      screen.getByRole("dialog", { name: "AI Chat 个性化设置" }),
+      screen.getByRole("dialog", { name: "AI 助手个性化设置" }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: "⌘ + Enter 发送" }));
 
@@ -386,13 +518,110 @@ describe("AIChatView", () => {
     ).toBe("true");
   });
 
+  it("keeps Activity non-modal and preserves composer focus and draft", async () => {
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "保持这段输入" } });
+    input.focus();
+    const activityToggle = screen.getByRole("button", {
+      name: "切换 Activity 检索轨迹",
+    });
+    fireEvent.pointerDown(activityToggle);
+    fireEvent.click(activityToggle);
+
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect((input as HTMLTextAreaElement).value).toBe("保持这段输入");
+    expect(container.querySelector(".ai-activity-backdrop")).toBeNull();
+    expect(
+      screen.getByRole("complementary", { name: "Activity 检索轨迹" }),
+    ).toBeTruthy();
+    expect(input.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("queues a follow-up while Agent is running and sends it next", async () => {
+    let resolveFirst:
+      | ((value: Awaited<ReturnType<typeof sendAiChatMessage>>) => void)
+      | undefined;
+    vi.mocked(sendAiChatMessage)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        session: {
+          id: "session-1",
+          title: "补充要求",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+        trace: { ...trace, id: "trace-2" },
+        user_message: { id: "3", role: "user", content: "只看安泰的课程" },
+        assistant_message: {
+          id: "4",
+          role: "assistant",
+          content: "已按补充要求处理",
+        },
+      });
+
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "检索本学期课程" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText("Agent 正在检索本地学习数据…");
+
+    fireEvent.change(input, { target: { value: "只看安泰的课程" } });
+    expect(
+      screen.getByRole("button", { name: "发送消息" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      screen
+        .getByRole("button", { name: "添加本地附件" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      screen
+        .getByRole("button", { name: "Agent：学习数据 Agent" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("将在当前检索完成后执行")).toBeTruthy();
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+
+    resolveFirst?.({
+      session: {
+        id: "session-1",
+        title: "课程检索",
+        model: "auto",
+        thinking_depth: "standard",
+        preset_id: "general",
+      },
+      trace,
+      user_message: { id: "1", role: "user", content: "检索本学期课程" },
+      assistant_message: { id: "2", role: "assistant", content: "第一轮完成" },
+    });
+
+    await waitFor(() => expect(sendAiChatMessage).toHaveBeenCalledTimes(2));
+    expect(sendAiChatMessage).toHaveBeenLastCalledWith(
+      "session-1",
+      "只看安泰的课程",
+      "auto",
+      "standard",
+      "general",
+    );
+    expect(await screen.findByText("已按补充要求处理")).toBeTruthy();
+  });
+
   it("closes personalization with Escape and restores trigger focus", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     const trigger = await screen.findByRole("button", { name: "个性化设置" });
     fireEvent.click(trigger);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(
-      screen.queryByRole("dialog", { name: "AI Chat 个性化设置" }),
+      screen.queryByRole("dialog", { name: "AI 助手个性化设置" }),
     ).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(trigger));
     expect(getSettings).toHaveBeenCalled();

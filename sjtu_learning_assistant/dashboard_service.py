@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import asdict
 from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ except ImportError:
 from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from sjtu_learning_assistant import __version__
 from sjtu_learning_assistant.agent_runtime import (
     AgentLoop,
     AgentToolError,
@@ -61,11 +64,27 @@ from sjtu_learning_assistant.credential_store import (
     save_canvas_token,
     save_mail_password,
 )
+from sjtu_learning_assistant.knowledge_compiler import (
+    KnowledgeCompilerError,
+    KnowledgeCompilerService,
+)
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
 )
+from sjtu_learning_assistant.academic_features import AcademicFeatureService
 from sjtu_learning_assistant.backup_service import canvas_remote_path
+from sjtu_learning_assistant.cloud_archive_service import CloudArchiveService
+from sjtu_learning_assistant.restore_service import RestoreService
+from sjtu_learning_assistant.canvas_client import CanvasClient
+from sjtu_learning_assistant.media_features import MediaFeatureService
+from sjtu_learning_assistant.update_service import UpdateService
+from sjtu_learning_assistant.transcript_service import AIContext, TranscriptError, TranscriptService
+from sjtu_learning_assistant.video_service import (
+    SJTUVideoError,
+    SJTUVideoService,
+    parse_remote_source_id,
+)
 from sjtu_learning_assistant.cloud_storage import (
     CloudStorageProvider,
     SJTUCloudPanProvider,
@@ -82,6 +101,7 @@ from sjtu_learning_assistant.local_settings import (
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
 from sjtu_learning_assistant.models import (
+    ArchiveJob,
     AIAgentTrace,
     AIChatMessage,
     AIChatMessageAttachment,
@@ -185,7 +205,7 @@ def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[s
     command = ["/usr/bin/open"]
     if reveal:
         command.append("-R")
-    command.append(value)
+    command.extend(("--", value))
     return command
 
 
@@ -207,6 +227,11 @@ class DashboardService:
         ai_client_factory: Callable[..., OpenAIClassificationClient] = OpenAIClassificationClient,
         mail_attachments_root: Path | None = None,
         canvas_client_factory: Callable[[], Any] | None = None,
+        academic_service: Any | None = None,
+        media_service: Any | None = None,
+        video_service: Any | None = None,
+        transcript_service: Any | None = None,
+        update_service: Any | None = None,
         cloud_provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
     ) -> None:
         self.engine = engine
@@ -228,12 +253,29 @@ class DashboardService:
         )
         self.canvas_client_factory = canvas_client_factory
         self.cloud_provider_factory = cloud_provider_factory
+        self.cloud_archive = CloudArchiveService(
+            engine,
+            provider_factory=cloud_provider_factory,
+            archive_root=self.archive_root,
+            mark_interrupted=isinstance(engine, Engine),
+        )
+        self.restore_service = RestoreService(
+            engine,
+            provider_factory=cloud_provider_factory,
+            mark_interrupted=False,
+        )
+        self._academic_service = academic_service
+        self.media_features = media_service or MediaFeatureService()
+        self._video_service_instance = video_service
+        self._transcript_service_instance = transcript_service
+        self.update_service = update_service or UpdateService(__version__)
         self.ai_files = AIManagedFileService(
             engine,
             archive_root=self.archive_root,
             provider_factory=cloud_provider_factory,
         )
         self._material_temp = tempfile.TemporaryDirectory(prefix="sjtu-learning-material-")
+        self._academic_temp = tempfile.TemporaryDirectory(prefix="sjtu-learning-academic-")
         self._sync_lock = threading.Lock()
         self._client_lock = threading.RLock()
         self._canvas_client: Any | None = None
@@ -251,6 +293,548 @@ class DashboardService:
         with self.engine.connect() as connection:
             connection.execute(select(1))
         return {"status": "ok", "time": to_shanghai(self.now())}
+
+    def _academic_features(self) -> Any:
+        """Return the lazily constructed academic facade, preserving injected fakes."""
+        with self._client_lock:
+            if self._academic_service is not None:
+                return self._academic_service
+            client = self._get_canvas_client()
+            if not callable(getattr(client, "course", None)):
+                if not hasattr(client, "base_url") or not callable(getattr(client, "request", None)):
+                    raise DashboardError("Canvas 客户端不支持学术功能。")
+                client = CanvasClient(client=client)
+            self._academic_service = AcademicFeatureService(
+                client,
+                engine=self.engine if isinstance(self.engine, Engine) else None,
+                export_root=Path(self._academic_temp.name),
+            )
+            return self._academic_service
+
+    @staticmethod
+    def _dto(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        converter = getattr(value, "as_dict", None)
+        if callable(converter):
+            converted = converter()
+            if isinstance(converted, Mapping):
+                return dict(converted)
+        try:
+            return asdict(value)
+        except (TypeError, ValueError) as exc:
+            raise DashboardError("后端服务返回了无法识别的数据。") from exc
+
+    def course_capabilities(self, course_id: int | str | None = None) -> dict[str, Any]:
+        academic = self._academic_features()
+        if course_id is None:
+            return {"items": [self._dto(item) for item in academic.list_course_capabilities()]}
+        return self._dto(academic.course_capabilities(course_id))
+
+    def capabilities(self, course_id: int | str | None = None) -> dict[str, Any]:
+        """Expose feature availability without granting permissions from renderer claims."""
+        result: dict[str, Any] = {
+            "media": self.media_features.capabilities(),
+            "update": {"check_only": True, "automatic_install": False},
+            "mcp": {"transport": "stdio", "read_only": True},
+        }
+        result["courses"] = self.course_capabilities(course_id)
+        return result
+
+    def calendar(
+        self, year: int, month: int, *, course_ids: Sequence[int | str] | None = None
+    ) -> dict[str, Any]:
+        overview = self._academic_features().calendar_overview(
+            year, month, now=self.now(), course_ids=course_ids, timezone_info=SHANGHAI_TZ
+        )
+        result = self._dto(overview)
+        result["month_events"] = list(result["month_events"])
+        result["upcoming_events"] = list(result["upcoming_events"])
+        return result
+
+    def gradebook(self, course_id: int | str) -> dict[str, Any]:
+        return self._academic_features().gradebook(course_id)
+
+    def roster(
+        self,
+        course_id: int | str,
+        *,
+        roles: Sequence[str] | str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "items": self._academic_features().list_members(
+                course_id, roles=roles, query=query
+            )
+        }
+
+    def roster_export(
+        self, course_id: int | str, *, user_ids: Sequence[int | str] | None = None
+    ) -> dict[str, Any]:
+        # The destination is always backend-owned; callers cannot provide a path.
+        artifact = self._academic_features().export_members_csv(
+            course_id, user_ids=user_ids
+        )
+        return {
+            "filename": artifact.filename,
+            "content_type": artifact.content_type,
+            "row_count": artifact.row_count,
+            "status": "created",
+            "reveal_token": artifact.filename,
+        }
+
+    def reveal_academic_export(self, token: str) -> dict[str, str]:
+        if (
+            type(token) is not str
+            or not token
+            or len(token) > 255
+            or token != Path(token).name
+            or "\x00" in token
+        ):
+            raise DashboardError("导出文件标识不正确。")
+        root = Path(self._academic_temp.name).resolve()
+        candidate = root / token
+        try:
+            path = candidate.resolve(strict=True)
+        except OSError:
+            raise NotFoundError("导出文件不存在或已过期。") from None
+        if path.parent != root or not path.is_file() or path.is_symlink():
+            raise DashboardError("导出文件标识不安全。")
+        completed = self.command_runner(_desktop_open_command(path, reveal=True), check=False)
+        if completed.returncode != 0:
+            raise DashboardError("无法在 Finder 中显示导出文件。")
+        return {"status": "revealed", "filename": token}
+
+    def gradebook_export(self, course_id: int | str) -> dict[str, Any]:
+        artifact = self._academic_features().export_grades_csv(course_id)
+        return {
+            "filename": artifact.filename,
+            "content_type": artifact.content_type,
+            "row_count": artifact.row_count,
+            "status": "created",
+            "reveal_token": artifact.filename,
+        }
+
+    def grading_submissions(
+        self, course_id: int | str, assignment_id: int | str
+    ) -> dict[str, Any]:
+        return {
+            "items": self._academic_features().list_submissions(
+                course_id, assignment_id
+            )
+        }
+
+    def grading_submission(
+        self, course_id: int | str, assignment_id: int | str, student_id: int | str
+    ) -> dict[str, Any]:
+        return self._academic_features().submission_detail(
+            course_id, assignment_id, student_id
+        )
+
+    def grading_update(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str,
+        *,
+        grade: str | int | float | None = None,
+        comment: str | None = None,
+        set_grade: bool = False,
+    ) -> dict[str, Any]:
+        outcome = self._academic_features().update_submission(
+            course_id,
+            assignment_id,
+            student_id,
+            grade=grade,
+            comment=comment,
+            set_grade=set_grade,
+        )
+        return self._dto(outcome)
+
+    def media_capabilities(self) -> dict[str, Any]:
+        return self.media_features.capabilities()
+
+    def _material_preview_payload(self, source_id: str) -> tuple[Any, bytes]:
+        record = self._material_record(source_id)
+        limit = self.media_features.limits.max_file_size
+        try:
+            path = self._resolve_local_file(source_id)
+        except NotFoundError:
+            if not record.cloud_path or record.cloud_size is None or record.cloud_size > limit:
+                raise NotFoundError("资料的本地文件和云端副本均不可用。") from None
+            try:
+                chunks: list[bytes] = []
+                size = 0
+                with self._cloud_provider() as provider:
+                    remote_path = self._cloud_segments(record.cloud_path)
+                    info = provider.get_info(remote_path)
+                    if info.is_directory or info.size != record.cloud_size:
+                        raise DashboardError("云端文件校验失败，无法读取。")
+                    for chunk in provider.download_stream(remote_path):
+                        size += len(chunk)
+                        if size > limit:
+                            raise DashboardError("文件超过媒体处理大小限制。")
+                        chunks.append(chunk)
+                payload = b"".join(chunks)
+            except DashboardError:
+                raise
+            except Exception:
+                raise DashboardError("云端文件读取失败，请检查网络后重试。") from None
+        else:
+            try:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    info = os.fstat(descriptor)
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                        raise DashboardError("文件不适合媒体处理。")
+                    payload = os.read(descriptor, limit + 1)
+                finally:
+                    os.close(descriptor)
+            except DashboardError:
+                raise
+            except OSError:
+                raise DashboardError("本地文件读取失败。") from None
+            if len(payload) > limit:
+                raise DashboardError("文件超过媒体处理大小限制。")
+        return record, payload
+
+    def media_preview(self, source_id: str) -> dict[str, Any]:
+        """Preview only a backend-resolved material; renderer paths are never accepted."""
+        record, payload = self._material_preview_payload(source_id)
+        return self.media_features.preview(
+            payload,
+            record.display_name or record.filename or "文件",
+            record.content_type,
+        )
+
+    def video_screenshot_pdf(self, source_id: str, interval_seconds: int = 60) -> dict[str, Any]:
+        record, payload = self._material_preview_payload(source_id)
+        result = self.media_features.video_screenshots_pdf(
+            payload, interval_seconds=interval_seconds
+        )
+        if not result.get("available") or result.get("status") != "succeeded":
+            raise DashboardError(str(result.get("reason") or "视频截图 PDF 当前不可用。"))
+        pdf = result.get("data")
+        if not isinstance(pdf, bytes):
+            raise DashboardError("视频截图 PDF 结果无效。")
+        stem = re.sub(
+            r"[^0-9A-Za-z._ -]+",
+            "-",
+            Path(record.display_name or record.filename or "video").stem,
+        ).strip(" .-")[:120] or "video"
+        filename = f"{stem}-screenshots.pdf"
+        root = Path(self._academic_temp.name).resolve()
+        target = root / filename
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".video-pdf-", dir=root)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(pdf)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return {
+            "status": "created",
+            "filename": filename,
+            "reveal_token": filename,
+            "frame_count": int(result.get("frame_count") or 0),
+            "size": len(pdf),
+        }
+
+    def _video_service(self) -> Any:
+        """Lazily create the remote video facade without fetching credentials."""
+        with self._client_lock:
+            if self._video_service_instance is None:
+                self._video_service_instance = SJTUVideoService(
+                    self._get_canvas_client
+                )
+            return self._video_service_instance
+
+    def course_media(self, course_id: int | str, *, limit: int = 5000) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise DashboardError("媒体数量限制不正确。")
+        if isinstance(course_id, bool) or type(course_id) not in {int, str}:
+            raise DashboardError("课程标识不正确。")
+        course_key = str(course_id).strip()
+        if not course_key or len(course_key) > 128 or re.fullmatch(r"[A-Za-z0-9_.:-]+", course_key) is None:
+            raise DashboardError("课程标识不正确。")
+        with Session(self.engine) as session:
+            course = session.scalar(
+                select(Course).where(Course.source_id == course_key)
+            )
+            if course is None and type(course_id) is int and course_id > 0:
+                course = session.get(Course, course_id)
+            if course is None:
+                raise NotFoundError("未找到课程。")
+            canvas_course_id = course.source_id
+            course_name = course.name
+            records = session.scalars(
+                select(CourseFile)
+                .where(CourseFile.course_id == course.id)
+                .order_by(CourseFile.id.asc())
+                .limit(limit)
+            ).all()
+            local = self.media_features.aggregate_course_media(
+                records, max_records=limit
+            )
+            for item in local["items"]:
+                item["course_name"] = course_name or "未命名课程"
+
+        try:
+            remote_items = self._video_service().list_course_videos(
+                canvas_course_id,
+                course_name=course_name,
+                limit=min(limit, 1000),
+            )
+        except SJTUVideoError as exc:
+            if not local["items"]:
+                raise DashboardError(str(exc)) from None
+            local["warning"] = "课程录像服务暂时不可用，已显示本地媒体。"
+            return local
+        except Exception:
+            if not local["items"]:
+                raise DashboardError("课程录像服务暂时不可用，请稍后重试。") from None
+            local["warning"] = "课程录像服务暂时不可用，已显示本地媒体。"
+            return local
+
+        combined = (remote_items + list(local["items"]))[:limit]
+        local["items"] = combined
+        local["counts"] = {
+            "video": sum(item.get("media_kind") == "video" for item in combined),
+            "audio": sum(item.get("media_kind") == "audio" for item in combined),
+            "subtitle": len(local["subtitles"]),
+        }
+        return local
+
+    def video(self, source_id: str) -> dict[str, Any]:
+        """Return a safe backend action descriptor, never a raw local path."""
+        if isinstance(source_id, str) and source_id.startswith("sjtu-video:"):
+            try:
+                return self._video_service().playback(source_id)
+            except SJTUVideoError as exc:
+                raise DashboardError(str(exc)) from None
+            except Exception:
+                raise DashboardError("课程录像播放地址获取失败，请稍后重试。") from None
+        return self.media_features.safe_playback_descriptor(
+            self._material_record(source_id)
+        )
+
+    def video_subtitles(self, source_id: str) -> dict[str, Any]:
+        """Fetch remote captions as WebVTT without exposing the short-lived JWT."""
+        try:
+            parse_remote_source_id(source_id)
+            return self._video_service().subtitles(source_id)
+        except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+        except Exception:
+            raise DashboardError("课程字幕读取失败，请稍后重试。") from None
+
+    def _transcript_ai_context(self) -> AIContext:
+        settings = self._effective_settings()
+        client = self._get_ai_client(settings) if settings.ai_enabled else None
+        fingerprint = hashlib.sha256(settings.ai_base_url.encode("utf-8")).hexdigest()
+        return AIContext(client, settings.ai_model, fingerprint, bool(client))
+
+    def _transcript_service(self) -> TranscriptService:
+        with self._client_lock:
+            if self._transcript_service_instance is None:
+                self._transcript_service_instance = TranscriptService(
+                    subtitle_fetcher=self.video_subtitles,
+                    ai_context_provider=self._transcript_ai_context,
+                )
+            return self._transcript_service_instance
+
+    def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
+        if isinstance(course_id, bool) or type(course_id) not in [int, str]:
+            raise DashboardError("课程标识不正确。")
+        course_key = str(course_id).strip()
+        with Session(self.engine) as session:
+            course = session.scalar(select(Course).where(Course.source_id == course_key))
+            if course is None and type(course_id) is int and course_id > 0:
+                course = session.get(Course, course_id)
+            if course is None:
+                raise NotFoundError("未找到课程。")
+            return str(course.source_id), course.name or "未命名课程"
+
+    def transcript_batch_start(
+        self, course_id: int | str, source_ids: Sequence[str]
+    ) -> dict[str, Any]:
+        canvas_course_id, course_name = self._transcript_course(course_id)
+        if (
+            isinstance(source_ids, (str, bytes))
+            or not 1 <= len(source_ids) <= 100
+            or len(set(source_ids)) != len(source_ids)
+        ):
+            raise DashboardError("字幕批量任务数量不正确。")
+        try:
+            available = self._video_service().list_course_videos(
+                canvas_course_id, course_name=course_name, limit=1000
+            )
+            by_id = dict((str(item.get("source_id")), item) for item in available)
+            videos = list()
+            for source_id in source_ids:
+                if type(source_id) is not str or source_id not in by_id:
+                    raise DashboardError("所选录像不属于当前课程。")
+                item = by_id[source_id]
+                videos.append(
+                    {
+                        "source_id": source_id,
+                        "title": str(item.get("name") or "课程录像"),
+                        "classroom": item.get("classroom"),
+                        "teaching_class": item.get("teaching_class"),
+                        "recorded_at": item.get("recorded_at"),
+                    }
+                )
+            return self._transcript_service().start_batch(
+                course_id=canvas_course_id,
+                course_name=course_name,
+                videos=videos,
+            )
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+        except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_batch_get(self, batch_id: str) -> dict[str, Any]:
+        try:
+            return self._transcript_service().get_batch(batch_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_jobs(self, course_id: int | str | None = None) -> dict[str, Any]:
+        try:
+            canvas_id = self._transcript_course(course_id)[0] if course_id is not None else None
+            return self._transcript_service().jobs(canvas_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_retry(self, job_id: str) -> dict[str, Any]:
+        try:
+            return self._transcript_service().retry(job_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_cancel(
+        self, *, batch_id: str | None = None, job_id: str | None = None
+    ) -> dict[str, Any]:
+        try:
+            return self._transcript_service().cancel(batch_id=batch_id, job_id=job_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_artifacts(self, job_id: str) -> dict[str, Any]:
+        try:
+            return self._transcript_service().list_artifacts(job_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_v2_artifacts(self, job_id: str) -> dict[str, Any]:
+        """Return Phase1 availability and safe opaque artifact descriptors."""
+        try:
+            return self._transcript_service().list_v2_artifacts(job_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_artifact_read(self, artifact_id: str) -> dict[str, Any]:
+        try:
+            return self._transcript_service().read_artifact(artifact_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_v2_artifact_read(self, artifact_id: str) -> dict[str, Any]:
+        if type(artifact_id) is not str or ":v2:" not in artifact_id:
+            raise DashboardError("Phase1 工件标识不正确。")
+        return self.transcript_artifact_read(artifact_id)
+
+    def transcript_artifact_reveal(self, artifact_id: str) -> dict[str, Any]:
+        try:
+            return self._transcript_service().reveal_artifact(artifact_id)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def video_slides_pdf(self, source_id: str) -> dict[str, Any]:
+        """Generate a remote slide PDF in the backend-owned export directory."""
+        try:
+            canvas_course_id, _video_id = parse_remote_source_id(source_id)
+            result = self._video_service().slides_pdf(source_id)
+        except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+        except Exception:
+            raise DashboardError("课件 PDF 生成失败，请稍后重试。") from None
+        pdf = result.get("data")
+        if not isinstance(pdf, bytes) or not pdf.startswith(b"%PDF-"):
+            raise DashboardError("课件 PDF 结果无效。")
+        with Session(self.engine) as session:
+            course = session.scalar(
+                select(Course).where(Course.source_id == canvas_course_id)
+            )
+            course_name = course.name if course is not None else "课程"
+        stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._ -]+", "-", course_name)
+        stem = stem.strip(" .-")[:120] or "课程"
+        filename = f"{stem}-课件.pdf"
+        root = Path(self._academic_temp.name).resolve()
+        target = root / filename
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".slides-pdf-", dir=root)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(pdf)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return {
+            "status": "created",
+            "filename": filename,
+            "reveal_token": filename,
+            "page_count": int(result.get("page_count") or 0),
+            "size": len(pdf),
+        }
+
+    def update_check(self) -> dict[str, Any]:
+        """Check metadata and return a plan; this method never installs an update."""
+        result = self.update_service.check()
+        payload = self._dto(result)
+        payload["automatic_install"] = False
+        return payload
+
+    @staticmethod
+    def mcp_config() -> dict[str, Any]:
+        if getattr(sys, "frozen", False):
+            command, args = sys.executable, ["--mcp-stdio"]
+        else:
+            command, args = sys.executable, ["-m", "sjtu_learning_assistant.mcp_server"]
+        return {
+            "transport": "stdio",
+            "command": command,
+            "args": args,
+            "read_only": True,
+        }
+
+    # Small semantic aliases keep the service usable outside the pywebview bridge.
+    feature_capabilities = capabilities
+    calendar_overview = calendar
+    roster_members = roster
+    media = course_media
+    video_playback = video
+    check_update = update_check
+    update = update_check
+    mcp = mcp_config
+
+    def grading(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+        student_id: int | str | None = None,
+    ) -> dict[str, Any]:
+        if student_id is None:
+            return self.grading_submissions(course_id, assignment_id)
+        return self.grading_submission(course_id, assignment_id, student_id)
 
     @staticmethod
     def _unfinished_assignment_conditions(now: datetime, until: datetime) -> tuple[Any, ...]:
@@ -1852,6 +2436,83 @@ class DashboardService:
             raise DashboardError("AI 归档连接测试失败。") from exc
         return {"ok": True, "model": settings.ai_model, "category": category}
 
+    def archive_list(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        query: str | None = None,
+        status: str | None = None,
+        sort: str = "updated_desc",
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        return self.cloud_archive.archive_list(
+            limit=limit,
+            offset=offset,
+            query=query,
+            status=status,
+            sort=sort,
+            cursor=cursor,
+        )
+
+    def archive_detail(self, entry_id: str) -> dict[str, Any]:
+        return self.cloud_archive.archive_detail(entry_id)
+
+    def archive_start(self, source_path: str, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.cloud_archive.archive_file(source_path, idempotency_key=idempotency_key)
+
+    def archive_retry(self, job_id: str) -> dict[str, Any]:
+        with Session(self.engine) as session:
+            job = session.get(ArchiveJob, job_id)
+            kind = job.kind if job is not None else None
+        if kind == "archive":
+            return self.cloud_archive.retry(job_id)
+        if kind == "restore":
+            return self.restore_service.retry(job_id)
+        raise DashboardError("任务不存在或不支持重试。")
+
+    def archive_jobs(self, limit: int = 100, status: str | None = None) -> dict[str, Any]:
+        return self.cloud_archive.archive_jobs(limit=limit, status=status)
+
+    def archive_job_events(self, job_id: str) -> dict[str, Any]:
+        return self.cloud_archive.archive_job_events(job_id)
+
+    def archive_reconcile(self, job_id: str | None = None) -> dict[str, Any]:
+        return self.cloud_archive.reconcile(job_id)
+
+    def archive_authorize_root(self) -> dict[str, Any]:
+        if self.folder_picker is None:
+            raise DashboardError("当前环境不支持选择恢复目录。")
+        selected = self.folder_picker()
+        if not selected:
+            raise DashboardError("未选择恢复目录。")
+        return self.restore_service.authorize_root(selected)
+
+    def restore_plan(
+        self,
+        entry_id: str,
+        version_id: str | None = None,
+        mode: str = "original",
+        authorized_root_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.restore_service.plan(
+            entry_id,
+            version_id=version_id,
+            mode=mode,
+            authorized_root_id=authorized_root_id,
+        )
+
+    def restore_execute(
+        self,
+        job_id: str,
+        conflict_policy: str,
+        confirm_create_dirs: bool = False,
+    ) -> dict[str, Any]:
+        return self.restore_service.execute(
+            job_id,
+            conflict_policy=conflict_policy,
+            confirm_create_dirs=confirm_create_dirs,
+        )
+
     @staticmethod
     def _close_client(client: Any | None) -> None:
         close = getattr(client, "close", None)
@@ -1876,20 +2537,115 @@ class DashboardService:
             self._ai_client_config = None
         self._close_client(client)
 
+    def _knowledge_compiler_service(self) -> KnowledgeCompilerService:
+        service = getattr(self, "_knowledge_compiler_instance", None)
+        if service is None:
+            service = KnowledgeCompilerService(
+                ai_runner=self._run_knowledge_compiler_ai
+            )
+            self._knowledge_compiler_instance = service
+        return service
+
+    def _run_knowledge_compiler_ai(
+        self, model: str, system_prompt: str, user_content: str
+    ) -> str:
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            raise DashboardError("请先在设置中启用并保存 AI 连接。")
+        client: Any | None = None
+        try:
+            key = self.ai_key_loader()
+            if not key:
+                raise DashboardError("未找到已保存的 AI API key。")
+            client = self.ai_client_factory(
+                api_key=key,
+                base_url=settings.ai_base_url,
+                model=model,
+            )
+            result = client.chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=4096,
+                temperature=0.1,
+                system_prompt=False,
+            )
+            content = result.get("content")
+            if type(content) is not str or not content.strip():
+                raise DashboardError("AI 未返回可用的知识库内容。")
+            return content.strip()
+        except (AIKeychainError, AIClassificationError) as exc:
+            raise DashboardError(str(exc)) from None
+        finally:
+            self._close_client(client)
+
+    def knowledge_compiler_pick_folder(self) -> dict[str, Any]:
+        if self.folder_picker is None:
+            raise DashboardError("当前环境不支持选择文件夹。")
+        selected = self.folder_picker()
+        if not selected:
+            return {"cancelled": True}
+        path = Path(selected).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise DashboardError("所选文件夹不可用。")
+        return {
+            "cancelled": False,
+            "path": str(path),
+            "name": path.name,
+        }
+
+    def knowledge_compiler_inspect(self, source_root: object) -> dict[str, Any]:
+        try:
+            return self._knowledge_compiler_service().inspect(source_root)
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_start(
+        self, source_root: object, target_root: object, mode: object
+    ) -> dict[str, Any]:
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            raise DashboardError("请先在设置中启用并保存 AI 连接。")
+        try:
+            return self._knowledge_compiler_service().start(
+                source_root, target_root, mode
+            )
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_status(
+        self, target_root: object | None = None
+    ) -> dict[str, Any]:
+        try:
+            return self._knowledge_compiler_service().status(target_root)
+        except KnowledgeCompilerError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def knowledge_compiler_cancel(self) -> dict[str, Any]:
+        return self._knowledge_compiler_service().cancel()
+
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        service = getattr(self, "_knowledge_compiler_instance", None)
+        if service is not None:
+            service.cancel()
         with self._client_lock:
             if self._closed:
                 return
             self._closed = True
             canvas_client = self._canvas_client
             ai_client = self._ai_client
+            transcript_service = self._transcript_service_instance
+            self._transcript_service_instance = None
             self._canvas_client = None
             self._ai_client = None
             self._ai_client_config = None
+        self._close_client(transcript_service)
         self._close_client(canvas_client)
         self._close_client(ai_client)
         self._material_temp.cleanup()
+        self._academic_temp.cleanup()
 
     def save_credential(
         self, kind: object, value: object, account: object = ""

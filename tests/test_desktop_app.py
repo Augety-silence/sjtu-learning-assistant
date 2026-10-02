@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -14,10 +17,45 @@ from desktop_app import (
     run_desktop_app,
     safe_message,
 )
+from sjtu_learning_assistant.diagnostic_bundle import DiagnosticBundleError
 from sjtu_learning_assistant.cloud_storage import (
     delete_user_token as delete_cloud_user_token,
     save_user_token as save_cloud_user_token,
 )
+
+
+class DesktopAppKeyringBackendTests(unittest.TestCase):
+    def _import_with_platform(self, backend=None):
+        environment = os.environ.copy()
+        if backend is None:
+            environment.pop("PYTHON_KEYRING_BACKEND", None)
+        else:
+            environment.__setitem__("PYTHON_KEYRING_BACKEND", backend)
+        script = (
+            "import os; "
+            "import desktop_app; "
+            "desktop_app._configure_keyring_backend(\"darwin\"); "
+            "print(os.environ.get(\"PYTHON_KEYRING_BACKEND\"))"
+        )
+        return subprocess.run(
+            (sys.executable, "-c", script),
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        ).stdout.strip()
+
+    def test_darwin_sets_native_keyring_backend_by_default(self):
+        self.assertEqual(
+            "keyring.backends.macOS.Keyring",
+            self._import_with_platform(),
+        )
+
+    def test_darwin_preserves_existing_keyring_backend(self):
+        self.assertEqual(
+            "custom.backend.Keyring",
+            self._import_with_platform(backend="custom.backend.Keyring"),
+        )
 
 
 class FakeKeyring:
@@ -144,6 +182,23 @@ class FakeBackupManager:
         return {"status": "started" if self.starts == 1 else "already_running"}
 
 
+class FakeDiagnosticBundle:
+    def __init__(self, error=None):
+        self.destinations = []
+        self.error = error
+
+    def export(self, destination):
+        self.destinations.append(destination)
+        if self.error is not None:
+            raise self.error
+        return {
+            "status": "created",
+            "filename": "debug.zip",
+            "size": 123,
+            "entry_count": 3,
+        }
+
+
 class DesktopBridgeTests(unittest.TestCase):
     def setUp(self):
         self.bridge = DesktopBridge(FakeService())
@@ -176,6 +231,51 @@ class DesktopBridgeTests(unittest.TestCase):
                 {"source_id": "file-1", "target_node_id": 1},
             )["error"]["code"],
         )
+
+    def test_debug_bundle_export_is_allowlisted_and_does_not_return_path(self):
+        bundle = FakeDiagnosticBundle()
+        bridge = DesktopBridge(
+            FakeService(),
+            save_file_picker=lambda default_name: f"/Users/alice/Desktop/{default_name}",
+            diagnostic_bundle=bundle,
+        )
+        response = bridge.invoke("debug_bundle_export", {})
+        self.assertTrue(response["ok"])
+        self.assertEqual("created", response["data"]["status"])
+        self.assertEqual("debug.zip", response["data"]["filename"])
+        self.assertNotIn("/Users/alice", str(response))
+        self.assertEqual(1, len(bundle.destinations))
+        self.assertRegex(bundle.destinations[0], r"sjtu-learning-assistant-debug-\d{8}_\d{6}\.zip$")
+
+    def test_debug_bundle_cancel_is_safe_and_does_not_write(self):
+        bundle = FakeDiagnosticBundle()
+        bridge = DesktopBridge(
+            FakeService(),
+            save_file_picker=lambda _default_name: None,
+            diagnostic_bundle=bundle,
+        )
+        self.assertEqual(
+            {"ok": True, "data": {"status": "cancelled"}},
+            bridge.invoke("debug_bundle_export"),
+        )
+        self.assertEqual([], bundle.destinations)
+
+    def test_debug_bundle_error_is_sanitized(self):
+        bundle = FakeDiagnosticBundle(
+            DiagnosticBundleError(
+                "token=fake-token [ph_EMAIL_4_ph] /Users/alice/private"
+            )
+        )
+        bridge = DesktopBridge(
+            FakeService(),
+            save_file_picker=lambda _default_name: "/tmp/debug.zip",
+            diagnostic_bundle=bundle,
+        )
+        response = bridge.invoke("debug_bundle_export")
+        self.assertEqual("operation_failed", response["error"]["code"])
+        self.assertNotIn("fake-token", str(response))
+        self.assertNotIn("[ph_EMAIL_4_ph]", str(response))
+        self.assertNotIn("/Users/alice", str(response))
 
     def test_assignment_action_names_match_public_contract(self):
         bridge = DesktopBridge(FakeService(), FakeLearningService())

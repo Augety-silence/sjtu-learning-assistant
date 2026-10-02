@@ -87,6 +87,107 @@ class AIClientTests(unittest.TestCase):
             client.chat([{"role": "user", "content": "x" * 4001}])
         client.close()
 
+    def test_default_timeout_allows_long_running_transcript_completion(self):
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json=dict(choices=(dict(message=dict(content="ok")),)),
+                    request=request,
+                )
+            ),
+            limiter=lambda: None,
+        )
+        self.assertEqual(120.0, client._client.timeout.read)
+        client.close()
+
+    def test_chat_error_categories_are_bounded_and_actionable(self):
+        cases = (
+            (401, "authentication", "认证"),
+            (404, "endpoint_or_model", "模型"),
+            (400, "request_parameters", "参数"),
+            (429, "rate_limit_or_quota", "配额"),
+            (503, "upstream_service", "服务端"),
+        )
+        for status_code, category, message_part in cases:
+            transport = httpx.MockTransport(
+                lambda request, code=status_code: httpx.Response(
+                    code, text="fake-key sensitive-response", request=request
+                )
+            )
+            client = OpenAIClassificationClient(
+                api_key="fake-key", transport=transport, limiter=lambda: None
+            )
+            with self.subTest(status_code=status_code):
+                with self.assertRaises(AIClassificationError) as raised:
+                    client.chat_completion(
+                        (dict(role="user", content="test"),), system_prompt=False
+                    )
+                self.assertEqual(category, raised.exception.category)
+                self.assertEqual(status_code, raised.exception.status_code)
+                self.assertIn(message_part, str(raised.exception))
+                self.assertNotIn("fake-key", str(raised.exception))
+                self.assertNotIn("sensitive-response", str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+            client.close()
+
+    def test_chat_distinguishes_response_format_and_network_failures(self):
+        malformed = httpx.MockTransport(
+            lambda request: httpx.Response(200, json=dict(result="ok"), request=request)
+        )
+        client = OpenAIClassificationClient(
+            api_key="fake-key", transport=malformed, limiter=lambda: None
+        )
+        with self.assertRaises(AIClassificationError) as raised:
+            client.chat_completion(
+                (dict(role="user", content="test"),), system_prompt=False
+            )
+        self.assertEqual("response_format", raised.exception.category)
+        self.assertIsNone(raised.exception.status_code)
+        client.close()
+
+        def disconnected(request):
+            raise httpx.ConnectError("fake-key sensitive-network-detail", request=request)
+
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            transport=httpx.MockTransport(disconnected),
+            limiter=lambda: None,
+        )
+        with self.assertRaises(AIClassificationError) as raised:
+            client.chat_completion(
+                (dict(role="user", content="test"),), system_prompt=False
+            )
+        self.assertEqual("network", raised.exception.category)
+        self.assertNotIn("fake-key", str(raised.exception))
+        self.assertNotIn("sensitive-network-detail", str(raised.exception))
+        client.close()
+
+    def test_chat_completion_exposes_safe_response_metadata_without_changing_content(self):
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json=dict(
+                        choices=(dict(message=dict(content="visible answer"), finish_reason="length"),),
+                        usage=dict(prompt_tokens=11, completion_tokens=22),
+                    ),
+                    request=request,
+                )
+            ),
+            limiter=lambda: None,
+        )
+        result = client.chat_completion((dict(role="user", content="test"),), system_prompt=False)
+        self.assertEqual("visible answer", result.get("content"))
+        metadata = result.get("response_metadata")
+        self.assertEqual("length", metadata.get("finish_reason"))
+        self.assertEqual(11, metadata.get("prompt_tokens"))
+        self.assertEqual(22, metadata.get("completion_tokens"))
+        self.assertNotIn("visible answer", json.dumps(metadata))
+        client.close()
+
     def test_fingerprint_changes_with_metadata(self):
         item = ClassificationInput("1", "课程", "a.pdf", ("f",), ("m",), ("i",), NOW)
         original = classification_fingerprint(item)

@@ -16,6 +16,36 @@ export interface BridgeError {
   message: string;
 }
 
+const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
+
+export class BridgeInvocationError extends Error {
+  readonly action: string;
+  readonly code: string;
+
+  constructor(action: string, error?: BridgeError) {
+    super(error?.message || "操作失败");
+    this.name = "BridgeInvocationError";
+    this.action = action;
+    this.code = error?.code || "unknown_error";
+  }
+}
+
+export class CapabilityUnavailableError extends BridgeInvocationError {
+  constructor(action: string, error?: BridgeError) {
+    super(action, error);
+    this.name = "CapabilityUnavailableError";
+  }
+}
+
+export function isCapabilityUnavailableError(
+  error: unknown,
+): error is CapabilityUnavailableError {
+  return (
+    error instanceof BridgeInvocationError &&
+    CAPABILITY_UNAVAILABLE_CODES.has(error.code)
+  );
+}
+
 export interface BridgeResponse<T> {
   ok: boolean;
   data?: T;
@@ -60,7 +90,14 @@ export async function invoke<T>(
   payload: Record<string, unknown> = {},
 ): Promise<T> {
   const response = await (await bridgeApi()).invoke<T>(action, payload);
-  if (!response.ok) throw new Error(response.error?.message || "操作失败");
+  if (!response.ok) {
+    const error = CAPABILITY_UNAVAILABLE_CODES.has(
+      response.error?.code || "unknown_error",
+    )
+      ? new CapabilityUnavailableError(action, response.error)
+      : new BridgeInvocationError(action, response.error);
+    throw error;
+  }
   return response.data as T;
 }
 
@@ -419,4 +456,396 @@ export function saveBackupToken(token: string) {
 
 export function deleteBackupToken() {
   return invoke<BackupTokenResult>("backup_token_delete");
+}
+
+export function getArchiveList(
+  options: {
+    limit?: number;
+    offset?: number;
+    query?: string;
+    status?: string;
+    sort?: string;
+    cursor?: string;
+  } = {},
+) {
+  return invoke<import("@/lib/types").ArchiveListResult>("archive_list", {
+    limit: options.limit ?? 25,
+    ...(options.offset !== undefined ? { offset: options.offset } : {}),
+    ...(options.query ? { query: options.query } : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(options.sort ? { sort: options.sort } : {}),
+    ...(options.cursor ? { cursor: options.cursor } : {}),
+  });
+}
+
+export function getArchiveDetail(entryId: string) {
+  return invoke<import("@/lib/types").ArchiveEntry>("archive_detail", {
+    entry_id: entryId,
+  });
+}
+
+export function startArchive(idempotencyKey?: string) {
+  return invoke<import("@/lib/types").ArchiveJob>("archive_start", {
+    ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+  });
+}
+
+export function retryArchive(jobId: string) {
+  return invoke<import("@/lib/types").ArchiveJob>("archive_retry", {
+    job_id: jobId,
+  });
+}
+
+export function getArchiveJobs(limit = 20, status?: string) {
+  return invoke<{ items: import("@/lib/types").ArchiveJob[] }>("archive_jobs", {
+    limit,
+    ...(status ? { status } : {}),
+  });
+}
+
+export function getArchiveJobEvents(jobId: string) {
+  return invoke<{ items: import("@/lib/types").ArchiveJobEvent[] }>(
+    "archive_job_events",
+    { job_id: jobId },
+  );
+}
+
+export function authorizeArchiveRoot() {
+  return invoke<import("@/lib/types").ArchiveAuthorizedRoot>(
+    "archive_authorize_root",
+  );
+}
+
+export function planRestore(
+  entryId: string,
+  options: {
+    versionId?: string;
+    mode: "original" | "choose_location" | "save_as";
+    authorizedRootId?: string;
+  },
+) {
+  return invoke<import("@/lib/types").RestorePlan>("restore_plan", {
+    entry_id: entryId,
+    mode: options.mode,
+    ...(options.versionId ? { version_id: options.versionId } : {}),
+    ...(options.authorizedRootId
+      ? { authorized_root_id: options.authorizedRootId }
+      : {}),
+  });
+}
+
+export function executeRestore(
+  jobId: string,
+  conflictPolicy: import("@/lib/types").ArchiveConflictPolicy,
+  confirmCreateDirs = false,
+) {
+  return invoke<import("@/lib/types").ArchiveJob>("restore_execute", {
+    job_id: jobId,
+    conflict_policy: conflictPolicy,
+    confirm_create_dirs: confirmCreateDirs,
+  });
+}
+
+export interface RosterQuery {
+  roles?: Array<"teacher" | "ta" | "student" | "observer" | "designer">;
+  query?: string;
+}
+
+export function getCapabilities(courseId?: number) {
+  return invoke<import("@/lib/types").AppCapabilities>("capabilities", {
+    ...(courseId === undefined ? {} : { course_id: courseId }),
+  });
+}
+
+export function getCalendar(year: number, month: number, courseIds?: number[]) {
+  return invoke<import("@/lib/types").CalendarResult>("calendar", {
+    year,
+    month,
+    ...(courseIds?.length ? { course_ids: courseIds } : {}),
+  });
+}
+
+export function getTimetableStatus() {
+  return invoke<import("@/lib/types").TimetableStatus>("timetable_status");
+}
+
+export function getTimetableSchedule(startAt: string, endAt: string) {
+  return invoke<import("@/lib/types").TimetableSchedule>("timetable_schedule", {
+    startAt,
+    endAt,
+  });
+}
+
+export function previewTimetableFile() {
+  return invoke<
+    import("@/lib/types").TimetableImportPreview | { cancelled: true }
+  >("timetable_preview_local_file");
+}
+
+export function previewTimetableSample() {
+  return invoke<import("@/lib/types").TimetableImportPreview>(
+    "timetable_load_bundled_sample",
+  );
+}
+
+export function commitTimetableImport(previewId: string) {
+  return invoke<import("@/lib/types").TimetableImportCommit>(
+    "timetable_commit_preview",
+    { previewId },
+  );
+}
+
+export function getGradebook(courseId: number) {
+  return invoke<import("@/lib/types").GradebookResult>("gradebook", {
+    course_id: courseId,
+  });
+}
+
+export function exportGradebook(courseId: number) {
+  return invoke<import("@/lib/types").ExportResult>("gradebook_export", {
+    course_id: courseId,
+  });
+}
+
+export function getRoster(courseId: number, query: RosterQuery = {}) {
+  return invoke<import("@/lib/types").RosterResult>("roster", {
+    course_id: courseId,
+    ...(query.roles?.length ? { roles: query.roles } : {}),
+    ...(query.query === undefined ? {} : { query: query.query }),
+  });
+}
+
+export function exportRoster(courseId: number, userIds?: number[]) {
+  return invoke<import("@/lib/types").ExportResult>("roster_export", {
+    course_id: courseId,
+    ...(userIds?.length ? { user_ids: userIds } : {}),
+  });
+}
+
+export function revealAcademicExport(token: string) {
+  return invoke<{ status: string; filename: string }>(
+    "academic_export_reveal",
+    {
+      token,
+    },
+  );
+}
+
+export function getGrading(
+  courseId: number,
+  assignmentId: number,
+  studentId?: number,
+) {
+  return invoke<
+    | import("@/lib/types").GradingResult
+    | import("@/lib/types").GradingSubmissionDto
+  >("grading", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    ...(studentId === undefined ? {} : { student_id: studentId }),
+  });
+}
+
+export function updateGrading(
+  courseId: number,
+  assignmentId: number,
+  studentId: number,
+  update: { grade?: string | number | null; comment?: string },
+) {
+  return invoke<import("@/lib/types").GradingUpdateResult>("grading_update", {
+    course_id: courseId,
+    assignment_id: assignmentId,
+    student_id: studentId,
+    ...update,
+  });
+}
+
+export function getCourseMedia(courseId: number, limit = 5000) {
+  return invoke<import("@/lib/types").CourseMediaResult>("media", {
+    course_id: courseId,
+    limit: Math.min(5000, Math.max(1, Math.trunc(limit))),
+  });
+}
+
+export function getMediaCapabilities() {
+  return invoke<Record<string, import("@/lib/types").FeatureCapability>>(
+    "media_capabilities",
+  );
+}
+
+export function getMediaPreview(sourceId: string) {
+  return invoke<import("@/lib/types").MediaPreviewResult>("media_preview", {
+    source_id: sourceId,
+  });
+}
+
+export function getVideoPlayback(sourceId: string) {
+  return invoke<import("@/lib/types").MediaActionDescriptor>("video", {
+    source_id: sourceId,
+  });
+}
+
+export function getVideoSubtitles(sourceId: string) {
+  return invoke<{
+    status: "ready" | "empty" | "processing";
+    message: string;
+    content_type: string;
+    vtt: string | null;
+    cue_count: number;
+  }>("video_subtitles", { source_id: sourceId });
+}
+
+export function createVideoSlidesPdf(sourceId: string) {
+  return invoke<{
+    status: string;
+    filename: string;
+    reveal_token: string;
+    page_count: number;
+    size: number;
+  }>("video_slides_pdf", { source_id: sourceId });
+}
+
+export function createVideoScreenshotPdf(
+  sourceId: string,
+  intervalSeconds = 60,
+) {
+  return invoke<{
+    status: string;
+    filename: string;
+    reveal_token: string;
+    frame_count: number;
+    size: number;
+  }>("video_screenshot_pdf", {
+    source_id: sourceId,
+    interval_seconds: intervalSeconds,
+  });
+}
+
+export interface DebugBundleExportResult {
+  status: "created" | "cancelled";
+  filename?: string;
+  size?: number;
+  entry_count?: number;
+}
+
+export function exportDebugBundle() {
+  return invoke<DebugBundleExportResult>("debug_bundle_export");
+}
+
+export function checkForUpdates() {
+  return invoke<import("@/lib/types").UpdateCheckResult>("update");
+}
+
+export function getMcpConfig() {
+  return invoke<import("@/lib/types").McpConfig>("mcp");
+}
+
+export function startTranscriptBatch(courseId: number, sourceIds: string[]) {
+  return invoke<import("@/lib/types").TranscriptBatch>(
+    "transcript_batch_start",
+    {
+      course_id: courseId,
+      source_ids: sourceIds,
+    },
+  );
+}
+
+export function getTranscriptBatch(batchId: string) {
+  return invoke<import("@/lib/types").TranscriptBatch>("transcript_batch_get", {
+    batch_id: batchId,
+  });
+}
+
+export function getTranscriptJobs(courseId?: number) {
+  return invoke<{ items: import("@/lib/types").TranscriptJob[] }>(
+    "transcript_jobs",
+    courseId ? { course_id: courseId } : {},
+  );
+}
+
+export function retryTranscriptJob(jobId: string) {
+  return invoke<import("@/lib/types").TranscriptBatch>("transcript_retry", {
+    job_id: jobId,
+  });
+}
+
+export function cancelTranscriptJob(jobId: string) {
+  return invoke<import("@/lib/types").TranscriptBatch>("transcript_cancel", {
+    job_id: jobId,
+  });
+}
+
+export function getTranscriptArtifacts(jobId: string) {
+  return invoke<{ items: import("@/lib/types").TranscriptArtifact[] }>(
+    "transcript_artifacts",
+    { job_id: jobId },
+  );
+}
+
+export function readTranscriptArtifact(artifactId: string) {
+  return invoke<import("@/lib/types").TranscriptArtifactContent>(
+    "transcript_artifact_read",
+    { artifact_id: artifactId },
+  );
+}
+
+export function getTranscriptV2Artifacts(jobId: string) {
+  return invoke<import("@/lib/types").Phase1ArtifactList>(
+    "transcript_v2_artifacts",
+    { job_id: jobId },
+  );
+}
+
+export function readTranscriptV2Artifact(artifactId: string) {
+  return invoke<import("@/lib/types").Phase1ArtifactRead>(
+    "transcript_v2_artifact_read",
+    { artifact_id: artifactId },
+  );
+}
+
+export function revealTranscriptArtifact(artifactId: string) {
+  return invoke<{ id: string; status: string }>("transcript_artifact_reveal", {
+    artifact_id: artifactId,
+  });
+}
+
+export function pickKnowledgeFolder() {
+  return invoke<{ cancelled: boolean; path?: string; name?: string }>(
+    "knowledge_compiler_pick_folder",
+  );
+}
+
+export function inspectKnowledgeSource(sourceRoot: string) {
+  return invoke<import("@/lib/types").KnowledgeCompilerInspection>(
+    "knowledge_compiler_inspect",
+    { source_root: sourceRoot },
+  );
+}
+
+export function startKnowledgeCompiler(
+  sourceRoot: string,
+  targetRoot: string,
+  mode: import("@/lib/types").KnowledgeCompilerMode,
+) {
+  return invoke<{
+    status: "started" | "already_running";
+    task: import("@/lib/types").KnowledgeCompilerTask;
+  }>("knowledge_compiler_start", {
+    source_root: sourceRoot,
+    target_root: targetRoot,
+    mode,
+  });
+}
+
+export function getKnowledgeCompilerStatus(targetRoot?: string) {
+  return invoke<import("@/lib/types").KnowledgeCompilerTask>(
+    "knowledge_compiler_status",
+    targetRoot ? { target_root: targetRoot } : {},
+  );
+}
+
+export function cancelKnowledgeCompiler() {
+  return invoke<import("@/lib/types").KnowledgeCompilerTask>(
+    "knowledge_compiler_cancel",
+  );
 }

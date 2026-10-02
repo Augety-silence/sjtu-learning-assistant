@@ -41,14 +41,25 @@ class DesktopActionSafetyTests(unittest.TestCase):
 
         self.assertEqual("revealed", self.service.reveal_material("42")["status"])
         self.assertEqual(
-            [["/usr/bin/open", "-R", str(document.resolve())]], self.commands
+            [["/usr/bin/open", "-R", "--", str(document.resolve())]], self.commands
         )
+
+    def test_macos_open_uses_end_of_options_for_dash_prefixed_target(self) -> None:
+        with patch("sjtu_learning_assistant.dashboard_service.sys.platform", "darwin"):
+            self.assertEqual(
+                ["/usr/bin/open", "--", "-dangerous"],
+                _desktop_open_command("-dangerous"),
+            )
+            self.assertEqual(
+                ["/usr/bin/open", "-R", "--", "-dangerous"],
+                _desktop_open_command("-dangerous", reveal=True),
+            )
 
     def test_external_open_accepts_only_plain_https_urls(self) -> None:
         self.assertEqual(
             "opened", self.service.open_external("https://example.edu/a")["status"]
         )
-        self.assertEqual([["/usr/bin/open", "https://example.edu/a"]], self.commands)
+        self.assertEqual([["/usr/bin/open", "--", "https://example.edu/a"]], self.commands)
         for unsafe in (
             "http://example.edu",
             "https://user:password@example.edu",

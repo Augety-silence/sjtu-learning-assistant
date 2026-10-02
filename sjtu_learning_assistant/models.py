@@ -726,3 +726,296 @@ class SyncRun(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (Index("ix_sync_runs_started_at", "started_at"),)
+
+
+class ArchiveEntry(TimestampMixin, Base):
+    # Stable identity for one original path, independent of later content versions.
+
+    __tablename__ = "archive_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    path_identity: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    volume_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_abs_path: Mapped[str | None] = mapped_column(Text)
+    archive_root_snapshot: Mapped[str | None] = mapped_column(Text)
+    relative_path: Mapped[str | None] = mapped_column(Text)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    restore_capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="user_file")
+    source_record_id: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    versions: Mapped[list["ArchiveVersion"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", order_by="ArchiveVersion.version_number"
+    )
+    jobs: Mapped[list["ArchiveJob"]] = relationship(back_populates="entry")
+
+    __table_args__ = (
+        UniqueConstraint("source_kind", "source_record_id", name="uq_archive_entries_legacy_source"),
+        CheckConstraint(
+            "restore_capability IN ('original_path', 'managed_location', 'choose_location')",
+            name="ck_archive_entries_restore_capability",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived', 'failed', 'legacy')",
+            name="ck_archive_entries_status",
+        ),
+        CheckConstraint("retry_count >= 0", name="ck_archive_entries_retry_count"),
+        Index("ix_archive_entries_status", "status"),
+        Index("ix_archive_entries_filename", "filename"),
+    )
+
+
+class ArchiveVersion(TimestampMixin, Base):
+    __tablename__ = "archive_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("archive_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    file_type: Mapped[str | None] = mapped_column(String(255))
+    mtime_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    cloud_provider: Mapped[str | None] = mapped_column(String(64))
+    cloud_remote_id: Mapped[str | None] = mapped_column(String(512))
+    cloud_remote_path: Mapped[str | None] = mapped_column(Text)
+    cloud_etag: Mapped[str | None] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    entry: Mapped[ArchiveEntry] = relationship(back_populates="versions")
+    jobs: Mapped[list["ArchiveJob"]] = relationship(back_populates="version")
+
+    __table_args__ = (
+        UniqueConstraint("entry_id", "version_number", name="uq_archive_versions_number"),
+        UniqueConstraint("entry_id", "sha256", name="uq_archive_versions_hash"),
+        CheckConstraint("version_number > 0", name="ck_archive_versions_number"),
+        CheckConstraint("size >= 0", name="ck_archive_versions_size"),
+        CheckConstraint("mtime_ns >= 0", name="ck_archive_versions_mtime"),
+        CheckConstraint("retry_count >= 0", name="ck_archive_versions_retry_count"),
+        CheckConstraint(
+            "status IN ('pending', 'uploading', 'archived', 'failed', 'needs_reconcile', 'needs_verification', 'unavailable')",
+            name="ck_archive_versions_status",
+        ),
+        Index("ix_archive_versions_entry_status", "entry_id", "status"),
+        Index("ix_archive_versions_sha256", "sha256"),
+    )
+
+
+class ArchiveAuthorizedRoot(TimestampMixin, Base):
+    __tablename__ = "archive_authorized_roots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    path_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    absolute_path: Mapped[str] = mapped_column(Text, nullable=False)
+    volume_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    jobs: Mapped[list["ArchiveJob"]] = relationship(back_populates="authorized_root")
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('native_picker', 'archive_source', 'both')",
+            name="ck_archive_authorized_roots_source",
+        ),
+        Index("ix_archive_authorized_roots_active", "is_active"),
+    )
+
+
+class ArchiveJob(TimestampMixin, Base):
+    __tablename__ = "archive_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    entry_id: Mapped[str | None] = mapped_column(
+        ForeignKey("archive_entries.id", ondelete="SET NULL")
+    )
+    version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("archive_versions.id", ondelete="SET NULL")
+    )
+    authorized_root_id: Mapped[str | None] = mapped_column(
+        ForeignKey("archive_authorized_roots.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    bytes_total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    bytes_done: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    conflict_policy: Mapped[str | None] = mapped_column(String(16))
+    target_abs_path: Mapped[str | None] = mapped_column(Text)
+    plan_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    entry: Mapped[ArchiveEntry | None] = relationship(back_populates="jobs")
+    version: Mapped[ArchiveVersion | None] = relationship(back_populates="jobs")
+    authorized_root: Mapped[ArchiveAuthorizedRoot | None] = relationship(back_populates="jobs")
+    events: Mapped[list["ArchiveEvent"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", order_by="ArchiveEvent.created_at"
+    )
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('archive', 'restore', 'reconcile')", name="ck_archive_jobs_kind"),
+        CheckConstraint(
+            "status IN ('planned', 'pending', 'running', 'uploading', 'verifying', 'downloading', 'completed', 'skipped', 'compare', 'failed', 'interrupted', 'needs_reconcile', 'needs_verification')",
+            name="ck_archive_jobs_status",
+        ),
+        CheckConstraint(
+            "conflict_policy IS NULL OR conflict_policy IN ('skip', 'save_as', 'overwrite', 'compare')",
+            name="ck_archive_jobs_conflict_policy",
+        ),
+        CheckConstraint(
+            "bytes_total >= 0 AND bytes_done >= 0 AND bytes_done <= bytes_total",
+            name="ck_archive_jobs_progress",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_archive_jobs_attempt_count"),
+        Index("ix_archive_jobs_status_created", "status", "created_at"),
+        Index("ix_archive_jobs_entry", "entry_id"),
+        Index("ix_archive_jobs_version", "version_id"),
+    )
+
+
+class ArchiveEvent(Base):
+    __tablename__ = "archive_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("archive_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_id: Mapped[str | None] = mapped_column(
+        ForeignKey("archive_entries.id", ondelete="SET NULL")
+    )
+    version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("archive_versions.id", ondelete="SET NULL")
+    )
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    bytes_done: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    bytes_total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    job: Mapped[ArchiveJob] = relationship(back_populates="events")
+
+    __table_args__ = (
+        CheckConstraint("bytes_done >= 0 AND bytes_total >= 0", name="ck_archive_events_progress"),
+        CheckConstraint(
+            "status IN ('planned', 'pending', 'running', 'uploading', 'verifying', 'downloading', 'completed', 'skipped', 'compare', 'failed', 'interrupted', 'needs_reconcile', 'needs_verification')",
+            name="ck_archive_events_status",
+        ),
+        Index("ix_archive_events_job_created", "job_id", "created_at"),
+        Index("ix_archive_events_entry", "entry_id"),
+    )
+
+
+class CanonicalCourse(TimestampMixin, Base):
+    __tablename__ = "canonical_courses"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    course_code: Mapped[str | None] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    mapping_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    __table_args__ = (
+        UniqueConstraint("course_code", "normalized_name", name="uq_canonical_course_identity"),
+        CheckConstraint("mapping_status IN (\x27mapped\x27, \x27pending\x27)", name="ck_canonical_course_mapping_status"),
+    )
+
+
+class TimetableProviderConnection(TimestampMixin, Base):
+    __tablename__ = "timetable_provider_connections"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        CheckConstraint("state IN (\x27awaiting_configuration\x27, \x27ready\x27, \x27error\x27)", name="ck_timetable_provider_state"),
+    )
+
+
+class TimetableCourse(TimestampMixin, Base):
+    __tablename__ = "timetable_courses"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider_connection_id: Mapped[int | None] = mapped_column(ForeignKey("timetable_provider_connections.id", ondelete="SET NULL"))
+    canonical_course_id: Mapped[int | None] = mapped_column(ForeignKey("canonical_courses.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    course_code: Mapped[str | None] = mapped_column(String(128))
+    course_name: Mapped[str] = mapped_column(Text, nullable=False)
+    term: Mapped[str | None] = mapped_column(String(128))
+    mapping_status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_timetable_course_source"),
+        CheckConstraint("mapping_status IN (\x27mapped\x27, \x27pending\x27)", name="ck_timetable_course_mapping_status"),
+    )
+
+
+class TimetableSession(TimestampMixin, Base):
+    __tablename__ = "timetable_sessions"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    timetable_course_id: Mapped[int] = mapped_column(ForeignKey("timetable_courses.id", ondelete="CASCADE"), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    week: Mapped[int | None] = mapped_column(Integer)
+    day: Mapped[int | None] = mapped_column(Integer)
+    period: Mapped[int | None] = mapped_column(Integer)
+    duration: Mapped[int | None] = mapped_column(Integer)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    classroom: Mapped[str | None] = mapped_column(Text)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    __table_args__ = (
+        UniqueConstraint("timetable_course_id", "source_id", name="uq_timetable_session_source"),
+        CheckConstraint("week IS NULL OR week > 0", name="ck_timetable_session_week"),
+        CheckConstraint("day IS NULL OR (day >= 1 AND day <= 7)", name="ck_timetable_session_day"),
+        CheckConstraint("duration IS NULL OR duration > 0", name="ck_timetable_session_duration"),
+        CheckConstraint("finish_at > start_at", name="ck_timetable_session_times"),
+        Index("ix_timetable_sessions_range", "start_at", "finish_at"),
+    )
+
+
+class TimetableImportRun(TimestampMixin, Base):
+    __tablename__ = "timetable_import_runs"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    imported_courses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    imported_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_sessions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deleted_courses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    deleted_sessions: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    warnings: Mapped[list[Any]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    __table_args__ = (CheckConstraint("status IN (\x27committed\x27, \x27failed\x27)", name="ck_timetable_import_status"),)
+
+
+class TimetableImportAudit(Base):
+    __tablename__ = "timetable_import_audit"
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(ForeignKey("timetable_import_runs.id", ondelete="CASCADE"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (
+        CheckConstraint("action IN (\x27inserted\x27, \x27updated\x27, \x27unchanged\x27, \x27deleted\x27)", name="ck_timetable_audit_action"),
+        Index("ix_timetable_audit_run", "import_run_id"),
+    )

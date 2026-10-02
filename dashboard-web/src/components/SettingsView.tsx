@@ -7,6 +7,7 @@ import {
   Mail,
   Monitor,
   Moon,
+  PackageOpen,
   Pencil,
   ShieldCheck,
   Sun,
@@ -22,11 +23,14 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import settingsFirstConfigIllustration from "@/assets/empty-states/settings-first-config.webp";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
+  checkForUpdates,
   deleteCredential,
+  exportDebugBundle,
   getSettings,
   openExternal,
   organizeArchive,
@@ -35,7 +39,7 @@ import {
   testAiConnection,
   updateSettings,
 } from "@/lib/api";
-import type { SettingsStatus, ThemeMode } from "@/lib/types";
+import type { SettingsStatus, ThemeMode, UpdateCheckResult } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
 const AI_MODELS = [
@@ -47,7 +51,7 @@ const AI_MODELS = [
   "qwen3.8-27b",
 ] as const;
 const CONFIGURATION_GUIDE_URL =
-  "https://bytedance.larkoffice.com/wiki/Iti5wHCN2iJ2PwksWoqcZjORn5f";
+  "https://my.feishu.cn/wiki/S1RywYx2gilgEtkOne0cTsqpnzd";
 type ConfigKind = "canvas" | "mail" | "cloud" | "ai";
 
 const themeOptions = [
@@ -85,7 +89,7 @@ const configMeta = {
   },
   ai: {
     title: "AI 模型",
-    description: "AI Chat 与资料自动分类",
+    description: "AI 助手与资料自动分类",
     secretLabel: "API Key",
     placeholder: "粘贴 API Key",
     icon: Bot,
@@ -107,6 +111,9 @@ export function SettingsView({
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModel, setAiModel] = useState("");
   const [secret, setSecret] = useState("");
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(
+    null,
+  );
   const configTriggerRef = useRef<HTMLButtonElement>(null);
   const { showToast } = useToast();
 
@@ -249,6 +256,71 @@ export function SettingsView({
     }
   };
 
+  const exportDiagnostics = async () => {
+    setBusy("debug-bundle");
+    showToast({
+      id: "debug-bundle",
+      kind: "info",
+      message: "正在打包已脱敏的运行日志…",
+      duration: 0,
+    });
+    try {
+      const result = await exportDebugBundle();
+      if (result.status === "cancelled") {
+        showToast({
+          id: "debug-bundle",
+          kind: "info",
+          message: "已取消保存调试包。",
+        });
+        return;
+      }
+      showToast({
+        id: "debug-bundle",
+        kind: "success",
+        message: `调试包已保存：${result.filename ?? "debug.zip"}`,
+      });
+    } catch (reason) {
+      showToast({
+        id: "debug-bundle",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "调试包生成失败",
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const checkUpdate = async () => {
+    setBusy("update-check");
+    try {
+      const result = await checkForUpdates();
+      setUpdateResult(result);
+      showToast({
+        id: "update-check",
+        kind: result.update_available ? "info" : "success",
+        message: result.update_available
+          ? `发现新版本 ${result.latest_version}。`
+          : "当前已是最新版本。",
+      });
+    } catch (reason) {
+      showToast({
+        id: "update-check",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "更新检查失败",
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const openReleasePage = async () => {
+    const url =
+      updateResult?.download_plan?.release_page_url ??
+      updateResult?.release?.page_url;
+    if (!url) return;
+    await openExternal(url);
+  };
+
   const chooseFolder = async () => {
     setBusy("pick");
     try {
@@ -320,6 +392,7 @@ export function SettingsView({
     cloud: status.cloud_token_saved,
     ai: status.ai_key_saved,
   };
+  const isFirstConfig = !Object.values(savedByKind).some(Boolean);
 
   return (
     <div className="section-stack settings-page">
@@ -402,6 +475,14 @@ export function SettingsView({
             <ExternalLink aria-hidden="true" />
           </button>
         </div>
+        {isFirstConfig && (
+          <div
+            className="settings-first-config-illustration"
+            aria-hidden="true"
+          >
+            <img src={settingsFirstConfigIllustration} alt="" />
+          </div>
+        )}
         <div className="configuration-grid">
           {(Object.keys(configMeta) as ConfigKind[]).map((kind) => {
             const meta = configMeta[kind];
@@ -505,6 +586,71 @@ export function SettingsView({
             {busy === "organize" ? "正在分类整理…" : "AI 归档分类/整理"}
           </Button>
           <span>仅处理最近同步的 Canvas active 课程。</span>
+        </div>
+      </section>
+
+      <section
+        className="settings-panel"
+        aria-labelledby="debug-feedback-title"
+      >
+        <div className="section-header">
+          <div>
+            <h3 id="debug-feedback-title">Debug 与反馈</h3>
+            <p>导出脱敏后的运行与同步诊断信息，不包含账号凭据或学习内容。</p>
+          </div>
+          <Button
+            variant="outline"
+            disabled={Boolean(busy)}
+            loading={busy === "debug-bundle"}
+            loadingLabel="正在打包…"
+            onClick={() => void exportDiagnostics()}
+          >
+            <PackageOpen aria-hidden="true" />
+            打包运行日志
+          </Button>
+        </div>
+      </section>
+
+      <section
+        className="settings-panel"
+        aria-labelledby="update-settings-title"
+      >
+        <div className="section-header">
+          <div>
+            <h3 id="update-settings-title">应用更新</h3>
+            <p>只检查官方 Release 元数据；下载和安装始终由你确认。</p>
+          </div>
+          <Button
+            variant="outline"
+            disabled={Boolean(busy)}
+            loading={busy === "update-check"}
+            onClick={() => void checkUpdate()}
+          >
+            检查更新
+          </Button>
+        </div>
+        <div className="settings-list">
+          <div className="settings-row">
+            <div>
+              <strong>版本状态</strong>
+              <span>
+                {updateResult
+                  ? `当前 ${updateResult.current_version} · 最新 ${updateResult.latest_version}`
+                  : "尚未检查"}
+              </span>
+            </div>
+            {updateResult?.update_available &&
+              (updateResult.download_plan?.release_page_url ||
+                updateResult.release?.page_url) && (
+                <Button
+                  variant="outline"
+                  onClick={() => void openReleasePage()}
+                >
+                  <ExternalLink aria-hidden="true" />
+                  查看发布页
+                </Button>
+              )}
+          </div>
         </div>
       </section>
 
