@@ -81,6 +81,7 @@ describe("OverviewView", () => {
     expect(within(summary).getByText("0")).toBeTruthy();
     expect(summary.classList.contains("summary-strip")).toBe(true);
     expect(summary.children).toHaveLength(3);
+    expect(summary.querySelectorAll(".summary-icon")).toHaveLength(3);
     expect(summary.querySelector(".summary-secondary")?.textContent).toContain(
       "8",
     );
@@ -93,6 +94,7 @@ describe("OverviewView", () => {
     );
     const deadlineRows = document.querySelectorAll(".list-row-button");
     expect(deadlineRows[0].textContent).toContain("即将截止");
+    expect(document.querySelectorAll(".overview-panel")).toHaveLength(2);
   });
 
   it("加载失败保留真实重试路径", async () => {

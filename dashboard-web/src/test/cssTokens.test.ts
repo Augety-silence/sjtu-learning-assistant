@@ -46,6 +46,17 @@ describe("CSS semantic tokens", () => {
     expect(css).toContain('[data-theme="dark"]');
     expect(css).toContain("backdrop-filter: var(--aura-blur)");
     expect(css).toContain("@supports (-webkit-backdrop-filter: blur(1px))");
+    expect(css).toContain("@media (prefers-reduced-transparency: reduce)");
+    expect(css).toContain("--aura-backdrop-solid");
+  });
+
+  it("将概览组织为三张独立指标卡和连续双栏工作面", () => {
+    expect(css).toContain(".overview-dashboard .summary-item");
+    expect(css).toContain(".overview-columns");
+    expect(css).toContain(".overview-panel");
+    expect(css).toContain(
+      "grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr)",
+    );
   });
 
   it("为深色主题覆盖核心界面与 AI 工作区语义色", () => {

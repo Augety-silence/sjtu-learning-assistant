@@ -158,7 +158,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             windows=[],
             FOLDER_DIALOG=object(),
             create_window=lambda *_args, **_kwargs: None,
-            start=lambda **_kwargs: events.append("window-exit"),
+            start=lambda *_args, **_kwargs: events.append("window-exit"),
         )
         static_index = SimpleNamespace(
             is_file=lambda: True,

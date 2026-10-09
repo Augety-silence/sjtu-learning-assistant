@@ -1,13 +1,9 @@
+import { BookOpenCheck, Clock3, Mail } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import overviewAllClearIllustration from "@/assets/empty-states/overview-all-clear.webp";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  Section,
-} from "@/components/States";
+import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { invoke, openExternal } from "@/lib/api";
@@ -119,115 +115,136 @@ export function OverviewView({
     data.deadlines.length === 0 && data.messages.length === 0;
 
   return (
-    <div className="section-stack">
+    <div className="section-stack overview-dashboard">
       <dl className="summary-strip" aria-label="学习概览">
         <div
           className={`summary-item summary-urgent${deadlinesWithin24Hours === 0 ? " summary-zero" : ""}`}
         >
-          <dt>24 小时内截止</dt>
-          <dd>{deadlinesWithin24Hours}</dd>
-          <span>优先处理</span>
+          <span className="summary-icon" aria-hidden="true">
+            <Clock3 />
+          </span>
+          <div className="summary-copy">
+            <dt>24 小时内截止</dt>
+            <dd>{deadlinesWithin24Hours}</dd>
+            <span>优先处理</span>
+          </div>
         </div>
         <div
           className={`summary-item summary-priority${data.unread_emails === 0 ? " summary-zero" : ""}`}
         >
-          <dt>未读邮件</dt>
-          <dd>{data.unread_emails}</dd>
-          <span>等待处理</span>
+          <span className="summary-icon" aria-hidden="true">
+            <Mail />
+          </span>
+          <div className="summary-copy">
+            <dt>未读邮件</dt>
+            <dd>{data.unread_emails}</dd>
+            <span>等待处理</span>
+          </div>
         </div>
         <div className="summary-item summary-secondary">
-          <dt>已同步课程</dt>
-          <dd>{data.courses}</dd>
-          <span>未来 7 天 {data.upcoming_deadlines} 项作业</span>
+          <span className="summary-icon" aria-hidden="true">
+            <BookOpenCheck />
+          </span>
+          <div className="summary-copy">
+            <dt>已同步课程</dt>
+            <dd>{data.courses}</dd>
+            <span>未来 7 天 {data.upcoming_deadlines} 项作业</span>
+          </div>
         </div>
       </dl>
-      <Section
-        title="临期事项"
-        action={
-          <Button variant="link" onClick={() => navigate("calendar")}>
-            查看全部
-          </Button>
-        }
-      >
-        <div className="list-surface">
-          {data.deadlines.length === 0 ? (
-            <EmptyState
-              title="近期没有截止事项"
-              description="未来 7 天内暂无未完成作业。"
-              illustration={
-                overviewAllClear ? (
-                  <img src={overviewAllClearIllustration} alt="" />
-                ) : undefined
-              }
-            />
-          ) : (
-            prioritizedDeadlines.map((item) => (
-              <button
-                type="button"
-                className="list-row list-row-button"
-                key={item.source_id}
-                disabled={!item.url}
-                onClick={() => void open(item.url)}
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{item.title}</p>
-                  <span>{item.course}</span>
-                </div>
-                <div className="row-meta">
-                  <span className="status-warning">
-                    {deadlineDistance(item.due_at)}
-                  </span>
-                  <span>{formatDateTime(item.due_at)}</span>
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-      </Section>
-      <Section
-        title="最新消息"
-        action={
-          <Button variant="link" onClick={() => navigate("messages")}>
-            查看全部
-          </Button>
-        }
-      >
-        <div className="list-surface">
-          {data.messages.length === 0 ? (
-            <EmptyState
-              title="暂无最新消息"
-              description="同步后，邮件与课程公告会显示在这里。"
-            />
-          ) : (
-            prioritizedMessages.map((item) => (
-              <button
-                type="button"
-                className="list-row list-row-button"
-                key={messageKey(item)}
-                aria-label={`打开消息详情：${item.title}`}
-                onClick={(event) => {
-                  detailTriggerRef.current = event.currentTarget;
-                  setDetailItem(item);
-                }}
-              >
-                <div className="min-w-0">
-                  <div className="message-title">
-                    {item.is_unread && <span className="unread-dot" />}
+      <div className="overview-columns">
+        <section className="overview-panel overview-deadlines">
+          <div className="section-header">
+            <div>
+              <h2>临期事项</h2>
+              <p>按截止时间排序</p>
+            </div>
+            <Button variant="link" onClick={() => navigate("calendar")}>
+              查看全部
+            </Button>
+          </div>
+          <div className="list-surface">
+            {data.deadlines.length === 0 ? (
+              <EmptyState
+                title="近期没有截止事项"
+                description="未来 7 天内暂无未完成作业。"
+                illustration={
+                  overviewAllClear ? (
+                    <img src={overviewAllClearIllustration} alt="" />
+                  ) : undefined
+                }
+              />
+            ) : (
+              prioritizedDeadlines.map((item) => (
+                <button
+                  type="button"
+                  className="list-row list-row-button"
+                  key={item.source_id}
+                  disabled={!item.url}
+                  onClick={() => void open(item.url)}
+                >
+                  <div className="min-w-0">
                     <p className="truncate font-medium">{item.title}</p>
+                    <span>{item.course}</span>
                   </div>
-                  <span>
-                    {item.source_label} ·{" "}
-                    {item.kind === "email" ? "邮件" : "公告"}
+                  <div className="row-meta">
+                    <span className="status-warning">
+                      {deadlineDistance(item.due_at)}
+                    </span>
+                    <span>{formatDateTime(item.due_at)}</span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+        <section className="overview-panel overview-messages">
+          <div className="section-header">
+            <div>
+              <h2>最新消息</h2>
+              <p>未读内容优先</p>
+            </div>
+            <Button variant="link" onClick={() => navigate("messages")}>
+              查看全部
+            </Button>
+          </div>
+          <div className="list-surface">
+            {data.messages.length === 0 ? (
+              <EmptyState
+                title="暂无最新消息"
+                description="同步后，邮件与课程公告会显示在这里。"
+              />
+            ) : (
+              prioritizedMessages.map((item) => (
+                <button
+                  type="button"
+                  className="list-row list-row-button"
+                  key={messageKey(item)}
+                  aria-label={`打开消息详情：${item.title}`}
+                  onClick={(event) => {
+                    detailTriggerRef.current = event.currentTarget;
+                    setDetailItem(item);
+                  }}
+                >
+                  <div className="min-w-0">
+                    <div className="message-title">
+                      {item.is_unread && <span className="unread-dot" />}
+                      <p className="truncate font-medium">{item.title}</p>
+                    </div>
+                    <span>
+                      {item.source_label} ·{" "}
+                      {item.kind === "email" ? "邮件" : "公告"}
+                    </span>
+                  </div>
+                  <span className="row-time">
+                    {formatDateTime(item.occurred_at)}
                   </span>
-                </div>
-                <span className="row-time">
-                  {formatDateTime(item.occurred_at)}
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-      </Section>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
       <AnimatePresence initial={false}>
         {detailItem && (
           <MessageDetailDialog

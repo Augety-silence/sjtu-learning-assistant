@@ -1,4 +1,10 @@
-import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Sparkles,
+} from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -344,21 +350,32 @@ export function CalmSchedule({
 
   const heroTime = hhmm(now);
   const heroSuffix = now.getHours() >= 12 ? "下午" : "上午";
+  const todayEventCount = eventsByDate.get(todayKey)?.length ?? 0;
 
   return (
     <div className="calm-schedule">
-      <section className="calm-hero" aria-label="今日概览">
-        <div className="calm-hero-clock" aria-hidden="true">
-          <span>{heroTime}</span>
-          <span className="calm-hero-suffix">{heroSuffix}</span>
+      <section className="calm-overview-strip" aria-label="今日概览">
+        <div className="calm-overview-date">
+          <span className="calm-overview-icon" aria-hidden="true">
+            <CalendarDays size={18} />
+          </span>
+          <span>
+            <strong>
+              {now.getMonth() + 1}月{now.getDate()}日 · {weekdayAt(now)}
+            </strong>
+            <span className="calm-overview-time">
+              <Clock3 size={13} aria-hidden="true" />
+              {heroSuffix} {heroTime}
+            </span>
+          </span>
         </div>
-        <div className="calm-hero-date">
-          <strong>
-            {now.getMonth() + 1}月{now.getDate()}日，{weekdayAt(now)}
-          </strong>
-          <p className="calm-hero-count">
-            7 天内<em>{dueCount}</em>项要交
-          </p>
+        <div className="calm-overview-stats" aria-label="日程摘要">
+          <span>
+            7 天内 <em>{dueCount}</em> 项待交
+          </span>
+          <span>
+            今天 <em>{todayEventCount}</em> 项安排
+          </span>
         </div>
         <button type="button" className="calm-ai-btn" onClick={askAI}>
           <Sparkles size={15} aria-hidden="true" />
@@ -500,9 +517,13 @@ export function CalmSchedule({
                     }`}
                     role={openable ? "button" : undefined}
                     tabIndex={openable ? 0 : undefined}
+                    aria-label={
+                      openable ? `在 App 内完成作业：${event.title}` : undefined
+                    }
                     onClick={() => onOpenEvent?.(event)}
                     onKeyDown={(keyEvent) => {
-                      if (keyEvent.key === "Enter") onOpenEvent?.(event);
+                      if (keyEvent.key === "Enter" || keyEvent.key === " ")
+                        keyEvent.preventDefault(), onOpenEvent?.(event);
                     }}
                   >
                     <span className="calm-task-top">
@@ -514,10 +535,18 @@ export function CalmSchedule({
                       </span>
                     </span>
                     <span className="calm-task-title">{event.title}</span>
-                    <span className="calm-task-meta">
-                      {[event.courseName, published]
-                        .filter(Boolean)
-                        .join(" · ")}
+                    <span className="calm-task-footer">
+                      <span className="calm-task-meta">
+                        {[event.courseName, published]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                      {openable ? (
+                        <span className="calm-task-action">
+                          在 App 内完成
+                          <ChevronRight size={14} aria-hidden="true" />
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                 );
@@ -565,7 +594,7 @@ export function CalmSchedule({
                 ]
                   .filter(Boolean)
                   .join(" ");
-                const openable = Boolean(onOpenEvent);
+                const openable = isAssignment(event) && Boolean(onOpenEvent);
                 const published = isAssignment(event) ? publishMeta(event) : "";
                 return (
                   <div
@@ -575,9 +604,13 @@ export function CalmSchedule({
                     }`}
                     role={openable ? "button" : undefined}
                     tabIndex={openable ? 0 : undefined}
+                    aria-label={
+                      openable ? `打开当日作业：${event.title}` : undefined
+                    }
                     onClick={() => onOpenEvent?.(event)}
                     onKeyDown={(keyEvent) => {
-                      if (keyEvent.key === "Enter") onOpenEvent?.(event);
+                      if (keyEvent.key === "Enter" || keyEvent.key === " ")
+                        keyEvent.preventDefault(), onOpenEvent?.(event);
                     }}
                   >
                     <span className="calm-item-time">
@@ -617,6 +650,13 @@ export function CalmSchedule({
                         </span>
                       )}
                     </span>
+                    {openable ? (
+                      <ChevronRight
+                        className="calm-item-action"
+                        size={16}
+                        aria-hidden="true"
+                      />
+                    ) : null}
                   </div>
                 );
               })}

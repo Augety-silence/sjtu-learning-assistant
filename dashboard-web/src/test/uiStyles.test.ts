@@ -162,8 +162,10 @@ describe("responsive and motion regression rules", () => {
   });
 
   it("keeps motion on compositor-friendly properties", () => {
-    expect(css).toContain("--motion-panel: 220ms");
-    expect(css).toContain("--ease-motion-out: cubic-bezier(0.16, 1, 0.3, 1)");
+    expect(css).toContain("--motion-panel: 300ms");
+    expect(css).toContain(
+      "--ease-motion-out: cubic-bezier(0.22, 0.8, 0.22, 1)",
+    );
     expect(css).not.toMatch(/transition:\s*(?:grid-template-columns|width)/);
     expect(css).toContain("transform: scale(0.98)");
   });

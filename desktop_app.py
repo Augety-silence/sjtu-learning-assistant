@@ -1404,6 +1404,40 @@ def _notify_database_recovery(engine, *, sender=None) -> None:
         pass
 
 
+def _enable_macos_window_material(window: object) -> None:
+    """Restore native shadow and a unified titlebar over pywebview vibrancy.
+
+    Keep a faint dynamic window background instead of a fully clear NSWindow.
+    A clear window can disappear from the macOS compositor after switching
+    between Aqua and Dark Aqua while its WebKit view remains alive.
+    """
+    if sys.platform != "darwin" or window is None:
+        return
+    try:
+        import AppKit  # type: ignore[import-not-found]
+        from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+    except ImportError:
+        return
+
+    def apply_material() -> None:
+        try:
+            native = getattr(window, "native", None)
+            if native is None:
+                return
+            native.setOpaque_(False)
+            material_base = AppKit.NSColor.windowBackgroundColor()
+            native.setBackgroundColor_(material_base.colorWithAlphaComponent_(0.08))
+            native.setHasShadow_(True)
+            native.setTitlebarAppearsTransparent_(True)
+            native.setTitleVisibility_(AppKit.NSWindowTitleHidden)
+            native.setMovableByWindowBackground_(False)
+        except (AttributeError, RuntimeError):
+            # Visual polish must never block the application from starting.
+            return
+
+    AppHelper.callAfter(apply_material)
+
+
 def run_desktop_app() -> int:
     """Create the native window. Tests exercise components without calling this."""
     if not STATIC_INDEX.is_file():
@@ -1493,7 +1527,8 @@ def run_desktop_app() -> int:
             ),
         )
         scheduler = DesktopScheduler(service.trigger_sync)
-        webview.create_window(
+        native_vibrancy = sys.platform == "darwin"
+        window = webview.create_window(
             "SJTU 学习助手",
             STATIC_INDEX.as_uri(),
             js_api=bridge,
@@ -1501,9 +1536,14 @@ def run_desktop_app() -> int:
             height=820,
             min_size=(960, 640),
             background_color="#EAF1FB",
+            transparent=native_vibrancy,
+            vibrancy=native_vibrancy,
         )
         scheduler.start()
-        webview.start(debug=False)
+        if native_vibrancy:
+            webview.start(_enable_macos_window_material, (window,), debug=False)
+        else:
+            webview.start(debug=False)
         return 0
     finally:
         if scheduler is not None:

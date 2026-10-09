@@ -122,9 +122,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
   const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
-  const [activityOpen, setActivityOpen] = useState(() =>
-    typeof window === "undefined" ? true : window.innerWidth >= 1280,
-  );
+  const [activityOpen, setActivityOpen] = useState(() => false);
   const wideActivityRef = useRef(
     typeof window === "undefined" ? true : window.innerWidth >= 1280,
   );

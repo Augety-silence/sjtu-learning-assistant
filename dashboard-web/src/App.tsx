@@ -10,7 +10,10 @@ import {
 } from "react";
 import { AIChatView } from "@/components/AIChatView";
 import { AppShell } from "@/components/AppShell";
-import { AssignmentsView } from "@/components/AssignmentsView";
+import {
+  AssignmentsView,
+  type AssignmentTarget,
+} from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
 import type { CalendarEventItem } from "@/components/CalendarView";
 import { DeadlinesView } from "@/components/DeadlinesView";
@@ -52,7 +55,6 @@ import {
   getVideoPlayback,
   getVideoSubtitles,
   invoke,
-  openExternal,
   retryTranscriptJob,
   revealAcademicExport,
   revealTranscriptArtifact,
@@ -166,6 +168,15 @@ function optionalIsoDate(value: unknown): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function positiveInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
 function adaptCalendarEvent(
   event: CalendarEventDto,
   index: number,
@@ -175,6 +186,7 @@ function adaptCalendarEvent(
   const assignment = event.assignment ?? {};
   const assignmentName = assignment.name;
   const contextCode = event.context_code ?? "Canvas";
+  const courseMatch = /^course_(\d+)$/.exec(contextCode);
   return {
     id: String(event.id ?? assignment.id ?? `${startAt}:${index}`),
     title:
@@ -191,6 +203,8 @@ function adaptCalendarEvent(
           : undefined,
     eventType: "assignment",
     source: "canvas",
+    assignmentCourseId: positiveInteger(courseMatch?.[1]),
+    assignmentId: positiveInteger(assignment.id),
     publishedAt: optionalIsoDate(assignment.created_at),
     availableAt: optionalIsoDate(assignment.unlock_at),
     url:
@@ -210,7 +224,7 @@ function ScheduleAdapter({
 }: {
   mode: ScheduleMode;
   onModeChange: (mode: ScheduleMode) => void;
-  onNavigateAssignments: () => void;
+  onNavigateAssignments: (target?: AssignmentTarget) => void;
   onAskAI: (prompt: string) => void;
 }) {
   const [month, setMonth] = useState(
@@ -255,8 +269,14 @@ function ScheduleAdapter({
       onMonthChange={setMonth}
       onRetryCanvas={loadCanvas}
       onOpenCanvasEvent={(event) => {
-        if (event.url) void openExternal(event.url);
-        else onNavigateAssignments();
+        if (event.assignmentCourseId && event.assignmentId) {
+          onNavigateAssignments({
+            courseId: event.assignmentCourseId,
+            assignmentId: event.assignmentId,
+          });
+          return;
+        }
+        onNavigateAssignments();
       }}
       onAskAI={onAskAI}
     />
@@ -868,6 +888,8 @@ function VideosAdapter({
 export default function App() {
   const [view, setViewState] = useState<ViewName>(initialView);
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("calendar");
+  const [assignmentTarget, setAssignmentTarget] =
+    useState<AssignmentTarget | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncRequested, setSyncRequested] = useState(false);
@@ -1100,7 +1122,10 @@ export default function App() {
             key={dataVersion}
             mode={scheduleMode}
             onModeChange={setScheduleMode}
-            onNavigateAssignments={() => setView("assignments")}
+            onNavigateAssignments={(target) => {
+              setAssignmentTarget(target ?? null);
+              setView("assignments");
+            }}
             onAskAI={(prompt) => {
               window.localStorage.setItem("ai-chat-pending-prompt", prompt);
               setView("ai-chat");
@@ -1108,7 +1133,13 @@ export default function App() {
           />
         )}
         {view === "messages" && <MessagesView key={dataVersion} />}
-        {view === "assignments" && <AssignmentsView key={dataVersion} />}
+        {view === "assignments" && (
+          <AssignmentsView
+            key={dataVersion}
+            initialTarget={assignmentTarget}
+            onInitialTargetHandled={() => setAssignmentTarget(null)}
+          />
+        )}
         {view === "materials" && <MaterialsView key={dataVersion} />}
         {view === "grades" && (
           <div className="section-stack">

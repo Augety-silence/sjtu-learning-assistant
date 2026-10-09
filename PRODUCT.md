@@ -25,7 +25,7 @@ SJTU Learning Assistant 将已同步到本机的学习数据统一组织成可�
 ## Capabilities and Constraints
 
 - 保留现有 Agent Runtime、数据库工具、Bridge 契约和 schema 0014。
-- 所有 Agent 工具仅访问本机已同步数据，不执行提交、删除或修改。
+- Agent 工具默认仅访问本机已同步数据；作业工作台仅在用户明确确认后通过 Canvas 提交接口写入，提交后立即回读验证。
 - 保留三栏信息架构：Agent 导航、主聊天区域、Activity 执行过程。
 - 主界面必须响应窗口宽度和高度变化；窄屏时侧栏需自然折叠为 Drawer。
 - 不修改现有业务逻辑、API 数据模型、会话模型或工具执行协议。

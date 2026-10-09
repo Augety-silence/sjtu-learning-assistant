@@ -1,0 +1,335 @@
+.assignments-page {
+  --assignment-accent: var(--action-primary);
+  --assignment-accent-soft: color-mix(
+    in srgb,
+    var(--assignment-accent) 10%,
+    transparent
+  );
+  gap: 16px;
+}
+
+.assignments-page .view-intro {
+  margin-bottom: 0;
+}
+
+.assignments-page .view-intro h2 {
+  font-size: 22px;
+  letter-spacing: -0.35px;
+}
+
+.assignments-page .assignment-filters {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--aura-border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--aura-control) 76%, transparent);
+  scrollbar-width: thin;
+}
+
+.assignments-page .assignment-filters button {
+  min-height: 32px;
+  flex: none;
+  padding-inline: 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.assignments-page .assignment-filters .assignment-filter-active {
+  background: color-mix(in srgb, var(--aura-panel-strong) 92%, transparent);
+  color: var(--text-primary);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    0 4px 12px -10px var(--text-primary);
+}
+
+.assignments-page .assignment-layout {
+  min-height: min(650px, calc(100vh - 245px));
+  grid-template-columns: minmax(260px, 31%) minmax(0, 1fr);
+  border: 1px solid var(--aura-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--aura-panel-strong) 80%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+  backdrop-filter: blur(20px) saturate(1.1);
+}
+
+.assignments-page .assignment-list {
+  padding: 8px;
+  border-color: var(--aura-border);
+  background: color-mix(in srgb, var(--aura-control) 35%, transparent);
+}
+
+.assignments-page .assignment-card {
+  min-height: 88px;
+  margin-bottom: 3px;
+  padding: 13px 12px;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+}
+
+.assignments-page .assignment-card:hover {
+  background: color-mix(in srgb, var(--aura-control-hover) 74%, transparent);
+}
+
+.assignments-page .assignment-card-active,
+.assignments-page .assignment-card-active:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--assignment-accent) 22%,
+    var(--aura-border)
+  );
+  background: var(--assignment-accent-soft);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.assignments-page .assignment-card strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignments-page .assignment-card > span:not(.assignment-card-footer) {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignments-page .assignment-detail {
+  padding: 24px 26px 32px;
+}
+
+.assignments-page .assignment-detail-heading {
+  align-items: center;
+}
+
+.assignments-page .assignment-detail-heading h3 {
+  margin-top: 5px;
+  font-size: 22px;
+  line-height: 1.3;
+  letter-spacing: -0.35px;
+}
+
+.assignment-native-badge {
+  display: inline-flex;
+  min-height: 30px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--status-success) 24%,
+    var(--aura-border)
+  );
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--status-success-bg) 72%, transparent);
+  color: var(--status-success);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.assignment-native-badge svg {
+  width: 15px;
+  height: 15px;
+}
+
+.assignments-page .assignment-meta {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 20px 0 22px;
+  gap: 8px;
+}
+
+.assignments-page .assignment-meta div {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--aura-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--aura-control) 64%, transparent);
+}
+
+.assignments-page .assignment-meta dd {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assignment-requirements {
+  display: grid;
+  gap: 8px;
+}
+
+.assignment-requirements h4,
+.assignment-submit-heading h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.assignments-page .assignment-description {
+  max-height: 220px;
+  margin: 0;
+  padding: 14px 15px;
+  border-color: var(--aura-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--aura-control) 42%, transparent);
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.assignment-submit-workspace {
+  margin-top: 22px;
+  overflow: hidden;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--assignment-accent) 20%,
+    var(--aura-border)
+  );
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--assignment-accent) 4%, transparent);
+}
+
+.assignment-submit-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--aura-border);
+}
+
+.assignment-submit-heading p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.assignment-submit-heading > svg {
+  width: 20px;
+  height: 20px;
+  color: var(--assignment-accent);
+}
+
+.assignments-page .submission-forms {
+  margin: 0;
+  padding: 14px;
+  gap: 10px;
+}
+
+.assignments-page .submission-forms form,
+.assignments-page .file-actions {
+  padding: 14px;
+  border-color: var(--aura-border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--aura-panel-strong) 72%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.assignments-page .submission-forms label,
+.assignment-method-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.assignments-page .submission-forms label svg,
+.assignment-method-title svg {
+  width: 16px;
+  height: 16px;
+  color: var(--assignment-accent);
+}
+
+.assignments-page .submission-forms textarea,
+.assignments-page .submission-forms input {
+  border-color: var(--aura-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--aura-control) 62%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.assignment-external-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--status-warning) 24%,
+    var(--aura-border)
+  );
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--status-warning-bg) 60%, transparent);
+}
+
+.assignment-external-notice strong {
+  font-size: 13.5px;
+}
+
+.assignment-external-notice p {
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+@media (max-width: 1040px) {
+  .assignments-page .assignment-layout {
+    grid-template-columns: minmax(230px, 34%) minmax(0, 1fr);
+  }
+
+  .assignments-page .assignment-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .assignments-page .assignment-layout {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .assignments-page .assignment-list {
+    max-height: 300px;
+    border-right: 0;
+    border-bottom: 1px solid var(--aura-border);
+  }
+
+  .assignments-page .assignment-detail {
+    padding: 20px 16px 24px;
+  }
+}
+
+@media (max-width: 520px) {
+  .assignments-page .assignment-detail-heading,
+  .assignment-external-notice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .assignments-page .assignment-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .assignments-page .assignment-layout,
+  .assignment-submit-workspace,
+  .assignments-page .submission-forms form,
+  .assignments-page .file-actions {
+    background: var(--aura-backdrop-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

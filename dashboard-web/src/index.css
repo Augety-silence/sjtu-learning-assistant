@@ -5,10 +5,10 @@
 :root {
   --motion-instant: 80ms;
   --motion-fast: 120ms;
-  --motion-control: 140ms;
-  --motion-enter: 180ms;
-  --motion-panel: 220ms;
-  --ease-motion-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-control: 160ms;
+  --motion-enter: 220ms;
+  --motion-panel: 300ms;
+  --ease-motion-out: cubic-bezier(0.22, 0.8, 0.22, 1);
   --ease-motion-in: cubic-bezier(0.4, 0, 1, 1);
   font-family: LarkCircular, -apple-system, BlinkMacSystemFont, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -285,26 +285,28 @@
 }
 
 :root {
-  --aura-backdrop: #eaf1fb;
-  --aura-atmosphere: #cfdef4;
-  --aura-panel: rgba(249, 252, 255, 0.72);
-  --aura-panel-strong: rgba(255, 255, 255, 0.88);
-  --aura-control: rgba(255, 255, 255, 0.62);
-  --aura-control-hover: rgba(255, 255, 255, 0.84);
-  --aura-border: rgba(63, 98, 143, 0.2);
-  --aura-border-highlight: rgba(255, 255, 255, 0.8);
-  --aura-shadow: 0 20px 52px rgba(35, 65, 105, 0.14),
-    0 3px 10px rgba(35, 65, 105, 0.06);
-  --aura-shadow-soft: 0 10px 28px rgba(35, 65, 105, 0.09),
-    0 1px 4px rgba(35, 65, 105, 0.05);
-  --aura-blur: blur(24px) saturate(1.12);
-  --aura-radius-window: 22px;
-  --aura-radius-card: 15px;
-  --aura-radius-control: 10px;
+  --aura-backdrop: rgba(221, 233, 250, 0.66);
+  --aura-backdrop-solid: #e8f0fb;
+  --aura-atmosphere: rgba(153, 191, 241, 0.6);
+  --aura-panel: rgba(242, 248, 255, 0.66);
+  --aura-panel-strong: rgba(253, 254, 255, 0.82);
+  --aura-control: rgba(255, 255, 255, 0.52);
+  --aura-control-hover: rgba(255, 255, 255, 0.74);
+  --aura-border: rgba(77, 109, 153, 0.16);
+  --aura-border-highlight: rgba(255, 255, 255, 0.74);
+  --aura-shadow: 0 24px 64px -24px rgba(24, 56, 99, 0.32),
+    0 8px 26px -18px rgba(24, 56, 99, 0.18);
+  --aura-shadow-soft: 0 16px 36px -24px rgba(24, 56, 99, 0.28),
+    0 3px 12px -8px rgba(24, 56, 99, 0.14);
+  --aura-blur: blur(30px) saturate(1.18);
+  --aura-radius-window: 24px;
+  --aura-radius-card: 18px;
+  --aura-radius-control: 11px;
 }
 
 :root[data-theme="dark"] {
-  --aura-backdrop: #0d1623;
+  --aura-backdrop: rgba(9, 18, 31, 0.7);
+  --aura-backdrop-solid: #0d1623;
   --aura-atmosphere: #1c3150;
   --aura-panel: rgba(20, 30, 44, 0.78);
   --aura-panel-strong: rgba(27, 38, 54, 0.91);
@@ -10130,40 +10132,41 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 /* Aura glass system — layered surfaces for the desktop learning workspace. */
 body {
-  background: var(--aura-backdrop);
+  background: transparent;
 }
 
 .app-shell[data-aura-shell] {
   position: relative;
   isolation: isolate;
-  gap: 12px;
-  padding: 12px;
+  gap: 0;
+  padding: 10px;
   background: var(--aura-backdrop);
+  backdrop-filter: var(--aura-blur);
 }
 
 .app-shell[data-aura-shell]::before,
 .app-shell[data-aura-shell]::after {
   position: fixed;
   z-index: -1;
-  width: 34vw;
-  height: 34vw;
+  width: 28vw;
+  height: 28vw;
   border-radius: 50%;
   background: var(--aura-atmosphere);
   content: "";
-  filter: blur(72px);
-  opacity: 0.48;
+  filter: blur(82px);
+  opacity: 0.36;
   pointer-events: none;
 }
 
 .app-shell[data-aura-shell]::before {
-  top: -18vw;
-  right: 8vw;
+  top: -16vw;
+  right: 4vw;
 }
 
 .app-shell[data-aura-shell]::after {
-  bottom: -24vw;
-  left: 12vw;
-  opacity: 0.3;
+  bottom: -20vw;
+  left: 8vw;
+  opacity: 0.22;
 }
 
 [data-aura-surface] {
@@ -10176,17 +10179,20 @@ body {
 }
 
 .sidebar[data-aura-surface="navigation"] {
-  width: 224px;
+  width: 218px;
   height: auto;
   padding: 14px 11px 11px;
-  flex-basis: 224px;
+  flex-basis: 218px;
   border-right: 1px solid var(--aura-border);
-  border-radius: var(--aura-radius-window);
+  border-radius: var(--aura-radius-window) 0 0 var(--aura-radius-window);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
 
 .workspace[data-aura-surface="workspace"] {
-  border-radius: var(--aura-radius-window);
-  background: var(--aura-panel);
+  border-left: 0;
+  border-radius: 0 var(--aura-radius-window) var(--aura-radius-window) 0;
+  background: color-mix(in srgb, var(--aura-panel) 92%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow);
 }
 
 .brand-mark {
@@ -10207,7 +10213,6 @@ body {
 
 .nav-item:hover {
   background: var(--aura-control);
-  transform: translateY(-1px);
 }
 
 .nav-item:active,
@@ -10233,11 +10238,12 @@ body {
 
 .page-header {
   top: 0;
-  min-height: 78px;
+  min-height: 72px;
+  padding-block: 12px;
   border-bottom-color: var(--aura-border);
-  background: var(--aura-panel-strong);
+  background: color-mix(in srgb, var(--aura-panel-strong) 84%, transparent);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight),
-    0 8px 22px rgba(35, 65, 105, 0.06);
+    0 10px 28px -22px rgba(35, 65, 105, 0.28);
   backdrop-filter: var(--aura-blur);
 }
 
@@ -10248,6 +10254,7 @@ body {
 .content {
   position: relative;
   z-index: 0;
+  padding-top: 24px;
 }
 
 .aura-button {
@@ -10370,6 +10377,231 @@ body {
   box-shadow: inset 0 1px 0 var(--aura-border-highlight),
     var(--shadow-ai-composer);
   backdrop-filter: blur(18px);
+}
+
+/* Overview cockpit — compact, continuous and data-first. */
+.overview-dashboard {
+  gap: 18px;
+}
+
+.overview-dashboard .summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+.overview-dashboard .summary-item {
+  min-height: 116px;
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-card);
+  background: color-mix(in srgb, var(--aura-panel-strong) 88%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+  backdrop-filter: blur(18px) saturate(1.08);
+  transition:
+    background-color var(--motion-control) var(--ease-motion-out),
+    box-shadow var(--motion-control) var(--ease-motion-out),
+    transform var(--motion-control) var(--ease-motion-out);
+}
+
+.overview-dashboard .summary-item:last-child {
+  border-right: 1px solid var(--aura-border);
+}
+
+.summary-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 12px;
+  color: var(--action-primary);
+  background: color-mix(in srgb, currentColor 8%, var(--aura-control));
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.summary-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.summary-urgent .summary-icon {
+  color: var(--status-warning);
+}
+
+.summary-copy {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 10px;
+}
+
+.summary-copy dt,
+.summary-copy span {
+  grid-column: 1 / -1;
+}
+
+.overview-dashboard .summary-item dd,
+.overview-dashboard .summary-zero dd,
+.overview-dashboard .summary-secondary dd {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.045em;
+}
+
+.overview-dashboard .summary-urgent:not(.summary-zero) dd {
+  color: var(--status-warning);
+}
+
+.overview-dashboard .summary-priority:not(.summary-zero) dd {
+  color: var(--action-primary);
+}
+
+.overview-columns {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.overview-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-card);
+  background: color-mix(in srgb, var(--aura-panel-strong) 86%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.overview-panel .section-header {
+  min-height: 64px;
+  margin: 0;
+  padding: 12px 16px 10px 18px;
+  border-bottom: 1px solid var(--aura-border);
+}
+
+.overview-panel .section-header h2 {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.overview-panel .section-header p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.overview-panel .list-surface {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.overview-panel .list-row {
+  min-height: 68px;
+  padding: 11px 18px;
+  border-bottom-color: color-mix(in srgb, var(--aura-border) 72%, transparent);
+  background: transparent;
+  transition: background-color var(--motion-control) var(--ease-motion-out);
+}
+
+.overview-panel .list-row:hover {
+  background: color-mix(in srgb, var(--aura-control) 68%, transparent);
+}
+
+.overview-panel .list-row:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.overview-panel .row-meta {
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+.overview-panel .state-box {
+  min-height: 210px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.overview-panel .state-illustration {
+  max-width: 132px;
+  max-height: 86px;
+}
+
+.toast {
+  border: 1px solid var(--aura-border);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--aura-panel-strong) 92%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow);
+  backdrop-filter: blur(24px) saturate(1.12);
+}
+
+@media (hover: hover) {
+  .overview-dashboard .summary-item:hover {
+    background: var(--aura-panel-strong);
+    box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+      0 18px 40px -28px rgba(24, 56, 99, 0.4);
+    transform: translateY(-1px);
+  }
+}
+
+@media (max-width: 980px) {
+  .overview-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .overview-dashboard .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-dashboard .summary-item {
+    min-height: 92px;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --aura-backdrop: var(--aura-backdrop-solid);
+    --aura-panel: var(--surface-page);
+    --aura-panel-strong: var(--surface-elevated);
+    --aura-control: var(--surface-control);
+    --aura-control-hover: var(--surface-control-hover);
+    --aura-blur: none;
+  }
+
+  .app-shell[data-aura-shell]::before,
+  .app-shell[data-aura-shell]::after {
+    display: none;
+  }
 }
 
 .mobile-drawer[data-aura-surface="navigation"] {

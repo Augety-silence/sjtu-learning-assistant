@@ -66,15 +66,14 @@ function renderCalm(props?: Partial<Parameters<typeof CalmSchedule>[0]>) {
 }
 
 describe("CalmSchedule", () => {
-  it("renders the hero clock, human date and seven-day due count", () => {
+  it("renders a compact today summary without the oversized clock hero", () => {
     renderCalm();
-    expect(screen.getByText("15:30")).toBeTruthy();
-    expect(screen.getByText("下午")).toBeTruthy();
-    expect(screen.getByText("10月7日，周三")).toBeTruthy();
-    expect(screen.getByText(/7 天内/)).toBeTruthy();
-    expect(screen.getByText(/项要交/)).toBeTruthy();
-    const heroCount = document.querySelector(".calm-hero-count em");
-    expect(heroCount?.textContent).toBe("1");
+    expect(screen.getByText(/下午 15:30/)).toBeTruthy();
+    expect(screen.getByText("10月7日 · 周三")).toBeTruthy();
+    expect(screen.getByLabelText("日程摘要").textContent).toContain(
+      "7 天内 1 项待交",
+    );
+    expect(document.querySelector(".calm-hero-clock")).toBeNull();
   });
 
   it("renders 42 day cells and opens the agenda for the selected day", () => {
@@ -127,14 +126,11 @@ describe("CalmSchedule", () => {
 
   it("opens assignments through the open-event callback", () => {
     const { onOpenEvent } = renderCalm();
-    const focusTitle = document.querySelector(
-      ".calm-task-item .calm-task-title",
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `在 App 内完成作业：${events[0].title}`,
+      }),
     );
-    const targetTitle = Array.from(
-      document.querySelectorAll(".calm-task-item .calm-task-title"),
-    ).find((element) => element.textContent === events[0].title);
-    expect(targetTitle).toBeTruthy();
-    fireEvent.click(targetTitle as HTMLElement);
     expect(onOpenEvent).toHaveBeenCalledWith(events[0]);
   });
 

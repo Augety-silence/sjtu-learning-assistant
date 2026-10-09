@@ -6,7 +6,7 @@ type Pane = "left" | "right";
 const LEFT_MIN = 208;
 const LEFT_MAX = 320;
 const RIGHT_MIN = 260;
-const RIGHT_MAX = 420;
+const RIGHT_MAX = 360;
 const STEP = 8;
 
 function clamp(value: number, min: number, max: number) {

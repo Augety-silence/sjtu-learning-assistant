@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from desktop_app import (
     DesktopBridge,
     DesktopScheduler,
+    _enable_macos_window_material,
     _notify_database_recovery,
     main,
     run_desktop_app,
@@ -557,6 +558,36 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             "数据库已从快照恢复。",
         )
 
+    def test_macos_material_keeps_nonzero_dynamic_window_background(self):
+        native = Mock()
+        window = SimpleNamespace(native=native)
+        material_base = Mock()
+        material_color = object()
+        material_base.colorWithAlphaComponent_.return_value = material_color
+        appkit = SimpleNamespace(
+            NSColor=SimpleNamespace(windowBackgroundColor=Mock(return_value=material_base)),
+            NSWindowTitleHidden=object(),
+        )
+        app_helper = SimpleNamespace(callAfter=lambda callback: callback())
+
+        with (
+            patch("desktop_app.sys.platform", "darwin"),
+            patch.dict(
+                "sys.modules",
+                AppKit=appkit,
+                PyObjCTools=SimpleNamespace(AppHelper=app_helper),
+            ),
+        ):
+            _enable_macos_window_material(window)
+
+        material_base.colorWithAlphaComponent_.assert_called_once_with(0.08)
+        native.setOpaque_.assert_called_once_with(False)
+        native.setBackgroundColor_.assert_called_once_with(material_color)
+        native.setHasShadow_.assert_called_once_with(True)
+        native.setTitlebarAppearsTransparent_.assert_called_once_with(True)
+        native.setTitleVisibility_.assert_called_once_with(appkit.NSWindowTitleHidden)
+        native.setMovableByWindowBackground_.assert_called_once_with(False)
+
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
         engine.dialect.name = "postgresql"
@@ -574,6 +605,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         )
         static_index = SimpleNamespace(is_file=lambda: True, as_uri=lambda: "file:///index.html")
         with (
+            patch("desktop_app.sys.platform", "darwin"),
             patch.dict("sys.modules", {"webview": webview}),
             patch("desktop_app.STATIC_INDEX", static_index),
             patch("desktop_app.create_database_engine", return_value=engine),
@@ -584,7 +616,19 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         ):
             self.assertEqual(0, run_desktop_app())
 
-        webview.start.assert_called_once_with(debug=False)
+        create_window_call = webview.create_window.call_args
+        self.assertEqual(
+            ("SJTU 学习助手", "file:///index.html"), create_window_call.args
+        )
+        self.assertEqual(1280, create_window_call.kwargs["width"])
+        self.assertEqual(820, create_window_call.kwargs["height"])
+        self.assertEqual((960, 640), create_window_call.kwargs["min_size"])
+        self.assertEqual("#EAF1FB", create_window_call.kwargs["background_color"])
+        self.assertTrue(create_window_call.kwargs["transparent"])
+        self.assertTrue(create_window_call.kwargs["vibrancy"])
+        self.assertEqual(_enable_macos_window_material, webview.start.call_args.args[0])
+        self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
+        self.assertEqual({"debug": False}, webview.start.call_args.kwargs)
         manager_factory.assert_called_once_with(
             engine,
             archive_root=dashboard.archive_root,

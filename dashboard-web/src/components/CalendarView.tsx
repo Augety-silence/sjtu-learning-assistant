@@ -21,6 +21,8 @@ export interface CalendarEventItem {
   eventType?: "assignment" | "course";
   source?: string;
   canonicalCourseId?: string | null;
+  assignmentCourseId?: number | null;
+  assignmentId?: number | null;
   publishedAt?: string | null;
   availableAt?: string | null;
 }

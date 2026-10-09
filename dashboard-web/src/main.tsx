@@ -4,6 +4,8 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ToastProvider } from "./components/Toast";
 import "./index.css";
+import "./aura-pages.css";
+import "./ai-chat-aura.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

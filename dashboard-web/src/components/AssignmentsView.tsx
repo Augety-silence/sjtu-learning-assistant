@@ -1,4 +1,10 @@
-import { ExternalLink, Upload } from "lucide-react";
+import {
+  ExternalLink,
+  FileText,
+  Link2,
+  ShieldCheck,
+  Upload,
+} from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import assignmentSubmittedIllustration from "@/assets/empty-states/assignment-submitted.webp";
@@ -26,6 +32,17 @@ import type {
   SubmissionResult,
 } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
+import "./assignments-workspace.css";
+
+export interface AssignmentTarget {
+  courseId: number;
+  assignmentId: number;
+}
+
+interface AssignmentsViewProps {
+  initialTarget?: AssignmentTarget | null;
+  onInitialTargetHandled?: () => void;
+}
 
 const filters: Array<{ value: AssignmentCategory; label: string }> = [
   { value: "today", label: "今天" },
@@ -233,8 +250,13 @@ function SubmissionConfirmDialog({
   );
 }
 
-export function AssignmentsView() {
-  const [category, setCategory] = useState<AssignmentCategory>("today");
+export function AssignmentsView({
+  initialTarget,
+  onInitialTargetHandled,
+}: AssignmentsViewProps = {}) {
+  const [category, setCategory] = useState<AssignmentCategory>(
+    initialTarget ? "upcoming" : "today",
+  );
   const [items, setItems] = useState<AssignmentItem[] | null>(null);
   const [selected, setSelected] = useState<AssignmentItem | null>(null);
   const [error, setError] = useState("");
@@ -247,13 +269,13 @@ export function AssignmentsView() {
   const [submissionError, setSubmissionError] = useState("");
   const [result, setResult] = useState<SubmissionResult | null>(null);
   const categoryRef = useRef(category);
+  const handledTargetRef = useRef("");
   categoryRef.current = category;
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setItems(null);
     setError("");
-    setSelected(null);
     try {
       setItems((await getAssignments(category)).items);
     } catch (reason) {
@@ -261,6 +283,49 @@ export function AssignmentsView() {
     }
   }, [category]);
   useEffect(() => void load(), [load]);
+
+  useEffect(() => {
+    if (!initialTarget) return;
+    const targetKey = `${initialTarget.courseId}:${initialTarget.assignmentId}`;
+    if (handledTargetRef.current === targetKey) return;
+    handledTargetRef.current = targetKey;
+    let active = true;
+    setError("");
+    setResult(null);
+    void getAssignmentDetail(initialTarget.courseId, initialTarget.assignmentId)
+      .then((detail) => {
+        if (!active) return;
+        setSelected(detail);
+        setItems((current) => {
+          if (
+            !current ||
+            current.some((item) => sameAssignment(item, detail))
+          ) {
+            return current;
+          }
+          return [detail, ...current];
+        });
+        const preferredCategory = filters.find((filter) =>
+          detail.categories.includes(filter.value),
+        )?.value;
+        if (preferredCategory && preferredCategory !== categoryRef.current) {
+          setCategory(preferredCategory);
+        }
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(
+            reason instanceof Error ? reason.message : "作业详情读取失败",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) onInitialTargetHandled?.();
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialTarget, onInitialTargetHandled]);
 
   const selectAssignment = async (item: AssignmentItem) => {
     setError("");
@@ -370,7 +435,7 @@ export function AssignmentsView() {
       );
       showToast({
         kind: "success",
-        message: "已在浏览器打开 Canvas 作业页面。",
+        message: "已打开该作业的外部工具页面。",
       });
     } catch (reason) {
       showToast({
@@ -385,8 +450,8 @@ export function AssignmentsView() {
     <div className="section-stack assignments-page">
       <div className="view-intro">
         <div>
-          <h2>Assignment Center</h2>
-          <p>查看 Canvas 实时状态并安全提交作业。</p>
+          <h2>作业工作台</h2>
+          <p>阅读要求、准备答案，并在本机完成提交与 Canvas 回读验证。</p>
         </div>
       </div>
       <div className="assignment-filters" role="tablist" aria-label="作业分类">
@@ -399,7 +464,10 @@ export function AssignmentsView() {
             className={
               category === filter.value ? "assignment-filter-active" : ""
             }
-            onClick={() => setCategory(filter.value)}
+            onClick={() => {
+              setSelected(null);
+              setCategory(filter.value);
+            }}
           >
             {filter.label}
           </button>
@@ -409,7 +477,7 @@ export function AssignmentsView() {
         <ErrorState message={error} retry={() => void load()} />
       ) : items === null ? (
         <LoadingState />
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && !selected ? (
         <EmptyState
           title="此分类暂无作业"
           description="Canvas 没有返回符合条件的作业。"
@@ -455,13 +523,12 @@ export function AssignmentsView() {
                     <span>{selected.course_name}</span>
                     <h3>{selected.name}</h3>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void openExternal()}
-                  >
-                    <ExternalLink aria-hidden="true" />在 Canvas 打开
-                  </Button>
+                  {!selected.requires_external_submission ? (
+                    <span className="assignment-native-badge">
+                      <ShieldCheck aria-hidden="true" />
+                      App 内提交
+                    </span>
+                  ) : null}
                 </div>
                 <dl className="assignment-meta">
                   <div>
@@ -485,135 +552,180 @@ export function AssignmentsView() {
                         .join("、") || "无"}
                     </dd>
                   </div>
+                  <div>
+                    <dt>满分</dt>
+                    <dd>{selected.points_possible ?? "—"}</dd>
+                  </div>
                 </dl>
                 {selected.description && (
-                  <p className="assignment-description">
-                    {selected.description}
-                  </p>
+                  <section className="assignment-requirements">
+                    <h4>作业要求</h4>
+                    <p className="assignment-description">
+                      {selected.description}
+                    </p>
+                  </section>
                 )}
                 {selected.requires_external_submission && (
-                  <div className="notice">
-                    此作业需要在 Canvas 外部页面完成提交。
+                  <div className="assignment-external-notice">
+                    <div>
+                      <strong>此作业由外部工具接管</strong>
+                      <p>
+                        Canvas 未开放原生提交接口，通常是
+                        LTI、在线测验或讨论任务。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void openExternal()}
+                    >
+                      <ExternalLink aria-hidden="true" />
+                      打开外部工具
+                    </Button>
                   </div>
                 )}
                 {selected.can_submit && (
-                  <div className="submission-forms">
-                    {hasType("online_text_entry") && (
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          queue("online_text_entry", "文本内容", () =>
-                            submitAssignmentText(
-                              Number(selected.course_id),
-                              Number(selected.id),
-                              text,
-                            ),
-                          );
-                        }}
-                      >
-                        <label htmlFor="assignment-text">文本内容</label>
-                        <textarea
-                          id="assignment-text"
-                          value={text}
-                          maxLength={200000}
-                          required
-                          disabled={submitting}
-                          onChange={(event) => setText(event.target.value)}
-                        />
-                        <Button
-                          type="submit"
-                          disabled={submitting || !text.trim()}
+                  <section
+                    className="assignment-submit-workspace"
+                    aria-labelledby="assignment-submit-title"
+                  >
+                    <div className="assignment-submit-heading">
+                      <div>
+                        <h4 id="assignment-submit-title">在 App 内提交</h4>
+                        <p>提交前会再次确认；成功后立即向 Canvas 回读状态。</p>
+                      </div>
+                      <ShieldCheck aria-hidden="true" />
+                    </div>
+                    <div className="submission-forms">
+                      {hasType("online_text_entry") && (
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            queue("online_text_entry", "文本内容", () =>
+                              submitAssignmentText(
+                                Number(selected.course_id),
+                                Number(selected.id),
+                                text,
+                              ),
+                            );
+                          }}
                         >
-                          准备提交文本
-                        </Button>
-                      </form>
-                    )}
-                    {hasType("online_url") && (
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          queue("online_url", url, () =>
-                            submitAssignmentUrl(
-                              Number(selected.course_id),
-                              Number(selected.id),
-                              url,
-                            ),
-                          );
-                        }}
-                      >
-                        <label htmlFor="assignment-url">作业网址</label>
-                        <input
-                          id="assignment-url"
-                          type="url"
-                          value={url}
-                          required
-                          disabled={submitting}
-                          onChange={(event) => setUrl(event.target.value)}
-                        />
-                        <Button type="submit" disabled={submitting || !url}>
-                          准备提交网址
-                        </Button>
-                      </form>
-                    )}
-                    {hasType("online_upload") && (
-                      <div className="file-actions">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={submitting}
-                          onClick={() => void chooseLocal()}
+                          <label htmlFor="assignment-text">
+                            <FileText aria-hidden="true" />
+                            文本作答
+                          </label>
+                          <textarea
+                            id="assignment-text"
+                            aria-label="文本内容"
+                            value={text}
+                            maxLength={200000}
+                            required
+                            disabled={submitting}
+                            onChange={(event) => setText(event.target.value)}
+                          />
+                          <Button
+                            type="submit"
+                            disabled={submitting || !text.trim()}
+                          >
+                            准备提交文本
+                          </Button>
+                        </form>
+                      )}
+                      {hasType("online_url") && (
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            queue("online_url", url, () =>
+                              submitAssignmentUrl(
+                                Number(selected.course_id),
+                                Number(selected.id),
+                                url,
+                              ),
+                            );
+                          }}
                         >
-                          <Upload aria-hidden="true" />
-                          选择本地文件
-                        </Button>
-                        {localFile?.path && (
-                          <>
-                            <span>{localFile.name}</span>
-                            <Button
-                              type="button"
+                          <label htmlFor="assignment-url">
+                            <Link2 aria-hidden="true" />
+                            网址作答
+                          </label>
+                          <input
+                            id="assignment-url"
+                            aria-label="作业网址"
+                            type="url"
+                            value={url}
+                            required
+                            disabled={submitting}
+                            onChange={(event) => setUrl(event.target.value)}
+                          />
+                          <Button type="submit" disabled={submitting || !url}>
+                            准备提交网址
+                          </Button>
+                        </form>
+                      )}
+                      {hasType("online_upload") && (
+                        <div className="file-actions">
+                          <div className="assignment-method-title">
+                            <Upload aria-hidden="true" />
+                            <strong>文件作答</strong>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={submitting}
+                            onClick={() => void chooseLocal()}
+                          >
+                            <Upload aria-hidden="true" />
+                            选择本地文件
+                          </Button>
+                          {localFile?.path && (
+                            <>
+                              <span>{localFile.name}</span>
+                              <Button
+                                type="button"
+                                disabled={submitting}
+                                onClick={() =>
+                                  queue(
+                                    "online_upload",
+                                    localFile.name || "本地文件",
+                                    () =>
+                                      submitAssignmentLocalFile(
+                                        Number(selected.course_id),
+                                        Number(selected.id),
+                                        localFile.path as string,
+                                      ),
+                                  )
+                                }
+                              >
+                                准备提交本地文件
+                              </Button>
+                            </>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={submitting}
+                            onClick={() => setShowPan((value) => !value)}
+                          >
+                            从交大云盘选择
+                          </Button>
+                          {showPan && (
+                            <PanFilePicker
                               disabled={submitting}
-                              onClick={() =>
-                                queue(
-                                  "online_upload",
-                                  localFile.name || "本地文件",
-                                  () =>
-                                    submitAssignmentLocalFile(
-                                      Number(selected.course_id),
-                                      Number(selected.id),
-                                      localFile.path as string,
-                                    ),
+                              onSelect={(item: PanItem) =>
+                                queue("online_upload", item.name, () =>
+                                  submitAssignmentCloudFile(
+                                    Number(selected.course_id),
+                                    Number(selected.id),
+                                    item.remote_path,
+                                  ),
                                 )
                               }
-                            >
-                              准备提交本地文件
-                            </Button>
-                          </>
-                        )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={submitting}
-                          onClick={() => setShowPan((value) => !value)}
-                        >
-                          从交大云盘选择
-                        </Button>
-                        {showPan && (
-                          <PanFilePicker
-                            disabled={submitting}
-                            onSelect={(item: PanItem) =>
-                              queue("online_upload", item.name, () =>
-                                submitAssignmentCloudFile(
-                                  Number(selected.course_id),
-                                  Number(selected.id),
-                                  item.remote_path,
-                                ),
-                              )
-                            }
-                          />
-                        )}
-                      </div>
-                    )}
-                  </div>
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </section>
                 )}
                 {result?.verified && <VerificationDetails result={result} />}
               </>

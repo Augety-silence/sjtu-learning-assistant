@@ -3,12 +3,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import {
+  getAssignmentDetail,
+  getAssignments,
   getBackupStatus,
+  getCalendar,
   getCourseMedia,
   getMediaCapabilities,
   getMessageDetail,
   getMessages,
   getSettings,
+  getTimetableSchedule,
+  getTimetableStatus,
   getTranscriptJobs,
   getVideoPlayback,
   invoke,
@@ -28,12 +33,17 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
+    getAssignmentDetail: vi.fn(),
+    getAssignments: vi.fn(),
     getBackupStatus: vi.fn(),
+    getCalendar: vi.fn(),
     getCourseMedia: vi.fn(),
     getMediaCapabilities: vi.fn(),
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
     getSettings: vi.fn(),
+    getTimetableSchedule: vi.fn(),
+    getTimetableStatus: vi.fn(),
     getTranscriptJobs: vi.fn(),
     getVideoPlayback: vi.fn(),
     invoke: vi.fn(),
@@ -439,6 +449,84 @@ describe("overview message detail", () => {
     expect(window.location.hash).toBe("#/overview");
     expect(getMessages).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /在 Canvas 打开/ })).toBeNull();
+  });
+});
+
+describe("日程到作业提交工作台", () => {
+  it("点击 Canvas 作业时留在 App 内并自动定位真实作业", async () => {
+    window.location.hash = "#/calendar";
+    const assignment = {
+      course_id: "1",
+      course_name: "人机交互",
+      id: "2",
+      name: "项目报告",
+      description: "完成报告",
+      due_at: "2026-10-19T21:59:00+08:00",
+      unlock_at: null,
+      lock_at: null,
+      points_possible: 100,
+      html_url: "https://oc.sjtu.edu.cn/courses/1/assignments/2",
+      submission_types: ["online_text_entry"],
+      submission: null,
+      can_submit: true,
+      requires_external_submission: false,
+      categories: ["upcoming", "unsubmitted"],
+    };
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return new Promise<never>(() => undefined);
+      if (action === "sync_status") {
+        return {
+          status: "idle",
+          last_success_at: null,
+          last_run_status: null,
+          last_run_at: null,
+        } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const event = {
+      id: 40,
+      title: assignment.name,
+      start_at: assignment.due_at,
+      context_code: "course_1",
+      context_name: assignment.course_name,
+      assignment: { id: 2, name: assignment.name },
+    };
+    vi.mocked(getCalendar).mockResolvedValue({
+      month_start: "2026-10-01T00:00:00+08:00",
+      month_end: "2026-11-01T00:00:00+08:00",
+      month_events: [event],
+      upcoming_start: "2026-10-09T00:00:00+08:00",
+      upcoming_end: "2026-11-09T00:00:00+08:00",
+      upcoming_events: [event],
+    });
+    vi.mocked(getTimetableStatus).mockResolvedValue({
+      state: "local",
+      provider: "上海交通大学",
+      lastSyncedAt: null,
+      message: null,
+      supportsOAuth: false,
+      hasLocalData: false,
+    });
+    vi.mocked(getTimetableSchedule).mockResolvedValue({ events: [] });
+    vi.mocked(getAssignments).mockResolvedValue({
+      category: "upcoming",
+      items: [assignment],
+    } as never);
+    vi.mocked(getAssignmentDetail).mockResolvedValue(assignment as never);
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "在 App 内完成作业：项目报告",
+      }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "在 App 内提交" }),
+    ).toBeTruthy();
+    expect(window.location.hash).toBe("#/assignments");
+    expect(getAssignmentDetail).toHaveBeenCalledWith(1, 2);
   });
 });
 

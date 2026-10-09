@@ -159,7 +159,7 @@ describe("AssignmentsView", () => {
     );
   });
 
-  it("shows external submissions and opens the Canvas assignment", async () => {
+  it("only offers an external fallback when Canvas marks the task as LTI", async () => {
     const external = {
       ...assignment,
       submission_types: ["external_tool"],
@@ -184,13 +184,29 @@ describe("AssignmentsView", () => {
     });
     render(<AssignmentsView />);
     fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
-    expect(
-      await screen.findByText("此作业需要在 Canvas 外部页面完成提交。"),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /在 Canvas 打开/ }));
+    expect(await screen.findByText("此作业由外部工具接管")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /打开外部工具/ }));
     await waitFor(() =>
       expect(api.openExternalAssignment).toHaveBeenCalledWith(1, 2),
     );
+  });
+
+  it("opens a calendar assignment directly in the in-app submission workspace", async () => {
+    const handled = vi.fn();
+    render(
+      <AssignmentsView
+        initialTarget={{ courseId: 1, assignmentId: 2 }}
+        onInitialTargetHandled={handled}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "在 App 内提交" }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("文本内容")).toBeTruthy();
+    expect(api.getAssignmentDetail).toHaveBeenCalledWith(1, 2);
+    expect(handled).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /在 Canvas 打开/ })).toBeNull();
   });
 
   it("requires confirmation and closes submission state after verified success", async () => {
