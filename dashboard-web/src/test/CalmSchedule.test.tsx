@@ -5,6 +5,8 @@ import type { CalendarEventItem } from "@/components/CalendarView";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
 import { cleanup, fireEvent, render, screen } from "@/test/render";
 
+process.env.TZ = "Asia/Shanghai";
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
