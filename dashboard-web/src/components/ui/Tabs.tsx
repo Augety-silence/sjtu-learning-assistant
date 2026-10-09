@@ -12,7 +12,7 @@ export const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center rounded-control bg-control-fill p-1 text-caption",
+      "aura-tabs-list inline-flex h-9 items-center rounded-[11px] bg-control-fill p-1 text-caption",
       className,
     )}
     {...props}
@@ -27,7 +27,7 @@ export const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "inline-flex h-8 items-center justify-center whitespace-nowrap rounded px-3 text-sm font-normal hover:bg-neutral-hover active:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-surface-elevated data-[state=active]:font-medium data-[state=active]:text-ink",
+      "aura-tabs-trigger inline-flex h-8 items-center justify-center whitespace-nowrap rounded-[8px] px-3 text-sm font-normal hover:bg-neutral-hover active:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-surface-elevated data-[state=active]:font-medium data-[state=active]:text-ink",
       className,
     )}
     {...props}

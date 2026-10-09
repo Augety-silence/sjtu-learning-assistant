@@ -21,6 +21,8 @@ export interface CalendarEventItem {
   eventType?: "assignment" | "course";
   source?: string;
   canonicalCourseId?: string | null;
+  publishedAt?: string | null;
+  availableAt?: string | null;
 }
 
 export interface CalendarViewProps {

@@ -118,6 +118,9 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
 
   const groups = useMemo(() => groupDeadlines(items ?? []), [items]);
 
+  const releaseText = (item: Deadline) =>
+    formatDateTime(item.unlock_at ?? item.published_at ?? null);
+
   const open = async (url: string | null) => {
     if (!url) return;
     try {
@@ -134,17 +137,19 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className="section-stack deadlines-page">
-      <div className={embedded ? "message-toolbar" : "view-intro"}>
-        {!embedded && (
-          <div>
-            <h2>待处理作业</h2>
-            <p>仅显示所选时间范围内尚未完成的作业。</p>
-          </div>
-        )}
+      <div className="calm-deadline-toolbar">
+        <div>
+          <h2>待处理任务</h2>
+          <p>查看所选时间范围内任务的发布、开放与截止时间。</p>
+        </div>
         <Tabs value={windowValue} onValueChange={setWindowValue}>
-          <TabsList aria-label="截止时间范围">
+          <TabsList className="calm-horizon-list" aria-label="截止时间范围">
             {windows.map((item) => (
-              <TabsTrigger key={item.value} value={item.value}>
+              <TabsTrigger
+                className="calm-horizon-trigger"
+                key={item.value}
+                value={item.value}
+              >
                 {item.label}
               </TabsTrigger>
             ))}
@@ -186,6 +191,7 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
                     <span className="deadline-card-title">{item.title}</span>
                     <span className="deadline-card-course">{item.course}</span>
                     <span className="deadline-card-meta">
+                      <span>{releaseText(item)}</span>
                       <span>{formatDateTime(item.due_at)}</span>
                       <span className="status-warning">
                         {deadlineDistance(item.due_at)}
@@ -204,6 +210,7 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
               <TableRow>
                 <TableHead className="deadline-title">事项</TableHead>
                 <TableHead className="deadline-course">课程</TableHead>
+                <TableHead className="deadline-release">发布/开放</TableHead>
                 <TableHead className="deadline-time">截止时间</TableHead>
                 <TableHead className="deadline-state">状态</TableHead>
               </TableRow>
@@ -211,7 +218,7 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
             {groups.map((group) => (
               <TableBody key={group.id} aria-label={group.label}>
                 <TableRow className="deadline-group-row">
-                  <TableCell colSpan={4}>
+                  <TableCell colSpan={5}>
                     <strong>{group.label}</strong>
                     <span>{group.items.length} 项</span>
                   </TableCell>
@@ -229,6 +236,7 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
                       </button>
                     </TableCell>
                     <TableCell>{item.course}</TableCell>
+                    <TableCell>{releaseText(item)}</TableCell>
                     <TableCell title={formatDateTime(item.due_at)}>
                       {formatDateTime(item.due_at)}
                     </TableCell>

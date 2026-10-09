@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CalendarEventItem } from "@/components/CalendarView";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
@@ -85,12 +86,17 @@ describe("CalmSchedule", () => {
           /^\d{1,2}月\d{1,2}日/.test(button.getAttribute("aria-label") ?? ""),
         ),
     ).toHaveLength(42);
-    expect(screen.getByText("Stakeholder engagement plan")).toBeTruthy();
+    expect(
+      screen.getAllByText("Stakeholder engagement plan").length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("今天 21:00")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "10月5日" }));
-    expect(screen.getByText("Weekly reflection 8")).toBeTruthy();
-    expect(screen.getByText("逾期 2 天")).toBeTruthy();
+    expect(screen.getAllByText("Weekly reflection 8").length).toBeGreaterThan(
+      0,
+    );
+    const agenda = screen.getByLabelText("当日安排");
+    expect(within(agenda).getByText("逾期 2 天")).toBeTruthy();
   });
 
   it("shows course sessions with time and location", () => {
@@ -113,9 +119,22 @@ describe("CalmSchedule", () => {
     expect(prompt).toContain("时间冲突");
   });
 
+  it("shows nearest deadlines, including a task later than seven days", () => {
+    renderCalm();
+    expect(screen.getByRole("heading", { name: "最近截止" })).toBeTruthy();
+    expect(screen.getByText("7 天后截止")).toBeTruthy();
+  });
+
   it("opens assignments through the open-event callback", () => {
     const { onOpenEvent } = renderCalm();
-    fireEvent.click(screen.getByText("Stakeholder engagement plan"));
+    const focusTitle = document.querySelector(
+      ".calm-task-item .calm-task-title",
+    );
+    const targetTitle = Array.from(
+      document.querySelectorAll(".calm-task-item .calm-task-title"),
+    ).find((element) => element.textContent === events[0].title);
+    expect(targetTitle).toBeTruthy();
+    fireEvent.click(targetTitle as HTMLElement);
     expect(onOpenEvent).toHaveBeenCalledWith(events[0]);
   });
 

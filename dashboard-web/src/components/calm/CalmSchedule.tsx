@@ -105,6 +105,28 @@ function toneClass(tone: DueTone): string {
   return "";
 }
 
+function relativeDueText(event: CalendarEventItem, now: Date): string {
+  const info = dueInfo(event, now);
+  if (info.tone === "overdue" || info.tone === "done") return info.text;
+  const diff = dayDiff(toDate(event.startAt), now);
+  if (diff === 0) return "今天截止";
+  if (diff === 1) return "明天截止";
+  return `${diff} 天后截止`;
+}
+
+function publishMeta(event: CalendarEventItem): string {
+  const parts: string[] = [];
+  if (event.publishedAt) {
+    const date = toDate(event.publishedAt);
+    parts.push(`发布 ${date.getMonth() + 1}月${date.getDate()}日`);
+  }
+  if (event.availableAt) {
+    const date = toDate(event.availableAt);
+    parts.push(`开放 ${date.getMonth() + 1}月${date.getDate()}日`);
+  }
+  return parts.join(" · ");
+}
+
 function isAssignment(event: CalendarEventItem): boolean {
   return event.eventType !== "course";
 }
@@ -217,6 +239,23 @@ export function CalmSchedule({
       return at >= startOfDay(now).getTime() && at < end.getTime();
     }).length;
   }, [events, now]);
+
+  const focusTasks = useMemo(
+    () =>
+      events
+        .filter(
+          (event) =>
+            isAssignment(event) &&
+            event.status !== "submitted" &&
+            event.status !== "graded",
+        )
+        .sort(
+          (left, right) =>
+            toDate(left.startAt).getTime() - toDate(right.startAt).getTime(),
+        )
+        .slice(0, 5),
+    [events],
+  );
 
   const selectedDate =
     dates.find((date) => dateKey(date) === selectedKey) ?? startOfDay(now);
@@ -438,90 +477,154 @@ export function CalmSchedule({
           </div>
         </div>
 
-        <div className="calm-agenda-col">
-          <div className="calm-agenda-head">
-            <span className="calm-agenda-title">
-              {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日{" "}
-              {weekdayAt(selectedDate)}
-              {selectedIsToday ? (
-                <span className="is-today-tag"> · 今天</span>
-              ) : null}
-            </span>
-            <span className="calm-agenda-count">
-              {selectedEvents.length} 项
-            </span>
-          </div>
-
-          <motion.div
-            key={selectedKey}
-            className="calm-agenda-list"
-            initial={reduceMotion ? false : { opacity: 0.3, x: direction * 10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.26, ease: [0.22, 0.8, 0.22, 1] }}
+        <div className="calm-side-col">
+          <section
+            className="calm-task-section"
+            aria-labelledby="calm-task-heading"
           >
-            {selectedEvents.map((event) => {
-              const due = dueInfo(event, now);
-              const barClass = [
-                "calm-item-bar",
-                due.tone === "done"
-                  ? "is-done"
-                  : due.tone === "overdue"
-                    ? "is-overdue"
-                    : isAssignment(event)
-                      ? "is-deadline"
-                      : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-              const openable = Boolean(onOpenEvent);
-              return (
-                <div
-                  key={`${event.eventType}-${event.id}`}
-                  className={`calm-agenda-item${
-                    openable ? " is-openable" : ""
-                  }`}
-                  role={openable ? "button" : undefined}
-                  tabIndex={openable ? 0 : undefined}
-                  onClick={() => onOpenEvent?.(event)}
-                  onKeyDown={(keyEvent) => {
-                    if (keyEvent.key === "Enter") onOpenEvent?.(event);
-                  }}
-                >
-                  <span className="calm-item-time">
-                    {hhmm(toDate(event.startAt))}
-                  </span>
-                  <span className={barClass} aria-hidden="true" />
-                  <span className="calm-item-body">
-                    <span className="calm-item-title">{event.title}</span>
-                    {isAssignment(event) ? (
-                      <span className="calm-item-meta">
-                        {event.courseName} · 截止 ·{" "}
-                        <span className={toneClass(due.tone)}>{due.text}</span>
+            <div className="calm-task-head">
+              <h2 id="calm-task-heading">最近截止</h2>
+              <span>未来 31 天</span>
+            </div>
+            <div className="calm-task-list">
+              {focusTasks.map((event) => {
+                const due = dueInfo(event, now);
+                const at = toDate(event.startAt);
+                const published = publishMeta(event);
+                const openable = Boolean(onOpenEvent);
+                return (
+                  <div
+                    key={`focus-${event.eventType}-${event.id}`}
+                    className={`calm-task-item${
+                      openable ? " is-openable" : ""
+                    }`}
+                    role={openable ? "button" : undefined}
+                    tabIndex={openable ? 0 : undefined}
+                    onClick={() => onOpenEvent?.(event)}
+                    onKeyDown={(keyEvent) => {
+                      if (keyEvent.key === "Enter") onOpenEvent?.(event);
+                    }}
+                  >
+                    <span className="calm-task-top">
+                      <span className="calm-task-due">
+                        {at.getMonth() + 1}月{at.getDate()}日 {hhmm(at)}
                       </span>
-                    ) : (
-                      <span className="calm-item-meta">
-                        {[
-                          event.courseName,
-                          event.periodLabel,
-                          event.location,
-                          event.endAt
-                            ? `${hhmm(toDate(event.startAt))}–${hhmm(
-                                toDate(event.endAt),
-                              )}`
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                      <span className={toneClass(due.tone)}>
+                        {relativeDueText(event, now)}
                       </span>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
-            {selectedEvents.length === 0 ? (
-              <p className="calm-agenda-empty">这一天没有安排。</p>
-            ) : null}
-          </motion.div>
+                    </span>
+                    <span className="calm-task-title">{event.title}</span>
+                    <span className="calm-task-meta">
+                      {[event.courseName, published]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  </div>
+                );
+              })}
+              {focusTasks.length === 0 ? (
+                <p className="calm-task-empty">近期没有待完成任务。</p>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="calm-agenda-col" aria-label="当日安排">
+            <div className="calm-agenda-head">
+              <span className="calm-agenda-title">
+                {selectedDate.getMonth() + 1}月{selectedDate.getDate()}日{" "}
+                {weekdayAt(selectedDate)}
+                {selectedIsToday ? (
+                  <span className="is-today-tag"> · 今天</span>
+                ) : null}
+              </span>
+              <span className="calm-agenda-count">
+                {selectedEvents.length} 项
+              </span>
+            </div>
+
+            <motion.div
+              key={selectedKey}
+              className="calm-agenda-list"
+              initial={
+                reduceMotion ? false : { opacity: 0.3, x: direction * 10 }
+              }
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.26, ease: [0.22, 0.8, 0.22, 1] }}
+            >
+              {selectedEvents.map((event) => {
+                const due = dueInfo(event, now);
+                const barClass = [
+                  "calm-item-bar",
+                  due.tone === "done"
+                    ? "is-done"
+                    : due.tone === "overdue"
+                      ? "is-overdue"
+                      : isAssignment(event)
+                        ? "is-deadline"
+                        : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                const openable = Boolean(onOpenEvent);
+                const published = isAssignment(event) ? publishMeta(event) : "";
+                return (
+                  <div
+                    key={`${event.eventType}-${event.id}`}
+                    className={`calm-agenda-item${
+                      openable ? " is-openable" : ""
+                    }`}
+                    role={openable ? "button" : undefined}
+                    tabIndex={openable ? 0 : undefined}
+                    onClick={() => onOpenEvent?.(event)}
+                    onKeyDown={(keyEvent) => {
+                      if (keyEvent.key === "Enter") onOpenEvent?.(event);
+                    }}
+                  >
+                    <span className="calm-item-time">
+                      {hhmm(toDate(event.startAt))}
+                    </span>
+                    <span className={barClass} aria-hidden="true" />
+                    <span className="calm-item-body">
+                      <span className="calm-item-title">{event.title}</span>
+                      {isAssignment(event) ? (
+                        <span className="calm-item-body-meta">
+                          <span className="calm-item-meta">
+                            {event.courseName} · 截止 ·{" "}
+                            <span className={toneClass(due.tone)}>
+                              {due.text}
+                            </span>
+                          </span>
+                          {published ? (
+                            <span className="calm-item-published">
+                              {published}
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="calm-item-meta">
+                          {[
+                            event.courseName,
+                            event.periodLabel,
+                            event.location,
+                            event.endAt
+                              ? `${hhmm(toDate(event.startAt))}–${hhmm(
+                                  toDate(event.endAt),
+                                )}`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+              {selectedEvents.length === 0 ? (
+                <p className="calm-agenda-empty">这一天没有安排。</p>
+              ) : null}
+            </motion.div>
+          </section>
         </div>
       </div>
     </div>

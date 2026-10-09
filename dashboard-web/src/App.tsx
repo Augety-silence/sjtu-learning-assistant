@@ -1,5 +1,6 @@
 import { motion, useReducedMotion } from "motion/react";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -104,6 +105,8 @@ const baseViews: ViewName[] = [
   "settings",
 ];
 
+type ScheduleMode = "calendar" | "deadlines";
+
 function initialView(): ViewName {
   const requested = window.location.hash.replace("#/", "");
   const aliases: Record<string, ViewName> = {
@@ -154,6 +157,15 @@ function eventDate(event: CalendarEventDto) {
   );
 }
 
+function optionalIsoDate(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const raw = value.trim().endsWith("Z")
+    ? `${value.trim().slice(0, -1)}+00:00`
+    : value.trim();
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function adaptCalendarEvent(
   event: CalendarEventDto,
   index: number,
@@ -179,6 +191,8 @@ function adaptCalendarEvent(
           : undefined,
     eventType: "assignment",
     source: "canvas",
+    publishedAt: optionalIsoDate(assignment.created_at),
+    availableAt: optionalIsoDate(assignment.unlock_at),
     url:
       typeof event.html_url === "string"
         ? event.html_url
@@ -189,9 +203,13 @@ function adaptCalendarEvent(
 }
 
 function ScheduleAdapter({
+  mode,
+  onModeChange,
   onNavigateAssignments,
   onAskAI,
 }: {
+  mode: ScheduleMode;
+  onModeChange: (mode: ScheduleMode) => void;
   onNavigateAssignments: () => void;
   onAskAI: (prompt: string) => void;
 }) {
@@ -227,39 +245,21 @@ function ScheduleAdapter({
   }, [month]);
   useEffect(() => void loadCanvas(), [loadCanvas]);
 
+  if (mode === "deadlines") return <DeadlinesView embedded />;
   return (
-    <div className="section-stack">
-      <Tabs defaultValue="calendar">
-        <div className="message-toolbar">
-          <TabsList className="calm-seg-list" aria-label="日程视图">
-            <TabsTrigger className="calm-seg-trigger" value="calendar">
-              月历
-            </TabsTrigger>
-            <TabsTrigger className="calm-seg-trigger" value="deadlines">
-              待处理
-            </TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="calendar">
-          <ScheduleView
-            canvasEvents={events}
-            canvasLoading={loading}
-            canvasError={error}
-            month={month}
-            onMonthChange={setMonth}
-            onRetryCanvas={loadCanvas}
-            onOpenCanvasEvent={(event) => {
-              if (event.url) void openExternal(event.url);
-              else onNavigateAssignments();
-            }}
-            onAskAI={onAskAI}
-          />
-        </TabsContent>
-        <TabsContent value="deadlines">
-          <DeadlinesView embedded />
-        </TabsContent>
-      </Tabs>
-    </div>
+    <ScheduleView
+      canvasEvents={events}
+      canvasLoading={loading}
+      canvasError={error}
+      month={month}
+      onMonthChange={setMonth}
+      onRetryCanvas={loadCanvas}
+      onOpenCanvasEvent={(event) => {
+        if (event.url) void openExternal(event.url);
+        else onNavigateAssignments();
+      }}
+      onAskAI={onAskAI}
+    />
   );
 }
 
@@ -867,6 +867,7 @@ function VideosAdapter({
 
 export default function App() {
   const [view, setViewState] = useState<ViewName>(initialView);
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("calendar");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncRequested, setSyncRequested] = useState(false);
@@ -942,6 +943,23 @@ export default function App() {
     window.location.hash = `/${next}`;
     setViewState(next);
   };
+
+  const headerActions: ReactNode =
+    view === "calendar" ? (
+      <Tabs
+        value={scheduleMode}
+        onValueChange={(value) => setScheduleMode(value as ScheduleMode)}
+      >
+        <TabsList className="calm-seg-list" aria-label="日程视图">
+          <TabsTrigger className="calm-seg-trigger" value="calendar">
+            月历
+          </TabsTrigger>
+          <TabsTrigger className="calm-seg-trigger" value="deadlines">
+            待处理
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+    ) : null;
   useLayoutEffect(() => applyThemeMode(themeMode), [themeMode]);
 
   useEffect(() => {
@@ -1062,6 +1080,7 @@ export default function App() {
       syncStatus={syncStatus}
       syncing={syncing}
       onSync={() => void triggerSync()}
+      headerActions={headerActions}
     >
       <motion.div
         key={view}
@@ -1079,6 +1098,8 @@ export default function App() {
         {view === "calendar" && (
           <ScheduleAdapter
             key={dataVersion}
+            mode={scheduleMode}
+            onModeChange={setScheduleMode}
             onNavigateAssignments={() => setView("assignments")}
             onAskAI={(prompt) => {
               window.localStorage.setItem("ai-chat-pending-prompt", prompt);

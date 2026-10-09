@@ -574,7 +574,9 @@ class AcademicFeatureService:
         except (TypeError, ValueError) as exc:
             raise AcademicValidationError("年月格式无效。") from exc
         month_items = self.events_between(month_start, month_end, course_ids=course_ids)
-        upcoming_end = current + timedelta(days=7)
+        # The calendar page needs the nearest later deadlines even when the
+        # next seven days are empty. The 31-day cap keeps the request bounded.
+        upcoming_end = current + timedelta(days=31)
         upcoming_items = self.events_between(current, upcoming_end, course_ids=course_ids)
         return CalendarAggregation(
             _iso(month_start),

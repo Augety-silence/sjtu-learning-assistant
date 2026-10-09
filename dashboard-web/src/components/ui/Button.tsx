@@ -4,16 +4,16 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex min-h-9 items-center justify-center gap-2 whitespace-nowrap rounded-control px-4 text-sm font-normal transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-[var(--motion-fast)] ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
+  "aura-button inline-flex min-h-9 items-center justify-center gap-2 whitespace-nowrap rounded-[10px] px-4 text-sm font-normal transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-[var(--motion-control)] ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-inverse hover:bg-primary-hover active:bg-primary-pressed",
+          "aura-button-primary bg-primary text-inverse hover:bg-primary-hover active:bg-primary-pressed",
         outline:
-          "border border-component bg-surface-elevated text-ink hover:bg-surface-hover",
+          "aura-button-outline border border-component bg-surface-elevated text-ink hover:bg-surface-hover",
         ghost:
-          "bg-transparent text-caption hover:bg-neutral-hover hover:text-ink",
+          "aura-button-ghost bg-transparent text-caption hover:bg-neutral-hover hover:text-ink",
         link: "min-h-9 px-2 text-primary hover:text-primary-hover",
       },
       size: {

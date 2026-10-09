@@ -284,6 +284,40 @@
   --shadow-ai-drop: 0 14px 38px #00000070, 0 3px 10px #0000004d;
 }
 
+:root {
+  --aura-backdrop: #eaf1fb;
+  --aura-atmosphere: #cfdef4;
+  --aura-panel: rgba(249, 252, 255, 0.72);
+  --aura-panel-strong: rgba(255, 255, 255, 0.88);
+  --aura-control: rgba(255, 255, 255, 0.62);
+  --aura-control-hover: rgba(255, 255, 255, 0.84);
+  --aura-border: rgba(63, 98, 143, 0.2);
+  --aura-border-highlight: rgba(255, 255, 255, 0.8);
+  --aura-shadow: 0 20px 52px rgba(35, 65, 105, 0.14),
+    0 3px 10px rgba(35, 65, 105, 0.06);
+  --aura-shadow-soft: 0 10px 28px rgba(35, 65, 105, 0.09),
+    0 1px 4px rgba(35, 65, 105, 0.05);
+  --aura-blur: blur(24px) saturate(1.12);
+  --aura-radius-window: 22px;
+  --aura-radius-card: 15px;
+  --aura-radius-control: 10px;
+}
+
+:root[data-theme="dark"] {
+  --aura-backdrop: #0d1623;
+  --aura-atmosphere: #1c3150;
+  --aura-panel: rgba(20, 30, 44, 0.78);
+  --aura-panel-strong: rgba(27, 38, 54, 0.91);
+  --aura-control: rgba(69, 88, 116, 0.34);
+  --aura-control-hover: rgba(78, 101, 136, 0.48);
+  --aura-border: rgba(150, 181, 225, 0.2);
+  --aura-border-highlight: rgba(208, 226, 255, 0.16);
+  --aura-shadow: 0 22px 56px rgba(0, 0, 0, 0.36),
+    0 3px 12px rgba(0, 0, 0, 0.2);
+  --aura-shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.24),
+    0 1px 5px rgba(0, 0, 0, 0.18);
+}
+
 ::selection {
   color: var(--selection-text);
   background: var(--selection-bg);
@@ -527,6 +561,13 @@ a {
 .page-header svg {
   width: 16px;
   height: 16px;
+}
+
+.page-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
 }
 
 .mobile-menu {
@@ -10085,4 +10126,299 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   .local-project-path button { grid-column: 1 / -1; }
   .local-projects-summary > div { padding: 13px; }
   .local-project-actions { display: grid; grid-template-columns: 1fr auto auto; }
+}
+
+/* Aura glass system — layered surfaces for the desktop learning workspace. */
+body {
+  background: var(--aura-backdrop);
+}
+
+.app-shell[data-aura-shell] {
+  position: relative;
+  isolation: isolate;
+  gap: 12px;
+  padding: 12px;
+  background: var(--aura-backdrop);
+}
+
+.app-shell[data-aura-shell]::before,
+.app-shell[data-aura-shell]::after {
+  position: fixed;
+  z-index: -1;
+  width: 34vw;
+  height: 34vw;
+  border-radius: 50%;
+  background: var(--aura-atmosphere);
+  content: "";
+  filter: blur(72px);
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.app-shell[data-aura-shell]::before {
+  top: -18vw;
+  right: 8vw;
+}
+
+.app-shell[data-aura-shell]::after {
+  bottom: -24vw;
+  left: 12vw;
+  opacity: 0.3;
+}
+
+[data-aura-surface] {
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--aura-border);
+  background: var(--aura-panel);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow);
+  backdrop-filter: var(--aura-blur);
+}
+
+.sidebar[data-aura-surface="navigation"] {
+  width: 224px;
+  height: auto;
+  padding: 14px 11px 11px;
+  flex-basis: 224px;
+  border-right: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-window);
+}
+
+.workspace[data-aura-surface="workspace"] {
+  border-radius: var(--aura-radius-window);
+  background: var(--aura-panel);
+}
+
+.brand-mark {
+  padding: 3px;
+  border: 1px solid var(--aura-border);
+  border-radius: 11px;
+  background: var(--aura-control);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.nav-item {
+  border-radius: var(--aura-radius-control);
+  transition: background-color var(--motion-control) var(--ease-motion-out),
+    color var(--motion-control) var(--ease-motion-out),
+    box-shadow var(--motion-control) var(--ease-motion-out),
+    transform var(--motion-control) var(--ease-motion-out);
+}
+
+.nav-item:hover {
+  background: var(--aura-control);
+  transform: translateY(-1px);
+}
+
+.nav-item:active,
+.nav-selected,
+.nav-selected:hover {
+  background: color-mix(in srgb, var(--action-primary) 11%, var(--aura-control));
+  box-shadow: inset 0 0 0 1px var(--aura-border),
+    0 5px 14px rgba(20, 86, 240, 0.09);
+  transform: none;
+}
+
+.sidebar-lower {
+  border-top-color: var(--aura-border);
+}
+
+.sidebar-footer {
+  margin-top: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-control);
+  background: color-mix(in srgb, var(--aura-control) 72%, transparent);
+}
+
+.page-header {
+  top: 0;
+  min-height: 78px;
+  border-bottom-color: var(--aura-border);
+  background: var(--aura-panel-strong);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    0 8px 22px rgba(35, 65, 105, 0.06);
+  backdrop-filter: var(--aura-blur);
+}
+
+.page-heading h1 {
+  letter-spacing: -0.02em;
+}
+
+.content {
+  position: relative;
+  z-index: 0;
+}
+
+.aura-button {
+  border-radius: var(--aura-radius-control);
+}
+
+.aura-button-primary {
+  border: 1px solid color-mix(in srgb, var(--action-primary) 72%, white);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 7px 16px rgba(20, 86, 240, 0.18);
+}
+
+.aura-button-outline {
+  border-color: var(--aura-border);
+  background: var(--aura-control);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    0 2px 6px rgba(35, 65, 105, 0.05);
+  backdrop-filter: blur(14px);
+}
+
+.aura-button-outline:hover,
+.aura-button-ghost:hover {
+  background: var(--aura-control-hover);
+}
+
+.aura-tabs-list {
+  border: 1px solid var(--aura-border);
+  background: color-mix(in srgb, var(--aura-control) 82%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  backdrop-filter: blur(14px);
+}
+
+.aura-tabs-trigger[data-state="active"] {
+  background: var(--aura-panel-strong);
+  box-shadow: 0 3px 10px rgba(35, 65, 105, 0.1);
+}
+
+:where(
+    .list-surface,
+    .table-surface,
+    .filter-bar,
+    .configuration-section,
+    .settings-panel,
+    .configuration-card,
+    .finder,
+    .assignment-layout,
+    .backup-status-card,
+    .knowledge-config,
+    .knowledge-run-card,
+    .knowledge-path-card,
+    .local-project-form,
+    .local-project-card,
+    .local-projects-summary,
+    .local-project-path,
+    .state-box,
+    .ai-chat
+  ) {
+  border-color: var(--aura-border);
+  border-radius: var(--aura-radius-card);
+  background: var(--aura-panel-strong);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+:where(.knowledge-hero, .local-projects-hero) {
+  border-color: color-mix(in srgb, var(--action-primary) 24%, var(--aura-border));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--action-primary) 7%, var(--aura-panel));
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+}
+
+:where(
+    .confirm-dialog,
+    .config-dialog,
+    .message-dialog,
+    .material-preview-dialog,
+    .message-image-preview-dialog,
+    .schedule-dialog,
+    .archive-restore-dialog,
+    .transcript-detail-drawer,
+    .archive-detail-drawer,
+    .ai-personalization-panel
+  ) {
+  border: 1px solid var(--aura-border);
+  border-radius: 18px;
+  background: var(--aura-panel-strong);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow);
+  backdrop-filter: blur(30px) saturate(1.12);
+}
+
+:where(
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select,
+    .search-control,
+    .ai-composer-box
+  ) {
+  border-color: var(--aura-border);
+  border-radius: var(--aura-radius-control);
+  background: var(--aura-control);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.ai-chat {
+  background: color-mix(in srgb, var(--aura-panel) 88%, transparent);
+}
+
+:where(.ai-chat-sidebar, .ai-activity, .ai-chat-toolbar, .ai-activity-header) {
+  border-color: var(--aura-border);
+  background: color-mix(in srgb, var(--aura-panel-strong) 84%, transparent);
+}
+
+:where(.ai-conversation, .ai-composer) {
+  background: transparent;
+}
+
+.ai-composer-box {
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--shadow-ai-composer);
+  backdrop-filter: blur(18px);
+}
+
+.mobile-drawer[data-aura-surface="navigation"] {
+  border-radius: 0 20px 20px 0;
+  background: var(--aura-panel-strong);
+}
+
+@supports (-webkit-backdrop-filter: blur(1px)) {
+  [data-aura-surface],
+  .page-header,
+  .aura-button-outline,
+  .aura-tabs-list,
+  .ai-composer-box {
+    -webkit-backdrop-filter: var(--aura-blur);
+    backdrop-filter: var(--aura-blur);
+  }
+}
+
+@media (hover: hover) {
+  .aura-button:not(:disabled):hover {
+    transform: translateY(-1px);
+  }
+
+  .aura-button:not(:disabled):active {
+    transform: scale(0.98);
+  }
+}
+
+@media (max-width: 1199px) and (min-width: 600px) {
+  .sidebar[data-aura-surface="navigation"] {
+    width: 72px;
+    flex-basis: 72px;
+    padding-inline: 8px;
+  }
+}
+
+@media (max-width: 599px) {
+  .app-shell[data-aura-shell] {
+    gap: 0;
+    padding: 0;
+  }
+
+  .workspace[data-aura-surface="workspace"] {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .page-header {
+    border-radius: 0 0 16px 16px;
+  }
 }

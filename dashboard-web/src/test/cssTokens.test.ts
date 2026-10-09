@@ -32,6 +32,22 @@ describe("CSS semantic tokens", () => {
     expect(css).not.toContain("0.5px");
   });
 
+  it("建立 Aura 三层玻璃语义并保留深色烟熏材质", () => {
+    for (const token of [
+      "--aura-backdrop",
+      "--aura-panel",
+      "--aura-panel-strong",
+      "--aura-control",
+      "--aura-border",
+      "--aura-shadow",
+    ]) {
+      expect(css).toContain(token);
+    }
+    expect(css).toContain('[data-theme="dark"]');
+    expect(css).toContain("backdrop-filter: var(--aura-blur)");
+    expect(css).toContain("@supports (-webkit-backdrop-filter: blur(1px))");
+  });
+
   it("为深色主题覆盖核心界面与 AI 工作区语义色", () => {
     expect(css).toContain(':root[data-theme="dark"]');
     const darkTheme = css.slice(css.indexOf(':root[data-theme="dark"]'));

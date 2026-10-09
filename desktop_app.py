@@ -1500,6 +1500,7 @@ def run_desktop_app() -> int:
             width=1280,
             height=820,
             min_size=(960, 640),
+            background_color="#EAF1FB",
         )
         scheduler.start()
         webview.start(debug=False)

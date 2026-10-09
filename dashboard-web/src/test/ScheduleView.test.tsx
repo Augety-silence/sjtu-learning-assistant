@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScheduleView } from "@/components/ScheduleView";
 import {
@@ -16,7 +17,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
     importTimetableIcs: vi.fn(),
-    syncTimetable: vi.fn(),
   };
 });
 
@@ -57,18 +57,28 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ScheduleView", () => {
-  it("shows the awaiting-configuration connection entry without credential fields", async () => {
+  it("只保留轻量状态和 ICS 导入按钮，不展示课程配置卡", async () => {
     renderView();
-    expect(await screen.findByText("连接上海交通大学")).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: "使用 jAccount 连接" })
-        .hasAttribute("disabled"),
-    ).toBe(true);
-    expect(screen.getAllByText("等待开放平台配置").length).toBeGreaterThan(0);
-    expect(screen.getByText(/不保存 jAccount 密码/)).toBeTruthy();
+    expect(await screen.findByText("等待开放平台配置")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "导入 ICS 日历" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /jAccount/ })).toBeNull();
+    expect(screen.queryByText("连接上海交通大学")).toBeNull();
     expect(screen.queryByLabelText(/client_secret/i)).toBeNull();
     expect(screen.queryByLabelText(/密码/)).toBeNull();
+  });
+
+  it("在固定状态槽显示 Canvas 同步状态且不插入新行", async () => {
+    render(
+      <ScheduleView
+        canvasEvents={[]}
+        canvasLoading
+        month={new Date(2026, 9, 1)}
+        onMonthChange={vi.fn()}
+      />,
+    );
+    const live = await screen.findByText("正在同步 Canvas 日历…");
+    expect(live.className).toContain("calm-utility-live");
+    expect(document.querySelectorAll(".calm-utility-row")).toHaveLength(1);
   });
 
   it("loads the full visible calendar grid and merges Canvas with local events once", async () => {
@@ -109,15 +119,16 @@ describe("ScheduleView", () => {
     expect(new Date(endAt).getDate()).toBe(9);
     expect(new Date(endAt).getMonth()).toBe(10);
     fireEvent.click(screen.getByRole("button", { name: "9月28日" }));
-    expect(await screen.findByText("本地课程")).toBeTruthy();
+    const agenda = await screen.findByLabelText("当日安排");
+    expect(within(agenda).findByText("本地课程")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "10月6日" }));
-    expect(await screen.findByText("Canvas 作业")).toBeTruthy();
+    expect(within(agenda).findByText("Canvas 作业")).toBeTruthy();
   });
 
-  it("imports an ICS timetable in one action", async () => {
+  it("imports an ICS calendar in one action", async () => {
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入 ICS 课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 日历" }),
     );
     await waitFor(() => expect(importTimetableIcs).toHaveBeenCalledOnce());
     expect(await screen.findByText("已导入 2 门课程、18 节课。")).toBeTruthy();
@@ -129,18 +140,17 @@ describe("ScheduleView", () => {
     );
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入 ICS 课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 日历" }),
     );
     expect(await screen.findByText("ICS 内容无效")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByText("加载匿名示例课表")).toBeNull();
   });
 
   it("does nothing when the ICS picker is cancelled", async () => {
     vi.mocked(importTimetableIcs).mockResolvedValueOnce({ cancelled: true });
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入 ICS 课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 日历" }),
     );
     await waitFor(() => expect(importTimetableIcs).toHaveBeenCalledOnce());
     expect(screen.queryByText(/^已导入/)).toBeNull();

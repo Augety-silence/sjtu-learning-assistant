@@ -284,7 +284,12 @@ class AcademicFeatureServiceTests(unittest.TestCase):
             course_ids=[1],
         )
         self.assertEqual(1, len(overview.month_events))
-        self.assertEqual(1, len(overview.upcoming_events))
+        # 31 天窗口保证近一周为空时，仍能展示最近的远期截止；
+        # “Duplicate assignment”与 “Course 1” 属于同一作业，按 ID 去重。
+        self.assertEqual(
+            ["Course 1", "Outside range"],
+            [item["title"] for item in overview.upcoming_events],
+        )
         self.assertEqual("2026-09-01T00:00:00+00:00", overview.month_start)
 
     def test_members_filter_and_csv_export_are_safe(self) -> None:

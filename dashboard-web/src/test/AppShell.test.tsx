@@ -100,8 +100,11 @@ describe("AppShell 移动导航", () => {
     );
 
     expect(shell).toBeTruthy();
+    expect(shell?.hasAttribute("data-aura-shell")).toBe(true);
     expect(sidebar).toBeTruthy();
+    expect(sidebar?.getAttribute("data-aura-surface")).toBe("navigation");
     expect(workspace).toBeTruthy();
+    expect(workspace?.getAttribute("data-aura-surface")).toBe("workspace");
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
     expect(within(mainNavigation).getAllByRole("button")).toHaveLength(13);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);

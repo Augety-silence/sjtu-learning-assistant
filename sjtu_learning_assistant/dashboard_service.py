@@ -189,6 +189,21 @@ def _course_name(value: str | None) -> str:
     return value or "未归属课程"
 
 
+def _raw_iso(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(SHANGHAI_TZ).isoformat(timespec="seconds")
+
+
 def _sender_name(value: str | None) -> str:
     # sender_address 和包含账号信息的邮件 source_id 永不进入 API DTO。
     clean = " ".join((value or "").split()).strip()
@@ -901,6 +916,16 @@ class DashboardService:
                 "title": assignment.name,
                 "course": _course_name(course.name),
                 "due_at": to_shanghai(assignment.due_at),
+                "published_at": _raw_iso(
+                    assignment.raw_data.get("created_at")
+                    if isinstance(assignment.raw_data, dict)
+                    else None
+                ),
+                "unlock_at": _raw_iso(
+                    assignment.raw_data.get("unlock_at")
+                    if isinstance(assignment.raw_data, dict)
+                    else None
+                ),
                 "submission_state": assignment.submission_state or "unsubmitted",
                 "url": assignment.url,
             }

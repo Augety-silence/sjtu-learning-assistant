@@ -127,6 +127,8 @@ export interface Deadline {
   title: string;
   course: string;
   due_at: string | null;
+  published_at?: string | null;
+  unlock_at?: string | null;
   submission_state: string;
   url: string | null;
 }

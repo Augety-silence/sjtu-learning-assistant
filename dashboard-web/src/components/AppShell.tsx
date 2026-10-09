@@ -18,7 +18,13 @@ import {
   Video,
 } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
-import { type RefObject, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import appLogo from "@/assets/app-logo.png";
 import { Button } from "@/components/ui/Button";
 import { motionDuration, motionEase } from "@/lib/motion";
@@ -54,6 +60,7 @@ interface AppShellProps {
   syncStatus: SyncStatus | null;
   syncing: boolean;
   onSync: () => void;
+  headerActions?: ReactNode;
   children: React.ReactNode;
 }
 
@@ -143,6 +150,7 @@ function MobileDrawer({
       <motion.aside
         ref={drawerRef}
         className="mobile-drawer"
+        data-aura-surface="navigation"
         role="dialog"
         aria-modal="true"
         aria-label="移动导航"
@@ -205,6 +213,7 @@ export function AppShell({
   syncStatus,
   syncing,
   onSync,
+  headerActions,
   children,
 }: AppShellProps) {
   const [isMobile, setIsMobile] = useState(mobileViewport);
@@ -260,8 +269,8 @@ export function AppShell({
   };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className="app-shell" data-aura-shell>
+      <aside className="sidebar" data-aura-surface="navigation">
         <div className="brand">
           <img className="brand-mark" src={appLogo} alt="SJTU 学习助手标志" />
           <div>
@@ -305,7 +314,7 @@ export function AppShell({
           />
         )}
       </AnimatePresence>
-      <main className="workspace">
+      <main className="workspace" data-aura-surface="workspace">
         <header className="page-header">
           <div className="page-heading">
             <Button
@@ -337,13 +346,16 @@ export function AppShell({
               </p>
             </div>
           </div>
-          <Button onClick={onSync} disabled={syncing}>
-            <RefreshCw
-              aria-hidden="true"
-              className={syncing ? "animate-spin" : ""}
-            />
-            {syncing ? "同步中" : "立即同步"}
-          </Button>
+          <div className="page-header-actions">
+            {headerActions}
+            <Button onClick={onSync} disabled={syncing}>
+              <RefreshCw
+                aria-hidden="true"
+                className={syncing ? "animate-spin" : ""}
+              />
+              {syncing ? "同步中" : "立即同步"}
+            </Button>
+          </div>
         </header>
         <div className="content">{children}</div>
       </main>
