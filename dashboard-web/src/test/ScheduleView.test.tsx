@@ -3,11 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScheduleView } from "@/components/ScheduleView";
 import {
-  commitTimetableImport,
   getTimetableSchedule,
   getTimetableStatus,
-  previewTimetableFile,
-  previewTimetableSample,
+  importTimetableIcs,
 } from "@/lib/api";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
@@ -15,11 +13,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
-    commitTimetableImport: vi.fn(),
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
-    previewTimetableFile: vi.fn(),
-    previewTimetableSample: vi.fn(),
+    importTimetableIcs: vi.fn(),
     syncTimetable: vi.fn(),
   };
 });
@@ -31,14 +27,6 @@ const awaitingStatus = {
   message: "等待开放平台配置",
   supportsOAuth: false,
   hasLocalData: false,
-};
-
-const preview = {
-  previewId: "preview-1",
-  format: "ics",
-  courses: [{ name: "文本分析与大模型" }, { name: "学术英语" }],
-  sessions: 18,
-  warnings: ["一节课程缺少教室"],
 };
 
 function renderView() {
@@ -56,17 +44,13 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(getTimetableStatus).mockResolvedValue(awaitingStatus);
   vi.mocked(getTimetableSchedule).mockResolvedValue({ events: [] });
-  vi.mocked(previewTimetableFile).mockResolvedValue(preview);
-  vi.mocked(previewTimetableSample).mockResolvedValue({
-    ...preview,
-    previewId: "sample-1",
-    warnings: [],
-  });
-  vi.mocked(commitTimetableImport).mockResolvedValue({
+  vi.mocked(importTimetableIcs).mockResolvedValue({
     status: "ok",
     importedCourses: 2,
     importedSessions: 18,
     updatedSessions: 0,
+    format: "ics",
+    warnings: [],
   });
 });
 
@@ -130,49 +114,35 @@ describe("ScheduleView", () => {
     expect(await screen.findByText("Canvas 作业")).toBeTruthy();
   });
 
-  it("previews and commits a selected local timetable", async () => {
+  it("imports an ICS timetable in one action", async () => {
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入本地课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 课表" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
-    expect(await screen.findByText("2 门")).toBeTruthy();
-    expect(screen.getByText("18 节")).toBeTruthy();
-    expect(screen.getByText("一节课程缺少教室")).toBeTruthy();
-    expect(screen.getByText("文本分析与大模型")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "确认导入" }));
-    await waitFor(() =>
-      expect(commitTimetableImport).toHaveBeenCalledWith("preview-1"),
-    );
-    expect(previewTimetableFile).toHaveBeenCalledWith();
+    await waitFor(() => expect(importTimetableIcs).toHaveBeenCalledOnce());
+    expect(await screen.findByText("已导入 2 门课程、18 节课。")).toBeTruthy();
   });
 
-  it("loads the anonymous sample and recovers from preview errors", async () => {
-    vi.mocked(previewTimetableFile).mockRejectedValueOnce(
+  it("shows ICS import errors without opening the legacy dialog", async () => {
+    vi.mocked(importTimetableIcs).mockRejectedValueOnce(
       new Error("ICS 内容无效"),
     );
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入本地课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 课表" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
     expect(await screen.findByText("ICS 内容无效")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /加载匿名示例课表/ }));
-    expect(await screen.findByText("18 节")).toBeTruthy();
-    expect(previewTimetableSample).toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("加载匿名示例课表")).toBeNull();
   });
 
-  it("keeps the preview available when commit fails", async () => {
-    vi.mocked(commitTimetableImport).mockRejectedValueOnce(
-      new Error("写入失败"),
-    );
+  it("does nothing when the ICS picker is cancelled", async () => {
+    vi.mocked(importTimetableIcs).mockResolvedValueOnce({ cancelled: true });
     renderView();
     fireEvent.click(
-      await screen.findByRole("button", { name: "导入本地课表" }),
+      await screen.findByRole("button", { name: "导入 ICS 课表" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "选择文件" }));
-    fireEvent.click(await screen.findByRole("button", { name: "确认导入" }));
-    expect(await screen.findByText("写入失败")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "确认导入" })).toBeTruthy();
+    await waitFor(() => expect(importTimetableIcs).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/^已导入/)).toBeNull();
   });
 });

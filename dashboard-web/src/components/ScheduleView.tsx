@@ -1,24 +1,20 @@
 import {
   CalendarDays,
   Check,
-  FileUp,
   RefreshCw,
   ShieldCheck,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type CalendarEventItem } from "@/components/CalendarView";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
 import { Button } from "@/components/ui/Button";
 import {
-  commitTimetableImport,
   getTimetableSchedule,
   getTimetableStatus,
-  previewTimetableFile,
-  previewTimetableSample,
+  importTimetableIcs,
 } from "@/lib/api";
-import type { TimetableImportPreview, TimetableStatus } from "@/lib/types";
-import { useModalFocus } from "@/lib/useModalFocus";
+import type { TimetableStatus } from "@/lib/types";
 
 const CACHE_KEY = "sjtu-learning-timetable-cache-v1";
 
@@ -32,8 +28,6 @@ interface ScheduleViewProps {
   onOpenCanvasEvent?: (event: CalendarEventItem) => void;
   onAskAI?: (prompt: string) => void;
 }
-
-type ImportStep = "idle" | "picking" | "preview" | "committing";
 
 function messageFrom(reason: unknown, fallback: string) {
   return reason instanceof Error ? reason.message : fallback;
@@ -61,167 +55,6 @@ function visibleCalendarRange(month: Date) {
   return { startAt: start.toISOString(), endAt: end.toISOString() };
 }
 
-function courseCount(preview: TimetableImportPreview) {
-  return Array.isArray(preview.courses)
-    ? preview.courses.length
-    : preview.courses;
-}
-
-function courseNames(preview: TimetableImportPreview) {
-  if (!Array.isArray(preview.courses)) return [];
-  return preview.courses.map((course) =>
-    typeof course === "string" ? course : course.name,
-  );
-}
-
-function ImportDialog({
-  preview,
-  step,
-  error,
-  onChoose,
-  onSample,
-  onCommit,
-  onClose,
-}: {
-  preview: TimetableImportPreview | null;
-  step: ImportStep;
-  error: string | null;
-  onChoose: () => void;
-  onSample: () => void;
-  onCommit: () => void;
-  onClose: () => void;
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  useModalFocus(dialogRef, onClose, {
-    initialFocusRef: closeRef,
-    dismissible: step !== "committing",
-  });
-  const names = preview ? courseNames(preview) : [];
-
-  return (
-    <div className="schedule-dialog-layer" data-modal-layer>
-      <div
-        ref={dialogRef}
-        className="schedule-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="schedule-import-title"
-        tabIndex={-1}
-      >
-        <div className="schedule-dialog-heading">
-          <div>
-            <h2 id="schedule-import-title">导入本地课表</h2>
-            <p>.json 与 .ics 文件仅用于生成本机日程。</p>
-          </div>
-          <Button
-            ref={closeRef}
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            disabled={step === "committing"}
-          >
-            取消
-          </Button>
-        </div>
-
-        <div className="schedule-file-choice">
-          <FileUp aria-hidden="true" />
-          <div>
-            <strong>{preview ? "已读取课表" : "选择课表文件"}</strong>
-            <p>支持 .json / .ics；确认前不会写入日程。</p>
-          </div>
-          <Button
-            variant={preview ? "outline" : "default"}
-            onClick={onChoose}
-            loading={step === "picking"}
-            loadingLabel="正在解析…"
-          >
-            {preview ? "重新选择" : "选择文件"}
-          </Button>
-        </div>
-
-        {error && (
-          <div className="schedule-import-error" role="alert">
-            <strong>未能读取课表</strong>
-            <span>{error}</span>
-            <Button variant="outline" size="sm" onClick={onChoose}>
-              重新选择
-            </Button>
-          </div>
-        )}
-
-        {preview ? (
-          <div className="schedule-preview" aria-live="polite">
-            <dl>
-              <div>
-                <dt>课程</dt>
-                <dd>{courseCount(preview)} 门</dd>
-              </div>
-              <div>
-                <dt>课次</dt>
-                <dd>{preview.sessions} 节</dd>
-              </div>
-              <div>
-                <dt>格式</dt>
-                <dd>{preview.format.toUpperCase()}</dd>
-              </div>
-            </dl>
-            {preview.warnings.length > 0 && (
-              <div className="schedule-warnings">
-                <strong>导入提示</strong>
-                <ul>
-                  {preview.warnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {names.length > 0 && (
-              <div className="schedule-course-preview">
-                <strong>课程预览</strong>
-                <ul>
-                  {names.slice(0, 6).map((name) => (
-                    <li key={name}>{name}</li>
-                  ))}
-                </ul>
-                {names.length > 6 && (
-                  <span>另有 {names.length - 6} 门课程</span>
-                )}
-              </div>
-            )}
-            <div className="schedule-dialog-actions">
-              <Button variant="outline" onClick={onChoose}>
-                重新选择
-              </Button>
-              <Button
-                onClick={onCommit}
-                loading={step === "committing"}
-                loadingLabel="正在导入…"
-              >
-                确认导入
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <button
-            className="schedule-sample"
-            type="button"
-            onClick={onSample}
-            disabled={step === "picking"}
-          >
-            <CalendarDays aria-hidden="true" />
-            <span>
-              <strong>加载匿名示例课表</strong>
-              <small>无需凭据，立即体验课程日程</small>
-            </span>
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function ScheduleView({
   canvasEvents,
   canvasLoading = false,
@@ -237,10 +70,7 @@ export function ScheduleView({
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [preview, setPreview] = useState<TimetableImportPreview | null>(null);
-  const [importStep, setImportStep] = useState<ImportStep>("idle");
-  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState("");
   const [syncing, setSyncing] = useState(false);
 
@@ -301,58 +131,20 @@ export function ScheduleView({
 
   useEffect(() => void load(), [load]);
 
-  const openImport = () => {
-    setPreview(null);
-    setImportError(null);
-    setImportStep("idle");
-    setDialogOpen(true);
-  };
-
-  const chooseFile = async () => {
-    setImportStep("picking");
-    setImportError(null);
+  const importIcs = async () => {
+    setImporting(true);
+    setNotice("");
     try {
-      const next = await previewTimetableFile();
-      if ("cancelled" in next) {
-        setImportStep(preview ? "preview" : "idle");
-        return;
-      }
-      setPreview(next);
-      setImportStep("preview");
-    } catch (reason) {
-      setPreview(null);
-      setImportError(messageFrom(reason, "文件解析失败，请检查格式后重试。"));
-      setImportStep("idle");
-    }
-  };
-
-  const loadSample = async () => {
-    setImportStep("picking");
-    setImportError(null);
-    try {
-      setPreview(await previewTimetableSample());
-      setImportStep("preview");
-    } catch (reason) {
-      setImportError(messageFrom(reason, "示例课表加载失败。"));
-      setImportStep("idle");
-    }
-  };
-
-  const commit = async () => {
-    if (!preview) return;
-    setImportStep("committing");
-    setImportError(null);
-    try {
-      const result = await commitTimetableImport(preview.previewId);
+      const result = await importTimetableIcs();
+      if ("cancelled" in result) return;
       setNotice(
         `已导入 ${result.importedCourses} 门课程、${result.importedSessions} 节课${result.updatedSessions ? `，更新 ${result.updatedSessions} 节` : ""}。`,
       );
-      setDialogOpen(false);
-      setPreview(null);
       await load();
     } catch (reason) {
-      setImportError(messageFrom(reason, "导入失败，本地课表未更改。"));
-      setImportStep("preview");
+      setNotice(messageFrom(reason, "ICS 导入失败，本地课表未更改。"));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -428,8 +220,14 @@ export function ScheduleView({
               <RefreshCw aria-hidden="true" />
               立即同步
             </Button>
-            <Button variant="outline" size="sm" onClick={openImport}>
-              重新导入
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void importIcs()}
+              loading={importing}
+              loadingLabel="导入中…"
+            >
+              重新导入 ICS
             </Button>
           </div>
           {status?.state === "awaiting_configuration" && (
@@ -459,24 +257,19 @@ export function ScheduleView({
               使用 jAccount 连接
             </Button>
             <span className="calm-awaiting">等待开放平台配置</span>
-            <Button variant="outline" onClick={openImport}>
-              导入本地课表
+            <Button
+              variant="outline"
+              onClick={() => void importIcs()}
+              loading={importing}
+              loadingLabel="导入中…"
+            >
+              导入 ICS 课表
             </Button>
           </div>
           <div className="calm-privacy">
             <ShieldCheck aria-hidden="true" />
             <span>不保存 jAccount 密码，可随时取消授权。</span>
           </div>
-          <button
-            className="calm-inline-sample"
-            type="button"
-            onClick={() => {
-              openImport();
-              window.setTimeout(() => void loadSample(), 0);
-            }}
-          >
-            加载匿名示例课表
-          </button>
         </section>
       )}
 
@@ -516,18 +309,6 @@ export function ScheduleView({
         }
         onAskAI={onAskAI}
       />
-
-      {dialogOpen && (
-        <ImportDialog
-          preview={preview}
-          step={importStep}
-          error={importError}
-          onChoose={() => void chooseFile()}
-          onSample={() => void loadSample()}
-          onCommit={() => void commit()}
-          onClose={() => setDialogOpen(false)}
-        />
-      )}
     </div>
   );
 }

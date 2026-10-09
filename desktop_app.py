@@ -259,6 +259,7 @@ class DesktopBridge:
         learning_service: DesktopLearningService | None = None,
         *,
         file_picker: Callable[[], str | None] | None = None,
+        ics_file_picker: Callable[[], str | None] | None = None,
         save_file_picker: Callable[[str], str | None] | None = None,
         backup_manager: BackupManager | None = None,
         diagnostic_bundle: DiagnosticBundleService | None = None,
@@ -267,6 +268,7 @@ class DesktopBridge:
         self._service = service
         self._learning_service = learning_service
         self._file_picker = file_picker
+        self._ics_file_picker = ics_file_picker
         self._save_file_picker = save_file_picker
         self._backup_manager = backup_manager
         self._diagnostic_bundle = diagnostic_bundle
@@ -354,6 +356,7 @@ class DesktopBridge:
             "timetable_preview_local_file": self._timetable_preview,
             "timetable_commit_preview": self._timetable_commit,
             "timetable_load_bundled_sample": self._timetable_sample,
+            "timetable_import_ics": self._timetable_import_ics,
             "gradebook": self._gradebook,
             "gradebook_export": self._gradebook_export,
             "roster": self._roster,
@@ -1019,6 +1022,15 @@ class DesktopBridge:
         _empty_payload(payload)
         return self._require_timetable().load_bundled_sample()
 
+    def _timetable_import_ics(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._ics_file_picker is None:
+            raise DashboardError("当前环境不支持本地文件选择。")
+        selected = self._ics_file_picker()
+        if not selected:
+            return {"cancelled": True}
+        return self._require_timetable().import_ics_local_file(selected)
+
     def _gradebook(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"course_id"})
         return self._service.gradebook(_positive_id(payload.get("course_id"), "课程标识"))
@@ -1430,6 +1442,16 @@ def run_desktop_app() -> int:
                 return None
             return str(result[0] if isinstance(result, (list, tuple)) else result)
 
+        def pick_ics_file() -> str | None:
+            result = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("ICS 日历文件 (*.ics)",),
+            )
+            if not result:
+                return None
+            return str(result[0] if isinstance(result, (list, tuple)) else result)
+
         def save_file(default_name: str) -> str | None:
             result = webview.windows[0].create_file_dialog(
                 webview.SAVE_DIALOG, save_filename=default_name
@@ -1462,6 +1484,7 @@ def run_desktop_app() -> int:
             service,
             learning_service,
             file_picker=pick_file,
+            ics_file_picker=pick_ics_file,
             save_file_picker=save_file,
             backup_manager=backup_manager,
             diagnostic_bundle=diagnostic_bundle,

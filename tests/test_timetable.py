@@ -330,6 +330,60 @@ END:VCALENDAR
             file.flush()
             self.service.preview_local_file(file.name)
 
+    def test_one_click_ics_import_and_extension_guard(self):
+        ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:one-click
+SUMMARY:文本分析与大模型
+DTSTART;TZID=Asia/Shanghai:20261012T080000
+DTEND;TZID=Asia/Shanghai:20261012T094000
+END:VEVENT
+END:VCALENDAR
+"""
+        with tempfile.NamedTemporaryFile(
+            suffix=".ics", mode="w", encoding="utf-8"
+        ) as file:
+            file.write(ics)
+            file.flush()
+            result = self.service.import_ics_local_file(file.name)
+        self.assertEqual("committed", result["status"])
+        self.assertEqual("ics", result["format"])
+        self.assertEqual(1, result["importedCourses"])
+        self.assertEqual(1, result["importedSessions"])
+
+        with (
+            tempfile.NamedTemporaryFile(suffix=".json") as file,
+            self.assertRaisesRegex(TimetableError, r"仅支持导入 \.ics"),
+        ):
+            file.write(b"{}")
+            file.flush()
+            self.service.import_ics_local_file(file.name)
+
+    def test_desktop_bridge_imports_ics_with_dedicated_picker(self):
+        ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:bridge-import
+SUMMARY:学术英语
+DTSTART:20261013T080000
+DTEND:20261013T094000
+END:VEVENT
+END:VCALENDAR
+"""
+        with tempfile.NamedTemporaryFile(
+            suffix=".ics", mode="w", encoding="utf-8"
+        ) as file:
+            file.write(ics)
+            file.flush()
+            bridge = DesktopBridge(
+                object(),
+                ics_file_picker=lambda: file.name,
+                timetable_service=self.service,
+            )
+            response = bridge.invoke("timetable_import_ics", {})
+        self.assertTrue(response["ok"])
+        self.assertEqual("ics", response["data"]["format"])
+        self.assertEqual(1, response["data"]["importedSessions"])
+
     def test_migration_head_and_all_timetable_tables(self):
         with tempfile.TemporaryDirectory() as directory:
             engine = create_engine(

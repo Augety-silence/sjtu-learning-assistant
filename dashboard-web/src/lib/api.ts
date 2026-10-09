@@ -595,6 +595,16 @@ export function commitTimetableImport(previewId: string) {
   );
 }
 
+export function importTimetableIcs() {
+  return invoke<
+    | (import("@/lib/types").TimetableImportCommit & {
+        format: string;
+        warnings: string[];
+      })
+    | { cancelled: true }
+  >("timetable_import_ics");
+}
+
 export function getGradebook(courseId: number) {
   return invoke<import("@/lib/types").GradebookResult>("gradebook", {
     course_id: courseId,
