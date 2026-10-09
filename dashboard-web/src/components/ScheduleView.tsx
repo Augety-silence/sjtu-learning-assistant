@@ -7,10 +7,8 @@ import {
   Unplug,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  type CalendarEventItem,
-  CalendarView,
-} from "@/components/CalendarView";
+import { type CalendarEventItem } from "@/components/CalendarView";
+import { CalmSchedule } from "@/components/calm/CalmSchedule";
 import { Button } from "@/components/ui/Button";
 import {
   commitTimetableImport,
@@ -32,6 +30,7 @@ interface ScheduleViewProps {
   onMonthChange: (month: Date) => void;
   onRetryCanvas?: () => void | Promise<void>;
   onOpenCanvasEvent?: (event: CalendarEventItem) => void;
+  onAskAI?: (prompt: string) => void;
 }
 
 type ImportStep = "idle" | "picking" | "preview" | "committing";
@@ -231,6 +230,7 @@ export function ScheduleView({
   onMonthChange,
   onRetryCanvas,
   onOpenCanvasEvent,
+  onAskAI,
 }: ScheduleViewProps) {
   const [status, setStatus] = useState<TimetableStatus | null>(null);
   const [courseEvents, setCourseEvents] = useState<CalendarEventItem[]>([]);
@@ -384,21 +384,16 @@ export function ScheduleView({
   const calendarError = allEvents.length === 0 ? canvasError : null;
 
   return (
-    <div className="section-stack schedule-workspace">
+    <div className="section-stack schedule-workspace calm-schedule">
       {loading && !status ? (
         <div
           className="schedule-status-skeleton"
           aria-label="正在加载课表状态"
         />
       ) : hasCourseData ? (
-        <section
-          className="schedule-status-bar"
-          aria-label="课表来源与同步状态"
-        >
+        <section className="calm-source-row" aria-label="课表来源与同步状态">
           <div className="schedule-status-main">
-            <span
-              className={`schedule-source-icon ${offline ? "is-offline" : ""}`}
-            >
+            <span className={`calm-source-icon ${offline ? "is-offline" : ""}`}>
               {offline ? (
                 <Unplug aria-hidden="true" />
               ) : (
@@ -417,7 +412,7 @@ export function ScheduleView({
               </p>
             </div>
           </div>
-          <div className="schedule-status-actions">
+          <div className="calm-source-actions">
             <Button
               variant="ghost"
               size="sm"
@@ -438,18 +433,18 @@ export function ScheduleView({
             </Button>
           </div>
           {status?.state === "awaiting_configuration" && (
-            <p className="schedule-status-note">
+            <p className="calm-source-note">
               开放平台配置完成前，“立即同步”仅刷新本地缓存。
             </p>
           )}
         </section>
       ) : (
         <section
-          className="schedule-connect"
+          className="calm-connect"
           aria-labelledby="schedule-connect-title"
         >
           <div className="schedule-connect-copy">
-            <span className="schedule-connect-icon">
+            <span className="calm-connect-icon">
               <CalendarDays aria-hidden="true" />
             </span>
             <div>
@@ -459,21 +454,21 @@ export function ScheduleView({
               </p>
             </div>
           </div>
-          <div className="schedule-connect-actions">
+          <div className="calm-connect-actions">
             <Button disabled title="等待上海交通大学开放平台配置">
               使用 jAccount 连接
             </Button>
-            <span className="schedule-awaiting">等待开放平台配置</span>
+            <span className="calm-awaiting">等待开放平台配置</span>
             <Button variant="outline" onClick={openImport}>
               导入本地课表
             </Button>
           </div>
-          <div className="schedule-privacy">
+          <div className="calm-privacy">
             <ShieldCheck aria-hidden="true" />
             <span>不保存 jAccount 密码，可随时取消授权。</span>
           </div>
           <button
-            className="schedule-inline-sample"
+            className="calm-inline-sample"
             type="button"
             onClick={() => {
               openImport();
@@ -499,17 +494,27 @@ export function ScheduleView({
         </p>
       )}
 
-      <CalendarView
+      {canvasLoading && !calendarError ? (
+        <p className="calm-source-note">正在同步 Canvas 日历…</p>
+      ) : null}
+      {calendarError ? (
+        <div className="calm-source-row" role="alert">
+          <p className="calm-source-note">{calendarError}</p>
+          <div className="calm-source-actions">
+            <Button size="sm" onClick={() => void onRetryCanvas?.()}>
+              重试
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <CalmSchedule
         events={allEvents}
         month={month}
-        loading={canvasLoading && allEvents.length === 0}
-        error={calendarError}
-        onRetry={onRetryCanvas}
         onMonthChange={onMonthChange}
         onOpenEvent={(event) =>
-          event.eventType !== "course" && onOpenCanvasEvent?.(event)
+          event.eventType !== "course" ? onOpenCanvasEvent?.(event) : undefined
         }
-        embedded
+        onAskAI={onAskAI}
       />
 
       {dialogOpen && (

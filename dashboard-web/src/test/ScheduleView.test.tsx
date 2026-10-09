@@ -124,10 +124,10 @@ describe("ScheduleView", () => {
     expect(new Date(startAt).getMonth()).toBe(8);
     expect(new Date(endAt).getDate()).toBe(9);
     expect(new Date(endAt).getMonth()).toBe(10);
+    fireEvent.click(screen.getByRole("button", { name: "9月28日" }));
     expect(await screen.findByText("本地课程")).toBeTruthy();
-    expect(
-      screen.getByRole("gridcell", { name: "2026-10-06，1 个事项" }),
-    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "10月6日" }));
+    expect(await screen.findByText("Canvas 作业")).toBeTruthy();
   });
 
   it("previews and commits a selected local timetable", async () => {
