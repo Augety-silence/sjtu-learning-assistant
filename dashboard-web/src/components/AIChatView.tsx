@@ -134,6 +134,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const shouldReduceMotion = useReducedMotion();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const pendingPrompt = window.localStorage.getItem("ai-chat-pending-prompt");
+    if (!pendingPrompt) return;
+    window.localStorage.removeItem("ai-chat-pending-prompt");
+    setDraft(pendingPrompt);
+    window.setTimeout(() => textareaRef.current?.focus(), 60);
+  }, []);
   const dragDepthRef = useRef(0);
   const {
     leftWidth,

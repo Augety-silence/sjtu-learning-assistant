@@ -190,8 +190,10 @@ function adaptCalendarEvent(
 
 function ScheduleAdapter({
   onNavigateAssignments,
+  onAskAI,
 }: {
   onNavigateAssignments: () => void;
+  onAskAI: (prompt: string) => void;
 }) {
   const [month, setMonth] = useState(
     () => new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -229,9 +231,13 @@ function ScheduleAdapter({
     <div className="section-stack">
       <Tabs defaultValue="calendar">
         <div className="message-toolbar">
-          <TabsList aria-label="日程视图">
-            <TabsTrigger value="calendar">月历</TabsTrigger>
-            <TabsTrigger value="deadlines">待处理</TabsTrigger>
+          <TabsList className="calm-seg-list" aria-label="日程视图">
+            <TabsTrigger className="calm-seg-trigger" value="calendar">
+              月历
+            </TabsTrigger>
+            <TabsTrigger className="calm-seg-trigger" value="deadlines">
+              待处理
+            </TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="calendar">
@@ -246,6 +252,7 @@ function ScheduleAdapter({
               if (event.url) void openExternal(event.url);
               else onNavigateAssignments();
             }}
+            onAskAI={onAskAI}
           />
         </TabsContent>
         <TabsContent value="deadlines">
@@ -1073,6 +1080,10 @@ export default function App() {
           <ScheduleAdapter
             key={dataVersion}
             onNavigateAssignments={() => setView("assignments")}
+            onAskAI={(prompt) => {
+              window.localStorage.setItem("ai-chat-pending-prompt", prompt);
+              setView("ai-chat");
+            }}
           />
         )}
         {view === "messages" && <MessagesView key={dataVersion} />}

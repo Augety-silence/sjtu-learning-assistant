@@ -391,6 +391,12 @@ class TimetableService:
         }
 
     def preview_local_file(self, path: str) -> dict[str, Any]:
+        data, suffix = self._read_local_file(path)
+        return self._preview_bytes(data, suffix)
+
+    def _read_local_file(
+        self, path: str, allowed_suffix: str | None = None
+    ) -> tuple[bytes, str]:
         if type(path) is not str or not path or len(path) > 4096 or "\x00" in path:
             raise TimetableError("本地文件路径无效。")
         candidate = Path(path)
@@ -400,10 +406,21 @@ class TimetableService:
             or not candidate.is_file()
         ):
             raise TimetableError("请选择普通本地文件。")
+        suffix = candidate.suffix.lower()
+        if allowed_suffix is not None and suffix != allowed_suffix:
+            raise TimetableError(f"仅支持导入 {allowed_suffix} 日历文件。")
         size = candidate.stat().st_size
         if size <= 0 or size > MAX_IMPORT_BYTES:
             raise TimetableError("文件为空或超过 10 MiB 限制。")
-        return self._preview_bytes(candidate.read_bytes(), candidate.suffix.lower())
+        return candidate.read_bytes(), suffix
+
+    def import_ics_local_file(self, path: str) -> dict[str, Any]:
+        data, _suffix = self._read_local_file(path, allowed_suffix=".ics")
+        preview = self._preview_bytes(data, ".ics")
+        result = self.commit_preview(preview["previewId"])
+        result["format"] = "ics"
+        result["warnings"] = preview["warnings"]
+        return result
 
     def load_bundled_sample(self) -> dict[str, Any]:
         if self.sample_path is None:
