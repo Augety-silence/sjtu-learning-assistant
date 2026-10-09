@@ -1,35 +1,36 @@
 /* AI workspace — conversation-first Aura surface. */
 .ai-workspace {
   --ai-shell-gap: 10px;
-  --ai-panel-fill: color-mix(in srgb, var(--aura-panel-strong) 78%, transparent);
-  --ai-panel-soft: color-mix(in srgb, var(--aura-panel) 64%, transparent);
-  --ai-control-fill: color-mix(in srgb, var(--aura-control) 72%, transparent);
+  --ai-panel-fill: var(--aura-reading);
+  --ai-panel-soft: var(--aura-navigation);
+  --ai-control-fill: var(--aura-control);
   --ai-control-hover: color-mix(in srgb, var(--aura-control-hover) 82%, transparent);
   position: relative;
   isolation: isolate;
   padding: 10px;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 16% -10%, color-mix(in srgb, var(--action-primary) 18%, transparent), transparent 36%),
-    radial-gradient(circle at 96% 104%, color-mix(in srgb, #69b8ff 18%, transparent), transparent 32%),
-    var(--aura-backdrop);
+  background: var(--aura-canvas);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-workspace::before {
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   content: "";
-  opacity: 0.42;
   pointer-events: none;
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.08) 0.6px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.045) 0.5px, transparent 0.75px);
-  background-size: 5px 5px, 9px 9px;
+  background:
+    radial-gradient(52vw 48vw at 5% 0%, var(--aura-atmosphere-blue), transparent 72%),
+    radial-gradient(46vw 52vw at 96% 10%, var(--aura-atmosphere-violet), transparent 74%),
+    radial-gradient(42vw 44vw at 88% 100%, var(--aura-atmosphere-cyan), transparent 76%),
+    radial-gradient(62vw 48vw at 42% 62%, color-mix(in srgb, var(--aura-atmosphere-blue) 35%, transparent), transparent 78%);
 }
 
 .ai-workspace-body,
 .ai-workspace-body.activity-closed {
+  position: relative;
+  z-index: 1;
   gap: 0;
   grid-template-columns:
     var(--ai-sidebar-width)
@@ -51,34 +52,42 @@
 }
 
 .ai-sidebar,
-.ai-conversation,
 .ai-activity {
   min-width: 0;
   border: 1px solid var(--aura-border);
   border-radius: 20px;
-  background: var(--ai-panel-fill);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
     var(--aura-shadow-soft);
-  -webkit-backdrop-filter: blur(24px) saturate(1.14);
-  backdrop-filter: blur(24px) saturate(1.14);
 }
 
 .ai-sidebar {
   border-right: 1px solid var(--aura-border);
+  background: var(--aura-navigation);
+  -webkit-backdrop-filter: var(--aura-blur-navigation);
+  backdrop-filter: var(--aura-blur-navigation);
 }
 
 .ai-conversation {
   position: relative;
+  min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--aura-border);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--aura-panel-strong) 88%, transparent), color-mix(in srgb, var(--aura-panel) 68%, transparent)),
-    var(--ai-panel-fill);
+  border: 1px solid var(--aura-border);
+  border-radius: 20px;
+  background: transparent;
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-activity {
+  width: var(--ai-activity-width);
+  max-width: min(360px, 42vw);
   border-left: 1px solid var(--aura-border);
+  background: var(--aura-reading);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-pane-resizer {
@@ -173,9 +182,7 @@
   padding: 8px;
   border: 1px solid color-mix(in srgb, var(--action-primary) 16%, var(--aura-border));
   border-radius: 14px;
-  background:
-    linear-gradient(138deg, color-mix(in srgb, var(--action-primary) 8%, transparent), transparent 62%),
-    var(--ai-control-fill);
+  background: color-mix(in srgb, var(--action-primary) 7%, var(--ai-control-fill));
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
 
@@ -226,7 +233,7 @@
   padding: 10px 6px 8px;
   border: 0;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--aura-panel) 32%, transparent);
+  background: transparent;
 }
 
 .ai-sidebar-label {
@@ -297,14 +304,27 @@
   height: 70px;
   padding: 0 18px;
   border-bottom: 1px solid color-mix(in srgb, var(--aura-border) 78%, transparent);
-  background: color-mix(in srgb, var(--aura-panel-strong) 68%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
-  -webkit-backdrop-filter: blur(26px) saturate(1.12);
-  backdrop-filter: blur(26px) saturate(1.12);
+  background: var(--aura-header);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight);
+  -webkit-backdrop-filter: var(--aura-blur-header);
+  backdrop-filter: var(--aura-blur-header);
 }
 
 .ai-conversation-heading {
-  gap: 10px !important;
+  min-width: 0;
+  gap: 10px;
+}
+
+.ai-conversation-heading > span {
+  min-width: 0;
+}
+
+.ai-conversation-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-conversation-heading > img {
@@ -338,17 +358,39 @@
   font-weight: 650;
 }
 
-.ai-conversation-header > button:last-child {
+@media (min-width: 1050px) {
+  .ai-conversation-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .ai-left-toggle {
+    display: none;
+  }
+
+  .ai-conversation-heading {
+    grid-column: 1;
+  }
+
+  .ai-activity-toggle {
+    grid-column: 2;
+  }
+}
+
+.ai-activity-toggle {
+  width: max-content;
+  max-width: 100%;
   min-height: 34px;
   padding-inline: 11px;
+  flex: 0 0 auto;
+  justify-self: end;
   border: 1px solid color-mix(in srgb, var(--aura-border) 86%, transparent);
   border-radius: 10px;
   background: var(--ai-control-fill);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
 
-.ai-conversation-header > button:last-child:hover,
-.ai-conversation-header > button:last-child[aria-expanded="true"] {
+.ai-activity-toggle:hover,
+.ai-activity-toggle[aria-expanded="true"] {
   color: var(--action-primary);
   border-color: color-mix(in srgb, var(--action-primary) 24%, var(--aura-border));
   background: color-mix(in srgb, var(--action-primary) 8%, var(--aura-control));
@@ -356,9 +398,9 @@
 
 .ai-chat-thread {
   scroll-padding: 32px 0 140px;
-  background:
-    radial-gradient(circle at 50% 12%, color-mix(in srgb, var(--action-primary) 5%, transparent), transparent 36%),
-    transparent;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-chat-empty {
@@ -406,8 +448,8 @@
   border-radius: 13px;
   background: var(--ai-control-fill);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-chat-starters button:hover {
@@ -447,12 +489,12 @@
   padding: 16px 18px 13px;
   border: 1px solid color-mix(in srgb, var(--aura-border) 84%, transparent);
   border-radius: 5px 17px 17px 17px;
-  background: color-mix(in srgb, var(--aura-panel-strong) 76%, transparent);
+  background: var(--aura-reading);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
-    0 14px 34px -28px rgba(24, 56, 99, 0.32);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
+    var(--aura-shadow-reading);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-message-user {
@@ -468,17 +510,47 @@
 .ai-message-user .ai-message-body {
   width: fit-content;
   max-width: min(74%, 650px);
+  padding: 0;
   justify-self: end;
   grid-column: 1;
   grid-row: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-message-user .ai-markdown {
   padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--action-primary) 17%, var(--aura-border));
   border-radius: 15px 5px 15px 15px;
-  background: color-mix(in srgb, var(--action-primary) 8%, var(--aura-control));
+  background: color-mix(in srgb, var(--action-primary) 9%, var(--aura-reading));
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.ai-message-user .ai-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ai-message-user .ai-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-message-user .ai-markdown p,
+.ai-message-user .ai-markdown h1,
+.ai-message-user .ai-markdown h2,
+.ai-message-user .ai-markdown h3,
+.ai-message-user .ai-markdown ul,
+.ai-message-user .ai-markdown ol {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-message-user .ai-message-author {
@@ -508,6 +580,9 @@
   border-radius: 12px;
   background: color-mix(in srgb, var(--aura-control) 46%, transparent);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  overflow-x: auto;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .ai-markdown th {
@@ -547,27 +622,22 @@
   padding: 8px 9px 8px 13px;
   gap: 7px;
   overflow: visible;
-  border: 1px solid color-mix(in srgb, white 32%, var(--aura-border));
+  border: 1px solid var(--aura-border-strong);
   border-radius: 18px;
-  background-color: color-mix(in srgb, var(--aura-panel-strong) 80%, transparent);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.055) 0.65px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.032) 0.55px, transparent 0.75px),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.14), transparent 46%);
-  background-size: 4px 4px, 7px 7px, auto;
+  background: var(--aura-input);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.58),
-    0 22px 56px -30px rgba(17, 42, 78, 0.62),
-    0 7px 22px -16px rgba(17, 42, 78, 0.24);
-  -webkit-backdrop-filter: blur(36px) saturate(1.28);
-  backdrop-filter: blur(36px) saturate(1.28);
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: var(--aura-blur-input);
+  backdrop-filter: var(--aura-blur-input);
 }
 
 .ai-composer-box:focus-within {
   border-color: color-mix(in srgb, var(--action-primary) 46%, var(--aura-border));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.65),
-    0 24px 60px -32px rgba(17, 42, 78, 0.66),
+    inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft),
     0 0 0 3px color-mix(in srgb, var(--action-primary) 11%, transparent);
 }
 
@@ -575,6 +645,9 @@
   min-height: 46px;
   padding: 10px 4px 8px;
   color: var(--text-primary);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   font-size: 14px;
   line-height: 22px;
 }
@@ -622,16 +695,14 @@
 
 /* Activity */
 .ai-activity {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--aura-panel-strong) 82%, transparent), color-mix(in srgb, var(--aura-panel) 62%, transparent)),
-    var(--ai-panel-fill);
+  background: var(--aura-reading);
 }
 
 .ai-activity-header {
   height: 70px;
   padding: 0 11px 0 15px;
   border-bottom: 1px solid color-mix(in srgb, var(--aura-border) 78%, transparent);
-  background: color-mix(in srgb, var(--aura-panel-strong) 68%, transparent);
+  background: transparent;
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
 
@@ -655,7 +726,9 @@
 }
 
 .ai-activity-scroll {
+  min-width: 0;
   padding: 15px 14px 24px;
+  overflow-x: hidden;
 }
 
 .ai-activity-section-title {
@@ -732,46 +805,29 @@
   border-color: var(--aura-border);
   border-radius: 9px;
   background: color-mix(in srgb, var(--aura-control) 68%, transparent);
+  overflow-x: auto;
 }
 
 .ai-activity-latest {
   border-color: var(--aura-border);
-  background: var(--ai-panel-fill);
-  box-shadow: var(--aura-shadow-soft);
-  -webkit-backdrop-filter: blur(24px) saturate(1.16);
-  backdrop-filter: blur(24px) saturate(1.16);
+  background: var(--aura-reading);
+  box-shadow: var(--aura-shadow-reading);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
-/* Menus remain the strongest glass surfaces. */
+/* Menus share the global overlay material. */
 .ai-sidebar-agent-menu,
 .ai-choice-menu,
 .ai-personalization-panel {
-  border-color: color-mix(in srgb, white 34%, var(--aura-border));
-  background-color: color-mix(in srgb, var(--aura-panel-strong) 82%, transparent);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.055) 0.65px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.032) 0.55px, transparent 0.75px);
-  background-size: 4px 4px, 7px 7px;
+  border-color: var(--aura-border-strong);
+  background: var(--aura-overlay);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.58),
-    0 24px 58px -28px rgba(17, 42, 78, 0.62);
-  -webkit-backdrop-filter: blur(38px) saturate(1.32);
-  backdrop-filter: blur(38px) saturate(1.32);
-}
-
-:root[data-theme="dark"] .ai-composer-box,
-:root[data-theme="dark"] .ai-sidebar-agent-menu,
-:root[data-theme="dark"] .ai-choice-menu,
-:root[data-theme="dark"] .ai-personalization-panel {
-  border-color: color-mix(in srgb, white 14%, var(--aura-border));
-  background-color: color-mix(in srgb, var(--aura-panel-strong) 76%, transparent);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.026) 0.65px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.016) 0.55px, transparent 0.75px),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.045), transparent 46%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 26px 62px -30px rgba(0, 0, 0, 0.86);
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-overlay);
+  -webkit-backdrop-filter: var(--aura-blur-overlay);
+  backdrop-filter: var(--aura-blur-overlay);
 }
 
 @media (max-width: 1180px) {
@@ -795,6 +851,21 @@
   }
 }
 
+@media (max-width: 1049px) {
+  .ai-workspace-body,
+  .ai-workspace-body.activity-closed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-conversation {
+    grid-column: 1;
+  }
+
+  .ai-pane-resizer {
+    display: none;
+  }
+}
+
 @media (max-width: 800px) {
   .ai-workspace {
     padding: 0;
@@ -811,6 +882,11 @@
     height: auto;
     border-radius: 18px;
     box-shadow: var(--aura-shadow);
+  }
+
+  .ai-activity {
+    width: min(var(--ai-activity-width), calc(100% - 16px));
+    max-width: calc(100% - 16px);
   }
 
   .ai-sidebar {
@@ -832,7 +908,7 @@
     padding-inline: 9px;
   }
 
-  .ai-conversation-header > button:last-child {
+  .ai-activity-toggle {
     width: 36px;
     padding: 0;
     overflow: hidden;
@@ -840,7 +916,7 @@
     gap: 0;
   }
 
-  .ai-conversation-header > button:last-child svg {
+  .ai-activity-toggle svg {
     color: var(--text-secondary);
   }
 
@@ -907,9 +983,11 @@
   .ai-sidebar,
   .ai-conversation,
   .ai-activity,
+  .ai-conversation-header,
   .ai-composer-box,
   .ai-chat-starters button,
   .ai-message-assistant .ai-message-body,
+  .ai-message-user .ai-markdown,
   .ai-activity-latest,
   .ai-sidebar-agent-menu,
   .ai-choice-menu,
@@ -918,6 +996,21 @@
     background-image: none;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+
+  .ai-workspace::before {
+    background: var(--aura-backdrop-solid);
+  }
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ai-sidebar,
+  .ai-conversation-header,
+  .ai-composer-box,
+  .ai-sidebar-agent-menu,
+  .ai-choice-menu,
+  .ai-personalization-panel {
+    background: var(--aura-backdrop-solid);
   }
 }
 

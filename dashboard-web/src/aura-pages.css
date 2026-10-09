@@ -1,4 +1,88 @@
-/* Aura page refinements — presentation only; behavior remains component-owned. */
+/* Page-level Aura assignments. Shared material values live in index.css. */
+.app-shell[data-aura-shell] {
+  position: relative;
+  isolation: isolate;
+  gap: 10px;
+  padding: 10px;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.app-shell[data-aura-shell]::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  content: "";
+  filter: none;
+  opacity: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(52vw 48vw at 5% 0%, var(--aura-atmosphere-blue), transparent 72%),
+    radial-gradient(46vw 52vw at 96% 10%, var(--aura-atmosphere-violet), transparent 74%),
+    radial-gradient(42vw 44vw at 88% 100%, var(--aura-atmosphere-cyan), transparent 76%),
+    radial-gradient(62vw 48vw at 42% 62%, color-mix(in srgb, var(--aura-atmosphere-blue) 35%, transparent), transparent 78%),
+    var(--aura-canvas);
+}
+
+.app-shell[data-aura-shell]::after {
+  content: none;
+}
+
+.sidebar[data-aura-surface="navigation"],
+.mobile-drawer[data-aura-surface="navigation"] {
+  z-index: 2;
+  border: 1px solid var(--aura-border);
+  background: var(--aura-navigation);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: var(--aura-blur-navigation);
+  backdrop-filter: var(--aura-blur-navigation);
+}
+
+.sidebar[data-aura-surface="navigation"] {
+  width: 218px;
+  height: auto;
+  padding: 14px 11px 11px;
+  flex-basis: 218px;
+  border-radius: var(--aura-radius-window);
+}
+
+.workspace[data-aura-surface="workspace"] {
+  z-index: 1;
+  border: 0;
+  border-radius: var(--aura-radius-window);
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.page-header {
+  min-height: 72px;
+  padding-block: 12px;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-window);
+  background: var(--aura-header);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: var(--aura-blur-header);
+  backdrop-filter: var(--aura-blur-header);
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+  padding-top: 24px;
+}
+
 .section-stack:not(.overview-dashboard):not(.schedule-workspace) {
   width: min(1240px, 100%);
   margin-inline: auto;
@@ -9,254 +93,266 @@
 .messages-page > section,
 .settings-page > section,
 .backup-page > section,
-.deadlines-page > section { min-width: 0; }
-
-.materials-page > section > .section-header,
-.messages-page > section > .section-header,
-.settings-page > section > .section-header,
-.backup-page > section > .section-header,
-.deadlines-page > section > .section-header { margin-bottom: 10px; }
-
-.finder,
-.assignment-layout,
-.settings-panel,
-.configuration-section,
-.backup-status-card,
-.backup-result,
-.knowledge-config,
-.knowledge-run-card,
-.local-projects-hero,
-.local-project-form,
-.local-project-card,
-.video-workbench,
-.video-list-panel,
-.ai-workspace {
-  border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-panel-strong) 84%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow-soft);
-  -webkit-backdrop-filter: blur(20px) saturate(1.1);
-  backdrop-filter: blur(20px) saturate(1.1);
+.deadlines-page > section {
+  min-width: 0;
 }
-
-.finder,
-.assignment-layout,
-.video-workbench,
-.ai-workspace { border-radius: var(--aura-radius-card); }
 
 .finder-toolbar,
 .message-toolbar,
 .assignment-filters,
-.video-course-toolbar {
+.video-course-toolbar,
+.schedule-toolbar {
   padding: 10px;
   border: 1px solid var(--aura-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--aura-control) 76%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
-  -webkit-backdrop-filter: blur(16px) saturate(1.08);
-  backdrop-filter: blur(16px) saturate(1.08);
+  background: var(--aura-navigation);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+  backdrop-filter: blur(24px) saturate(1.12);
 }
 
-.finder-tree,
+.overview-dashboard .summary-item {
+  border-color: var(--aura-border);
+  background: var(--aura-stat);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: var(--aura-blur-stat);
+  backdrop-filter: var(--aura-blur-stat);
+  transition:
+    background-color var(--motion-control) var(--ease-motion-out),
+    border-color var(--motion-control) var(--ease-motion-out);
+}
+
+@media (hover: hover) {
+  .overview-dashboard .summary-item:hover {
+    background: var(--aura-stat);
+    box-shadow:
+      inset 0 1px 0 var(--aura-border-highlight),
+      inset 0 -1px 0 var(--aura-border-lowlight),
+      var(--aura-shadow-soft);
+    transform: none;
+  }
+}
+
+.overview-panel,
+.list-surface,
+.table-surface,
+.assignment-detail,
+.message-dialog .message-detail-body,
+.calendar-month,
+.calendar-agenda,
+.backup-result,
+.backup-status-card,
+.knowledge-config,
+.knowledge-run-card,
+.local-project-form,
+.settings-panel,
+.settings-list,
+.grading-detail,
+.roster-table,
+.grades-table {
+  border-color: var(--aura-border);
+  background: var(--aura-reading);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-reading);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.overview-panel .list-surface,
+.overview-panel .state-box,
 .finder-list,
 .assignment-list,
-.assignment-detail { background: transparent; }
+.calendar-day,
+.calendar-event-row,
+.message-row,
+.list-row,
+.finder-row,
+.video-recording-list > li,
+.table-surface tr,
+.table-surface th,
+.table-surface td {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 
-.finder-tree,
-.assignment-list { border-color: var(--aura-border); }
+.overview-panel .state-box {
+  min-height: 164px;
+  padding-block: 24px;
+}
+
+.overview-panel .state-illustration {
+  max-width: 116px;
+  max-height: 74px;
+}
+
+.finder,
+.assignment-layout,
+.video-workbench {
+  overflow: hidden;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-card);
+  background: var(--aura-reading);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-reading);
+}
+
+.finder-tree {
+  border-color: var(--aura-border);
+  background: var(--aura-navigation);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+  backdrop-filter: blur(24px) saturate(1.12);
+}
+
+.list-row,
+.finder-row,
+.message-row,
+.assignment-card,
+.calendar-event-row,
+.video-recording-list > li {
+  border-color: color-mix(in srgb, var(--aura-border) 78%, transparent);
+}
+
+.list-row:hover,
+.finder-row:hover,
+.message-row:hover,
+.assignment-card:hover,
+.calendar-event-row:hover,
+.video-recording-list > li:hover,
+.video-recording-list > li:focus-within {
+  background: color-mix(in srgb, var(--aura-control-hover) 66%, transparent);
+}
+
+.message-row-unread {
+  background: color-mix(in srgb, var(--action-primary) 7%, var(--aura-reading));
+}
+
+.message-row-selected,
+.finder-row-selected,
+.assignment-card-selected {
+  background: color-mix(in srgb, var(--action-primary) 10%, var(--aura-reading));
+  box-shadow: inset 2px 0 var(--action-primary);
+}
 
 .finder-toolbar select,
 .search-control,
 .settings-account-controls input,
 .backup-token-form input,
-.config-dialog select {
+.config-dialog select,
+.local-project-path,
+.knowledge-path-card,
+.knowledge-mode-grid label,
+.theme-options label {
   border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-control) 82%, transparent);
+  background: var(--aura-control);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
-
-.list-surface,
-.table-surface {
-  border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-panel) 80%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow-soft);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
-}
-
-.list-row,
-.assignment-card,
-.finder-row { border-color: color-mix(in srgb, var(--aura-border) 74%, transparent); }
-
-.list-row:hover,
-.assignment-card:hover,
-.finder-row:hover { background: color-mix(in srgb, var(--aura-control-hover) 72%, transparent); }
-
-.assignment-filter-active,
-.assignment-filters button[aria-pressed="true"] {
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight), 0 7px 18px -14px var(--action-primary);
-}
-
-.settings-panel,
-.configuration-section,
-.backup-status-card,
-.backup-result,
-.knowledge-config,
-.knowledge-run-card,
-.local-projects-hero,
-.local-project-form { border-radius: var(--aura-radius-card); }
 
 .configuration-card,
 .settings-row,
 .backup-counts > div,
 .backup-result-grid > div,
-.knowledge-path-card,
-.knowledge-mode-grid label,
 .knowledge-metrics,
-.local-project-card {
+.local-project-card,
+.local-projects-summary {
   border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-control) 70%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  background: transparent;
+  box-shadow: none;
 }
 
-.settings-row:hover,
-.configuration-card:hover,
-.knowledge-path-card:hover,
-.local-project-card:hover { background: color-mix(in srgb, var(--aura-control-hover) 80%, transparent); }
-
-.theme-options label {
-  border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-control) 72%, transparent);
+.settings-row,
+.backup-counts > div,
+.backup-result-grid > div,
+.local-projects-summary > div {
+  border-color: color-mix(in srgb, var(--aura-border) 78%, transparent);
 }
 
 .knowledge-hero,
 .local-projects-hero {
-  border-color: color-mix(in srgb, var(--action-primary) 20%, var(--aura-border));
-  background:
-    linear-gradient(132deg, color-mix(in srgb, var(--action-primary) 9%, transparent), transparent 58%),
-    color-mix(in srgb, var(--aura-panel-strong) 86%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow);
-  -webkit-backdrop-filter: var(--aura-blur);
-  backdrop-filter: var(--aura-blur);
+  border-color: var(--aura-border);
+  background: var(--aura-stat);
+  box-shadow:
+    inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+  -webkit-backdrop-filter: var(--aura-blur-stat);
+  backdrop-filter: var(--aura-blur-stat);
 }
 
-.knowledge-hero::after { opacity: 0.5; }
-
-.knowledge-notice,
-.settings-warning,
-.backup-inline-error,
-.submission-error,
-.submission-success {
-  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 42%, transparent);
+.knowledge-hero::after {
+  opacity: 0.28;
 }
 
-.knowledge-phase-strip li,
 .knowledge-events li,
-.local-project-stats > div { background: color-mix(in srgb, var(--aura-control) 64%, transparent); }
-
-.local-project-grid { gap: 14px; }
-
-.local-project-card {
-  border-radius: 16px;
-  transition:
-    background-color var(--motion-control) var(--ease-motion-out),
-    border-color var(--motion-control) var(--ease-motion-out),
-    box-shadow var(--motion-control) var(--ease-motion-out);
+.knowledge-phase-strip li,
+.local-project-stats > div {
+  background: transparent;
 }
 
 .backup-progress,
 .knowledge-progress,
 .local-project-progress {
-  background: color-mix(in srgb, var(--aura-control) 76%, transparent);
+  background: color-mix(in srgb, var(--aura-control) 70%, transparent);
   box-shadow: inset 0 1px 3px color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 
-.video-course-toolbar,
-.video-list-panel { border-color: var(--aura-border); }
-
 .video-player-shell {
-  border-color: color-mix(in srgb, white 9%, var(--aura-border));
-  box-shadow: 0 22px 54px -28px rgba(3, 10, 20, 0.72);
+  border-color: color-mix(in srgb, white 10%, var(--aura-border));
+  background: var(--surface-video-player);
+  box-shadow: 0 22px 52px -30px rgba(3, 10, 20, 0.72);
 }
 
-.video-recording-list > li,
+.video-list-panel,
 .video-tool-panel,
 .video-batch-bar,
 .video-player-feedback {
   border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-control) 66%, transparent);
+  background: var(--aura-reading);
+  box-shadow: var(--aura-shadow-reading);
 }
 
-.video-recording-list > li:hover,
-.video-recording-list > li:focus-within {
-  background: color-mix(in srgb, var(--aura-control-hover) 78%, transparent);
-}
-
-.ai-workspace { overflow: hidden; }
-
-.ai-chat-thread,
-.ai-chat-messages {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--aura-panel) 76%, transparent), transparent 44%),
-    transparent;
-}
-
-.ai-composer-box,
-.ai-chat-starters button,
-.ai-thinking {
-  border-color: var(--aura-border);
-  background: color-mix(in srgb, var(--aura-panel-strong) 82%, transparent);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight), var(--aura-shadow-soft);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
-}
-
-/* High-blur glass is reserved for transient overlay surfaces. */
 .toast,
 .dialog-panel,
 .confirm-dialog,
 .config-dialog,
+.message-dialog,
+.material-preview-dialog,
+.message-image-preview-dialog,
+.schedule-dialog,
+.archive-restore-dialog,
+.transcript-detail-drawer,
+.archive-detail-drawer,
 .video-course-popup,
 .video-more-menu,
 .video-player-popover,
 .material-move-menu,
 .ai-personalization-panel,
 .ai-preset-menu {
-  border: 1px solid color-mix(in srgb, white 36%, var(--aura-border));
-  background-color: color-mix(in srgb, var(--aura-panel-strong) 82%, transparent);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.055) 0.65px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.032) 0.55px, transparent 0.75px),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.16), transparent 42%);
-  background-size: 4px 4px, 7px 7px, auto;
+  border: 1px solid var(--aura-border-strong);
+  border-radius: 18px;
+  background: var(--aura-overlay);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.58),
-    0 26px 64px -30px rgba(17, 42, 78, 0.62),
-    0 8px 24px -16px rgba(17, 42, 78, 0.28);
-  -webkit-backdrop-filter: blur(38px) saturate(1.32);
-  backdrop-filter: blur(38px) saturate(1.32);
+    inset 0 1px 0 var(--aura-border-highlight),
+    inset 0 -1px 0 var(--aura-border-lowlight),
+    var(--aura-shadow-overlay);
+  -webkit-backdrop-filter: var(--aura-blur-overlay);
+  backdrop-filter: var(--aura-blur-overlay);
 }
 
-:root[data-theme="dark"] .toast,
-:root[data-theme="dark"] .dialog-panel,
-:root[data-theme="dark"] .confirm-dialog,
-:root[data-theme="dark"] .config-dialog,
-:root[data-theme="dark"] .video-course-popup,
-:root[data-theme="dark"] .video-more-menu,
-:root[data-theme="dark"] .video-player-popover,
-:root[data-theme="dark"] .material-move-menu,
-:root[data-theme="dark"] .ai-personalization-panel,
-:root[data-theme="dark"] .ai-preset-menu {
-  border-color: color-mix(in srgb, white 14%, var(--aura-border));
-  background-color: color-mix(in srgb, var(--aura-panel-strong) 76%, transparent);
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.026) 0.65px, transparent 0.8px),
-    radial-gradient(circle at 3px 2px, rgba(255, 255, 255, 0.016) 0.55px, transparent 0.75px),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.055), transparent 46%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 28px 70px -32px rgba(0, 0, 0, 0.88),
-    0 9px 26px -18px rgba(0, 0, 0, 0.58);
+@media (max-width: 1199px) and (min-width: 600px) {
+  .sidebar[data-aura-surface="navigation"] {
+    width: 72px;
+    flex-basis: 72px;
+    padding-inline: 8px;
+  }
 }
 
 @media (max-width: 980px) {
@@ -264,7 +360,8 @@
   .finder-toolbar,
   .message-toolbar,
   .assignment-filters,
-  .video-course-toolbar { padding: 8px; }
+  .video-course-toolbar,
+  .schedule-toolbar { padding: 8px; flex-wrap: wrap; }
   .knowledge-paths,
   .knowledge-mode-grid,
   .configuration-grid,
@@ -272,10 +369,12 @@
 }
 
 @media (max-width: 760px) {
+  .app-shell[data-aura-shell] { gap: 0; padding: 0; }
+  .workspace[data-aura-surface="workspace"],
+  .page-header,
   .finder,
   .assignment-layout,
-  .video-workbench,
-  .ai-workspace { border-radius: 0; box-shadow: none; }
+  .video-workbench { border-radius: 0; box-shadow: none; }
   .materials-page,
   .messages-page,
   .assignments-page,
@@ -286,27 +385,38 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .finder,
-  .assignment-layout,
-  .knowledge-hero,
-  .settings-panel,
-  .configuration-section,
-  .backup-status-card,
-  .backup-result,
-  .knowledge-config,
-  .knowledge-run-card,
-  .local-projects-hero,
-  .local-project-form,
-  .local-project-card,
-  .video-workbench,
-  .video-list-panel,
-  .ai-workspace,
+  .app-shell[data-aura-shell]::before { background: var(--aura-backdrop-solid); }
+  .sidebar[data-aura-surface="navigation"],
+  .mobile-drawer[data-aura-surface="navigation"],
+  .page-header,
+  .finder-toolbar,
+  .message-toolbar,
+  .assignment-filters,
+  .video-course-toolbar,
+  .schedule-toolbar,
+  .overview-dashboard .summary-item,
+  .overview-panel,
   .list-surface,
   .table-surface,
+  .finder,
+  .finder-tree,
+  .assignment-layout,
+  .assignment-detail,
+  .knowledge-hero,
+  .local-projects-hero,
+  .video-list-panel,
+  .video-tool-panel,
   .toast,
   .dialog-panel,
   .confirm-dialog,
   .config-dialog,
+  .message-dialog,
+  .material-preview-dialog,
+  .message-image-preview-dialog,
+  .schedule-dialog,
+  .archive-restore-dialog,
+  .transcript-detail-drawer,
+  .archive-detail-drawer,
   .video-course-popup,
   .video-more-menu,
   .video-player-popover,
@@ -318,4 +428,44 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .sidebar[data-aura-surface="navigation"],
+  .mobile-drawer[data-aura-surface="navigation"],
+  .page-header,
+  .finder-toolbar,
+  .message-toolbar,
+  .assignment-filters,
+  .video-course-toolbar,
+  .schedule-toolbar,
+  .overview-dashboard .summary-item,
+  .knowledge-hero,
+  .local-projects-hero,
+  .toast,
+  .dialog-panel,
+  .confirm-dialog,
+  .config-dialog,
+  .message-dialog,
+  .material-preview-dialog,
+  .message-image-preview-dialog,
+  .schedule-dialog,
+  .archive-restore-dialog,
+  .transcript-detail-drawer,
+  .archive-detail-drawer,
+  .video-course-popup,
+  .video-more-menu,
+  .video-player-popover,
+  .material-move-menu,
+  .ai-personalization-panel,
+  .ai-preset-menu { background: var(--aura-backdrop-solid); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-dashboard .summary-item,
+  .list-row,
+  .finder-row,
+  .message-row,
+  .assignment-card,
+  .local-project-card { transition: none; }
 }

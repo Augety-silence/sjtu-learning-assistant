@@ -687,6 +687,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             <Button
               variant={activityOpen ? "outline" : "ghost"}
               size="sm"
+              className="ai-activity-toggle"
               aria-expanded={activityOpen}
               aria-label="切换 Activity 检索轨迹"
               onPointerDown={() => {

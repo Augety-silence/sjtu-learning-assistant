@@ -2,80 +2,80 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../aura-pages.css", import.meta.url), "utf8");
-const overlaySelectors = [
-  ".toast",
-  ".dialog-panel",
-  ".confirm-dialog",
-  ".config-dialog",
-  ".video-course-popup",
-  ".video-more-menu",
-  ".video-player-popover",
-  ".material-move-menu",
-  ".ai-personalization-panel",
-  ".ai-preset-menu",
-];
+const tokens = readFileSync(new URL("../index.css", import.meta.url), "utf8");
 
-function sectionBetween(startMarker: string, endMarker: string): string {
-  const start = css.indexOf(startMarker);
-  const end = css.indexOf(endMarker, start + startMarker.length);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  return css.slice(start, end);
-}
-
-describe("Aura page glass surfaces", () => {
-  it("reserves strong glass and subtle white noise for transient overlays", () => {
-    const overlays = sectionBetween(
-      "/* High-blur glass is reserved for transient overlay surfaces. */",
-      ':root[data-theme="dark"] .toast',
-    );
-
-    for (const selector of overlaySelectors) {
-      expect(overlays).toContain(selector);
-    }
-    expect(overlays).toContain("blur(38px) saturate(1.32)");
-    expect(overlays.match(/radial-gradient\(/g)).toHaveLength(2);
-    expect(overlays).toContain("background-size: 4px 4px, 7px 7px, auto");
-  });
-
-  it("keeps the overlay treatment legible in the dark theme", () => {
-    const darkOverlays = sectionBetween(
-      ':root[data-theme="dark"] .toast',
-      "@media (max-width: 980px)",
-    );
-
-    for (const selector of overlaySelectors) {
-      expect(darkOverlays).toContain(selector);
-    }
-    expect(darkOverlays.match(/radial-gradient\(/g)).toHaveLength(2);
-    expect(darkOverlays).toContain("rgba(0, 0, 0, 0.88)");
-  });
-
-  it("removes blur and noise when reduced transparency is requested", () => {
-    const reduced = css.slice(
-      css.indexOf("@media (prefers-reduced-transparency: reduce)"),
-    );
-
-    expect(reduced).toContain(".knowledge-hero");
-    for (const selector of overlaySelectors) {
-      expect(reduced).toContain(selector);
-    }
-    expect(reduced).toContain("background: var(--aura-backdrop-solid)");
-    expect(reduced).toContain("background-image: none");
-    expect(reduced).toContain("-webkit-backdrop-filter: none");
-    expect(reduced).toContain("backdrop-filter: none");
-  });
-
-  it("keeps WebKit-prefixed blur declarations paired with standard ones", () => {
-    for (const value of [
-      "blur(20px) saturate(1.1)",
-      "blur(16px) saturate(1.08)",
-      "blur(18px) saturate(1.08)",
-      "var(--aura-blur)",
-      "blur(38px) saturate(1.32)",
+describe("Aura page material system", () => {
+  it("keeps shared navigation, reading, input, and overlay materials centralized", () => {
+    for (const token of [
+      "--aura-navigation",
+      "--aura-header",
+      "--aura-stat",
+      "--aura-reading",
+      "--aura-input",
+      "--aura-overlay",
+      "--aura-blur-navigation",
+      "--aura-blur-overlay",
     ]) {
-      expect(css).toContain(`-webkit-backdrop-filter: ${value}`);
-      expect(css).toContain(`backdrop-filter: ${value}`);
+      expect(tokens).toContain(token);
     }
+    expect(tokens).toContain(':root[data-theme="dark"]');
+  });
+
+  it("draws one continuous static atmosphere behind transparent shells", () => {
+    const atmosphere = css.slice(
+      css.indexOf(".app-shell[data-aura-shell]::before"),
+      css.indexOf('.sidebar[data-aura-surface="navigation"]'),
+    );
+    expect(atmosphere.match(/radial-gradient\(/g)).toHaveLength(4);
+    expect(atmosphere).toContain("filter: none");
+    expect(atmosphere).toContain("opacity: 1");
+    expect(atmosphere).toContain("pointer-events: none");
+    expect(css).toMatch(
+      /\.app-shell\[data-aura-shell\] \{[^}]*background: transparent[^}]*backdrop-filter: none/,
+    );
+    expect(css).toMatch(
+      /\.workspace\[data-aura-surface="workspace"\] \{[^}]*background: transparent[^}]*backdrop-filter: none/,
+    );
+  });
+
+  it("uses stable reading surfaces without blurring rows or table cells", () => {
+    expect(css).toMatch(
+      /\.overview-panel,[\s\S]*?background: var\(--aura-reading\)[^}]*backdrop-filter: none/,
+    );
+    expect(css).toMatch(
+      /\.overview-panel \.list-surface,[\s\S]*?\.table-surface td \{[^}]*background: transparent[^}]*backdrop-filter: none/,
+    );
+    expect(css).toContain(".overview-dashboard .summary-item:hover");
+    expect(css).toContain("transform: none");
+  });
+
+  it("shares one restrained overlay material across transient surfaces", () => {
+    for (const selector of [
+      ".toast",
+      ".message-dialog",
+      ".confirm-dialog",
+      ".video-more-menu",
+      ".material-move-menu",
+      ".ai-personalization-panel",
+    ]) {
+      expect(css).toContain(selector);
+    }
+    expect(css).toContain("background: var(--aura-overlay)");
+    expect(css).toContain("backdrop-filter: var(--aura-blur-overlay)");
+    expect(css).not.toContain("background-size: 4px 4px");
+  });
+
+  it("provides reduced-transparency, reduced-motion, and no-blur fallbacks", () => {
+    expect(css).toMatch(
+      /@media \(max-width: 1199px\) and \(min-width: 600px\)[\s\S]*?width: 72px/,
+    );
+    expect(css).toContain("@media (prefers-reduced-transparency: reduce)");
+    expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(css).toContain(
+      "@supports not ((-webkit-backdrop-filter: blur(1px))",
+    );
+    expect(css).toContain("background: var(--aura-backdrop-solid)");
+    expect(css).toContain("-webkit-backdrop-filter: none");
+    expect(css).toContain("backdrop-filter: none");
   });
 });

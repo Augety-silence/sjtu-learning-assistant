@@ -285,39 +285,72 @@
 }
 
 :root {
-  --aura-backdrop: rgba(221, 233, 250, 0.66);
-  --aura-backdrop-solid: #e8f0fb;
-  --aura-atmosphere: rgba(153, 191, 241, 0.6);
-  --aura-panel: rgba(242, 248, 255, 0.66);
-  --aura-panel-strong: rgba(253, 254, 255, 0.82);
-  --aura-control: rgba(255, 255, 255, 0.52);
-  --aura-control-hover: rgba(255, 255, 255, 0.74);
-  --aura-border: rgba(77, 109, 153, 0.16);
-  --aura-border-highlight: rgba(255, 255, 255, 0.74);
-  --aura-shadow: 0 24px 64px -24px rgba(24, 56, 99, 0.32),
-    0 8px 26px -18px rgba(24, 56, 99, 0.18);
-  --aura-shadow-soft: 0 16px 36px -24px rgba(24, 56, 99, 0.28),
-    0 3px 12px -8px rgba(24, 56, 99, 0.14);
-  --aura-blur: blur(30px) saturate(1.18);
+  --aura-canvas: #eef2f8;
+  --aura-backdrop: rgba(238, 242, 248, 0.38);
+  --aura-backdrop-solid: #eef2f8;
+  --aura-atmosphere-blue: rgba(137, 177, 225, 0.32);
+  --aura-atmosphere-violet: rgba(191, 177, 226, 0.26);
+  --aura-atmosphere-cyan: rgba(132, 205, 210, 0.18);
+  --aura-panel: rgba(247, 250, 255, 0.62);
+  --aura-panel-strong: rgba(252, 253, 255, 0.9);
+  --aura-navigation: rgba(241, 247, 255, 0.56);
+  --aura-header: rgba(249, 252, 255, 0.66);
+  --aura-stat: rgba(249, 252, 255, 0.68);
+  --aura-reading: rgba(253, 254, 255, 0.91);
+  --aura-input: rgba(249, 252, 255, 0.72);
+  --aura-overlay: rgba(253, 254, 255, 0.94);
+  --aura-control: rgba(255, 255, 255, 0.58);
+  --aura-control-hover: rgba(255, 255, 255, 0.78);
+  --aura-border: rgba(71, 99, 137, 0.17);
+  --aura-border-strong: rgba(71, 99, 137, 0.23);
+  --aura-border-highlight: rgba(255, 255, 255, 0.78);
+  --aura-border-lowlight: rgba(61, 84, 117, 0.08);
+  --aura-shadow: 0 22px 48px -30px rgba(25, 49, 82, 0.3),
+    0 7px 18px -15px rgba(25, 49, 82, 0.16);
+  --aura-shadow-soft: 0 14px 30px -25px rgba(25, 49, 82, 0.24),
+    0 3px 10px -8px rgba(25, 49, 82, 0.12);
+  --aura-shadow-reading: 0 12px 26px -24px rgba(25, 49, 82, 0.22);
+  --aura-shadow-overlay: 0 26px 60px -28px rgba(17, 36, 62, 0.38),
+    0 8px 22px -16px rgba(17, 36, 62, 0.2);
+  --aura-blur: blur(26px) saturate(1.14);
+  --aura-blur-navigation: blur(28px) saturate(1.14);
+  --aura-blur-header: blur(24px) saturate(1.12);
+  --aura-blur-stat: blur(20px) saturate(1.1);
+  --aura-blur-input: blur(30px) saturate(1.14);
+  --aura-blur-overlay: blur(20px) saturate(1.12);
   --aura-radius-window: 24px;
-  --aura-radius-card: 18px;
+  --aura-radius-card: 16px;
   --aura-radius-control: 11px;
 }
 
 :root[data-theme="dark"] {
-  --aura-backdrop: rgba(9, 18, 31, 0.7);
-  --aura-backdrop-solid: #0d1623;
-  --aura-atmosphere: #1c3150;
-  --aura-panel: rgba(20, 30, 44, 0.78);
-  --aura-panel-strong: rgba(27, 38, 54, 0.91);
-  --aura-control: rgba(69, 88, 116, 0.34);
-  --aura-control-hover: rgba(78, 101, 136, 0.48);
-  --aura-border: rgba(150, 181, 225, 0.2);
-  --aura-border-highlight: rgba(208, 226, 255, 0.16);
-  --aura-shadow: 0 22px 56px rgba(0, 0, 0, 0.36),
-    0 3px 12px rgba(0, 0, 0, 0.2);
-  --aura-shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.24),
-    0 1px 5px rgba(0, 0, 0, 0.18);
+  --aura-canvas: #0e151f;
+  --aura-backdrop: rgba(9, 17, 28, 0.42);
+  --aura-backdrop-solid: #111a27;
+  --aura-atmosphere-blue: rgba(62, 96, 145, 0.25);
+  --aura-atmosphere-violet: rgba(94, 75, 132, 0.2);
+  --aura-atmosphere-cyan: rgba(50, 111, 119, 0.15);
+  --aura-panel: rgba(20, 30, 44, 0.7);
+  --aura-panel-strong: rgba(27, 38, 54, 0.88);
+  --aura-navigation: rgba(18, 30, 46, 0.58);
+  --aura-header: rgba(21, 33, 49, 0.68);
+  --aura-stat: rgba(25, 38, 56, 0.7);
+  --aura-reading: rgba(27, 38, 53, 0.92);
+  --aura-input: rgba(25, 39, 58, 0.74);
+  --aura-overlay: rgba(29, 41, 58, 0.95);
+  --aura-control: rgba(74, 94, 123, 0.34);
+  --aura-control-hover: rgba(85, 108, 143, 0.48);
+  --aura-border: rgba(158, 187, 226, 0.19);
+  --aura-border-strong: rgba(171, 199, 234, 0.27);
+  --aura-border-highlight: rgba(218, 232, 252, 0.14);
+  --aura-border-lowlight: rgba(0, 0, 0, 0.22);
+  --aura-shadow: 0 22px 50px -26px rgba(0, 0, 0, 0.68),
+    0 6px 18px -12px rgba(0, 0, 0, 0.42);
+  --aura-shadow-soft: 0 14px 30px -22px rgba(0, 0, 0, 0.52),
+    0 3px 10px -7px rgba(0, 0, 0, 0.32);
+  --aura-shadow-reading: 0 12px 26px -22px rgba(0, 0, 0, 0.48);
+  --aura-shadow-overlay: 0 28px 64px -26px rgba(0, 0, 0, 0.8),
+    0 8px 24px -14px rgba(0, 0, 0, 0.56);
 }
 
 ::selection {
@@ -7639,7 +7672,6 @@ select {
 
   .ai-conversation {
     grid-column: 1;
-    transition: padding-right 220ms var(--ease-motion-out);
   }
 
   .ai-workspace-body:not(.activity-closed) .ai-conversation {
