@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -112,6 +113,43 @@ const baseViews: ViewName[] = [
   "ai-chat",
   "settings",
 ];
+
+const pageAILabels: Record<ViewName, string> = {
+  overview: "概览",
+  calendar: "日程",
+  messages: "消息",
+  assignments: "作业中心",
+  materials: "课程资料",
+  grades: "成绩",
+  roster: "花名册",
+  grading: "作业批改",
+  videos: "课程视频",
+  backup: "云盘备份",
+  "local-projects": "本地项目",
+  knowledge: "知识库编译",
+  "ai-chat": "AI 助手",
+  settings: "设置",
+};
+
+const pageAIPrompts: Record<ViewName, string> = {
+  overview:
+    "根据概览中的临期事项和最新消息，给出今天最值得优先处理的三件事，并说明证据。",
+  calendar: "检查当前日程与截止事项，指出时间冲突，并给出本周学习安排建议。",
+  messages: "检索最近的课程消息，区分必须处理、建议关注和仅供知悉的内容。",
+  assignments:
+    "梳理当前作业要求和截止时间，给出可执行的完成顺序；不要替我提交。",
+  materials: "根据当前课程资料范围，指出最值得先读的文件和资料缺口。",
+  grades: "基于当前可见成绩与反馈，总结有证据支持的薄弱点和复习建议。",
+  roster: "仅基于当前授权字段汇总名单信息，不推断学生能力或敏感属性。",
+  grading: "基于当前评分量规给出反馈草稿和需人工确认的评分证据，不发布成绩。",
+  videos: "结合课程视频、字幕和已有学习材料，建议下一步复习与主动练习。",
+  backup:
+    "解释当前备份状态和风险，并给出备份范围建议；不要执行上传、删除或恢复。",
+  "local-projects": "基于当前本地项目索引，给出下一步行动和可能缺失的资料。",
+  knowledge: "检查当前知识库编译范围，建议合适的编译模式和需要先确认的问题。",
+  "ai-chat": "请基于本地学习数据回答问题，并标明证据与不确定性。",
+  settings: "解释当前 AI 连接配置和兼容性风险，不读取或展示任何密钥。",
+};
 
 type ReadRequest = BoundedReadRequest;
 
@@ -1122,22 +1160,50 @@ export default function App() {
     setViewState(next);
   };
 
-  const headerActions: ReactNode =
-    view === "calendar" ? (
-      <Tabs
-        value={scheduleMode}
-        onValueChange={(value) => setScheduleMode(value as ScheduleMode)}
-      >
-        <TabsList className="calm-seg-list" aria-label="日程视图">
-          <TabsTrigger className="calm-seg-trigger" value="calendar">
-            月历
-          </TabsTrigger>
-          <TabsTrigger className="calm-seg-trigger" value="deadlines">
-            待处理
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-    ) : null;
+  const askCurrentPageAI = () => {
+    const selection: Record<string, string | number | boolean | null> = {};
+    if (view === "calendar") selection.schedule_mode = scheduleMode;
+    if (["grades", "roster", "grading"].includes(view) && staffCourseId) {
+      selection.course_id = staffCourseId;
+    }
+    window.localStorage.setItem("ai-chat-pending-prompt", pageAIPrompts[view]);
+    window.localStorage.setItem(
+      "ai-chat-pending-context",
+      JSON.stringify({
+        page_id: view,
+        source: "page-header",
+        title: pageAILabels[view],
+        ...(Object.keys(selection).length > 0 ? { selection } : {}),
+      }),
+    );
+    setView("ai-chat");
+  };
+
+  const headerActions: ReactNode = (
+    <>
+      {view === "calendar" && (
+        <Tabs
+          value={scheduleMode}
+          onValueChange={(value) => setScheduleMode(value as ScheduleMode)}
+        >
+          <TabsList className="calm-seg-list" aria-label="日程视图">
+            <TabsTrigger className="calm-seg-trigger" value="calendar">
+              月历
+            </TabsTrigger>
+            <TabsTrigger className="calm-seg-trigger" value="deadlines">
+              待处理
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      )}
+      {view !== "ai-chat" && (
+        <Button variant="outline" onClick={askCurrentPageAI}>
+          <Sparkles aria-hidden="true" />
+          询问 AI
+        </Button>
+      )}
+    </>
+  );
   useLayoutEffect(() => applyThemeMode(themeMode), [themeMode]);
 
   useEffect(() => {
@@ -1311,6 +1377,15 @@ export default function App() {
                 }}
                 onAskAI={(prompt) => {
                   window.localStorage.setItem("ai-chat-pending-prompt", prompt);
+                  window.localStorage.setItem(
+                    "ai-chat-pending-context",
+                    JSON.stringify({
+                      page_id: "calendar",
+                      source: "calendar-selection",
+                      title: "日程",
+                      selection: { schedule_mode: scheduleMode },
+                    }),
+                  );
                   setView("ai-chat");
                 }}
               />

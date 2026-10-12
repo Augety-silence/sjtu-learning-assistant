@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -98,6 +99,35 @@ class AIChatHistoryTests(unittest.TestCase):
         chat = self.service.ai_chat_new("deepseek-chat", "quick")
         self.assertTrue(self.service.ai_chat_delete(chat["id"])["deleted"])
         self.assertFalse(self.service.ai_chat_delete(chat["id"])["deleted"])
+
+    def test_stream_task_persists_page_context_result_and_unknown_usage(self) -> None:
+        chat = self.service.ai_chat_new("auto", "standard")
+        started = self.service.ai_chat_stream_start(
+            chat["id"],
+            "检查最近的作业截止时间",
+            "auto",
+            "standard",
+            "general",
+            page_context={
+                "page_id": "calendar",
+                "source": "page-header",
+                "title": "日程",
+            },
+        )
+        task_id = started["task"]["id"]
+        snapshot = started
+        for _ in range(100):
+            snapshot = self.service.ai_task_status(task_id)
+            if snapshot["task"]["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual("completed", snapshot["task"]["status"])
+        self.assertEqual("calendar", snapshot["task"]["page_id"])
+        self.assertIn(
+            "建议", snapshot["task"]["result"]["chat_result"]["assistant_message"]["content"]
+        )
+        self.assertEqual(1, snapshot["task"]["usage"]["unknown_usage_calls"])
+        self.assertEqual(0, snapshot["task"]["usage"]["total_tokens"])
 
 
 if __name__ == "__main__":

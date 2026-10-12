@@ -30,6 +30,7 @@ const history: AIChatSession = {
   traces: [],
 };
 vi.mock("@/lib/api", () => ({
+  AI_CHAT_STREAM_EVENT: "sjtu-ai-chat-stream",
   getAiPresets: vi.fn(async () => ({
     default_preset_id: "general",
     items: [{ id: "general", name: "学习 Agent", allowed_tools: [] }],

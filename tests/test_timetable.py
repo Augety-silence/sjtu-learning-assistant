@@ -389,8 +389,8 @@ END:VCALENDAR
             engine = create_engine(
                 "sqlite+pysqlite:///" + str(Path(directory) / "migration.db")
             )
-            self.assertEqual("0020", SCHEMA_VERSION)
-            self.assertEqual("0020", bootstrap_sqlite(engine))
+            self.assertEqual("0021", SCHEMA_VERSION)
+            self.assertEqual("0021", bootstrap_sqlite(engine))
             tables = set(inspect(engine).get_table_names())
             self.assertTrue(
                 {
@@ -414,7 +414,7 @@ END:VCALENDAR
                 self.assertIn("0", str(run_columns[name]["default"]))
             engine.dispose()
 
-    def test_real_0019_database_upgrades_to_0020_without_data_loss(self):
+    def test_real_0019_database_upgrades_to_current_without_data_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "released-0019.db"
             engine = create_engine("sqlite+pysqlite:///" + str(path))
@@ -423,7 +423,7 @@ END:VCALENDAR
                 "script_location", str(Path(__file__).parent.parent / "migrations")
             )
             config.set_main_option("sqlalchemy.url", str(engine.url))
-            self.assertEqual("0020", bootstrap_sqlite(engine))
+            self.assertEqual("0021", bootstrap_sqlite(engine))
             with engine.begin() as connection:
                 config.attributes["connection"] = connection
                 command.downgrade(config, "0019")
@@ -449,7 +449,7 @@ END:VCALENDAR
                     "VALUES (?, 'session', 'old-session', 'unchanged', '{}')",
                     (run_id,),
                 )
-            self.assertEqual("0020", bootstrap_sqlite(engine))
+            self.assertEqual("0021", bootstrap_sqlite(engine))
             with engine.begin() as connection:
                 row = connection.exec_driver_sql(
                     "SELECT imported_courses, imported_sessions, updated_sessions, "

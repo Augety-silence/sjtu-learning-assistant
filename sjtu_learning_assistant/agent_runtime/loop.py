@@ -116,6 +116,7 @@ class AgentLoop:
         max_tokens: int,
         temperature: float,
         attachment_ids: list[int] | tuple[int, ...] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentResult:
         started = self.clock()
         prefetch_messages, runs = self._prefetch(user_text, attachment_ids)
@@ -133,18 +134,42 @@ class AgentLoop:
             if attachment_ids or not prefetch_messages
             else []
         )
+        if event_callback is not None:
+            for run in runs:
+                event_callback("tool", dict(run))
         for step in range(1, self.max_steps + 1):
             if self.clock() - started > self.timeout_seconds:
                 return AgentResult("智能体执行超时，请缩小问题范围后重试。", None, "timeout", step - 1, tuple(runs))
             try:
-                completion = self.client.chat_completion(
-                    conversation,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    tools=definitions,
-                    tool_choice="auto" if definitions else None,
-                    system_prompt=False,
-                )
+                stream_method = getattr(self.client, "chat_completion_stream", None)
+                if (
+                    not definitions
+                    and callable(stream_method)
+                    and bool(getattr(self.client, "supports_streaming", True))
+                ):
+                    completion = stream_method(
+                        conversation,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system_prompt=False,
+                        on_delta=(
+                            lambda kind, value: event_callback(
+                                "content_delta" if kind == "content" else "reasoning_delta",
+                                {"delta": value},
+                            )
+                            if event_callback is not None
+                            else None
+                        ),
+                    )
+                else:
+                    completion = self.client.chat_completion(
+                        conversation,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        tools=definitions,
+                        tool_choice="auto" if definitions else None,
+                        system_prompt=False,
+                    )
             except AIToolsUnsupportedError:
                 completion = self.client.chat_completion(
                     conversation,
@@ -188,6 +213,8 @@ class AgentLoop:
                 else:
                     runs.append({"tool_name": execution.name, "phase": "model", "status": "ok", "arguments_summary": execution.arguments_summary, "result_summary": execution.result_summary})
                     tool_result = execution.result
+                if event_callback is not None:
+                    event_callback("tool", dict(runs[-1]))
                 conversation.append({"role": "tool", "tool_call_id": call_id, "name": str(name or "unknown")[:80], "content": json.dumps(tool_result, ensure_ascii=False, separators=(",", ":"))})
         combined = "\n\n".join(reasoning_parts)[:12_000] or None
         return AgentResult("已达到本轮工具调用上限，请缩小问题范围后重试。", combined, "max_steps", self.max_steps, tuple(runs))

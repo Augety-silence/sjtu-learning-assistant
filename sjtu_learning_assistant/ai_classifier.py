@@ -439,6 +439,142 @@ class OpenAIClassificationClient:
                 "AI 对话请求失败，请稍后重试。", category="client_error"
             ) from None
 
+    def chat_completion_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = 1200,
+        temperature: float = 0.3,
+        system_prompt: bool = True,
+        on_delta: Callable[[str, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Consume a real OpenAI-compatible SSE response and report visible deltas.
+
+        Tool calls deliberately stay on ``chat_completion``. The Agent runtime uses
+        this path only after deterministic prefetch has removed the need for tools.
+        """
+        if not messages or len(messages) > 64:
+            raise AIClassificationError("AI 对话消息数量无效。")
+        clean_messages: list[dict[str, str]] = []
+        total_length = 0
+        for message in messages:
+            if type(message) is not dict or set(message) != {"role", "content"}:
+                raise AIClassificationError("流式 AI 对话消息格式无效。")
+            role = message.get("role")
+            content = message.get("content")
+            if role not in {"system", "user", "assistant"}:
+                raise AIClassificationError("流式 AI 对话消息格式无效。")
+            if type(content) is not str or len(content) > 14_000:
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            if role in {"system", "user"} and not content.strip():
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            total_length += len(content)
+            clean_messages.append({"role": role, "content": content.strip()})
+        if total_length > 60_000:
+            raise AIClassificationError("AI 对话内容过长，请开始新对话。")
+        request_messages: list[dict[str, str]] = []
+        if system_prompt:
+            request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
+        request_messages.extend(clean_messages)
+        body: dict[str, object] = {
+            "model": self.model,
+            "max_tokens": max(256, min(int(max_tokens), 4096)),
+            "messages": request_messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if self.model != "deepseek-reasoner":
+            body["temperature"] = max(0.0, min(float(temperature), 1.5))
+
+        def consume(request_body: Mapping[str, object]) -> dict[str, Any]:
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            usage: dict[str, int] = {}
+            finish_reason: str | None = None
+            with self._client.stream("POST", "chat/completions", json=dict(request_body)) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    payload = json.loads(data)
+                    if not isinstance(payload, Mapping):
+                        continue
+                    reported = normalize_token_usage(payload.get("usage"))
+                    if reported:
+                        usage = reported
+                    choices = payload.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0]
+                    if not isinstance(choice, Mapping):
+                        continue
+                    raw_finish = choice.get("finish_reason")
+                    if type(raw_finish) is str:
+                        finish_reason = raw_finish
+                    delta = choice.get("delta")
+                    if not isinstance(delta, Mapping):
+                        continue
+                    content = delta.get("content")
+                    if type(content) is str and content:
+                        content_parts.append(content)
+                        if on_delta is not None:
+                            on_delta("content", content)
+                    reasoning = delta.get("reasoning_content")
+                    if type(reasoning) is str and reasoning:
+                        reasoning_parts.append(reasoning)
+                        if on_delta is not None:
+                            on_delta("reasoning", reasoning)
+            content = "".join(content_parts).strip()
+            if not content:
+                raise ValueError("empty response")
+            reasoning = "".join(reasoning_parts).strip() or None
+            metadata = {
+                "finish_reason": finish_reason,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "usage": dict(usage),
+            }
+            return {
+                "content": content,
+                "reasoning_content": reasoning,
+                "tool_calls": [],
+                "usage": usage,
+                "response_metadata": metadata,
+            }
+
+        try:
+            self._limiter()
+            try:
+                return consume(body)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {400, 422} or "stream_options" not in body:
+                    raise
+                fallback = dict(body)
+                fallback.pop("stream_options", None)
+                return consume(fallback)
+        except AIClassificationError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in (401, 403):
+                message, category = "AI 认证或访问权限失败，请检查 API key。", "authentication"
+            elif status_code == 429:
+                message, category = "AI 请求受限或配额不足，请稍后重试。", "rate_limit_or_quota"
+            elif status_code >= 500:
+                message, category = "AI 服务暂时不可用，请稍后重试。", "upstream_service"
+            else:
+                message, category = "AI 流式请求不被上游接口接受。", "request_parameters"
+            raise AIClassificationError(message, category=category, status_code=status_code) from None
+        except httpx.TimeoutException:
+            raise AIClassificationError("AI 流式请求超时，请稍后重试。", category="timeout") from None
+        except httpx.RequestError:
+            raise AIClassificationError("无法连接 AI 服务，请检查网络与 Base URL。", category="network") from None
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise AIClassificationError("AI 流式响应格式不兼容。", category="response_format") from None
+
     @staticmethod
     def _parse_tool_calls(value: object) -> list[dict[str, Any]]:
         if value is None:

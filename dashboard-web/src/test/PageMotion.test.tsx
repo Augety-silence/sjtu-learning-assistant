@@ -31,6 +31,7 @@ const presetResult = {
   ],
 };
 vi.mock("@/lib/api", () => ({
+  AI_CHAT_STREAM_EVENT: "sjtu-ai-chat-stream",
   getAiPresets: vi.fn(),
   getAiChatSessions: vi.fn(async () => ({ items: [] })),
   getSettings: vi.fn(async () => ({})),

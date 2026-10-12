@@ -457,6 +457,19 @@
   line-height: 21px;
 }
 
+.ai-context-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--aura-glass-card) 72%, transparent);
+  color: var(--aura-text-muted);
+  font-size: 12px;
+}
+
 .ai-chat-starters {
   width: min(650px, 100%);
   margin-top: 22px;

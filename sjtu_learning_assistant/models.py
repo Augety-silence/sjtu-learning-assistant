@@ -686,6 +686,106 @@ class AIAgentTrace(Base):
     )
 
 
+class AITask(TimestampMixin, Base):
+    """Persistent execution envelope shared by every AI-capable page."""
+
+    __tablename__ = "ai_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    page_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    model: Mapped[str | None] = mapped_column(String(64))
+    context: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
+    error_text: Mapped[str | None] = mapped_column(Text)
+    input_token_budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_token_budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    charged_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unknown_usage_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    events: Mapped[list["AITaskEvent"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+    usage_records: Mapped[list["AIUsageRecord"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            name="ck_ai_tasks_status",
+        ),
+        CheckConstraint("input_token_budget > 0", name="ck_ai_tasks_input_budget"),
+        CheckConstraint("output_token_budget > 0", name="ck_ai_tasks_output_budget"),
+        CheckConstraint("max_model_calls > 0", name="ck_ai_tasks_max_calls"),
+        Index("ix_ai_tasks_page_created", "page_id", "created_at"),
+        Index("ix_ai_tasks_status_updated", "status", "updated_at"),
+    )
+
+
+class AITaskEvent(Base):
+    __tablename__ = "ai_task_events"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    task: Mapped[AITask] = relationship(back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence", name="uq_ai_task_events_sequence"),
+        Index("ix_ai_task_events_task", "task_id", "sequence"),
+    )
+
+
+class AIUsageRecord(Base):
+    __tablename__ = "ai_usage_records"
+
+    id: Mapped[int] = mapped_column(PRIMARY_KEY_TYPE, Identity(), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    call_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="openai-compatible")
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    charged_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    usage_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    finish_reason: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    task: Mapped[AITask] = relationship(back_populates="usage_records")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "call_index", name="uq_ai_usage_task_call"),
+        CheckConstraint(
+            "usage_status IN ('reported', 'partial', 'unknown')", name="ck_ai_usage_status"
+        ),
+        Index("ix_ai_usage_task", "task_id", "call_index"),
+        Index("ix_ai_usage_created", "created_at"),
+    )
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

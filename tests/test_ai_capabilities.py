@@ -19,14 +19,17 @@ class AICapabilityTests(unittest.TestCase):
             self.assertTrue(task["input_sources"])
             self.assertTrue(task["input_requirements"])
             self.assertEqual("readonly_suggestions", task["decision_boundary"])
-            self.assertEqual("proposed_not_enforced", task["budget_status"])
+            self.assertEqual("enforced_for_page_ai", task["budget_status"])
+            self.assertTrue(task["page_ai_available"])
+            self.assertEqual("persistent_ledger", task["task_runtime"])
             self.assertGreater(task["max_model_calls"], 0)
             self.assertLessEqual(task["max_output_tokens"], 4096)
             if task["implementation_status"] == "planned":
                 self.assertEqual([], task["backend_actions"])
         chat = ai_task_catalog("ai-chat")["tasks"][0]
-        self.assertIn("stream_not_implemented", chat["limitations"])
-        self.assertEqual("text_stream_candidate", chat["output_mode"])
+        self.assertNotIn("stream_not_implemented", chat["limitations"])
+        self.assertEqual("text_stream", chat["output_mode"])
+        self.assertIn("ai_chat_stream_start", chat["backend_actions"])
 
     def test_configuration_never_claims_live_connection_or_key_access(self):
         settings = SimpleNamespace(ai_enabled=True, ai_key_saved=True, ai_model="qwen")
@@ -38,6 +41,7 @@ class AICapabilityTests(unittest.TestCase):
         self.assertFalse(status["network_probe_performed"])
         self.assertEqual("unknown_until_provider_response", status["usage_status"])
         self.assertEqual([], status["reasons"])
+        self.assertTrue(status["streaming_implemented"])
 
     def test_preflight_reads_only_declared_nonsecret_fields(self):
         class Settings:

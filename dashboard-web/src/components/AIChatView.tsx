@@ -23,6 +23,7 @@ import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import {
+  AI_CHAT_STREAM_EVENT,
   createAiChatSession,
   deleteAiChatSession,
   getAiChatSession,
@@ -108,6 +109,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [sessions, setSessions] = useState<AIChatSessionSummary[]>([]);
   const [active, setActive] = useState<AIChatSession | null>(null);
   const [draft, setDraft] = useState("");
+  const [contextTitle, setContextTitle] = useState<string | null>(null);
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
   const [busy, setBusy] = useState(false);
@@ -153,10 +155,66 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, [isPresent]);
   useEffect(() => {
     const pendingPrompt = window.localStorage.getItem("ai-chat-pending-prompt");
-    if (!pendingPrompt) return;
-    window.localStorage.removeItem("ai-chat-pending-prompt");
-    setDraft(pendingPrompt);
-    pendingComposerFocusRef.current = true;
+    const pendingContext = window.localStorage.getItem(
+      "ai-chat-pending-context",
+    );
+    if (pendingContext) {
+      window.localStorage.setItem("ai-chat-active-context", pendingContext);
+      window.localStorage.removeItem("ai-chat-pending-context");
+      try {
+        const parsed = JSON.parse(pendingContext) as { title?: unknown };
+        if (typeof parsed.title === "string") setContextTitle(parsed.title);
+      } catch {
+        window.localStorage.removeItem("ai-chat-active-context");
+      }
+    } else {
+      window.localStorage.removeItem("ai-chat-active-context");
+    }
+    if (pendingPrompt) {
+      window.localStorage.removeItem("ai-chat-pending-prompt");
+      setDraft(pendingPrompt);
+      pendingComposerFocusRef.current = true;
+    }
+  }, []);
+  useEffect(() => {
+    const receive = (rawEvent: Event) => {
+      const detail = (rawEvent as CustomEvent<Record<string, unknown>>).detail;
+      if (!detail || detail.type !== "content_delta") return;
+      const sessionId = detail.session_id;
+      const taskId = detail.task_id;
+      const delta = detail.delta;
+      if (
+        typeof sessionId !== "string" ||
+        typeof taskId !== "string" ||
+        typeof delta !== "string" ||
+        !delta
+      )
+        return;
+      const streamId = `stream-${taskId}`;
+      setActive((current) => {
+        if (current?.id !== sessionId) return current;
+        const existing = current.messages.findIndex(
+          (message) => message.id === streamId,
+        );
+        if (existing < 0) {
+          return {
+            ...current,
+            messages: [
+              ...current.messages,
+              { id: streamId, role: "assistant", content: delta },
+            ],
+          };
+        }
+        const messages = [...current.messages];
+        messages[existing] = {
+          ...messages[existing],
+          content: messages[existing].content + delta,
+        };
+        return { ...current, messages };
+      });
+    };
+    window.addEventListener(AI_CHAT_STREAM_EVENT, receive);
+    return () => window.removeEventListener(AI_CHAT_STREAM_EVENT, receive);
   }, []);
   useEffect(() => {
     if (!isPresent || !pendingComposerFocusRef.current) return;
@@ -473,7 +531,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
-        const messages = [...current.messages];
+        const messages = current.messages.filter(
+          (message) => !message.id.startsWith("stream-"),
+        );
         const optimisticIndex = messages.findIndex(
           (item) => item.id === request.optimisticId,
         );
@@ -502,7 +562,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           ? {
               ...current,
               messages: current.messages.filter(
-                (item) => item.id !== request.optimisticId,
+                (item) =>
+                  item.id !== request.optimisticId &&
+                  !item.id.startsWith("stream-"),
               ),
             }
           : current,
@@ -789,6 +851,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                   会按需调用只读工具，查询课程、课程文件、截止日期、消息和资料树；每一步都可在
                   Activity 中核验。
                 </p>
+                {contextTitle && (
+                  <span className="ai-context-chip">来自：{contextTitle}</span>
+                )}
                 <div className="ai-chat-starters">
                   {starters.map((starter) => (
                     <button

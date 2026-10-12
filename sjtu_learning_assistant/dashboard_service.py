@@ -86,6 +86,13 @@ from sjtu_learning_assistant.media_features import MediaFeatureService
 from sjtu_learning_assistant.update_service import UpdateService
 from sjtu_learning_assistant.transcript_service import AIContext, TranscriptError, TranscriptService
 from sjtu_learning_assistant.ai_capabilities import ai_capabilities as build_ai_capabilities
+from sjtu_learning_assistant.ai_tasks import (
+    AITaskCancelled,
+    AITaskError,
+    AITaskLedger,
+    BudgetedAIClient,
+    normalize_page_context,
+)
 from sjtu_learning_assistant.video_service import (
     SJTUVideoError,
     SJTUVideoService,
@@ -263,6 +270,9 @@ class DashboardService:
         self.archive_root = Path(settings.archive_root)
         self.folder_picker = folder_picker
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self.ai_tasks = AITaskLedger(engine, now_provider=self.now)
+        self._ai_task_threads: dict[str, threading.Thread] = {}
+        self._ai_task_lock = threading.Lock()
         self.local_projects_path = Path(
             local_projects_path or APP_SUPPORT_DIR / "local-projects.json"
         )
@@ -2386,6 +2396,10 @@ class DashboardService:
         depth: object = "standard",
         preset_id: object | None = None,
         attachment_ids: object | None = None,
+        *,
+        task_id: str | None = None,
+        page_context: Mapping[str, Any] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
@@ -2440,6 +2454,21 @@ class DashboardService:
                     ),
                 }
             )
+        if page_context:
+            prompt.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "本轮页面上下文只用于限定证据范围。请将可核验事实、决策建议和"
+                        "需要用户确认的操作分开表述，不得声称已执行写操作："
+                        + json.dumps(
+                            dict(page_context),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    ),
+                }
+            )
         prompt.append({"role": "user", "content": text})
         try:
             preset = PresetLoader().get(selected_preset_id)
@@ -2447,19 +2476,25 @@ class DashboardService:
             raise DashboardError(str(exc)) from None
 
         client: Any | None = None
+        raw_client: Any | None = None
         owns_client = selected_model != settings.ai_model
         try:
             if owns_client:
                 key = self.ai_key_loader()
                 if not key:
                     raise DashboardError("未找到已保存的 AI API key。")
-                client = self.ai_client_factory(
+                raw_client = self.ai_client_factory(
                     api_key=key,
                     base_url=settings.ai_base_url,
                     model=selected_model,
                 )
             else:
-                client = self._get_ai_client(settings, required=True)
+                raw_client = self._get_ai_client(settings, required=True)
+            client = (
+                BudgetedAIClient(raw_client, self.ai_tasks, task_id)
+                if task_id is not None
+                else raw_client
+            )
             assert client is not None
             options = CHAT_DEPTH_OPTIONS[selected_depth]
             agent_result = AgentLoop(
@@ -2477,13 +2512,14 @@ class DashboardService:
                 max_tokens=int(options["max_tokens"]),
                 temperature=float(options["temperature"]),
                 attachment_ids=selected_attachment_ids,
+                event_callback=event_callback,
             )
         except (AIClassificationError, AgentToolError) as exc:
             self._persist_failed_agent_trace(session_id, preset.id)
             raise DashboardError(str(exc)) from None
         finally:
             if owns_client:
-                self._close_client(client)
+                self._close_client(raw_client)
 
         now = self.now()
         trace_id = str(uuid.uuid4())
@@ -2568,6 +2604,122 @@ class DashboardService:
                 ),
             }
         return result
+
+    def ai_chat_stream_start(
+        self,
+        session_id: str,
+        content: object,
+        model: object = "auto",
+        depth: object = "standard",
+        preset_id: object | None = None,
+        attachment_ids: object | None = None,
+        page_context: object | None = None,
+    ) -> dict[str, Any]:
+        if type(session_id) is not str or not session_id or len(session_id) > 36:
+            raise DashboardError("对话标识无效。")
+        if type(content) is not str or not content.strip() or len(content) > 4000:
+            raise DashboardError("消息不能为空或超过 4000 字。")
+        context = normalize_page_context(page_context)
+        settings = self._effective_settings()
+        selected_model, _ = self._chat_model(model, depth, settings.ai_model)
+        snapshot = self.ai_tasks.create(context, model=selected_model)
+        task_id = str(snapshot["task"]["id"])
+        thread = threading.Thread(
+            target=self._run_ai_chat_task,
+            kwargs={
+                "task_id": task_id,
+                "session_id": session_id,
+                "content": content,
+                "model": model,
+                "depth": depth,
+                "preset_id": preset_id,
+                "attachment_ids": attachment_ids,
+                "page_context": context,
+            },
+            name=f"ai-chat-{task_id[:8]}",
+            daemon=True,
+        )
+        with self._ai_task_lock:
+            self._ai_task_threads[task_id] = thread
+        thread.start()
+        return snapshot
+
+    def _run_ai_chat_task(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        content: str,
+        model: object,
+        depth: object,
+        preset_id: object | None,
+        attachment_ids: object | None,
+        page_context: Mapping[str, Any],
+    ) -> None:
+        buffers: dict[str, list[str]] = {"content_delta": [], "reasoning_delta": []}
+
+        def flush(kind: str) -> None:
+            parts = buffers[kind]
+            if not parts:
+                return
+            self.ai_tasks.append_event(task_id, kind, {"delta": "".join(parts)})
+            parts.clear()
+
+        def event(kind: str, payload: dict[str, Any]) -> None:
+            if self.ai_tasks.is_cancel_requested(task_id):
+                raise AITaskCancelled("AI 任务已取消。")
+            if kind in buffers:
+                delta = payload.get("delta")
+                if type(delta) is str and delta:
+                    buffers[kind].append(delta)
+                    if sum(len(part) for part in buffers[kind]) >= 48:
+                        flush(kind)
+                return
+            self.ai_tasks.append_event(task_id, kind, payload)
+
+        try:
+            self.ai_tasks.start(task_id)
+            result = self.ai_chat_send(
+                session_id,
+                content,
+                model,
+                depth,
+                preset_id,
+                attachment_ids,
+                task_id=task_id,
+                page_context=page_context,
+                event_callback=event,
+            )
+            flush("reasoning_delta")
+            flush("content_delta")
+            self.ai_tasks.complete(task_id, {"chat_result": result})
+        except AITaskCancelled:
+            self.ai_tasks.finish_cancelled(task_id)
+        except (AITaskError, DashboardError, AIClassificationError, AgentToolError) as exc:
+            self.ai_tasks.fail(task_id, str(exc))
+        except Exception:
+            self.ai_tasks.fail(task_id, "AI 任务执行失败，请稍后重试。")
+        finally:
+            with self._ai_task_lock:
+                self._ai_task_threads.pop(task_id, None)
+
+    def ai_task_status(self, task_id: str, after_sequence: int = 0) -> dict[str, Any]:
+        try:
+            return self.ai_tasks.get(task_id, after_sequence=after_sequence)
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def ai_task_cancel(self, task_id: str) -> dict[str, Any]:
+        try:
+            return self.ai_tasks.cancel(task_id)
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def ai_usage_summary(self, page_id: str | None = None) -> dict[str, Any]:
+        try:
+            return self.ai_tasks.usage_summary(page_id=page_id)
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
 
     def ai_chat(self, messages: object) -> dict[str, Any]:
         """Compatibility endpoint for pre-history clients."""

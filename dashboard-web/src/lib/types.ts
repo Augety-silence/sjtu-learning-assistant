@@ -117,6 +117,53 @@ export interface AIChatSendResult {
   assistant_message: AIChatMessage;
 }
 
+export interface AIPageContext {
+  page_id: ViewName;
+  source?: string;
+  title?: string;
+  entity_ids?: Array<string | number>;
+  selection?: Record<
+    string,
+    string | number | boolean | null | Array<string | number | boolean | null>
+  >;
+}
+
+export interface AITaskEvent {
+  sequence: number;
+  kind: string;
+  payload: Record<string, unknown>;
+  created_at?: string | null;
+}
+
+export interface AITaskSnapshot {
+  task: {
+    id: string;
+    page_id: ViewName;
+    capability_id: string;
+    status: "queued" | "running" | "completed" | "failed" | "cancelled";
+    model?: string | null;
+    context: AIPageContext;
+    result?: { chat_result?: AIChatSendResult } | null;
+    error?: string | null;
+    budget: {
+      input_tokens: number;
+      output_tokens: number;
+      max_model_calls: number;
+    };
+    usage: {
+      model_calls: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      charged_output_tokens: number;
+      unknown_usage_calls: number;
+      status: string;
+    };
+  };
+  events: AITaskEvent[];
+  next_sequence: number;
+}
+
 export interface AIChatResult {
   reply: string;
   model: string;

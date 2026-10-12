@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from .ai_classifier import ALLOWED_AI_MODELS
 
 OUTPUT_MODES = frozenset({
-    "one_shot", "validated_artifact", "progress_then_artifact", "text_stream_candidate",
+    "one_shot", "validated_artifact", "progress_then_artifact", "text_stream_candidate", "text_stream",
 })
 
 
@@ -33,13 +33,15 @@ class AITaskSpec:
     readonly_decisions: tuple[str, ...]
     limitations: tuple[str, ...] = ()
     decision_boundary: str = "readonly_suggestions"
-    budget_status: str = "proposed_not_enforced"
+    budget_status: str = "enforced_for_page_ai"
 
     def to_dict(self) -> dict[str, object]:
         result = asdict(self)
         for name, value in result.items():
             if isinstance(value, tuple):
                 result[name] = list(value)
+        result["page_ai_available"] = True
+        result["task_runtime"] = "persistent_ledger"
         return result
 
 
@@ -86,11 +88,11 @@ TASK_SPECS = (
                ("selected_markdown_sources",), ("explicit_source_and_target_scope",), 12000, 4096, 24,
                ("propose_notes", "link_concepts", "flag_uncertainty"),
                ("compiler_has_separate_file_write_boundary", "hardcoded_stage_models", "budget_not_enforced")),
-    AITaskSpec("ai-chat", "learning_chat", "基于本地证据的学习问答", "partial",
-               ("ai_chat_send", "ai_chat_session"), "text_stream_candidate",
+    AITaskSpec("ai-chat", "learning_chat", "基于本地证据的学习问答", "implemented",
+               ("ai_chat_stream_start", "ai_task_status", "ai_task_cancel", "ai_usage_summary"), "text_stream",
                ("chat_history", "readonly_local_tools", "selected_ai_attachments"), ("selected_session",),
                12000, 3000, 6, ("retrieve_evidence", "explain", "suggest_next_step"),
-               ("actual_output_is_one_shot", "no_transcript_or_course_memory_tool", "stream_not_implemented")),
+               ("tool_selection_steps_remain_one_shot", "no_transcript_or_course_memory_tool")),
     AITaskSpec("settings", "connection_diagnostics", "AI连接配置解释", "partial", ("test_ai_connection",), "one_shot",
                ("nonsecret_ai_settings", "explicit_connection_test_result"), ("no_raw_key_in_context",),
                1000, 500, 1, ("explain_configuration", "suggest_compatibility_check"),
@@ -144,7 +146,7 @@ def ai_configuration_preflight(
         "connection_verified": connection_verified if configured else False,
         "key_access_verified": False, "network_probe_performed": False,
         "reasons": reasons, "usage_status": "unknown_until_provider_response",
-        "streaming_implemented": False,
+        "streaming_implemented": True,
     }
 
 

@@ -71,6 +71,7 @@ const trace = {
 };
 
 vi.mock("@/lib/api", () => ({
+  AI_CHAT_STREAM_EVENT: "sjtu-ai-chat-stream",
   getAiPresets: vi.fn(async () => ({
     default_preset_id: "general",
     items: [preset],

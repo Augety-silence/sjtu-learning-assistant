@@ -153,9 +153,41 @@ describe("pywebview bridge client", () => {
   });
 
   it("sends the complete agent preset contract for new sessions and turns", async () => {
-    const bridge = vi.fn().mockResolvedValue({
-      ok: true,
-      data: { default_preset_id: "general", items: [] },
+    const chatResult = {
+      session: { id: "session-1" },
+      trace: { id: "trace-1" },
+      user_message: { id: "1", role: "user", content: "查询课程文件" },
+      assistant_message: { id: "2", role: "assistant", content: "结果" },
+    };
+    const bridge = vi.fn(async (action: string) => {
+      if (action === "ai_presets") {
+        return { ok: true, data: { default_preset_id: "general", items: [] } };
+      }
+      if (action === "ai_chat_stream_start") {
+        return {
+          ok: true,
+          data: {
+            task: { id: "task-1", status: "running" },
+            events: [],
+            next_sequence: 1,
+          },
+        };
+      }
+      if (action === "ai_task_status") {
+        return {
+          ok: true,
+          data: {
+            task: {
+              id: "task-1",
+              status: "completed",
+              result: { chat_result: chatResult },
+            },
+            events: [],
+            next_sequence: 2,
+          },
+        };
+      }
+      return { ok: true, data: {} };
     });
     vi.stubGlobal("pywebview", { api: { invoke: bridge } });
 
@@ -176,12 +208,16 @@ describe("pywebview bridge client", () => {
       "deep",
       "review-planner",
     );
-    expect(bridge).toHaveBeenLastCalledWith("ai_chat_send", {
+    expect(bridge).toHaveBeenCalledWith("ai_chat_stream_start", {
       session_id: "session-1",
       content: "查询课程文件",
       model: "deepseek-chat",
       thinking_depth: "deep",
       preset_id: "review-planner",
+    });
+    expect(bridge).toHaveBeenCalledWith("ai_task_status", {
+      task_id: "task-1",
+      after_sequence: 1,
     });
   });
 

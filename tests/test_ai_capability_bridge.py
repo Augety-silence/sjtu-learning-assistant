@@ -58,6 +58,32 @@ def test_unknown_page_never_substitutes_another_page():
         configuration_service().ai_capabilities("unknown")
 
 
+def test_stream_task_bridge_rejects_renderer_budget_and_provider_claims():
+    service = Mock()
+    service.ai_chat_stream_start.return_value = {"task": {"id": "task-1"}}
+    service.ai_task_status.return_value = {"task": {"id": "task-1"}, "events": []}
+    service.ai_task_cancel.return_value = {"task": {"id": "task-1", "status": "cancelled"}}
+    service.ai_usage_summary.return_value = {"tasks": 1}
+    bridge = DesktopBridge(service)
+    valid = {
+        "session_id": "session-1",
+        "content": "安排本周学习",
+        "model": "auto",
+        "thinking_depth": "standard",
+        "preset_id": "general",
+        "page_context": {
+            "page_id": "calendar",
+            "source": "page-header",
+            "title": "日程",
+        },
+    }
+    assert bridge.invoke("ai_chat_stream_start", valid)["ok"] is True
+    for field in ("max_tokens", "max_model_calls", "provider", "api_key"):
+        assert bridge.invoke("ai_chat_stream_start", {**valid, field: 1})["ok"] is False
+    assert bridge.invoke("ai_task_status", {"task_id": "task-1", "after_sequence": 0})["ok"] is True
+    assert bridge.invoke("ai_task_status", {"task_id": "task-1", "after_sequence": -1})["ok"] is False
+
+
 @pytest.mark.parametrize("endpoint,model,expected", [
     ("https://models.sjtu.edu.cn/api/v1", "deepseek-chat", True),
     ("https://models.sjtu.edu.cn/api/v1/", "deepseek-chat", True),

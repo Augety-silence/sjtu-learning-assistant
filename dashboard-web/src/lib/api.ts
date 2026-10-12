@@ -253,7 +253,39 @@ export function createAiChatSession(
   });
 }
 
-export function sendAiChatMessage(
+export const AI_CHAT_STREAM_EVENT = "sjtu-ai-chat-stream";
+
+function activeAIPageContext() {
+  if (typeof window === "undefined") return undefined;
+  const storage = window.localStorage;
+  if (!storage) return undefined;
+  const raw = storage.getItem("ai-chat-active-context");
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object"
+      ? (parsed as import("@/lib/types").AIPageContext)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function emitAIStream(detail: Record<string, unknown>) {
+  if (
+    typeof window === "undefined" ||
+    typeof window.dispatchEvent !== "function" ||
+    typeof CustomEvent === "undefined"
+  )
+    return;
+  window.dispatchEvent(new CustomEvent(AI_CHAT_STREAM_EVENT, { detail }));
+}
+
+function waitForTaskPoll(delay = 120) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+}
+
+export async function sendAiChatMessage(
   sessionId: string,
   content: string,
   model: import("@/lib/types").AIModel,
@@ -261,14 +293,78 @@ export function sendAiChatMessage(
   presetId: string,
   attachmentIds?: number[],
 ) {
-  return invoke<import("@/lib/types").AIChatSendResult>("ai_chat_send", {
-    session_id: sessionId,
-    content,
-    model,
-    thinking_depth: thinkingDepth,
-    preset_id: presetId,
-    ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
-  });
+  let snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+    "ai_chat_stream_start",
+    {
+      session_id: sessionId,
+      content,
+      model,
+      thinking_depth: thinkingDepth,
+      preset_id: presetId,
+      ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
+      ...(activeAIPageContext() ? { page_context: activeAIPageContext() } : {}),
+    },
+  );
+  const taskId = snapshot.task.id;
+  let sequence = snapshot.next_sequence;
+  emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    if (snapshot.task.status === "completed") {
+      const result = snapshot.task.result?.chat_result;
+      if (!result) throw new Error("AI 任务完成但没有返回对话结果。");
+      emitAIStream({
+        type: "complete",
+        task_id: taskId,
+        session_id: sessionId,
+      });
+      return result;
+    }
+    if (snapshot.task.status === "failed") {
+      throw new Error(snapshot.task.error || "AI 任务执行失败。");
+    }
+    if (snapshot.task.status === "cancelled") {
+      throw new Error("AI 任务已取消。");
+    }
+    await waitForTaskPoll();
+    snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+      "ai_task_status",
+      { task_id: taskId, after_sequence: sequence },
+    );
+    sequence = snapshot.next_sequence;
+    for (const event of snapshot.events) {
+      if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
+        emitAIStream({
+          type: event.kind,
+          task_id: taskId,
+          session_id: sessionId,
+          delta: event.payload.delta,
+        });
+      }
+      if (event.kind === "tool") {
+        emitAIStream({
+          type: "tool",
+          task_id: taskId,
+          session_id: sessionId,
+          run: event.payload,
+        });
+      }
+    }
+  }
+  await invoke("ai_task_cancel", { task_id: taskId }).catch(() => undefined);
+  throw new Error("AI 任务等待超时，已请求停止。");
+}
+
+export function getAIUsageSummary(pageId?: import("@/lib/types").ViewName) {
+  return invoke<{
+    page_id?: string | null;
+    tasks: number;
+    model_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    unknown_usage_calls: number;
+  }>("ai_usage_summary", pageId ? { page_id: pageId } : {});
 }
 
 export function listAiAttachments(limit = 100) {

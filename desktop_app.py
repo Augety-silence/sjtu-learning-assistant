@@ -316,6 +316,10 @@ class DesktopBridge:
             "ai_chat_session": self._ai_chat_session,
             "ai_chat_new": self._ai_chat_new,
             "ai_chat_send": self._ai_chat_send,
+            "ai_chat_stream_start": self._ai_chat_stream_start,
+            "ai_task_status": self._ai_task_status,
+            "ai_task_cancel": self._ai_task_cancel,
+            "ai_usage_summary": self._ai_usage_summary,
             "ai_chat_delete": self._ai_chat_delete,
             "ai_attachment_list": self._ai_attachment_list,
             "knowledge_compiler_pick_folder": self._knowledge_compiler_pick_folder,
@@ -540,6 +544,63 @@ class DesktopBridge:
             if attachment_id not in normalized:
                 normalized.append(attachment_id)
         return self._service.ai_chat_send(*base_arguments, normalized)
+
+    def _ai_chat_stream_start(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(
+            payload,
+            {
+                "session_id",
+                "content",
+                "model",
+                "thinking_depth",
+                "preset_id",
+                "attachment_ids",
+                "page_context",
+            },
+        )
+        preset_id = payload.get("preset_id")
+        if preset_id is not None:
+            preset_id = _preset_id(preset_id)
+        attachment_ids = payload.get("attachment_ids")
+        if attachment_ids is not None:
+            if type(attachment_ids) is not list or len(attachment_ids) > 20:
+                raise DashboardError("附件标识列表无效。")
+            attachment_ids = [
+                _positive_id(value, "附件标识") for value in attachment_ids
+            ]
+        page_context = payload.get("page_context")
+        if page_context is not None and type(page_context) is not dict:
+            raise DashboardError("页面上下文格式无效。")
+        return self._service.ai_chat_stream_start(
+            self._chat_session_id(payload),
+            payload.get("content"),
+            payload.get("model", "auto"),
+            payload.get("thinking_depth", "standard"),
+            preset_id,
+            attachment_ids,
+            page_context,
+        )
+
+    def _ai_task_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"task_id", "after_sequence"})
+        task_id = _bounded_id(payload.get("task_id"), limit=36, label="AI 任务标识")
+        after_sequence = payload.get("after_sequence", 0)
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise DashboardError("AI 任务事件游标无效。")
+        return self._service.ai_task_status(task_id, after_sequence)
+
+    def _ai_task_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"task_id"})
+        return self._service.ai_task_cancel(
+            _bounded_id(payload.get("task_id"), limit=36, label="AI 任务标识")
+        )
+
+    def _ai_usage_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"page_id"})
+        page_id = payload.get("page_id")
+        if page_id is not None:
+            page_id = _bounded_id(page_id, limit=32, label="页面标识")
+        return self._service.ai_usage_summary(page_id)
 
     def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"session_id"})
