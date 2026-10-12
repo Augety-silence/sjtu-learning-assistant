@@ -1,5 +1,6 @@
 import { FolderOpen, X } from "lucide-react";
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { formatArchiveMtime } from "@/components/archive/archiveUtils";
 import { Button } from "@/components/ui/Button";
 import { authorizeArchiveRoot, executeRestore, planRestore } from "@/lib/api";
@@ -110,7 +111,7 @@ export function RestoreDialog({
     }
   };
 
-  return (
+  return createPortal(
     <div className="archive-overlay archive-dialog-layer" data-modal-layer>
       <button
         type="button"
@@ -327,6 +328,7 @@ export function RestoreDialog({
           </div>
         )}
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

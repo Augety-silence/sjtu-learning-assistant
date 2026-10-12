@@ -85,6 +85,9 @@ describe("OverviewView", () => {
     expect(summary.querySelector(".summary-secondary")?.textContent).toContain(
       "8",
     );
+    expect(within(summary).getByText("1 项即将截止")).toBeTruthy();
+    expect(within(summary).getByText("没有等待查看的邮件")).toBeTruthy();
+    expect(within(summary).getByText("课程数据已同步")).toBeTruthy();
 
     const messageButtons = screen.getAllByRole("button", {
       name: /打开消息详情/,
@@ -114,5 +117,52 @@ describe("OverviewView", () => {
     retry.click();
     expect(await screen.findByLabelText("学习概览")).toBeTruthy();
     expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("让统计卡片的空状态描述与动态数字保持一致", async () => {
+    const empty: OverviewData = {
+      courses: 0,
+      upcoming_deadlines: 0,
+      unread_emails: 0,
+      deadlines: [],
+      messages: [],
+    };
+    vi.mocked(invoke).mockResolvedValue(empty);
+
+    render(<OverviewView navigate={vi.fn()} />);
+    const summary = await screen.findByLabelText("学习概览");
+    expect(within(summary).getByText("24 小时内无任务")).toBeTruthy();
+    expect(within(summary).getByText("没有等待查看的邮件")).toBeTruthy();
+    expect(within(summary).getByText("尚未同步课程")).toBeTruthy();
+  });
+
+  it("仅展示截止日期最近的五项未完成任务", async () => {
+    const now = Date.now();
+    const dayOffsets = [9, 1, 7, 3, 5, 11];
+    const data: OverviewData = {
+      courses: 1,
+      upcoming_deadlines: 3,
+      unread_emails: 0,
+      deadlines: dayOffsets.map((days) => ({
+        source_id: `deadline-${days}`,
+        title: `第 ${days} 天截止`,
+        course: "测试课程",
+        due_at: new Date(now + days * 24 * 60 * 60 * 1000).toISOString(),
+        submission_state: "unsubmitted",
+        url: null,
+      })),
+      messages: [],
+    };
+    vi.mocked(invoke).mockResolvedValue(data);
+
+    render(<OverviewView navigate={vi.fn()} />);
+    expect(await screen.findByText("最近截止")).toBeTruthy();
+    const rows = document.querySelectorAll(
+      ".overview-deadlines .list-row-button",
+    );
+    expect(rows).toHaveLength(5);
+    expect(rows[0].textContent).toContain("第 1 天截止");
+    expect(rows[4].textContent).toContain("第 9 天截止");
+    expect(document.body.textContent).not.toContain("第 11 天截止");
   });
 });

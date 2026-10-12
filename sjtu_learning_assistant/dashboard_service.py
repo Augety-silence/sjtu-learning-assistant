@@ -85,6 +85,7 @@ from sjtu_learning_assistant.canvas_client import CanvasClient
 from sjtu_learning_assistant.media_features import MediaFeatureService
 from sjtu_learning_assistant.update_service import UpdateService
 from sjtu_learning_assistant.transcript_service import AIContext, TranscriptError, TranscriptService
+from sjtu_learning_assistant.ai_capabilities import ai_capabilities as build_ai_capabilities
 from sjtu_learning_assistant.video_service import (
     SJTUVideoError,
     SJTUVideoService,
@@ -363,18 +364,110 @@ class DashboardService:
             "mcp": {"transport": "stdio", "read_only": True},
         }
         result["courses"] = self.course_capabilities(course_id)
+        result["ai"] = self.ai_capabilities()
         return result
 
     def calendar(
         self, year: int, month: int, *, course_ids: Sequence[int | str] | None = None
     ) -> dict[str, Any]:
-        overview = self._academic_features().calendar_overview(
-            year, month, now=self.now(), course_ids=course_ids, timezone_info=SHANGHAI_TZ
+        try:
+            month_start = datetime(year, month, 1, tzinfo=SHANGHAI_TZ)
+            month_end = (
+                datetime(year + 1, 1, 1, tzinfo=SHANGHAI_TZ)
+                if month == 12
+                else datetime(year, month + 1, 1, tzinfo=SHANGHAI_TZ)
+            )
+        except (TypeError, ValueError) as exc:
+            raise DashboardError("年月格式无效。") from exc
+
+        current = self.now()
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        current = current.astimezone(SHANGHAI_TZ)
+        upcoming_end = current + timedelta(days=31)
+        range_start = min(month_start, current)
+        range_end = max(month_end, upcoming_end)
+
+        statement = (
+            select(Assignment, Course)
+            .join(Course, Course.id == Assignment.course_id)
+            .where(
+                Assignment.is_active.is_(True),
+                Assignment.due_at.is_not(None),
+                Assignment.due_at >= range_start,
+                Assignment.due_at < range_end,
+            )
+            .order_by(Assignment.due_at.asc(), Assignment.id.asc())
         )
-        result = self._dto(overview)
-        result["month_events"] = list(result["month_events"])
-        result["upcoming_events"] = list(result["upcoming_events"])
-        return result
+        if course_ids:
+            statement = statement.where(
+                Course.source_id.in_([str(item) for item in course_ids])
+            )
+
+        with Session(self.engine) as session:
+            rows = session.execute(statement).all()
+
+        def event_dto(assignment: Assignment, course: Course) -> dict[str, Any]:
+            due_at = assignment.due_at
+            if due_at is None:
+                raise DashboardError("本地作业缺少截止时间。")
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            due_text = due_at.astimezone(SHANGHAI_TZ).isoformat(timespec="seconds")
+            raw = (
+                assignment.raw_data
+                if isinstance(assignment.raw_data, Mapping)
+                else {}
+            )
+            return {
+                "id": assignment.source_id,
+                "title": assignment.name,
+                "start_at": due_text,
+                "end_at": due_text,
+                "context_name": _course_name(course.name),
+                "context_code": f"course_{course.source_id}",
+                "workflow_state": assignment.submission_state,
+                "html_url": assignment.url,
+                "assignment": {
+                    "id": assignment.source_id,
+                    "name": assignment.name,
+                    "due_at": due_text,
+                    "created_at": _raw_iso(raw.get("created_at")),
+                    "unlock_at": _raw_iso(raw.get("unlock_at")),
+                    "html_url": assignment.url,
+                    "submission": {
+                        "workflow_state": assignment.submission_state,
+                    },
+                },
+            }
+
+        events = [
+            (event_dto(assignment, course), assignment.due_at)
+            for assignment, course in rows
+        ]
+
+        def inside(value: datetime | None, start: datetime, end: datetime) -> bool:
+            if value is None:
+                return False
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            value = value.astimezone(SHANGHAI_TZ)
+            return start <= value < end
+
+        return {
+            "month_start": month_start.isoformat(timespec="seconds"),
+            "month_end": month_end.isoformat(timespec="seconds"),
+            "month_events": [
+                event
+                for event, due_at in events
+                if inside(due_at, month_start, month_end)
+            ],
+            "upcoming_start": current.isoformat(timespec="seconds"),
+            "upcoming_end": upcoming_end.isoformat(timespec="seconds"),
+            "upcoming_events": [
+                event for event, due_at in events if inside(due_at, current, upcoming_end)
+            ],
+        }
 
     def gradebook(self, course_id: int | str) -> dict[str, Any]:
         return self._academic_features().gradebook(course_id)
@@ -646,6 +739,26 @@ class DashboardService:
             self._material_record(source_id)
         )
 
+    def ai_capabilities(self, page_id: str | None = None) -> dict[str, Any]:
+        """Inspect AI configuration without loading a key or invoking a model."""
+        settings = self._effective_settings()
+        try:
+            key_saved = bool(settings.ai_key_saved and self.ai_key_saved_checker())
+            key_status_available = True
+        except Exception:
+            key_saved = False
+            key_status_available = False
+        try:
+            result = build_ai_capabilities({
+                "ai_enabled": settings.ai_enabled,
+                "ai_key_saved": key_saved,
+                "ai_model": settings.ai_model,
+            }, page_id=page_id)
+        except ValueError:
+            raise DashboardError("AI 能力页面不正确。") from None
+        result["preflight"]["key_status_available"] = key_status_available
+        return result
+
     def video_subtitles(self, source_id: str) -> dict[str, Any]:
         """Fetch remote captions as WebVTT without exposing the short-lived JWT."""
         try:
@@ -660,7 +773,12 @@ class DashboardService:
         settings = self._effective_settings()
         client = self._get_ai_client(settings) if settings.ai_enabled else None
         fingerprint = hashlib.sha256(settings.ai_base_url.encode("utf-8")).hexdigest()
-        return AIContext(client, settings.ai_model, fingerprint, bool(client))
+        # Only this provider/model pair has passed the JSON-object live probe.
+        json_mode = (
+            settings.ai_base_url.rstrip("/") == "https://models.sjtu.edu.cn/api/v1"
+            and settings.ai_model == "deepseek-chat"
+        )
+        return AIContext(client, settings.ai_model, fingerprint, bool(client), json_mode)
 
     def _transcript_service(self) -> TranscriptService:
         with self._client_lock:
@@ -861,17 +979,21 @@ class DashboardService:
         return self.grading_submission(course_id, assignment_id, student_id)
 
     @staticmethod
-    def _unfinished_assignment_conditions(now: datetime, until: datetime) -> tuple[Any, ...]:
-        return (
+    def _unfinished_assignment_conditions(
+        now: datetime, until: datetime | None = None
+    ) -> tuple[Any, ...]:
+        conditions: list[Any] = [
             Assignment.is_active.is_(True),
             Assignment.due_at.is_not(None),
             Assignment.due_at >= now,
-            Assignment.due_at <= until,
             or_(
                 Assignment.submission_state.is_(None),
                 func.lower(Assignment.submission_state).not_in(DONE_STATES),
             ),
-        )
+        ]
+        if until is not None:
+            conditions.append(Assignment.due_at <= until)
+        return tuple(conditions)
 
     def overview(self) -> dict[str, Any]:
         now = self.now()
@@ -895,13 +1017,15 @@ class DashboardService:
             "courses": int(courses),
             "upcoming_deadlines": int(deadlines),
             "unread_emails": int(unread),
-            "deadlines": self.deadlines(168, limit=5),
+            "deadlines": self.deadlines(None, limit=5),
             "messages": self.messages("all", limit=5),
         }
 
-    def deadlines(self, hours: int, *, limit: int = 100) -> list[dict[str, Any]]:
+    def deadlines(
+        self, hours: int | None, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
         now = self.now()
-        until = now + timedelta(hours=hours)
+        until = now + timedelta(hours=hours) if hours is not None else None
         with Session(self.engine) as session:
             rows = session.execute(
                 select(Assignment, Course)
@@ -2942,12 +3066,18 @@ class DashboardService:
 
         with Session(self.engine) as session:
             last_success = session.scalar(select(func.max(SyncState.last_success_at)))
+            last_canvas_success = session.scalar(
+                select(func.max(SyncState.last_success_at)).where(
+                    SyncState.source == "canvas"
+                )
+            )
             latest_run = session.scalars(
                 select(SyncRun).order_by(SyncRun.started_at.desc()).limit(1)
             ).first()
         return {
             "status": "syncing" if running else "idle",
             "last_success_at": to_shanghai(last_success),
+            "last_canvas_success_at": to_shanghai(last_canvas_success),
             "last_run_status": getattr(latest_run, "status", None),
             "last_run_at": to_shanghai(getattr(latest_run, "started_at", None)),
         }

@@ -369,6 +369,7 @@ class DesktopBridge:
             "media": self._course_media,
             "course_media": self._course_media,
             "media_capabilities": self._media_capabilities,
+            "ai_capabilities": self._ai_capabilities,
             "media_preview": self._media_preview,
             "video": self._video,
             "video_playback": self._video,
@@ -966,6 +967,15 @@ class DesktopBridge:
             if normalized not in result:
                 result.append(normalized)
         return result
+
+    def _ai_capabilities(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"page_id"})
+        page_id = payload.get("page_id")
+        if page_id is not None and (
+            type(page_id) is not str or not 1 <= len(page_id) <= 40
+        ):
+            raise DashboardError("AI 能力页面不正确。")
+        return self._service.ai_capabilities(page_id)
 
     def _capabilities(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"course_id"})

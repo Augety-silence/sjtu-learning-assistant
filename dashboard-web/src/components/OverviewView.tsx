@@ -2,6 +2,7 @@ import { BookOpenCheck, Clock3, Mail } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import overviewAllClearIllustration from "@/assets/empty-states/overview-all-clear.webp";
+import { ContentReveal } from "@/components/ContentReveal";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -99,6 +100,10 @@ export function OverviewView({
       )
       .map(({ item }) => item);
   }, [data]);
+  const nearestDeadlines = useMemo(
+    () => prioritizedDeadlines.slice(0, 5),
+    [prioritizedDeadlines],
+  );
   const deadlinesWithin24Hours = useMemo(() => {
     const now = Date.now();
     const end = now + 24 * 60 * 60 * 1000;
@@ -115,7 +120,7 @@ export function OverviewView({
     data.deadlines.length === 0 && data.messages.length === 0;
 
   return (
-    <div className="section-stack overview-dashboard">
+    <ContentReveal className="section-stack overview-dashboard" afterLoad>
       <dl className="summary-strip" aria-label="学习概览">
         <div
           className={`summary-item summary-urgent${deadlinesWithin24Hours === 0 ? " summary-zero" : ""}`}
@@ -126,7 +131,11 @@ export function OverviewView({
           <div className="summary-copy">
             <dt>24 小时内截止</dt>
             <dd>{deadlinesWithin24Hours}</dd>
-            <span>优先处理</span>
+            <span>
+              {deadlinesWithin24Hours === 0
+                ? "24 小时内无任务"
+                : `${deadlinesWithin24Hours} 项即将截止`}
+            </span>
           </div>
         </div>
         <div
@@ -138,7 +147,11 @@ export function OverviewView({
           <div className="summary-copy">
             <dt>未读邮件</dt>
             <dd>{data.unread_emails}</dd>
-            <span>等待处理</span>
+            <span>
+              {data.unread_emails === 0
+                ? "没有等待查看的邮件"
+                : `${data.unread_emails} 条等待查看`}
+            </span>
           </div>
         </div>
         <div className="summary-item summary-secondary">
@@ -148,7 +161,9 @@ export function OverviewView({
           <div className="summary-copy">
             <dt>已同步课程</dt>
             <dd>{data.courses}</dd>
-            <span>未来 7 天 {data.upcoming_deadlines} 项作业</span>
+            <span>
+              {data.courses === 0 ? "尚未同步课程" : "课程数据已同步"}
+            </span>
           </div>
         </div>
       </dl>
@@ -156,18 +171,18 @@ export function OverviewView({
         <section className="overview-panel overview-deadlines">
           <div className="section-header">
             <div>
-              <h2>临期事项</h2>
-              <p>按截止时间排序</p>
+              <h2>最近截止</h2>
+              <p>按截止时间展示最近 5 项</p>
             </div>
             <Button variant="link" onClick={() => navigate("calendar")}>
               查看全部
             </Button>
           </div>
           <div className="list-surface">
-            {data.deadlines.length === 0 ? (
+            {nearestDeadlines.length === 0 ? (
               <EmptyState
-                title="近期没有截止事项"
-                description="未来 7 天内暂无未完成作业。"
+                title="暂无待截止事项"
+                description="同步后，最近的 5 项未完成任务会显示在这里。"
                 illustration={
                   overviewAllClear ? (
                     <img src={overviewAllClearIllustration} alt="" />
@@ -175,7 +190,7 @@ export function OverviewView({
                 }
               />
             ) : (
-              prioritizedDeadlines.map((item) => (
+              nearestDeadlines.map((item) => (
                 <button
                   type="button"
                   className="list-row list-row-button"
@@ -255,6 +270,6 @@ export function OverviewView({
           />
         )}
       </AnimatePresence>
-    </div>
+    </ContentReveal>
   );
 }

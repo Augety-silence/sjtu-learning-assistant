@@ -29,6 +29,33 @@ const submissions: GradingSubmission[] = [
 ];
 
 describe("GradingView", () => {
+  it("keeps the entered grade and focus when props refresh without a loading replacement", () => {
+    const saveScore = vi.fn(async () => undefined);
+    const { container, rerender } = render(
+      <GradingView
+        submissions={submissions}
+        maxScore={100}
+        onSaveScore={saveScore}
+      />,
+    );
+    const page = container.querySelector("[data-page-reveal]");
+    const input = screen.getByLabelText("评分（满分 100）") as HTMLInputElement;
+    input.focus();
+    fireEvent.change(input, { target: { value: "93" } });
+    rerender(
+      <GradingView
+        submissions={[...submissions]}
+        maxScore={100}
+        onSaveScore={saveScore}
+      />,
+    );
+    expect(container.querySelector("[data-page-reveal]")).toBe(page);
+    expect(page?.getAttribute("data-page-reveal")).toBe("ready");
+    expect(screen.getByLabelText("评分（满分 100）")).toBe(input);
+    expect(input.value).toBe("93");
+    expect(document.activeElement).toBe(input);
+  });
+
   it("shows submission detail, comments and reference status", () => {
     render(
       <GradingView

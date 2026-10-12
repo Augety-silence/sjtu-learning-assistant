@@ -1,15 +1,19 @@
-import { Activity, Check, Copy, FileText } from "lucide-react";
+import { Check, Copy, FileText } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { Children, isValidElement, type ReactNode, useState } from "react";
+import {
+  Children,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { motionDuration, motionEase } from "@/lib/motion";
-import type { AIChatMessage } from "@/lib/types";
-
-const genericUserAvatar =
-  "data:image/svg+xml;name=user-avatar,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23eef2ff'/%3E%3Ccircle cx='16' cy='12' r='5' fill='%236366f1'/%3E%3Cpath d='M7 28c.8-6 4-9 9-9s8.2 3 9 9' fill='%236366f1'/%3E%3C/svg%3E";
+import type { AIAgentTrace, AIChatMessage } from "@/lib/types";
 
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
@@ -33,8 +37,51 @@ function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-export function AIChatMessageBubble({
+const MessageMarkdown = memo(function MessageMarkdown({
+  content,
+  showCodeLineNumbers,
+}: {
+  content: string;
+  showCodeLineNumbers: boolean;
+}) {
+  return (
+    <div className="ai-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a {...props} target="_blank" rel="noreferrer" />
+          ),
+          table: ({ node: _node, ...props }) => (
+            <div
+              className="ai-markdown-table"
+              role="region"
+              aria-label="表格内容"
+              tabIndex={0}
+            >
+              <table {...props} />
+            </div>
+          ),
+          ...(showCodeLineNumbers
+            ? {
+                pre: ({ node: _node, children }) => (
+                  <NumberedCodeBlock>{children}</NumberedCodeBlock>
+                ),
+              }
+            : {}),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
+export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   message,
+  trace,
+  agentName,
   onOpenActivity,
   onRevealAttachment,
   showCodeLineNumbers,
@@ -42,6 +89,8 @@ export function AIChatMessageBubble({
   queued = false,
 }: {
   message: AIChatMessage;
+  trace?: AIAgentTrace | null;
+  agentName: string;
   onOpenActivity: () => void;
   onRevealAttachment: (id: number) => void;
   showCodeLineNumbers: boolean;
@@ -77,55 +126,24 @@ export function AIChatMessageBubble({
       data-motion-entry={animateEntry ? message.role : undefined}
       aria-label={message.role === "user" ? "你的消息" : "学习 Agent 回复"}
     >
-      <span className="ai-message-avatar">
-        <img
-          src={message.role === "user" ? genericUserAvatar : aiAgentLogo}
-          alt=""
-          aria-hidden="true"
-        />
-      </span>
       <div className="ai-message-body">
         {message.role === "assistant" && (
           <header className="ai-message-author">
-            <strong>学习 Agent</strong>
+            <img src={aiAgentLogo} alt="" aria-hidden="true" />
+            <strong>{agentName}</strong>
           </header>
         )}
-        {message.reasoning_content && (
-          <details className="ai-reasoning">
-            <summary>查看推理过程</summary>
-            <p>{message.reasoning_content}</p>
-          </details>
+        {message.role === "assistant" && (
+          <InlineAgentExecution
+            trace={trace}
+            toolRuns={message.tool_runs}
+            onOpenActivity={onOpenActivity}
+          />
         )}
-        <div className="ai-markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSanitize]}
-            components={{
-              a: ({ node: _node, ...props }) => (
-                <a {...props} target="_blank" rel="noreferrer" />
-              ),
-              table: ({ node: _node, ...props }) => (
-                <div
-                  className="ai-markdown-table"
-                  role="region"
-                  aria-label="表格内容"
-                  tabIndex={0}
-                >
-                  <table {...props} />
-                </div>
-              ),
-              ...(showCodeLineNumbers
-                ? {
-                    pre: ({ node: _node, children }) => (
-                      <NumberedCodeBlock>{children}</NumberedCodeBlock>
-                    ),
-                  }
-                : {}),
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
-        </div>
+        <MessageMarkdown
+          content={message.content}
+          showCodeLineNumbers={showCodeLineNumbers}
+        />
         {message.attachments && message.attachments.length > 0 && (
           <div className="ai-message-attachments" aria-label="消息附件">
             {message.attachments.map((attachment) => (
@@ -151,12 +169,6 @@ export function AIChatMessageBubble({
             <span className="ai-message-queued">将在当前检索完成后执行</span>
           )}
           {message.model && <span>{message.model}</span>}
-          {message.tool_runs && message.tool_runs.length > 0 && (
-            <button type="button" onClick={onOpenActivity}>
-              <Activity aria-hidden="true" />
-              {message.tool_runs.length} 次工具调用
-            </button>
-          )}
           <button
             type="button"
             aria-label="复制消息"
@@ -172,4 +184,4 @@ export function AIChatMessageBubble({
       </div>
     </motion.article>
   );
-}
+});

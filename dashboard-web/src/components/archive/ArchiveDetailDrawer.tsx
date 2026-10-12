@@ -1,7 +1,9 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
 import { archiveStatusLabel } from "@/components/archive/archiveUtils";
+import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import { getArchiveDetail } from "@/lib/api";
 import { formatDateTime, formatSize } from "@/lib/format";
@@ -50,7 +52,7 @@ export function ArchiveDetailDrawer({
     .filter((job) => job.entry_id === entry.id)
     .slice(0, 3);
 
-  return (
+  return createPortal(
     <div className="archive-overlay" data-modal-layer>
       <button
         type="button"
@@ -92,7 +94,7 @@ export function ArchiveDetailDrawer({
             正在读取版本信息…
           </p>
         ) : (
-          <>
+          <ContentReveal variant="detail">
             <dl className="archive-detail-meta">
               <div>
                 <dt>原始路径</dt>
@@ -189,9 +191,10 @@ export function ArchiveDetailDrawer({
                 <p className="archive-muted">暂无任务记录。</p>
               )}
             </section>
-          </>
+          </ContentReveal>
         )}
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

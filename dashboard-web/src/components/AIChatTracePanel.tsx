@@ -9,18 +9,14 @@ import {
 import { useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import {
+  TraceRun,
+  toolLabel,
+  traceFailed,
+  traceHitCount,
+} from "@/components/AIExecutionCard";
 import { Button } from "@/components/ui/Button";
-import type { AIAgentPreset, AIAgentTrace, AIToolRun } from "@/lib/types";
-
-const toolLabels: Record<string, string> = {
-  list_courses: "检索课程信息",
-  search_course_files: "检索课程文件",
-  list_course_files: "读取课程文件",
-  get_deadlines: "检索截止日期",
-  search_messages: "检索课程消息",
-  get_message_detail: "读取消息详情",
-  get_material_tree: "读取资料目录",
-};
+import type { AIAgentPreset, AIAgentTrace } from "@/lib/types";
 
 const traceStatusLabels: Record<string, string> = {
   completed: "已完成",
@@ -30,77 +26,56 @@ const traceStatusLabels: Record<string, string> = {
   failed: "未完成",
 };
 
-function compactJson(value: unknown) {
-  if (value === null || value === undefined) return "无";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function resultLabel(run: AIToolRun) {
-  if (run.status === "rejected") return "调用被安全策略拒绝";
-  if (run.result_summary && typeof run.result_summary === "object") {
-    const summary = run.result_summary as Record<string, unknown>;
-    if (typeof summary.count === "number") return `命中 ${summary.count} 项`;
-    if (typeof summary.items_count === "number") {
-      return `命中 ${summary.items_count} 项`;
-    }
-    if (typeof summary.status === "string") return summary.status;
-  }
-  return "已返回安全摘要";
-}
-
-function traceHits(trace: AIAgentTrace) {
-  return trace.tool_runs.reduce((total, run) => {
-    if (!run.result_summary || typeof run.result_summary !== "object") {
-      return total;
-    }
-    const summary = run.result_summary as Record<string, unknown>;
-    const count = summary.count ?? summary.items_count;
-    return total + (typeof count === "number" ? count : 0);
-  }, 0);
-}
-
 function traceTitle(trace: AIAgentTrace) {
   const run = trace.tool_runs[0];
-  return run ? (toolLabels[run.tool_name] ?? run.tool_name) : "整理检索结果";
+  return run ? toolLabel(run.tool_name) : "整理回答";
 }
 
-function TraceRun({ run }: { run: AIToolRun }) {
-  const ok = run.status === "ok";
+function ActivityTraceStep({
+  trace,
+  index,
+}: {
+  trace: AIAgentTrace;
+  index: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const hits = traceHitCount(trace.tool_runs);
+  const failed = traceFailed(trace);
+
   return (
-    <details className="ai-tool-run">
+    <details
+      className={failed ? "ai-trace-step is-failed" : "ai-trace-step"}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
-        <span
-          className={ok ? "ai-tool-icon is-ok" : "ai-tool-icon is-rejected"}
-        >
-          {ok ? (
-            <CheckCircle2 aria-hidden="true" />
-          ) : (
-            <CircleSlash2 aria-hidden="true" />
-          )}
+        <span className="ai-trace-node" aria-hidden="true">
+          {failed ? <CircleSlash2 /> : <CheckCircle2 />}
         </span>
-        <span className="ai-tool-run-copy">
-          <strong>{toolLabels[run.tool_name] ?? run.tool_name}</strong>
-          <span>{resultLabel(run)}</span>
+        <span className="ai-trace-summary-copy">
+          <strong>
+            第 {index + 1} 轮　{traceTitle(trace)}
+          </strong>
+          <small>
+            {traceStatusLabels[trace.status] ?? trace.status} · 调用{" "}
+            {trace.tool_runs.length} 次 · 命中 {hits} 项
+          </small>
         </span>
-        <span className="ai-tool-phase">
-          {run.phase === "prefetch" ? "预检索" : "模型调用"}
-        </span>
-        <ChevronRight className="ai-tool-caret" aria-hidden="true" />
+        <ChevronRight className="ai-trace-caret" aria-hidden="true" />
       </summary>
-      <div className="ai-tool-detail">
-        <div>
-          <span>安全参数</span>
-          <pre>{compactJson(run.arguments_summary)}</pre>
-        </div>
-        <div>
-          <span>结果摘要</span>
-          <pre>{compactJson(run.result_summary)}</pre>
-        </div>
+      <div className="ai-trace-content">
+        {trace.tool_runs.length > 0 ? (
+          <div className="ai-tool-runs">
+            {trace.tool_runs.map((run, runIndex) => (
+              <TraceRun
+                key={`${trace.id}-${run.tool_name}-${runIndex}`}
+                run={run}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="ai-trace-no-tools">本轮未调用工具。</p>
+        )}
       </div>
     </details>
   );
@@ -146,6 +121,7 @@ export function AIChatTracePanel({
 
   return (
     <aside
+      id="ai-activity-panel"
       className={open ? "ai-activity is-open" : "ai-activity"}
       aria-label="Activity 检索轨迹"
       aria-hidden={!open}
@@ -200,46 +176,9 @@ export function AIChatTracePanel({
         )}
 
         <div className="ai-trace-list">
-          {traces.map((trace, index) => {
-            const hits = traceHits(trace);
-            const failed = trace.status === "failed";
-            return (
-              <details
-                className={failed ? "ai-trace-step is-failed" : "ai-trace-step"}
-                key={trace.id}
-              >
-                <summary>
-                  <span className="ai-trace-node" aria-hidden="true">
-                    {failed ? <CircleSlash2 /> : <CheckCircle2 />}
-                  </span>
-                  <span className="ai-trace-summary-copy">
-                    <strong>
-                      第 {index + 1} 轮　{traceTitle(trace)}
-                    </strong>
-                    <small>
-                      {traceStatusLabels[trace.status] ?? trace.status} · 调用{" "}
-                      {trace.tool_runs.length} 次 · 命中 {hits} 项
-                    </small>
-                  </span>
-                  <ChevronRight className="ai-trace-caret" aria-hidden="true" />
-                </summary>
-                <div className="ai-trace-content">
-                  {trace.tool_runs.length > 0 ? (
-                    <div className="ai-tool-runs">
-                      {trace.tool_runs.map((run, runIndex) => (
-                        <TraceRun
-                          key={`${trace.id}-${run.tool_name}-${runIndex}`}
-                          run={run}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="ai-trace-no-tools">本轮未调用工具。</p>
-                  )}
-                </div>
-              </details>
-            );
-          })}
+          {traces.map((trace, index) => (
+            <ActivityTraceStep key={trace.id} trace={trace} index={index} />
+          ))}
 
           {busy && (
             <article className="ai-trace-step is-running" role="status">
@@ -247,8 +186,8 @@ export function AIChatTracePanel({
                 <LoaderCircle className="animate-spin" />
               </span>
               <span className="ai-trace-summary-copy">
-                <strong>第 {traces.length + 1} 轮　正在检索</strong>
-                <small>正在规划并调用本地只读工具</small>
+                <strong>等待 Agent 返回</strong>
+                <small>请求已发送，尚未收到新的工具事件</small>
               </span>
             </article>
           )}

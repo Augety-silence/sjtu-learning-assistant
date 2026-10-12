@@ -16,6 +16,11 @@ describe("motion contract", () => {
       control: 0.16,
       enter: 0.22,
       panel: 0.3,
+      contentReveal: 0.32,
+      loadedReveal: 0.42,
+      overlayEnter: 0.28,
+      popoverEnter: 0.2,
+      detailReveal: 0.36,
     });
     expect(motionEase.out).toEqual([0.22, 0.8, 0.22, 1]);
     expect(css).toContain("--motion-instant: 80ms");

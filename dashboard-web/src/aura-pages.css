@@ -2,8 +2,8 @@
 .app-shell[data-aura-shell] {
   position: relative;
   isolation: isolate;
-  gap: 10px;
-  padding: 10px;
+  gap: var(--aura-shell-gap);
+  padding: var(--aura-window-gutter);
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -11,21 +11,20 @@
 
 .app-shell[data-aura-shell]::before {
   position: absolute;
-  inset: 0;
+  inset: -4px;
   z-index: 0;
   width: auto;
   height: auto;
   border-radius: 0;
   content: "";
-  filter: none;
+  filter: var(--aura-scene-filter);
   opacity: 1;
   pointer-events: none;
-  background:
-    radial-gradient(52vw 48vw at 5% 0%, var(--aura-atmosphere-blue), transparent 72%),
-    radial-gradient(46vw 52vw at 96% 10%, var(--aura-atmosphere-violet), transparent 74%),
-    radial-gradient(42vw 44vw at 88% 100%, var(--aura-atmosphere-cyan), transparent 76%),
-    radial-gradient(62vw 48vw at 42% 62%, color-mix(in srgb, var(--aura-atmosphere-blue) 35%, transparent), transparent 78%),
-    var(--aura-canvas);
+  background-color: var(--aura-canvas);
+  background-image: var(--aura-scene-background);
+  background-repeat: no-repeat;
+  background-position: center, center, center, center, center 54%;
+  background-size: 100% 100%, auto, auto, auto, cover;
 }
 
 .app-shell[data-aura-shell]::after {
@@ -36,7 +35,7 @@
 .mobile-drawer[data-aura-surface="navigation"] {
   z-index: 2;
   border: 1px solid var(--aura-border);
-  background: var(--aura-navigation);
+  background: var(--glass-base-surface);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     inset 0 -1px 0 var(--aura-border-lowlight),
@@ -66,9 +65,10 @@
 .page-header {
   min-height: 72px;
   padding-block: 12px;
+  padding-inline: var(--aura-panel-padding);
   border: 1px solid var(--aura-border);
   border-radius: var(--aura-radius-window);
-  background: var(--aura-header);
+  background: var(--glass-card-surface);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     inset 0 -1px 0 var(--aura-border-lowlight),
@@ -80,13 +80,106 @@
 .content {
   position: relative;
   z-index: 1;
-  padding-top: 24px;
+  width: 100%;
+  padding: var(--aura-content-gap) 0 32px;
+}
+
+/* Shared content axis: inset text inside full-width frames, not the frames. */
+.content .view-intro,
+.content .section-stack > .result-count,
+.content .section-stack > section:not([class]) > .section-header,
+.content .section-stack > .grid > section > .section-header,
+.content .section-stack > .grid > .grid > section > .section-header,
+.calm-utility-row,
+.calm-deadline-toolbar,
+.deadline-mobile-group > h3,
+.settings-warning {
+  padding-inline: calc(var(--aura-panel-padding) + 1px);
+}
+
+.overview-panel .section-header,
+.overview-panel .list-row,
+.overview-dashboard .summary-item,
+.video-now-playing,
+.video-tool-panel,
+.video-list-header,
+.video-recording-list > li {
+  padding-inline: var(--aura-panel-padding);
+}
+
+.video-now-playing,
+.video-tool-panel {
+  padding-inline: calc(var(--aura-panel-padding) + 1px);
+}
+
+.backup-status-card,
+.backup-result,
+.knowledge-config,
+.knowledge-run-card,
+.local-project-form,
+.configuration-section,
+.settings-panel {
+  padding-inline: var(--aura-panel-padding);
+}
+
+.assignments-page .assignment-filters {
+  /* The tab's own 12px inset contributes to the shared text axis. */
+  padding-inline: max(4px, calc(var(--aura-panel-padding) - 12px));
+}
+
+.assignments-page .assignment-detail {
+  padding-inline: var(--aura-panel-padding);
+}
+
+.calm-overview-strip,
+.calm-month-col,
+.calm-task-section,
+.calm-agenda-col {
+  padding-inline: var(--aura-panel-padding);
+}
+
+/* Clip the optical highlight to the rim so translucent fills stay translucent. */
+@supports (mask-composite: exclude) or (-webkit-mask-composite: xor) {
+  :where(.sidebar[data-aura-surface="navigation"], .page-header,
+    .overview-dashboard .summary-item, .ai-sidebar, .ai-activity,
+    .ai-conversation, .ai-current-agent, .ai-chat-starters button,
+    .ai-message-user .ai-markdown, .ai-execution-card, .ai-composer-box,
+    .ai-activity-latest, .ai-personalization-panel) {
+    position: relative;
+  }
+
+  :where(.sidebar[data-aura-surface="navigation"], .page-header,
+    .overview-dashboard .summary-item, .ai-sidebar, .ai-activity,
+    .ai-conversation, .ai-current-agent, .ai-chat-starters button,
+    .ai-message-user .ai-markdown, .ai-execution-card, .ai-composer-box,
+    .ai-activity-latest, .ai-personalization-panel)::after {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    padding: 1px;
+    border-radius: inherit;
+    background: var(--glass-optical-edge);
+    content: "";
+    pointer-events: none;
+    -webkit-mask: linear-gradient(white 0 0) content-box, linear-gradient(white 0 0);
+    mask: linear-gradient(white 0 0) content-box, linear-gradient(white 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
 }
 
 .section-stack:not(.overview-dashboard):not(.schedule-workspace) {
-  width: min(1240px, 100%);
-  margin-inline: auto;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
   gap: 20px;
+}
+
+.overview-dashboard,
+.schedule-workspace {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
 }
 
 .materials-page > section,
@@ -102,38 +195,37 @@
 .assignment-filters,
 .video-course-toolbar,
 .schedule-toolbar {
-  padding: 10px;
+  padding: 10px var(--aura-panel-padding);
   border: 1px solid var(--aura-border);
-  border-radius: 14px;
+  border-radius: var(--aura-radius-toolbar);
   background: var(--aura-navigation);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     inset 0 -1px 0 var(--aura-border-lowlight);
-  -webkit-backdrop-filter: blur(24px) saturate(1.12);
-  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: var(--aura-blur-navigation);
+  backdrop-filter: var(--aura-blur-navigation);
 }
 
 .overview-dashboard .summary-item {
-  border-color: var(--aura-border);
-  background: var(--aura-stat);
-  box-shadow:
-    inset 0 1px 0 var(--aura-border-highlight),
-    inset 0 -1px 0 var(--aura-border-lowlight),
-    var(--aura-shadow-soft);
-  -webkit-backdrop-filter: var(--aura-blur-stat);
-  backdrop-filter: var(--aura-blur-stat);
+  border-color: transparent;
+  background:
+    var(--glass-card-surface) padding-box,
+    var(--glass-optical-edge) border-box;
+  box-shadow: var(--glass-card-shadow);
+  -webkit-backdrop-filter: var(--glass-card-filter);
+  backdrop-filter: var(--glass-card-filter);
   transition:
-    background-color var(--motion-control) var(--ease-motion-out),
-    border-color var(--motion-control) var(--ease-motion-out);
+    box-shadow var(--motion-control) var(--ease-motion-out),
+    transform var(--motion-control) var(--ease-motion-out);
 }
 
 @media (hover: hover) {
   .overview-dashboard .summary-item:hover {
-    background: var(--aura-stat);
-    box-shadow:
-      inset 0 1px 0 var(--aura-border-highlight),
-      inset 0 -1px 0 var(--aura-border-lowlight),
-      var(--aura-shadow-soft);
+    background:
+      var(--glass-card-surface) padding-box,
+      var(--glass-optical-edge) border-box;
+    box-shadow: var(--glass-card-shadow),
+      0 18px 38px -32px color-mix(in srgb, var(--action-primary) 22%, transparent);
     transform: none;
   }
 }
@@ -150,19 +242,21 @@
 .knowledge-config,
 .knowledge-run-card,
 .local-project-form,
+.configuration-section,
 .settings-panel,
 .settings-list,
 .grading-detail,
 .roster-table,
 .grades-table {
   border-color: var(--aura-border);
+  border-radius: var(--aura-radius-card);
   background: var(--aura-reading);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     inset 0 -1px 0 var(--aura-border-lowlight),
     var(--aura-shadow-reading);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  -webkit-backdrop-filter: var(--aura-blur-reading);
+  backdrop-filter: var(--aura-blur-reading);
 }
 
 .overview-panel .list-surface,
@@ -184,6 +278,11 @@
   backdrop-filter: none;
 }
 
+.overview-panel .list-surface {
+  border: 0;
+  border-radius: 0;
+}
+
 .overview-panel .state-box {
   min-height: 164px;
   padding-block: 24px;
@@ -195,8 +294,7 @@
 }
 
 .finder,
-.assignment-layout,
-.video-workbench {
+.assignment-layout {
   overflow: hidden;
   border: 1px solid var(--aura-border);
   border-radius: var(--aura-radius-card);
@@ -204,13 +302,39 @@
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     var(--aura-shadow-reading);
+  -webkit-backdrop-filter: var(--aura-blur-reading);
+  backdrop-filter: var(--aura-blur-reading);
+}
+
+.video-workbench {
+  width: 100%;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.video-course-toolbar {
+  padding: 16px var(--aura-panel-padding);
+}
+
+.video-learning-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, var(--aura-video-list-width));
+  gap: var(--aura-content-gap);
+}
+
+.video-list-jump {
+  display: none;
 }
 
 .finder-tree {
   border-color: var(--aura-border);
-  background: var(--aura-navigation);
-  -webkit-backdrop-filter: blur(24px) saturate(1.12);
-  backdrop-filter: blur(24px) saturate(1.12);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .list-row,
@@ -232,6 +356,13 @@
   background: color-mix(in srgb, var(--aura-control-hover) 66%, transparent);
 }
 
+.video-recording-list > li.is-current,
+.video-recording-list > li.is-current:hover,
+.video-recording-list > li.is-current:focus-within {
+  background: color-mix(in srgb, var(--action-primary) 18%, var(--aura-reading));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action-primary) 40%, var(--aura-border));
+}
+
 .message-row-unread {
   background: color-mix(in srgb, var(--action-primary) 7%, var(--aura-reading));
 }
@@ -240,7 +371,17 @@
 .finder-row-selected,
 .assignment-card-selected {
   background: color-mix(in srgb, var(--action-primary) 10%, var(--aura-reading));
-  box-shadow: inset 2px 0 var(--action-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action-primary) 34%, var(--aura-border));
+}
+
+.messages-page > .list-surface {
+  isolation: isolate;
+  overflow: hidden;
+  clip-path: inset(0 round var(--aura-radius-card));
+}
+
+.messages-page > .list-surface > .message-row:last-child {
+  border-bottom: 0;
 }
 
 .finder-toolbar select,
@@ -255,6 +396,54 @@
   border-color: var(--aura-border);
   background: var(--aura-control);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+:where(.app-shell select:not([multiple])) {
+  min-height: var(--compact-select-height);
+  padding: 0 34px 0 12px;
+  appearance: none;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--compact-radius);
+  color: var(--text-primary);
+  background-color: var(--aura-control);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b737d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-control) var(--ease-motion-out),
+    background-color var(--motion-control) var(--ease-motion-out),
+    box-shadow var(--motion-control) var(--ease-motion-out);
+}
+
+:root[data-theme="dark"] :where(.app-shell select:not([multiple])) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23aab1bc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
+}
+
+:where(.app-shell select:not([multiple])):hover:not(:disabled) {
+  border-color: var(--aura-border-strong);
+  background-color: var(--aura-control-hover);
+}
+
+:where(.app-shell select:not([multiple])):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--action-primary) 44%, var(--aura-border));
+}
+
+:where(.app-shell select:not([multiple])):disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+:where(.app-shell select:not([multiple])) option {
+  color: var(--text-primary);
+  background: var(--surface-elevated);
 }
 
 .configuration-card,
@@ -279,7 +468,8 @@
 .knowledge-hero,
 .local-projects-hero {
   border-color: var(--aura-border);
-  background: var(--aura-stat);
+  background: var(--glass-card-surface);
+  padding-inline: var(--aura-panel-padding);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
     var(--aura-shadow-soft);
@@ -307,7 +497,7 @@
 .video-player-shell {
   border-color: color-mix(in srgb, white 10%, var(--aura-border));
   background: var(--surface-video-player);
-  box-shadow: 0 22px 52px -30px rgba(3, 10, 20, 0.72);
+  box-shadow: 0 14px 30px -24px rgba(3, 10, 20, 0.48);
 }
 
 .video-list-panel,
@@ -317,6 +507,28 @@
   border-color: var(--aura-border);
   background: var(--aura-reading);
   box-shadow: var(--aura-shadow-reading);
+}
+
+.video-list-panel {
+  border-radius: var(--aura-radius-card);
+  -webkit-backdrop-filter: var(--aura-blur-reading);
+  backdrop-filter: var(--aura-blur-reading);
+}
+
+.video-tool-panel,
+.video-player-feedback {
+  border-radius: var(--aura-radius-card);
+}
+
+.video-batch-bar {
+  border-radius: 0;
+}
+
+.video-tool-panel,
+.video-batch-bar,
+.video-player-feedback {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .toast,
@@ -337,7 +549,7 @@
 .ai-personalization-panel,
 .ai-preset-menu {
   border: 1px solid var(--aura-border-strong);
-  border-radius: 18px;
+  border-radius: var(--aura-radius-overlay);
   background: var(--aura-overlay);
   box-shadow:
     inset 0 1px 0 var(--aura-border-highlight),
@@ -347,7 +559,28 @@
   backdrop-filter: var(--aura-blur-overlay);
 }
 
+.message-dialog-layer {
+  align-items: flex-start;
+  padding: clamp(12px, 3.2vh, 28px);
+  overflow-y: auto;
+}
+
+.message-dialog {
+  width: min(760px, 100%);
+  max-height: calc(100dvh - clamp(24px, 6.4vh, 56px));
+}
+
+.message-dialog .message-content-stack,
+.message-dialog .message-detail-body {
+  min-height: 0;
+}
+
 @media (max-width: 1199px) and (min-width: 600px) {
+  :root {
+    --aura-panel-padding: 18px;
+    --aura-video-list-width: 320px;
+  }
+
   .sidebar[data-aura-surface="navigation"] {
     width: 72px;
     flex-basis: 72px;
@@ -355,13 +588,30 @@
   }
 }
 
+@media (max-width: 900px) {
+  .video-learning-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .video-list-panel {
+    max-height: 460px;
+  }
+
+  .video-list-jump {
+    width: fit-content;
+    margin-top: 10px;
+    display: inline-flex;
+  }
+}
+
 @media (max-width: 980px) {
+  .app-shell[data-aura-shell]::before { background-position: center, center, center, center, 44% 54%; }
   .section-stack:not(.overview-dashboard):not(.schedule-workspace) { gap: 16px; }
   .finder-toolbar,
   .message-toolbar,
   .assignment-filters,
   .video-course-toolbar,
-  .schedule-toolbar { padding: 8px; flex-wrap: wrap; }
+  .schedule-toolbar { padding: 8px var(--aura-panel-padding); flex-wrap: wrap; }
   .knowledge-paths,
   .knowledge-mode-grid,
   .configuration-grid,
@@ -369,12 +619,20 @@
 }
 
 @media (max-width: 760px) {
+  :root {
+    --aura-window-gutter: 0px;
+    --aura-shell-gap: 0px;
+    --aura-panel-padding: 16px;
+  }
+
   .app-shell[data-aura-shell] { gap: 0; padding: 0; }
+  .content { padding-inline: 0; }
   .workspace[data-aura-surface="workspace"],
   .page-header,
   .finder,
   .assignment-layout,
-  .video-workbench { border-radius: 0; box-shadow: none; }
+  .video-workbench,
+  .transcript-detail-drawer { border-radius: 0; box-shadow: none; }
   .materials-page,
   .messages-page,
   .assignments-page,
@@ -382,6 +640,10 @@
   .backup-page,
   .knowledge-page,
   .local-projects-page { gap: 14px; }
+}
+
+@media (min-aspect-ratio: 16 / 10) {
+  .app-shell[data-aura-shell]::before { background-position: center, center, center, center, center 58%; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -401,6 +663,7 @@
   .finder,
   .finder-tree,
   .assignment-layout,
+  .assignments-page .assignment-layout,
   .assignment-detail,
   .knowledge-hero,
   .local-projects-hero,
@@ -440,6 +703,11 @@
   .video-course-toolbar,
   .schedule-toolbar,
   .overview-dashboard .summary-item,
+  .assignments-page .assignment-layout,
+  .calm-overview-strip,
+  .calm-month-col,
+  .calm-task-section,
+  .calm-agenda-col,
   .knowledge-hero,
   .local-projects-hero,
   .toast,
@@ -467,5 +735,6 @@
   .finder-row,
   .message-row,
   .assignment-card,
-  .local-project-card { transition: none; }
+  .local-project-card,
+  :where(.app-shell select:not([multiple])) { transition: none; }
 }

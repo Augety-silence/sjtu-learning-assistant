@@ -22,7 +22,7 @@ describe("responsive and motion regression rules", () => {
     expect(css.match(/\.workspace \{[^}]*\}/)?.[0]).not.toContain("max-width");
   });
 
-  it("keeps the course picker and popup below the sticky page header", () => {
+  it("ports the course popup above clipped workspace surfaces", () => {
     const headerRule = css.match(/\.page-header \{([^}]*)\}/)?.[1] ?? "";
     const pickerRule =
       css.match(/\.video-course-picker \{([^}]*)\}/)?.[1] ?? "";
@@ -32,8 +32,8 @@ describe("responsive and motion regression rules", () => {
 
     expect(pickerRule).toContain("position: relative");
     expect(pickerRule).not.toContain("z-index");
-    expect(popupRule).toContain("position: absolute");
-    expect(headerZIndex).toBeGreaterThan(popupZIndex);
+    expect(popupRule).toContain("position: fixed");
+    expect(popupZIndex).toBeGreaterThan(headerZIndex);
   });
 
   it("keeps the compact sidebar through 1199px", () => {
@@ -60,7 +60,7 @@ describe("responsive and motion regression rules", () => {
     );
   });
 
-  it("shares interaction states and contains no gradients", () => {
+  it("shares flat interaction states while reserving gradients for the scene background", () => {
     for (const selector of [
       ".nav-item",
       ".list-row-button",
@@ -74,7 +74,12 @@ describe("responsive and motion regression rules", () => {
     }
     expect(css).toContain("background: var(--surface-hover)");
     expect(css).toContain("background: var(--surface-selected)");
-    expect(css).not.toMatch(/(?:linear|radial|conic)-gradient\s*\(/i);
+    expect(css).toContain(
+      '--aura-scene-image: url("./assets/mist-blue-v1.png")',
+    );
+    expect(css).not.toMatch(
+      /\.nav-item\s*\{[^}]*(?:linear|radial|conic)-gradient\s*\(/i,
+    );
   });
 
   it("keeps AI Chat conversation width and responsive drawers intentional", () => {
@@ -230,5 +235,17 @@ describe("responsive and motion regression rules", () => {
     expect(css).toMatch(/\.transcript-practice details \{[^}]*border-top:/);
     expect(css).toMatch(/\.video-pdf-state small \{[^}]*display: block/);
     expect(css).toMatch(/\.video-state-label-failed \{[^}]*status-danger/);
+  });
+
+  it("keeps wrapped recording filters in flow and highlights the whole active row", () => {
+    expect(css).toMatch(
+      /\.video-status-filters \{[^}]*flex: 0 0 auto[^}]*flex-wrap: wrap/,
+    );
+    expect(css).toMatch(/\.video-recording-list \{[^}]*flex: 1 1 auto/);
+    const currentRule =
+      css.match(/\.video-recording-list > li\.is-current \{([^}]*)\}/)?.[1] ??
+      "";
+    expect(currentRule).toContain("inset 0 0 0 1px");
+    expect(currentRule).not.toContain("inset 2px 0");
   });
 });

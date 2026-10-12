@@ -1,6 +1,7 @@
 import { Upload } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { type CalendarEventItem } from "@/components/CalendarView";
+import { ContentReveal } from "@/components/ContentReveal";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
 import { Button } from "@/components/ui/Button";
 import {
@@ -8,6 +9,7 @@ import {
   getTimetableStatus,
   importTimetableIcs,
 } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import type { TimetableStatus } from "@/lib/types";
 
 const CACHE_KEY = "sjtu-learning-timetable-cache-v1";
@@ -16,6 +18,7 @@ interface ScheduleViewProps {
   canvasEvents: CalendarEventItem[];
   canvasLoading?: boolean;
   canvasError?: string | null;
+  canvasSyncedAt?: string | null;
   month: Date;
   onMonthChange: (month: Date) => void;
   onRetryCanvas?: () => void | Promise<void>;
@@ -41,6 +44,7 @@ export function ScheduleView({
   canvasEvents,
   canvasLoading = false,
   canvasError,
+  canvasSyncedAt,
   month,
   onMonthChange,
   onRetryCanvas,
@@ -145,11 +149,17 @@ export function ScheduleView({
   const liveStatus = displayError
     ? displayError
     : canvasLoading
-      ? "正在同步 Canvas 日历…"
-      : notice;
+      ? "正在读取本机同步数据…"
+      : notice ||
+        (canvasSyncedAt
+          ? `Canvas 数据已落地 · ${formatDateTime(canvasSyncedAt)}`
+          : "尚未完成 Canvas 数据同步");
 
   return (
-    <div className="section-stack schedule-workspace calm-schedule">
+    <ContentReveal
+      className="section-stack schedule-workspace calm-schedule"
+      ready={Boolean(status || loadError) && !canvasLoading}
+    >
       <div className="calm-utility-row">
         <div className="calm-utility-meta">
           <span className="calm-utility-label">{statusLabel}</span>
@@ -187,6 +197,6 @@ export function ScheduleView({
         }
         onAskAI={onAskAI}
       />
-    </div>
+    </ContentReveal>
   );
 }

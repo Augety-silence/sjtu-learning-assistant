@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import materialsFirstSyncIllustration from "@/assets/empty-states/materials-first-sync.webp";
+import { ContentReveal } from "@/components/ContentReveal";
 import { FilePreviewDialog } from "@/components/FilePreviewDialog";
 import {
   isMaterialDropTarget,
@@ -172,31 +173,45 @@ export function MaterialsView() {
     void load();
   }, [load]);
 
-  const path = tree ? (findNodePath(tree.root, selectedId) ?? [tree.root]) : [];
+  const path = useMemo(
+    () => (tree ? (findNodePath(tree.root, selectedId) ?? [tree.root]) : []),
+    [tree, selectedId],
+  );
   const current = path[path.length - 1];
-  const allMatches = tree ? filesBelow(tree.root) : [];
-  const visibleFiles = (
-    query.trim()
-      ? allMatches
-      : current
-        ? directFiles(current, path.slice(1, -1))
-        : []
-  ).filter(({ file }) => {
-    const searchMatched =
-      !query.trim() ||
-      file.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-    const categoryMatched = category === "all" || file.category === category;
-    const statusMatched =
-      status === "all" ||
-      file.download_status === status ||
-      (status === "pending" &&
-        !["downloaded", "cloud_only", "failed"].includes(
-          file.download_status ?? "pending",
-        ));
-    return searchMatched && categoryMatched && statusMatched;
-  });
-  const childFolders =
-    query.trim() || !current ? [] : containerChildren(current);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const isSearching = Boolean(normalizedQuery);
+  const allMatches = useMemo(
+    () => (tree && isSearching ? filesBelow(tree.root) : []),
+    [tree, isSearching],
+  );
+  const visibleFiles = useMemo(
+    () =>
+      (isSearching
+        ? allMatches
+        : current
+          ? directFiles(current, path.slice(1, -1))
+          : []
+      ).filter(({ file }) => {
+        const searchMatched =
+          !normalizedQuery ||
+          file.name.toLocaleLowerCase().includes(normalizedQuery);
+        const categoryMatched =
+          category === "all" || file.category === category;
+        const statusMatched =
+          status === "all" ||
+          file.download_status === status ||
+          (status === "pending" &&
+            !["downloaded", "cloud_only", "failed"].includes(
+              file.download_status ?? "pending",
+            ));
+        return searchMatched && categoryMatched && statusMatched;
+      }),
+    [allMatches, category, current, isSearching, normalizedQuery, path, status],
+  );
+  const childFolders = useMemo(
+    () => (isSearching || !current ? [] : containerChildren(current)),
+    [isSearching, current],
+  );
   const visibleItems = useMemo(
     () => (tree ? visibleTreeItems(tree.root, expandedIds) : []),
     [expandedIds, tree],
@@ -527,7 +542,10 @@ export function MaterialsView() {
   };
 
   return (
-    <div className="section-stack materials-page">
+    <ContentReveal
+      className="section-stack materials-page"
+      ready={Boolean(tree) || Boolean(error)}
+    >
       <div className="view-intro">
         <div>
           <h2>资料库</h2>
@@ -971,6 +989,6 @@ export function MaterialsView() {
           />
         )}
       </AnimatePresence>
-    </div>
+    </ContentReveal>
   );
 }

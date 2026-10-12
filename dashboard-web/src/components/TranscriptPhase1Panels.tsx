@@ -18,19 +18,24 @@ type Phase1PanelKind =
   | "corrected"
   | "correction_diff"
   | "uncertain"
-  | "quality";
+  | "quality"
+  | "pipeline_events";
 
 type UnknownRecord = Record<string, unknown>;
 type ParsedUncertainSpan = Phase1UncertainSpan & { candidateTotal: number };
 type PracticeItem = {
   question: string;
   answer: string | null;
+  evidence: string[];
 };
 type LearningSummary = {
   knowledgePoints: string[];
+  emphasizedPoints: string[];
+  legacyCases: string[];
   classroomExamples: string[];
   auxiliaryTraining: string[];
   practiceItems: PracticeItem[];
+  practiceLabel: string;
 };
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -60,6 +65,11 @@ function asStringArray(value: unknown) {
     : [];
 }
 
+function asJoinedString(value: unknown) {
+  const items = asStringArray(value);
+  return items.length ? items.join("\n") : null;
+}
+
 function readLearningItems(value: unknown): string[] {
   const values = Array.isArray(value) ? value : value == null ? [] : [value];
   return values
@@ -68,18 +78,52 @@ function readLearningItems(value: unknown): string[] {
       const row = asRecord(item);
       if (!row) return "";
       const heading =
-        asString(row.title) ?? asString(row.name) ?? asString(row.topic);
+        asString(row.title) ??
+        asString(row.name) ??
+        asString(row.topic) ??
+        asString(row.concept);
       const body =
+        asString(row.statement) ??
         asString(row.content) ??
         asString(row.text) ??
         asString(row.description) ??
         asString(row.example) ??
         asString(row.question) ??
         asString(row.prompt);
-      if (heading && body) return `**${heading}**\n\n${body}`;
-      return heading ?? body ?? "";
+      const content =
+        heading && body ? `**${heading}**\n\n${body}` : (heading ?? body ?? "");
+      const evidence = readLearningEvidence(row.evidence);
+      return content && evidence.length
+        ? `${content}\n\n字幕证据：${evidence.join("；")}`
+        : content;
     })
     .filter(Boolean);
+}
+
+function readLearningEvidence(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_METADATA_ITEMS).flatMap((item) => {
+    if (typeof item === "string" && item.trim()) return [item.slice(0, 250)];
+    const row = asRecord(item);
+    const cue = row && asString(row.cue_id);
+    if (!row || !cue) return [];
+    const start = asNumber(row.start_ms);
+    const end = asNumber(row.end_ms);
+    const time = (ms: number) => {
+      const seconds = Math.floor(ms / 1000);
+      return `${Math.floor(seconds / 60)
+        .toString()
+        .padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
+    };
+    const range =
+      start !== null && end !== null && start >= 0 && end >= start
+        ? ` · ${time(start)}–${time(end)}`
+        : "";
+    const quote = asString(row.quote);
+    return [
+      `${cue.slice(0, 100)}${range}${quote ? ` · “${quote.slice(0, 240)}”` : ""}`,
+    ];
+  });
 }
 
 function firstLearningItems(record: UnknownRecord, keys: string[]) {
@@ -95,7 +139,7 @@ function readPracticeItems(value: unknown): PracticeItem[] {
   return value
     .map((item) => {
       if (typeof item === "string" && item.trim())
-        return { question: item.trim(), answer: null };
+        return { question: item.trim(), answer: null, evidence: [] };
       const row = asRecord(item);
       if (!row) return null;
       const question =
@@ -104,13 +148,18 @@ function readPracticeItems(value: unknown): PracticeItem[] {
         asString(row.title) ??
         asString(row.content);
       if (!question) return null;
+      const answer =
+        asString(row.answer) ??
+        asString(row.reference_answer) ??
+        asString(row.referenceAnswer) ??
+        asString(row.solution) ??
+        asJoinedString(row.answer_key) ??
+        asJoinedString(row.answerKey) ??
+        asJoinedString(row.rubric);
       return {
         question,
-        answer:
-          asString(row.answer) ??
-          asString(row.reference_answer) ??
-          asString(row.referenceAnswer) ??
-          asString(row.solution),
+        answer: answer || null,
+        evidence: readLearningEvidence(row.evidence),
       };
     })
     .filter((item): item is PracticeItem => item !== null);
@@ -134,9 +183,12 @@ function parseLearningSummary(content: string): LearningSummary {
   if (!source) {
     return {
       knowledgePoints: content.trim() ? [content.trim()] : [],
+      emphasizedPoints: [],
+      legacyCases: [],
       classroomExamples: [],
       auxiliaryTraining: [],
       practiceItems: [],
+      practiceLabel: "【自编练习】",
     };
   }
   const nested =
@@ -148,40 +200,65 @@ function parseLearningSummary(content: string): LearningSummary {
     source;
   const studyGuide =
     asRecord(source.study_guide) ?? asRecord(source.studyGuide) ?? nested;
-  const knowledgePoints = firstLearningItems(nested, [
+  const sectionItems = (keys: string[]) => {
+    const items = firstLearningItems(nested, keys);
+    return items.length ? items : firstLearningItems(source, keys);
+  };
+  const knowledgePoints = sectionItems([
     "knowledge_points",
     "knowledgePoints",
     "key_points",
     "keyPoints",
     "points",
+    "concepts",
+  ]);
+  const practiceKeys = [
+    "questions",
+    "practice_items",
+    "practiceItems",
+    "practice_questions",
+    "practiceQuestions",
+    "practice",
+    "exercises",
+  ];
+  const practiceItems = firstPracticeItems(studyGuide, practiceKeys).concat(
+    studyGuide === source
+      ? []
+      : firstPracticeItems(source, [
+          "practice_items",
+          "practiceItems",
+          "practice_questions",
+          "practiceQuestions",
+        ]),
+  );
+  const legacyPractice = firstPracticeItems(source, [
+    "review_questions",
+    "reviewQuestions",
   ]);
   return {
     knowledgePoints: knowledgePoints.length
       ? knowledgePoints
       : readLearningItems(source.summary ?? source.content ?? source.text),
-    classroomExamples: firstLearningItems(nested, [
+    emphasizedPoints: sectionItems(["emphasized_points", "emphasizedPoints"]),
+    legacyCases: sectionItems([
+      "cases_formulas_conclusions",
+      "casesFormulasConclusions",
+    ]),
+    classroomExamples: sectionItems([
       "classroom_examples",
       "classroomExamples",
       "class_examples",
       "examples",
     ]),
-    auxiliaryTraining: firstLearningItems(nested, [
+    auxiliaryTraining: sectionItems([
       "auxiliary_training",
       "auxiliaryTraining",
       "training",
       "practice",
       "exercises",
     ]),
-    practiceItems: firstPracticeItems(studyGuide, [
-      "practice_items",
-      "practiceItems",
-      "practice",
-      "exercises",
-    ]).concat(
-      studyGuide === source
-        ? []
-        : firstPracticeItems(source, ["practice_items", "practiceItems"]),
-    ),
+    practiceItems: practiceItems.length ? practiceItems : legacyPractice,
+    practiceLabel: practiceItems.length ? "【自编练习】" : "【复习自测】",
   };
 }
 
@@ -206,13 +283,14 @@ function LearningItems({ items }: { items: string[] }) {
 }
 
 export function TranscriptPractice({ content }: { content: string }) {
-  const items = parseLearningSummary(content).practiceItems;
+  const summary = parseLearningSummary(content);
+  const items = summary.practiceItems;
   if (!items.length) return <p className="phase1-empty">本节暂无自编练习。</p>;
   return (
     <section className="transcript-practice" aria-labelledby="practice-title">
       <div className="transcript-practice-heading">
         <h4 id="practice-title">主动练习</h4>
-        <span>【自编练习】</span>
+        <span>{summary.practiceLabel}</span>
       </div>
       <ol>
         {items.map((item, index) => (
@@ -225,6 +303,11 @@ export function TranscriptPractice({ content }: { content: string }) {
                 {item.question}
               </ReactMarkdown>
             </div>
+            {Boolean(item.evidence?.length) && (
+              <p className="transcript-muted">
+                字幕证据：{item.evidence?.join("；")}
+              </p>
+            )}
             {item.answer ? (
               <details>
                 <summary>查看答案</summary>
@@ -261,16 +344,35 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
           </p>
         )}
       </section>
+      {summary.emphasizedPoints.length > 0 && (
+        <section aria-labelledby="learning-emphasis-title">
+          <h4 id="learning-emphasis-title">课堂强调</h4>
+          <LearningItems items={summary.emphasizedPoints} />
+        </section>
+      )}
       <section aria-labelledby="learning-examples-title">
-        <h4 id="learning-examples-title">课堂例子</h4>
+        <h4 id="learning-examples-title">
+          {!summary.classroomExamples.length && summary.legacyCases.length
+            ? "案例、公式与结论"
+            : "课堂例子"}
+        </h4>
         {summary.classroomExamples.length ? (
           <LearningItems items={summary.classroomExamples} />
+        ) : summary.legacyCases.length ? (
+          <LearningItems items={summary.legacyCases} />
         ) : (
           <p className="learning-flow-fallback">
             旧版小结未单独标注课堂例子，可结合规整字幕回看讲解。
           </p>
         )}
       </section>
+      {summary.classroomExamples.length > 0 &&
+        summary.legacyCases.length > 0 && (
+          <section aria-labelledby="learning-legacy-cases-title">
+            <h4 id="learning-legacy-cases-title">案例、公式与结论</h4>
+            <LearningItems items={summary.legacyCases} />
+          </section>
+        )}
       <section aria-labelledby="learning-training-title">
         <h4 id="learning-training-title">辅助训练</h4>
         {summary.auxiliaryTraining.length ? (
@@ -625,6 +727,91 @@ function QualityPanel({
   );
 }
 
+const semanticRoles: Record<string, string> = {
+  terminology: "术语识别",
+  correction: "字幕校对",
+  critic: "证据复核",
+  memory: "课程记忆提案",
+};
+
+function TokenUsagePanel({ artifact }: { artifact: Phase1ArtifactRead }) {
+  const data = artifactData(artifact);
+  if (!Array.isArray(data))
+    return <EmptyPanel>AI 用量记录格式暂不可识别。</EmptyPanel>;
+  const calls = data
+    .map(asRecord)
+    .filter(
+      (event): event is UnknownRecord =>
+        event !== null &&
+        typeof event.agent === "string" &&
+        Object.hasOwn(semanticRoles, event.agent) &&
+        event.status !== "skipped",
+    );
+  if (!calls.length)
+    return <EmptyPanel>这份产物没有记录 AI 校对调用；用量未知。</EmptyPanel>;
+  const reported = (event: UnknownRecord, field: string) => {
+    const value = asRecord(event.token_usage)?.[field];
+    return typeof value === "number" &&
+      Number.isSafeInteger(value) &&
+      value >= 0
+      ? value
+      : null;
+  };
+  const formatUsage = (events: UnknownRecord[], field: string) => {
+    const values = events
+      .map((event) => reported(event, field))
+      .filter((value): value is number => value !== null);
+    if (!values.length) return "未知";
+    const sum = values.reduce((total, value) => total + value, 0);
+    if (!Number.isSafeInteger(sum)) return "超出显示范围";
+    return `${sum.toLocaleString("zh-CN")}${values.length === events.length ? "" : `（已知部分，${events.length - values.length} 次未知）`}`;
+  };
+  return (
+    <div className="phase1-quality" aria-label="AI 校对用量">
+      <p>
+        这份校对产物生成时的服务端用量；读取缓存不会重新计费。原始字幕整理和本节小结不在此统计内。
+      </p>
+      <dl className="phase1-quality-grid">
+        <div>
+          <dt>校对调用</dt>
+          <dd>{calls.length} 次</dd>
+        </div>
+        <div>
+          <dt>输入 Token</dt>
+          <dd>{formatUsage(calls, "prompt_tokens")}</dd>
+        </div>
+        <div>
+          <dt>输出 Token</dt>
+          <dd>{formatUsage(calls, "completion_tokens")}</dd>
+        </div>
+        <div>
+          <dt>服务端总 Token</dt>
+          <dd>{formatUsage(calls, "total_tokens")}</dd>
+        </div>
+      </dl>
+      <p className="transcript-muted">
+        缺失用量保持未知；未按字符数估算，也未将失败请求记作零。
+      </p>
+      <details>
+        <summary>各阶段用量</summary>
+        <dl className="phase1-quality-grid">
+          {Object.entries(semanticRoles).map(([role, label]) => {
+            const events = calls.filter((event) => event.agent === role);
+            return events.length ? (
+              <div key={role}>
+                <dt>
+                  {label} · {events.length} 次
+                </dt>
+                <dd>{formatUsage(events, "total_tokens")}</dd>
+              </div>
+            ) : null;
+          })}
+        </dl>
+      </details>
+    </div>
+  );
+}
+
 export function TranscriptPhase1Panel({
   kind,
   artifact,
@@ -637,6 +824,8 @@ export function TranscriptPhase1Panel({
   if (kind === "corrected") return <CorrectedPanel artifact={artifact} />;
   if (kind === "correction_diff") return <DiffPanel artifact={artifact} />;
   if (kind === "uncertain") return <UncertainPanel artifact={artifact} />;
+  if (kind === "pipeline_events")
+    return <TokenUsagePanel artifact={artifact} />;
   return (
     <QualityPanel artifact={artifact} manifestWarnings={manifestWarnings} />
   );

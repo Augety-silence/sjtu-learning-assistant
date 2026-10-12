@@ -1,17 +1,19 @@
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { motionDuration, motionEase } from "@/lib/motion";
 
 export function LoadingState({ label = "正在加载…" }: { label?: string }) {
+  const shouldReduceMotion = useReducedMotion();
   return (
     <motion.div
       className="state-box"
       aria-live="polite"
       aria-busy="true"
       data-motion-surface="state"
-      initial={{ opacity: 0.88, y: 3 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+      initial={shouldReduceMotion ? false : { opacity: 0.88 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: motionDuration.fast, ease: motionEase.out }}
     >
       <span className="spinner" aria-hidden="true" />
       {label}
@@ -30,14 +32,15 @@ export function EmptyState({
   action?: ReactNode;
   illustration?: ReactNode;
 }) {
+  const shouldReduceMotion = useReducedMotion();
   return (
     <motion.div
       className="state-box state-stack"
       role="status"
       data-motion-surface="state"
-      initial={{ opacity: 0.88, y: 3 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+      initial={shouldReduceMotion ? false : { opacity: 0.88 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: motionDuration.fast, ease: motionEase.out }}
     >
       {illustration && (
         <div className="state-illustration" aria-hidden="true">
@@ -67,6 +70,7 @@ export function ErrorState({
   retryLabel?: string;
   secondaryAction?: StateAction;
 }) {
+  const shouldReduceMotion = useReducedMotion();
   const [retrying, setRetrying] = useState(false);
   const runRetry = async () => {
     if (!retry || retrying) return;
@@ -83,9 +87,9 @@ export function ErrorState({
       className="state-box state-stack state-error"
       role="alert"
       data-motion-surface="state"
-      initial={{ opacity: 0.88, y: 3 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+      initial={shouldReduceMotion ? false : { opacity: 0.88 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: motionDuration.fast, ease: motionEase.out }}
     >
       <p className="font-medium text-danger">加载失败</p>
       <p className="text-sm text-caption">{message}</p>

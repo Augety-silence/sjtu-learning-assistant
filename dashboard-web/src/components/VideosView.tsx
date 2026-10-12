@@ -25,11 +25,19 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { TranscriptQualityWarning } from "@/components/TranscriptPhase1Panels";
 import { Button } from "@/components/ui/Button";
+import {
+  type CompactControlTone,
+  StatusBadge as CompactStatusBadge,
+  FilterChip,
+  MetaTag,
+} from "@/components/ui/CompactControls";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
+import { createBoundedReadPool } from "@/lib/boundedReadPool";
 import type { TranscriptArtifact, TranscriptJob } from "@/lib/types";
 
 export type VideoSource = "canvas" | "video_space" | "legacy";
@@ -76,6 +84,7 @@ export interface VideoTaskItem {
 }
 
 export interface VideoPlaybackResult {
+  kind?: "inline" | "external_opened";
   url?: string | null;
   subtitleUrl?: string | null;
   subtitleVtt?: string | null;
@@ -101,6 +110,14 @@ export interface VideosViewProps {
   courseOptions?: Array<{ id: number; name: string }>;
   onCourseChange?: (courseId: number) => void;
   transcriptJobs?: TranscriptJob[];
+  aiReadiness?: {
+    status?: "checking" | "ready" | "blocked" | "unknown";
+    configured: boolean;
+    message: string;
+    model: string;
+    connectionVerified?: boolean | null;
+  };
+  onOpenAISettings?: () => void;
   onRetry?: () => void | Promise<void>;
   onPlay?: (
     video: CourseVideoItem,
@@ -150,6 +167,10 @@ type VideoMenuPosition = {
   left: number;
   direction: "up" | "down";
 };
+type CoursePopupPosition = VideoMenuPosition & {
+  width: number;
+  maxHeight: number;
+};
 type OrganizationFilter =
   | "all"
   | "pending"
@@ -168,6 +189,14 @@ const statusCopy: Record<UnifiedStatus, string> = {
   partial: "部分完成",
   failed: "失败可重试",
 };
+export function videoOrganizationReason(video: CourseVideoItem) {
+  if (video.source !== "video_space")
+    return "当前仅支持整理视频空间的课堂字幕；此来源尚未接入字幕整理。";
+  if (!video.supportsSubtitle)
+    return "此录像没有可用字幕，暂不能生成讲义、练习或 AI 校对。";
+  return null;
+}
+
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 type PlaybackRate = (typeof playbackRates)[number];
 const temporaryPlaybackRates = [1.5, 2, 3, 4] as const;
@@ -415,8 +444,12 @@ function transcriptIsProcessing(job?: TranscriptJob) {
   return Boolean(job && isActiveTranscriptStatus(job.status, job.progress));
 }
 
-function transcriptIsComplete(job?: TranscriptJob) {
-  return isCompletedForBatch(job);
+function transcriptHasLearningMaterials(job?: TranscriptJob) {
+  return Boolean(
+    job &&
+      job.progress >= 100 &&
+      ["completed", "completed_with_warnings"].includes(job.status),
+  );
 }
 
 function phase1IsReady(job?: TranscriptJob) {
@@ -433,7 +466,8 @@ function transcriptNeedsRetry(job?: TranscriptJob) {
     ) ||
     phase1Status === "partial" ||
     phase1Status === "failed" ||
-    transcriptQualityRisk(job)
+    transcriptQualityRisk(job) ||
+    (job.status === "completed" && !phase1IsReady(job))
   );
 }
 
@@ -477,11 +511,30 @@ function StatusBadge({ status }: { status: UnifiedStatus }) {
           : status === "partial"
             ? CircleAlert
             : CircleDashed;
+  const tone: CompactControlTone =
+    status === "completed"
+      ? "success"
+      : status === "failed"
+        ? "danger"
+        : status === "partial"
+          ? "warning"
+          : [
+                "processing",
+                "queued",
+                "transcribing",
+                "generating",
+                "reviewing",
+              ].includes(status)
+            ? "info"
+            : "neutral";
   return (
-    <span className={`video-status video-status-${status}`}>
-      <Icon aria-hidden="true" />
+    <CompactStatusBadge
+      className={`video-status video-status-${status}`}
+      icon={Icon}
+      tone={tone}
+    >
       {statusCopy[status]}
-    </span>
+    </CompactStatusBadge>
   );
 }
 
@@ -532,12 +585,15 @@ function CoursePicker({
   const id = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedIndex = Math.max(
     0,
     options.findIndex((option) => option.id === value),
   );
   const [open, setOpen] = useState(false);
+  const [popupPosition, setPopupPosition] =
+    useState<CoursePopupPosition | null>(null);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const current = options[selectedIndex];
 
@@ -545,7 +601,12 @@ function CoursePicker({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (
+        !rootRef.current?.contains(target) &&
+        !popupRef.current?.contains(target)
+      )
+        setOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -574,6 +635,7 @@ function CoursePicker({
 
   const close = (restoreFocus = false) => {
     setOpen(false);
+    setPopupPosition(null);
     if (restoreFocus)
       window.requestAnimationFrame(() => triggerRef.current?.focus());
   };
@@ -586,6 +648,46 @@ function CoursePicker({
     if (options.length)
       setActiveIndex((index + options.length) % options.length);
   };
+  const positionPopup = () => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportHeight = viewport?.height ?? window.innerHeight;
+    const edge = 8;
+    const gap = 6;
+    const width = Math.min(Math.max(280, rect.width), viewportWidth - edge * 2);
+    const desiredHeight = Math.min(320, options.length * 44 + 10);
+    const below = viewportTop + viewportHeight - rect.bottom - edge - gap;
+    const above = rect.top - viewportTop - edge - gap;
+    const direction =
+      below < Math.min(desiredHeight, 220) && above > below ? "up" : "down";
+    const maxHeight = Math.max(
+      96,
+      Math.min(desiredHeight, direction === "down" ? below : above),
+    );
+    const left = Math.min(
+      Math.max(rect.left, viewportLeft + edge),
+      viewportLeft + viewportWidth - width - edge,
+    );
+    setPopupPosition({
+      direction,
+      width,
+      maxHeight,
+      left,
+      top:
+        direction === "down"
+          ? rect.bottom + gap
+          : Math.max(viewportTop + edge, rect.top - gap - maxHeight),
+    });
+  };
+  const openPopup = () => {
+    positionPopup();
+    setOpen(true);
+  };
   const onTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
       event.preventDefault();
@@ -596,7 +698,7 @@ function CoursePicker({
             ? 0
             : selectedIndex,
       );
-      setOpen(true);
+      openPopup();
     }
     if (event.key === "Escape" && open) {
       event.preventDefault();
@@ -642,7 +744,7 @@ function CoursePicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={`${id}-options`}
-        onClick={() => setOpen((currentOpen) => !currentOpen)}
+        onClick={() => (open ? close() : openPopup())}
         onKeyDown={onTriggerKeyDown}
       >
         <span title={current?.name ?? fallback}>
@@ -650,39 +752,49 @@ function CoursePicker({
         </span>
         <ChevronDown aria-hidden="true" />
       </button>
-      {open && (
-        <div
-          id={`${id}-options`}
-          className="video-course-popup"
-          role="listbox"
-          aria-label="课程列表"
-          aria-activedescendant={`${id}-option-${options[activeIndex]?.id}`}
-        >
-          {options.map((option, index) => (
-            <button
-              key={option.id}
-              ref={(node) => {
-                optionRefs.current[index] = node;
-              }}
-              id={`${id}-option-${option.id}`}
-              type="button"
-              role="option"
-              aria-label={option.name}
-              aria-selected={option.id === value}
-              tabIndex={index === activeIndex ? 0 : -1}
-              className={option.id === value ? "is-selected" : ""}
-              title={option.name}
-              onFocus={() => setActiveIndex(index)}
-              onMouseEnter={() => setActiveIndex(index)}
-              onKeyDown={onOptionKeyDown}
-              onClick={() => select(index)}
-            >
-              <span>{option.name}</span>
-              {option.id === value && <Check aria-hidden="true" />}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        popupPosition &&
+        createPortal(
+          <div
+            ref={popupRef}
+            id={`${id}-options`}
+            className={`video-course-popup is-open-${popupPosition.direction}`}
+            style={{
+              top: popupPosition.top,
+              left: popupPosition.left,
+              width: popupPosition.width,
+              maxHeight: popupPosition.maxHeight,
+            }}
+            role="listbox"
+            aria-label="课程列表"
+            aria-activedescendant={`${id}-option-${options[activeIndex]?.id}`}
+          >
+            {options.map((option, index) => (
+              <button
+                key={option.id}
+                ref={(node) => {
+                  optionRefs.current[index] = node;
+                }}
+                id={`${id}-option-${option.id}`}
+                type="button"
+                role="option"
+                aria-label={option.name}
+                aria-selected={option.id === value}
+                tabIndex={index === activeIndex ? 0 : -1}
+                className={option.id === value ? "is-selected" : ""}
+                title={option.name}
+                onFocus={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(index)}
+                onKeyDown={onOptionKeyDown}
+                onClick={() => select(index)}
+              >
+                <span>{option.name}</span>
+                {option.id === value && <Check aria-hidden="true" />}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -709,12 +821,17 @@ export function VideosView({
   onRetryTranscript,
   onCancelTranscript,
   onRevealTranscript,
+  aiReadiness,
+  onOpenAISettings,
 }: VideosViewProps) {
   const [source, setSource] = useState<"all" | VideoSource>("all");
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [externalPlaybackSourceId, setExternalPlaybackSourceId] = useState<
+    string | null
+  >(null);
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null);
   const [learningTab, setLearningTab] = useState<LearningTab>("summary");
@@ -738,6 +855,7 @@ export function VideosView({
     null,
   );
   const [busy, setBusy] = useState<string | null>(null);
+  const [operationKeys, setOperationKeys] = useState<Set<string>>(new Set());
   const [pdfResults, setPdfResults] = useState<Map<string, SlidesPdfResult>>(
     () => new Map(),
   );
@@ -764,11 +882,31 @@ export function VideosView({
   const summaryPriorJobIds = useRef<Set<string>>(new Set());
   const summaryRequestedJobId = useRef<string | null>(null);
   const summaryAwaitsNewJob = useRef(false);
-  const busyRef = useRef<symbol | null>(null);
+  const operationsRef = useRef(new Map<string, symbol>());
+  const operationGenerationRef = useRef(0);
+  const playBusyRef = useRef<string | null>(null);
+  const [readVideo] = useState(() => createBoundedReadPool());
+  const playbackWaitRef = useRef<AbortController | null>(null);
+  const subtitleWaitRef = useRef<AbortController | null>(null);
+  const subtitleReadRequest = useRef(0);
+  const isBusy = (key: string) => operationKeys.has(key);
+  const isOrganizing = (id: string) => isBusy(`learning:${id}`);
   const playerLoadedRef = useRef(false);
   const playbackRateRef = useRef<PlaybackRate>(1);
   const temporaryPlaybackRef = useRef<TemporaryPlaybackState | null>(null);
   const { showToast } = useToast();
+  const organizationReason = useCallback(
+    (video: CourseVideoItem) =>
+      videoOrganizationReason(video) ??
+      (aiReadiness?.configured === false
+        ? aiReadiness.status === "checking"
+          ? "正在检查 AI 配置，请稍候。"
+          : aiReadiness.status === "unknown"
+            ? "AI 状态尚未确认，请重新检查配置。"
+            : aiReadiness.message || "尚未配置 AI，先配置后再生成学习材料。"
+        : null),
+    [aiReadiness?.configured, aiReadiness?.message, aiReadiness?.status],
+  );
 
   const jobsByVideo = useMemo(
     () => latestTranscriptJobs(transcriptJobs),
@@ -826,7 +964,11 @@ export function VideosView({
   );
   const transcriptEligible = selectedVideos.filter((video) => {
     const job = jobsByVideo.get(video.id);
-    return !isCompletedForBatch(job) && !transcriptIsProcessing(job);
+    return (
+      !organizationReason(video) &&
+      !isCompletedForBatch(job) &&
+      !transcriptIsProcessing(job)
+    );
   });
   const pdfEligible = selectedVideos.filter((video) => video.supportsSlidesPdf);
   const organizationCounts = useMemo(() => {
@@ -873,9 +1015,11 @@ export function VideosView({
     () =>
       videos.filter((video) => {
         const state = stateForVideo(video.id);
-        return !state.complete && !state.processing;
+        return (
+          !organizationReason(video) && !state.complete && !state.processing
+        );
       }),
-    [stateForVideo, videos],
+    [organizationReason, stateForVideo, videos],
   );
   const skippedOrganizationCount = videos.length - unfinishedVideos.length;
   const selectedJob = selected ? jobsByVideo.get(selected.id) : undefined;
@@ -884,8 +1028,7 @@ export function VideosView({
   );
   const selectedSummaryProcessing =
     selectedSummaryPending || transcriptIsProcessing(selectedJob);
-  const selectedSummaryReady =
-    transcriptIsComplete(selectedJob) && phase1IsReady(selectedJob);
+  const selectedSummaryReady = transcriptHasLearningMaterials(selectedJob);
   const selectedSummaryFailed = transcriptNeedsRetry(selectedJob);
   const selectedTasks = selected
     ? tasks.filter((task) => task.videoId === selected.id)
@@ -960,6 +1103,10 @@ export function VideosView({
     if (selected && !valid.has(selected.id)) setSelected(null);
   }, [videos, selected]);
   useLayoutEffect(() => {
+    operationGenerationRef.current += 1;
+    playbackWaitRef.current?.abort();
+    subtitleWaitRef.current?.abort();
+    subtitleReadRequest.current += 1;
     playRequest.current += 1;
     autoPlaySourceId.current = null;
     if (subtitleBlobUrl.current) {
@@ -980,11 +1127,15 @@ export function VideosView({
     setSelectedIds(new Set());
     setPlaybackUrl(null);
     setPlaybackError(null);
+    setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
     setPreservedAcrossSource(false);
     setBusy(null);
-    busyRef.current = null;
+    playBusyRef.current = null;
+    operationsRef.current.clear();
+    setOperationKeys(new Set());
+    setPdfResults(new Map());
     setLearningTab("summary");
     setOrganizationFilter("all");
     setSelectionMode(false);
@@ -1084,7 +1235,7 @@ export function VideosView({
       ? transcriptJobs.find((job) => job.id === summaryRequestedJobId.current)
       : jobsByVideo.get(pendingSummarySourceId);
     if (!requestedJob) return;
-    if (transcriptIsComplete(requestedJob) && phase1IsReady(requestedJob)) {
+    if (transcriptHasLearningMaterials(requestedJob)) {
       setDetailInitialTab("summary");
       setDetailJob(requestedJob);
       setPendingSummarySourceId(null);
@@ -1408,18 +1559,22 @@ export function VideosView({
       setPreservedAcrossSource(true);
       return;
     }
+    playbackWaitRef.current?.abort();
+    subtitleWaitRef.current?.abort();
+    subtitleReadRequest.current += 1;
     playRequest.current += 1;
     autoPlaySourceId.current = null;
     const invalidatedBusy =
       busy === `play:${selected.id}` || busy === `subtitle:${selected.id}`;
     if (invalidatedBusy) {
-      busyRef.current = null;
+      playBusyRef.current = null;
       setBusy(null);
     }
     revokeSubtitleBlob();
     setSelected(null);
     setPlaybackUrl(null);
     setPlaybackError(null);
+    setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
     setPreservedAcrossSource(false);
@@ -1427,6 +1582,11 @@ export function VideosView({
   };
   useEffect(
     () => () => {
+      operationGenerationRef.current += 1;
+      operationsRef.current.clear();
+      playbackWaitRef.current?.abort();
+      subtitleWaitRef.current?.abort();
+      subtitleReadRequest.current += 1;
       playRequest.current += 1;
       if (subtitleBlobUrl.current) URL.revokeObjectURL(subtitleBlobUrl.current);
       if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
@@ -1438,28 +1598,61 @@ export function VideosView({
   const run = async (
     key: string,
     label: string,
-    action?: () => void | Promise<void>,
+    action?: (isCurrent: () => boolean) => void | Promise<void>,
     onError?: (message: string) => void,
+    resources: string[] = [key],
+    isRelevant: () => boolean = () => true,
   ) => {
-    if (!action || busyRef.current || busy) return false;
+    const keys = [...new Set([key, ...resources])];
+    if (!action || keys.some((item) => operationsRef.current.has(item)))
+      return false;
+    const generation = operationGenerationRef.current;
+    const isCurrent = () =>
+      operationGenerationRef.current === generation && isRelevant();
     const operation = Symbol(key);
-    busyRef.current = operation;
-    setBusy(key);
+    for (const item of keys) operationsRef.current.set(item, operation);
+    setOperationKeys(new Set(operationsRef.current.keys()));
     try {
-      await action();
+      await action(isCurrent);
+      if (!isCurrent()) return false;
       showToast({ kind: "success", message: label });
       return true;
     } catch (reason) {
+      if (!isCurrent()) return false;
       const message = reason instanceof Error ? reason.message : "视频操作失败";
       onError?.(message);
       showToast({ kind: "error", message });
       return false;
     } finally {
-      if (busyRef.current === operation) {
-        busyRef.current = null;
-        setBusy((current) => (current === key ? null : current));
+      for (const item of keys) {
+        if (operationsRef.current.get(item) === operation)
+          operationsRef.current.delete(item);
       }
+      if (operationGenerationRef.current === generation)
+        setOperationKeys(new Set(operationsRef.current.keys()));
     }
+  };
+
+  const selectLearningVideo = (video: CourseVideoItem) => {
+    if (selected?.id !== video.id) {
+      stopTemporaryPlayback();
+      videoRef.current?.pause();
+      playbackWaitRef.current?.abort();
+      subtitleWaitRef.current?.abort();
+      subtitleReadRequest.current += 1;
+      playRequest.current += 1;
+      autoPlaySourceId.current = null;
+      playBusyRef.current = null;
+      setBusy(null);
+      revokeSubtitleBlob();
+      setPlaybackUrl(null);
+      setPlaybackError(null);
+      setExternalPlaybackSourceId(null);
+      setSubtitleUrl(null);
+      setSubtitleMessage(null);
+      setPreservedAcrossSource(false);
+    }
+    setSelected(video);
   };
 
   const useSubtitleResult = (result: VideoPlaybackResult) => {
@@ -1474,21 +1667,54 @@ export function VideosView({
     setSubtitleMessage(result.subtitleMessage ?? null);
   };
 
+  const beginSubtitleRead = (video: CourseVideoItem) => {
+    subtitleWaitRef.current?.abort();
+    const controller = new AbortController();
+    subtitleWaitRef.current = controller;
+    const id = ++subtitleReadRequest.current;
+    const promise = readVideo(
+      `subtitle:${courseId ?? "unscoped"}:${video.id}`,
+      () => Promise.resolve(onLoadSubtitles ? onLoadSubtitles(video) : {}),
+      controller.signal,
+      "字幕读取超时，可从录像更多操作重新载入字幕。",
+    );
+    return { id, promise };
+  };
+
   const loadSubtitles = (video: CourseVideoItem) => {
+    selectLearningVideo(video);
     const request = playRequest.current;
-    return run(`subtitle:${video.id}`, "字幕状态已更新。", async () => {
-      setSelected(video);
-      setLearningTab("transcript");
-      const result = await onLoadSubtitles?.(video);
-      if (result && playRequest.current === request) useSubtitleResult(result);
-    });
+    let subtitleId: number | undefined;
+    const isRelevant = () =>
+      playRequest.current === request &&
+      subtitleReadRequest.current === subtitleId;
+    return run(
+      `subtitle:${video.id}`,
+      "字幕状态已更新。",
+      async () => {
+        setLearningTab("transcript");
+        setSubtitleMessage("正在加载字幕…");
+        const reading = beginSubtitleRead(video);
+        subtitleId = reading.id;
+        const result = await reading.promise;
+        if (isRelevant()) useSubtitleResult(result);
+      },
+      (message) => setSubtitleMessage(message),
+      [`subtitle:${video.id}`],
+      isRelevant,
+    );
   };
 
   const play = async (video: CourseVideoItem, shouldAutoPlay = true) => {
-    if (video.playable === false || busy) return;
+    if (video.playable === false || playBusyRef.current === video.id) return;
     stopTemporaryPlayback();
     videoRef.current?.pause();
     playerLoadedRef.current = false;
+    playbackWaitRef.current?.abort();
+    subtitleWaitRef.current?.abort();
+    subtitleReadRequest.current += 1;
+    const controller = new AbortController();
+    playbackWaitRef.current = controller;
     const request = ++playRequest.current;
     revokeSubtitleBlob();
     setSelected(video);
@@ -1496,12 +1722,32 @@ export function VideosView({
     autoPlaySourceId.current = shouldAutoPlay ? video.id : null;
     setPlaybackUrl(null);
     setPlaybackError(null);
+    setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
     setSubtitleMessage(video.supportsSubtitle ? "正在加载字幕…" : null);
+    playBusyRef.current = video.id;
     setBusy(`play:${video.id}`);
     try {
-      const result = await onPlay?.(video);
+      const result = await readVideo(
+        `play:${courseId ?? "unscoped"}:${video.id}`,
+        () => Promise.resolve(onPlay?.(video)),
+        controller.signal,
+        "播放地址读取超时，可重新选择播放；若仍无响应，请重新打开应用。",
+      );
       if (playRequest.current !== request) return;
+      if (
+        result &&
+        typeof result !== "string" &&
+        result.kind === "external_opened"
+      ) {
+        autoPlaySourceId.current = null;
+        setPlaybackUrl(null);
+        setPlaybackError(null);
+        setExternalPlaybackSourceId(video.id);
+        setSubtitleUrl(null);
+        setSubtitleMessage(null);
+        return;
+      }
       let nextUrl: string | null = null;
       if (typeof result === "string") {
         nextUrl = result;
@@ -1524,8 +1770,26 @@ export function VideosView({
         video.supportsSubtitle &&
         onLoadSubtitles
       ) {
-        const subtitleResult = await onLoadSubtitles(video);
-        if (playRequest.current === request) useSubtitleResult(subtitleResult);
+        const reading = beginSubtitleRead(video);
+        void reading.promise
+          .then((subtitleResult) => {
+            if (
+              playRequest.current === request &&
+              subtitleReadRequest.current === reading.id
+            )
+              useSubtitleResult(subtitleResult);
+          })
+          .catch((reason) => {
+            if (
+              playRequest.current === request &&
+              subtitleReadRequest.current === reading.id
+            )
+              setSubtitleMessage(
+                reason instanceof Error
+                  ? reason.message
+                  : "字幕加载失败，可从更多操作重新载入。",
+              );
+          });
       }
     } catch (reason) {
       if (playRequest.current === request) {
@@ -1537,13 +1801,16 @@ export function VideosView({
         showToast({ kind: "error", message });
       }
     } finally {
-      if (playRequest.current === request) setBusy(null);
+      if (playRequest.current === request) {
+        playBusyRef.current = null;
+        setBusy(null);
+      }
     }
   };
 
-  const viewLearningMaterials = async (video: CourseVideoItem) => {
+  const viewLearningMaterials = (video: CourseVideoItem) => {
+    selectLearningVideo(video);
     setLearningTab("summary");
-    await play(video, false);
   };
 
   const toggleVideo = (videoId: string) =>
@@ -1558,18 +1825,39 @@ export function VideosView({
     key = "transcript:batch",
     label = `开始整理 ${items.length} 节。`,
   ) =>
-    run(key, label, async () => {
-      if (!items.length || !onStartTranscript) return;
-      await onStartTranscript(items);
-      setSelectedIds(new Set());
-    });
+    run(
+      key,
+      label,
+      async (isCurrent) => {
+        if (!items.length || !onStartTranscript) return;
+        const reason = items.map(organizationReason).find(Boolean);
+        if (reason) throw new Error(reason);
+        await onStartTranscript(items);
+        if (isCurrent()) setSelectedIds(new Set());
+      },
+      undefined,
+      items.map((video) => `learning:${video.id}`),
+    );
   const organizeVideo = (video: CourseVideoItem, job?: TranscriptJob) => {
-    setSelected(video);
+    selectLearningVideo(video);
     setLearningTab("summary");
-    if (transcriptIsProcessing(job) || isCompletedForBatch(job)) return;
+    const reason = organizationReason(video);
+    if (reason) {
+      showToast({ kind: "error", message: reason });
+      return;
+    }
+    if (
+      transcriptIsProcessing(job) ||
+      (isCompletedForBatch(job) && !transcriptNeedsRetry(job))
+    )
+      return;
     if (job && transcriptNeedsRetry(job) && onRetryTranscript)
-      return run(`organize:${video.id}`, "已重新开始整理本节学习材料。", () =>
-        onRetryTranscript(job),
+      return run(
+        `organize:${video.id}`,
+        "已重新开始整理本节学习材料。",
+        () => onRetryTranscript(job),
+        undefined,
+        [`learning:${video.id}`],
       );
     return startTranscript(
       [video],
@@ -1581,7 +1869,7 @@ export function VideosView({
     startTranscript(
       unfinishedVideos,
       "transcript:all",
-      `开始整理 ${unfinishedVideos.length} 节，跳过 ${skippedOrganizationCount} 节已完成/处理中。`,
+      `开始整理 ${unfinishedVideos.length} 节，跳过 ${skippedOrganizationCount} 节已完成、处理中或不支持整理。`,
     );
   const requestSummary = async (
     video: CourseVideoItem,
@@ -1589,7 +1877,7 @@ export function VideosView({
   ) => {
     if (transcriptIsProcessing(job) || pendingSummarySourceId === video.id)
       return;
-    if (job && transcriptIsComplete(job) && phase1IsReady(job)) {
+    if (job && transcriptHasLearningMaterials(job)) {
       setDetailInitialTab("summary");
       setDetailJob(job);
       return;
@@ -1601,9 +1889,14 @@ export function VideosView({
       : onStartTranscript
         ? () => onStartTranscript([video])
         : undefined;
-    if (!action) return;
+    if (
+      !action ||
+      organizationReason(video) ||
+      operationsRef.current.has(`learning:${video.id}`)
+    )
+      return;
 
-    setSelected(video);
+    selectLearningVideo(video);
     setLearningTab("summary");
     setSummaryRequestError(null);
     setPendingSummarySourceId(video.id);
@@ -1614,12 +1907,15 @@ export function VideosView({
         .map((item) => item.id),
     );
     summaryAwaitsNewJob.current = true;
+    const generation = operationGenerationRef.current;
     const succeeded = await run(
       `summary:${video.id}`,
       "已开始生成 AI 总结。",
       action,
       (message) => setSummaryRequestError({ sourceId: video.id, message }),
+      [`learning:${video.id}`],
     );
+    if (operationGenerationRef.current !== generation) return;
     if (!succeeded) {
       summaryAwaitsNewJob.current = false;
       summaryRequestedJobId.current = null;
@@ -1638,18 +1934,30 @@ export function VideosView({
     setPdfResults((current) => new Map(current).set(key, value));
   };
   const createPdf = (video: CourseVideoItem, key = `pdf:${video.id}`) =>
-    run(key, "课件已生成（临时文件）。", async () => {
-      const result = await onCreateSlidesPdf?.(video);
-      rememberPdfResult(video, result);
-    });
-  const createPdfs = () =>
-    run("pdf:batch", "所选课件已生成（临时文件）。", async () => {
-      for (const video of pdfEligible) {
+    run(
+      key,
+      "课件已生成（临时文件）。",
+      async (isCurrent) => {
         const result = await onCreateSlidesPdf?.(video);
-        rememberPdfResult(video, result);
-      }
-      setSelectedIds(new Set());
-    });
+        if (isCurrent()) rememberPdfResult(video, result);
+      },
+      undefined,
+      [`pdf:${video.id}`],
+    );
+  const createPdfs = () =>
+    run(
+      "pdf:batch",
+      "所选课件已生成（临时文件）。",
+      async (isCurrent) => {
+        for (const video of pdfEligible) {
+          const result = await onCreateSlidesPdf?.(video);
+          if (isCurrent()) rememberPdfResult(video, result);
+        }
+        if (isCurrent()) setSelectedIds(new Set());
+      },
+      undefined,
+      pdfEligible.map((video) => `pdf:${video.id}`),
+    );
 
   const renderLearningContent = (tab: LearningTab) => {
     if (!selected)
@@ -1667,13 +1975,20 @@ export function VideosView({
         <div className="video-learning-empty">
           <div>
             <strong>这节录像还没有学习材料</strong>
-            <span>整理后可获得讲义、字幕、主动练习和可跳转时间戳。</span>
+            <span>
+              {organizationReason(selected) ??
+                "整理后可获得讲义、字幕、主动练习和可跳转时间戳。"}
+            </span>
           </div>
           <Button
             variant="outline"
             size="sm"
-            loading={busy === `organize:${selected.id}`}
-            disabled={!onStartTranscript || Boolean(busy)}
+            loading={isBusy(`organize:${selected.id}`)}
+            disabled={
+              !onStartTranscript ||
+              Boolean(organizationReason(selected)) ||
+              isOrganizing(selected.id)
+            }
             onClick={() => void organizeVideo(selected)}
           >
             <NotebookPen aria-hidden="true" />
@@ -1682,16 +1997,15 @@ export function VideosView({
         </div>
       );
     if (tab === "notes") {
-      const canOpenPractice = Boolean(
-        selectedJob && phase1IsReady(selectedJob),
-      );
+      const canOpenPractice = transcriptHasLearningMaterials(selectedJob);
       return (
         <div className="video-tool-summary">
           <NotebookPen aria-hidden="true" />
           <span>
             {canOpenPractice
               ? "题目与答案分开呈现，答案默认折叠。来源：【自编练习】"
-              : "完成本节讲义后，将根据 summary、study_guide 与 practice_items 生成自测。"}
+              : (organizationReason(selected) ??
+                "完成本节讲义后，将显示本节自测；如无题目会明确提示。")}
           </span>
           {canOpenPractice && selectedJob && (
             <Button
@@ -1753,8 +2067,8 @@ export function VideosView({
             <Button
               variant="outline"
               size="sm"
-              loading={busy === `pdf:${selected.id}`}
-              disabled={Boolean(busy)}
+              loading={isBusy(`pdf:${selected.id}`)}
+              disabled={isBusy(`pdf:${selected.id}`)}
               onClick={() => void createPdf(selected)}
             >
               <FileText aria-hidden="true" />
@@ -1770,28 +2084,26 @@ export function VideosView({
         summaryRequestError?.sourceId === selected.id
           ? summaryRequestError.message
           : null;
-      const waitingForPhase1 =
-        transcriptIsComplete(selectedJob) &&
-        !phase1IsReady(selectedJob) &&
-        !selectedSummaryFailed;
       const summaryMessage = requestError
         ? `${requestError}。可重试生成。`
-        : selectedSummaryFailed
-          ? selectedJob?.error ||
-            selectedJob?.message ||
-            "生成未完成，可从失败阶段重试。"
-          : waitingForPhase1
-            ? "字幕已规整，正在等待 AI 校对完成；完成后才能查看总结。"
+        : selectedSummaryReady
+          ? deriveVideoLearningState(selectedJob).partial
+            ? "学习材料可阅读，AI 校对尚未通过；可在详情中补充或重试。"
+            : phase1IsReady(selectedJob)
+              ? "学习材料与 AI 校对均已完成，可查看总结。"
+              : "学习材料已生成，可查看总结；可在详情中补充 AI 校对。"
+          : selectedSummaryFailed
+            ? selectedJob?.error ||
+              selectedJob?.message ||
+              "生成未完成，可从失败阶段重试。"
             : selectedSummaryProcessing
               ? selectedJob?.message ||
-                "正在规整字幕并进行 AI 校对，完成后将自动打开总结。"
-              : selectedSummaryReady
-                ? "字幕规整和 AI 校对已完成，可查看 AI 总结。"
-                : "生成前会先规整字幕并完成 AI 校对，再生成总结。";
-      const summaryEligible =
-        selected.source === "video_space" && selected.supportsSubtitle;
+                "正在规整字幕并生成学习材料，完成后将自动打开总结。"
+              : (organizationReason(selected) ??
+                "生成前会先规整字幕，再整理总结与主动练习。");
+      const summaryEligible = !organizationReason(selected);
       const canRequestSummary = selectedSummaryFailed
-        ? Boolean(onRetryTranscript)
+        ? Boolean(summaryEligible && onRetryTranscript)
         : Boolean(summaryEligible && onStartTranscript);
       return (
         <div
@@ -1801,13 +2113,15 @@ export function VideosView({
         >
           <StatusBadge
             status={
-              requestError || selectedSummaryFailed
+              requestError
                 ? "failed"
-                : selectedSummaryProcessing || waitingForPhase1
-                  ? "processing"
-                  : selectedSummaryReady
-                    ? "completed"
-                    : "pending"
+                : selectedSummaryReady
+                  ? deriveVideoLearningState(selectedJob).status
+                  : selectedSummaryFailed
+                    ? deriveVideoLearningState(selectedJob).status
+                    : selectedSummaryProcessing
+                      ? "processing"
+                      : "pending"
             }
           />
           <span>{summaryMessage}</span>
@@ -1830,17 +2144,27 @@ export function VideosView({
               loadingLabel={
                 busy === `summary:${selected.id}` ? "正在启动…" : "正在生成…"
               }
-              disabled={selectedSummaryProcessing}
+              disabled={selectedSummaryProcessing || isOrganizing(selected.id)}
               onClick={() => void requestSummary(selected, selectedJob)}
             >
               <Captions aria-hidden="true" />
               {selectedSummaryFailed || requestError
                 ? "重试生成 AI 总结"
-                : waitingForPhase1
-                  ? "继续生成 AI 总结"
-                  : "生成 AI 总结"}
+                : "生成 AI 总结"}
             </Button>
           ) : null}
+          {selectedJob?.status === "partial" && !selectedSummaryReady && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetailInitialTab("summary");
+                setDetailJob(selectedJob);
+              }}
+            >
+              查看已有结果
+            </Button>
+          )}
         </div>
       );
     }
@@ -1850,7 +2174,7 @@ export function VideosView({
         <span>
           {subtitleMessage || selectedJob?.message || "尚无可查看的字幕内容。"}
         </span>
-        {selectedJob && onRetryTranscript && onRevealTranscript ? (
+        {selectedJob ? (
           <Button
             variant="outline"
             size="sm"
@@ -1861,13 +2185,11 @@ export function VideosView({
           >
             查看字幕
           </Button>
-        ) : onStartTranscript &&
-          selected.source === "video_space" &&
-          selected.supportsSubtitle ? (
+        ) : onStartTranscript && !organizationReason(selected) ? (
           <Button
             variant="outline"
             size="sm"
-            disabled={Boolean(busy)}
+            disabled={isOrganizing(selected.id)}
             onClick={() =>
               void startTranscript([selected], `transcript:${selected.id}`)
             }
@@ -1881,7 +2203,9 @@ export function VideosView({
   };
 
   return (
-    <main
+    <ContentReveal
+      as="main"
+      ready={!loading}
       className="video-workbench"
       aria-busy={loading || undefined}
       data-state={
@@ -1932,12 +2256,12 @@ export function VideosView({
           <Button
             variant="outline"
             size="sm"
-            loading={busy === "transcript:all"}
+            loading={isBusy("transcript:all")}
             disabled={
               loading ||
               !onStartTranscript ||
               unfinishedVideos.length === 0 ||
-              Boolean(busy)
+              unfinishedVideos.some((video) => isOrganizing(video.id))
             }
             title={
               unfinishedVideos.length === 0
@@ -1945,7 +2269,7 @@ export function VideosView({
                   videos.length > 0
                   ? "全部已整理"
                   : "没有可重复提交的录像"
-                : `跳过 ${skippedOrganizationCount} 节已完成/处理中`
+                : `跳过 ${skippedOrganizationCount} 节已完成、处理中或不支持整理`
             }
             onClick={() => void organizeAllUnfinished()}
           >
@@ -1970,6 +2294,22 @@ export function VideosView({
         </Tabs>
       </section>
 
+      {aiReadiness && (
+        <div className="video-ai-readiness" role="status">
+          <span>
+            {aiReadiness.message}{" "}
+            {aiReadiness.configured && aiReadiness.connectionVerified !== true
+              ? "配置已保存，连接尚未验证。"
+              : ""}{" "}
+            学习材料生成需要视频空间的可用字幕；已有材料可直接阅读。
+          </span>
+          {onOpenAISettings && (
+            <Button variant="link" size="sm" onClick={onOpenAISettings}>
+              {aiReadiness.configured ? "查看 AI 设置" : "配置 AI"}
+            </Button>
+          )}
+        </div>
+      )}
       <section className="video-learning-grid" aria-label="课程视频学习工作台">
         <div className="video-player-column">
           <div className="video-player-shell" data-testid="video-player-shell">
@@ -2050,12 +2390,16 @@ export function VideosView({
                 <strong>
                   {busy === `play:${selected.id}`
                     ? "正在准备播放"
-                    : "已选择当前录像"}
+                    : externalPlaybackSourceId === selected.id
+                      ? "已在本地播放器或外部应用打开"
+                      : "已选择当前录像"}
                 </strong>
                 <span>
                   {busy === `play:${selected.id}`
                     ? "正在获取视频地址…"
-                    : "可继续使用下方学习工具，或再次选择播放"}
+                    : externalPlaybackSourceId === selected.id
+                      ? "可在外部应用观看录像，或继续使用下方学习工具。"
+                      : "可继续使用下方学习工具，或再次选择播放"}
                 </span>
               </div>
             ) : (
@@ -2274,17 +2618,17 @@ export function VideosView({
                 <Button
                   variant="outline"
                   size="sm"
-                  loading={busy === "transcript:batch"}
+                  loading={isBusy("transcript:batch")}
                   disabled={
                     !onStartTranscript ||
                     transcriptEligible.length === 0 ||
-                    Boolean(busy)
+                    transcriptEligible.some((video) => isOrganizing(video.id))
                   }
                   onClick={() =>
                     void startTranscript(
                       transcriptEligible,
                       "transcript:batch",
-                      `开始整理 ${transcriptEligible.length} 节，跳过 ${selectedVideos.length - transcriptEligible.length} 节已完成/处理中。`,
+                      `开始整理 ${transcriptEligible.length} 节，跳过 ${selectedVideos.length - transcriptEligible.length} 节已完成、处理中或不支持整理。`,
                     )
                   }
                 >
@@ -2294,11 +2638,11 @@ export function VideosView({
                 <Button
                   variant="outline"
                   size="sm"
-                  loading={busy === "pdf:batch"}
+                  loading={isBusy("pdf:batch")}
                   disabled={
                     !onCreateSlidesPdf ||
                     pdfEligible.length === 0 ||
-                    Boolean(busy)
+                    pdfEligible.some((video) => isBusy(`pdf:${video.id}`))
                   }
                   onClick={() => void createPdfs()}
                 >
@@ -2317,7 +2661,9 @@ export function VideosView({
                   退出选择
                 </Button>
               </div>
-              <p>已整理和处理中的录像会自动跳过，避免重复创建任务。</p>
+              <p>
+                仅整理视频空间且有字幕的录像；已整理和处理中的录像会自动跳过。
+              </p>
             </section>
           )}
           <div
@@ -2335,15 +2681,16 @@ export function VideosView({
                 ["failed", "失败", sourceOrganizationCounts.failed],
               ] as const
             ).map(([value, label, count]) => (
-              <button
+              <FilterChip
                 key={value}
-                type="button"
                 className={count === 0 ? "is-zero" : undefined}
-                aria-pressed={organizationFilter === value}
+                pressed={organizationFilter === value}
+                count={count}
+                aria-label={`${label} ${count}`}
                 onClick={() => setOrganizationFilter(value)}
               >
-                {label} <strong>{count}</strong>
-              </button>
+                {label}
+              </FilterChip>
             ))}
             {selectionMode && filtered.length > 0 && (
               <label className="video-select-all">
@@ -2452,19 +2799,15 @@ export function VideosView({
                 ].filter(Boolean);
                 const isCurrent =
                   selected?.id === video.id && selected.source === video.source;
-                const canShowTranscriptDetails = Boolean(
-                  job && onRetryTranscript && onRevealTranscript,
-                );
+                const canShowTranscriptDetails = Boolean(job);
                 const rowSummaryPending = pendingSummarySourceId === video.id;
                 const rowSummaryProcessing =
                   rowSummaryPending || transcriptIsProcessing(job);
-                const rowSummaryReady =
-                  transcriptIsComplete(job) && phase1IsReady(job);
+                const rowSummaryReady = transcriptHasLearningMaterials(job);
                 const rowSummaryFailed = transcriptNeedsRetry(job);
-                const rowSummaryEligible =
-                  video.source === "video_space" && video.supportsSubtitle;
+                const rowSummaryEligible = !organizationReason(video);
                 const canRequestRowSummary = rowSummaryFailed
-                  ? Boolean(onRetryTranscript)
+                  ? Boolean(rowSummaryEligible && onRetryTranscript)
                   : Boolean(rowSummaryEligible && onStartTranscript);
                 const showSummaryAction =
                   rowSummaryReady ||
@@ -2502,7 +2845,7 @@ export function VideosView({
                               : `播放 ${video.title}`
                         }
                         aria-busy={rowIsLoading ? "true" : undefined}
-                        disabled={video.playable === false || Boolean(busy)}
+                        disabled={video.playable === false || rowIsLoading}
                         onClick={() => void play(video)}
                         onKeyDown={(event) => {
                           if (event.key !== "Enter" && event.key !== " ")
@@ -2525,7 +2868,7 @@ export function VideosView({
                         <strong title={video.originalTitle || video.title}>
                           {video.title}
                         </strong>
-                        {busy === `organize:${video.id}` && (
+                        {isBusy(`organize:${video.id}`) && (
                           <span className="video-row-organizing" role="status">
                             <LoaderCircle aria-hidden="true" />
                             正在整理…
@@ -2617,29 +2960,39 @@ export function VideosView({
                                     items[next]?.focus();
                                   }}
                                 >
+                                  {organizationReason(video) && (
+                                    <p role="status">
+                                      {organizationReason(video)}
+                                    </p>
+                                  )}
                                   {(onStartTranscript || onRetryTranscript) && (
                                     <button
                                       type="button"
                                       role="menuitem"
                                       disabled={
-                                        learningState.complete ||
+                                        Boolean(organizationReason(video)) ||
+                                        (learningState.complete &&
+                                          !rowSummaryFailed) ||
                                         rowSummaryProcessing ||
-                                        Boolean(busy) ||
+                                        isOrganizing(video.id) ||
                                         !(job && transcriptNeedsRetry(job)
                                           ? onRetryTranscript
                                           : onStartTranscript)
+                                      }
+                                      title={
+                                        organizationReason(video) ?? undefined
                                       }
                                       onClick={() => {
                                         setOpenMenuId(null);
                                         void organizeVideo(video, job);
                                       }}
                                     >
-                                      {busy === `organize:${video.id}` ? (
+                                      {isBusy(`organize:${video.id}`) ? (
                                         <LoaderCircle aria-hidden="true" />
                                       ) : (
                                         <NotebookPen aria-hidden="true" />
                                       )}
-                                      {busy === `organize:${video.id}`
+                                      {isBusy(`organize:${video.id}`)
                                         ? "正在整理…"
                                         : rowSummaryFailed
                                           ? "重试整理学习材料"
@@ -2667,7 +3020,9 @@ export function VideosView({
                                       <button
                                         type="button"
                                         role="menuitem"
-                                        disabled={Boolean(busy)}
+                                        disabled={isBusy(
+                                          `subtitle:${video.id}`,
+                                        )}
                                         onClick={() => {
                                           closeVideoMenu();
                                           void loadSubtitles(video);
@@ -2682,11 +3037,12 @@ export function VideosView({
                                       type="button"
                                       role="menuitem"
                                       disabled={
-                                        Boolean(busy) || rowSummaryProcessing
+                                        isOrganizing(video.id) ||
+                                        rowSummaryProcessing
                                       }
                                       onClick={() => {
                                         setOpenMenuId(null);
-                                        setSelected(video);
+                                        selectLearningVideo(video);
                                         setLearningTab("summary");
                                         if (rowSummaryReady && job) {
                                           setDetailInitialTab("summary");
@@ -2704,11 +3060,10 @@ export function VideosView({
                                             : "生成 AI 总结"}
                                     </button>
                                   )}
-                                  {learningState.complete && (
+                                  {rowSummaryReady && (
                                     <button
                                       type="button"
                                       role="menuitem"
-                                      disabled={Boolean(busy)}
                                       onClick={() => {
                                         setOpenMenuId(null);
                                         void viewLearningMaterials(video);
@@ -2723,7 +3078,7 @@ export function VideosView({
                                       <button
                                         type="button"
                                         role="menuitem"
-                                        disabled={Boolean(busy)}
+                                        disabled={isBusy(`pdf:${video.id}`)}
                                         onClick={() => {
                                           setOpenMenuId(null);
                                           void createPdf(video);
@@ -2740,7 +3095,9 @@ export function VideosView({
                                       <button
                                         type="button"
                                         role="menuitem"
-                                        disabled={Boolean(busy)}
+                                        disabled={isBusy(
+                                          `subtitle:${video.id}`,
+                                        )}
                                         onClick={() => {
                                           setOpenMenuId(null);
                                           void run(
@@ -2759,7 +3116,7 @@ export function VideosView({
                                       <button
                                         type="button"
                                         role="menuitem"
-                                        disabled={Boolean(busy)}
+                                        disabled={isBusy(`video:${video.id}`)}
                                         onClick={() => {
                                           setOpenMenuId(null);
                                           void run(
@@ -2784,14 +3141,18 @@ export function VideosView({
                       </span>
                       <div className="video-recording-footer">
                         <div className="video-recording-state">
-                          <span className="video-source-badge">
+                          <MetaTag className="video-source-badge">
                             {sourceLabels[video.source]}
-                          </span>
+                          </MetaTag>
                           <span>{formatDuration(video.duration)}</span>
                           {learningState.label ? (
-                            <span className="video-state-label video-state-label-failed">
+                            <CompactStatusBadge
+                              className="video-state-label video-state-label-failed"
+                              icon={XCircle}
+                              tone="danger"
+                            >
                               {learningState.label}
-                            </span>
+                            </CompactStatusBadge>
                           ) : (
                             <StatusBadge status={learningState.status} />
                           )}
@@ -2799,8 +3160,14 @@ export function VideosView({
                         <span
                           className="video-play-state"
                           role={rowIsLoading ? "status" : undefined}
+                          aria-label={
+                            rowIsLoading
+                              ? "正在加载"
+                              : video.playable === false
+                                ? "不可播放"
+                                : "播放"
+                          }
                           aria-live={rowIsLoading ? "polite" : undefined}
-                          aria-hidden={rowIsLoading ? undefined : true}
                         >
                           {rowIsLoading ? (
                             <LoaderCircle
@@ -2808,13 +3175,8 @@ export function VideosView({
                               aria-hidden="true"
                             />
                           ) : (
-                            <Play />
+                            <Play aria-hidden="true" />
                           )}
-                          {rowIsLoading
-                            ? "正在加载"
-                            : video.playable === false
-                              ? "不可播放"
-                              : "点击行播放"}
                         </span>
                       </div>
                     </div>
@@ -2884,6 +3246,8 @@ export function VideosView({
                     [
                       "queued",
                       "fetching",
+                      "saved",
+                      "reviewing",
                       "waiting_remote",
                       "waiting_for_ai",
                       "organizing",
@@ -2892,6 +3256,8 @@ export function VideosView({
                       <Button
                         variant="link"
                         size="sm"
+                        loading={isBusy(`transcript-cancel:${job.id}`)}
+                        disabled={isOrganizing(job.sourceId)}
                         onClick={() =>
                           void run(
                             `transcript-cancel:${job.id}`,
@@ -2900,6 +3266,8 @@ export function VideosView({
                               onCancelTranscript(
                                 job.transcript as TranscriptJob,
                               ),
+                            undefined,
+                            [`learning:${job.sourceId}`],
                           )
                         }
                       >
@@ -2923,20 +3291,18 @@ export function VideosView({
                         取消
                       </Button>
                     )}
-                  {job.transcript &&
-                    onRetryTranscript &&
-                    onRevealTranscript && (
-                      <Button
-                        variant="link"
-                        size="sm"
-                        onClick={() => {
-                          setDetailInitialTab("summary");
-                          setDetailJob(job.transcript || null);
-                        }}
-                      >
-                        详情
-                      </Button>
-                    )}
+                  {job.transcript && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      onClick={() => {
+                        setDetailInitialTab("summary");
+                        setDetailJob(job.transcript || null);
+                      }}
+                    >
+                      详情
+                    </Button>
+                  )}
                 </div>
               </article>
             ))}
@@ -2951,7 +3317,7 @@ export function VideosView({
                   <span>{job.kind}</span>
                 </div>
                 <StatusBadge status={job.status} />
-                {job.transcript && onRetryTranscript && onRevealTranscript && (
+                {job.transcript && (
                   <Button
                     variant="link"
                     size="sm"
@@ -2970,16 +3336,51 @@ export function VideosView({
         )}
       </section>
 
-      {detailJob && onRetryTranscript && onRevealTranscript && (
+      {detailJob && (
         <TranscriptDetailDrawer
           job={detailJob}
           initialTab={detailInitialTab}
           onClose={() => setDetailJob(null)}
-          onRetry={onRetryTranscript}
-          onCancel={onCancelTranscript || (() => undefined)}
+          onRetry={
+            videos.some(
+              (video) =>
+                video.id === detailJob.source_id && !organizationReason(video),
+            )
+              ? onRetryTranscript &&
+                (async (job) => {
+                  const succeeded = await run(
+                    `transcript-retry:${job.id}`,
+                    "已重新开始整理本节学习材料。",
+                    () => onRetryTranscript(job),
+                    undefined,
+                    [`learning:${job.source_id}`],
+                  );
+                  if (!succeeded)
+                    throw new Error(
+                      "本节已有整理操作正在进行，或操作失败，请查看任务状态后重试。",
+                    );
+                })
+              : undefined
+          }
+          onCancel={
+            onCancelTranscript &&
+            (async (job) => {
+              const succeeded = await run(
+                `transcript-cancel:${job.id}`,
+                "任务已取消。",
+                () => onCancelTranscript(job),
+                undefined,
+                [`learning:${job.source_id}`],
+              );
+              if (!succeeded)
+                throw new Error(
+                  "本节已有任务操作正在进行，或取消失败，请查看任务状态后重试。",
+                );
+            })
+          }
           onReveal={onRevealTranscript}
         />
       )}
-    </main>
+    </ContentReveal>
   );
 }

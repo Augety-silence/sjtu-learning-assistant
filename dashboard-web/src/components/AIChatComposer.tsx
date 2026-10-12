@@ -1,7 +1,15 @@
-import { ArrowUp, Check, LoaderCircle, Paperclip, X } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  LoaderCircle,
+  Paperclip,
+  X,
+} from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import {
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -34,26 +42,33 @@ function AnimatedChoiceMenu({
   className = "ai-choice-menu",
   label,
   children,
+  menuRef,
+  onKeyDown,
 }: {
   id: string;
   className?: string;
   label: string;
   children: ReactNode;
+  menuRef?: RefObject<HTMLDivElement | null>;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
   const isPresent = useIsPresent();
   return (
     <motion.div
+      ref={menuRef}
       id={id}
       className={className}
       role="listbox"
       aria-label={label}
       aria-hidden={!isPresent}
       inert={!isPresent ? true : undefined}
-      initial={{ opacity: 0.01, y: 4, scale: 0.99 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 3, scale: 0.99 }}
+      onKeyDown={onKeyDown}
+      initial={{ opacity: 0.65 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{
-        duration: isPresent ? motionDuration.enter : motionDuration.fast,
+        type: "tween",
+        duration: isPresent ? motionDuration.popoverEnter : motionDuration.fast,
         ease: motionEase.out,
       }}
     >
@@ -64,6 +79,7 @@ function AnimatedChoiceMenu({
 
 function ChoiceMenu<T extends string>({
   label,
+  triggerLabel = label,
   menuId,
   value,
   items,
@@ -73,6 +89,7 @@ function ChoiceMenu<T extends string>({
   onSelect,
 }: {
   label: string;
+  triggerLabel?: string;
   menuId: string;
   value: T;
   items: Choice<T>[];
@@ -82,9 +99,65 @@ function ChoiceMenu<T extends string>({
   onSelect: (value: T) => void;
 }) {
   const selected = items.find((item) => item.value === value) ?? items[0];
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    queueMicrotask(() => {
+      menuRef.current
+        ?.querySelector<HTMLButtonElement>(
+          '[role="option"][aria-selected="true"]',
+        )
+        ?.focus();
+    });
+  }, [open]);
+
+  const focusRelativeOption = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    direction: -1 | 1,
+  ) => {
+    const options = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ??
+        [],
+    );
+    if (options.length === 0) return;
+    event.preventDefault();
+    const current = options.indexOf(
+      document.activeElement as HTMLButtonElement,
+    );
+    const next =
+      current < 0 ? 0 : (current + direction + options.length) % options.length;
+    options[next]?.focus();
+  };
+
+  const closeAndRestoreFocus = () => {
+    if (open) onToggle();
+    queueMicrotask(() => triggerRef.current?.focus());
+  };
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowDown") focusRelativeOption(event, 1);
+    else if (event.key === "ArrowUp") focusRelativeOption(event, -1);
+    else if (event.key === "Home" || event.key === "End") {
+      const options = Array.from(
+        menuRef.current?.querySelectorAll<HTMLButtonElement>(
+          '[role="option"]',
+        ) ?? [],
+      );
+      event.preventDefault();
+      options[event.key === "Home" ? 0 : options.length - 1]?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAndRestoreFocus();
+    }
+  };
+
   return (
     <div className="ai-compact-choice">
       <button
+        ref={triggerRef}
         type="button"
         className="ai-compact-trigger"
         aria-label={`${label}：${selected?.label ?? value}`}
@@ -93,13 +166,27 @@ function ChoiceMenu<T extends string>({
         aria-expanded={open}
         disabled={disabled}
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!open) onToggle();
+          }
+        }}
       >
-        <span className="ai-choice-dot" aria-hidden="true" />
-        <span>{selected?.label ?? value}</span>
+        <span className="ai-compact-trigger-copy">
+          <span>{triggerLabel}：</span>
+          <strong>{selected?.label ?? value}</strong>
+        </span>
+        <ChevronDown aria-hidden="true" />
       </button>
       <AnimatePresence>
         {open && (
-          <AnimatedChoiceMenu id={menuId} label={label}>
+          <AnimatedChoiceMenu
+            id={menuId}
+            label={label}
+            menuRef={menuRef}
+            onKeyDown={handleMenuKeyDown}
+          >
             <header>{label}</header>
             {items.map((item) => (
               <button
@@ -107,7 +194,10 @@ function ChoiceMenu<T extends string>({
                 type="button"
                 role="option"
                 aria-selected={item.value === value}
-                onClick={() => onSelect(item.value)}
+                onClick={() => {
+                  onSelect(item.value);
+                  queueMicrotask(() => triggerRef.current?.focus());
+                }}
               >
                 <span>
                   <strong>{item.label}</strong>
@@ -344,6 +434,7 @@ export function AIChatComposer({
             />
             <ChoiceMenu
               label="推理强度"
+              triggerLabel="推理"
               menuId="ai-depth-menu"
               value={depth}
               items={depths}

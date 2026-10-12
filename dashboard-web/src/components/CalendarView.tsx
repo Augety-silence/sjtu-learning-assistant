@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import {
   EmptyState,
   ErrorState,
@@ -192,7 +193,7 @@ export function CalendarView({
   if (loading) return <LoadingState label="正在加载课程日历…" />;
 
   return (
-    <div className="section-stack">
+    <ContentReveal className="section-stack" afterLoad>
       <div className={embedded ? "message-toolbar" : "view-intro"}>
         {!embedded && (
           <div>
@@ -413,6 +414,6 @@ export function CalendarView({
           </Section>
         </div>
       </div>
-    </div>
+    </ContentReveal>
   );
 }

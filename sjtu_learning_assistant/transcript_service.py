@@ -112,6 +112,7 @@ class AIContext:
     model: str
     endpoint_fingerprint: str
     enabled: bool
+    json_mode: bool = False
 
 
 def _now() -> str:
@@ -999,7 +1000,7 @@ class TranscriptService:
             return self.orchestrator
         if not context.enabled or context.client is None:
             raise TranscriptError("Phase1 未运行：AI 未配置。")
-        adapter = OpenAIClassificationSemanticAdapter(context.client)
+        adapter = OpenAIClassificationSemanticAdapter(context.client, json_mode=context.json_mode)
         adapter.model = context.model or adapter.model
         return CourseLearningOrchestrator(adapter, persist_raw=False)
 

@@ -40,6 +40,54 @@ CHAT_SYSTEM_PROMPT = (
 )
 
 
+def normalize_token_usage(value: object) -> dict[str, int]:
+    """Keep provider-reported counts only; absent/invalid usage is unknown, not zero.
+
+    Nested OpenAI details are flattened to ``cached_tokens``/``reasoning_tokens``.
+    SJTU-compatible cache hit/miss counts retain their original field names.
+    No totals are inferred, and arbitrary provider fields are never propagated.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    fields = (
+        "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens",
+        "reasoning_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+    )
+    result = {
+        name: value[name] for name in fields
+        if type(value.get(name)) is int and value[name] >= 0
+    }
+    for source, target in (("input_tokens", "prompt_tokens"), ("output_tokens", "completion_tokens")):
+        count = value.get(source)
+        if target not in result and type(count) is int and count >= 0:
+            result[target] = count
+    for parent, source, target in (
+        ("prompt_tokens_details", "cached_tokens", "cached_tokens"),
+        ("input_tokens_details", "cached_tokens", "cached_tokens"),
+        ("completion_tokens_details", "reasoning_tokens", "reasoning_tokens"),
+        ("output_tokens_details", "reasoning_tokens", "reasoning_tokens"),
+    ):
+        details = value.get(parent)
+        count = details.get(source) if isinstance(details, Mapping) else None
+        if target not in result and type(count) is int and count >= 0:
+            result[target] = count
+    return result
+
+
+def extract_token_usage(response: object) -> dict[str, int]:
+    """Read canonical and legacy completion envelopes without reading credentials."""
+    if not isinstance(response, Mapping):
+        return {}
+    metadata = response.get("response_metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    # Older clients expose flat metadata. Newer canonical usage takes precedence.
+    result = normalize_token_usage(metadata)
+    result.update(normalize_token_usage(metadata.get("usage")))
+    result.update(normalize_token_usage(response.get("usage")))
+    return result
+
+
 class AIClassificationError(RuntimeError):
     """A bounded, credential-safe AI classification failure."""
 
@@ -220,7 +268,12 @@ class OpenAIClassificationClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: object | None = None,
         system_prompt: bool = True,
+        response_format: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        if response_format is not None and (
+            not isinstance(response_format, Mapping) or dict(response_format) != {"type": "json_object"}
+        ):
+            raise AIClassificationError("AI response_format 仅支持 json_object。")
         if not messages or len(messages) > 64:
             raise AIClassificationError("AI 对话消息数量无效。")
         clean_messages: list[dict[str, Any]] = []
@@ -300,6 +353,8 @@ class OpenAIClassificationClient:
             if tools:
                 request_body["tools"] = tools
                 request_body["tool_choice"] = tool_choice or "auto"
+            if response_format is not None:
+                request_body["response_format"] = dict(response_format)
             if self.model != "deepseek-reasoner":
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
             response = self._client.post("chat/completions", json=request_body)
@@ -317,13 +372,13 @@ class OpenAIClassificationClient:
             tool_calls = self._parse_tool_calls(message.get("tool_calls", list()))
             if (type(content) is not str or not content.strip()) and not tool_calls:
                 raise ValueError("empty response")
-            usage = payload.get("usage")
-            usage = usage if isinstance(usage, Mapping) else dict()
+            usage = normalize_token_usage(payload.get("usage"))
             finish_reason = choice.get("finish_reason")
             response_metadata = dict(
                 finish_reason=finish_reason if type(finish_reason) is str else None,
-                prompt_tokens=usage.get("prompt_tokens") if type(usage.get("prompt_tokens")) is int else None,
-                completion_tokens=usage.get("completion_tokens") if type(usage.get("completion_tokens")) is int else None,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                usage=dict(usage),
             )
             return dict(
                 content=content.strip() if type(content) is str else "",
@@ -331,6 +386,7 @@ class OpenAIClassificationClient:
                 if type(reasoning) is str and reasoning.strip()
                 else None,
                 tool_calls=tool_calls,
+                usage=usage,
                 response_metadata=response_metadata,
             )
 

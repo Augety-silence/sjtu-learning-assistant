@@ -242,6 +242,7 @@ describe("ArchiveManager", () => {
     fireEvent.click(fileButton);
     const drawer = await screen.findByRole("dialog", { name: "week-1.pdf" });
     expect(getArchiveDetail).toHaveBeenCalledOnce();
+    expect(drawer.parentElement?.parentElement).toBe(document.body);
     expect(drawer.textContent).toContain("SHA-256");
     expect(drawer.textContent).toContain(
       "SJTU Learning Assistant/Archive/week-1.pdf",
@@ -327,9 +328,10 @@ describe("ArchiveManager", () => {
     await screen.findByText("week-1.pdf");
     fireEvent.click(screen.getByRole("checkbox", { name: "选择 week-1.pdf" }));
     fireEvent.click(screen.getByRole("button", { name: "逐项恢复所选" }));
-    expect(
-      await screen.findByRole("dialog", { name: /恢复“week-1.pdf”/ }),
-    ).toBeTruthy();
+    const restoreDialog = await screen.findByRole("dialog", {
+      name: /恢复“week-1.pdf”/,
+    });
+    expect(restoreDialog.parentElement?.parentElement).toBe(document.body);
   });
 
   it("呈现 Bridge 离线错误并允许重试", async () => {

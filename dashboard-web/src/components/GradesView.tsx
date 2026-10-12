@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import {
   EmptyState,
   ErrorState,
@@ -160,10 +161,15 @@ export function GradesView({
     );
   }
   if (error) return <ErrorState message={error} retry={onRetry} />;
-  if (loading) return <LoadingState label="正在加载学生成绩…" />;
+  if (loading)
+    return (
+      <ContentReveal className="section-stack" ready={false}>
+        <LoadingState label="正在加载学生成绩…" />
+      </ContentReveal>
+    );
 
   return (
-    <div className="section-stack">
+    <ContentReveal className="section-stack" ready={!loading}>
       <div className="view-intro">
         <div>
           <h2>评分册</h2>
@@ -352,6 +358,6 @@ export function GradesView({
           </div>
         </Section>
       )}
-    </div>
+    </ContentReveal>
   );
 }

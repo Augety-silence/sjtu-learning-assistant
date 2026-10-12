@@ -14,9 +14,10 @@ import {
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type ReactNode, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
-import appLogo from "@/assets/app-logo.png";
 import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
+import { AppBrand } from "@/components/AppBrand";
 import { Button } from "@/components/ui/Button";
+import { MetaTag } from "@/components/ui/CompactControls";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAgentPreset,
@@ -55,11 +56,12 @@ function AgentMenuSurface({ children }: { children: ReactNode }) {
       aria-label="切换 Agent"
       aria-hidden={!isPresent}
       inert={!isPresent ? true : undefined}
-      initial={{ opacity: 0.01, y: -4, scale: 0.99 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -3, scale: 0.99 }}
+      initial={{ opacity: 0.65 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{
-        duration: isPresent ? motionDuration.enter : motionDuration.control,
+        type: "tween",
+        duration: isPresent ? motionDuration.popoverEnter : motionDuration.fast,
         ease: motionEase.out,
       }}
     >
@@ -153,19 +155,8 @@ export function AIChatSidebar({
       className={open ? "ai-sidebar is-open" : "ai-sidebar"}
       aria-label="AI 助手导航"
     >
-      <header className="ai-sidebar-brand">
-        <button
-          type="button"
-          className="ai-brand-button"
-          onClick={onBack}
-          aria-label="返回学习助手"
-        >
-          <img src={appLogo} alt="" aria-hidden="true" />
-          <span>
-            <strong>SJTU</strong>
-            <small>学习助手</small>
-          </span>
-        </button>
+      <header className="ai-sidebar-brand app-brand-header">
+        <AppBrand onClick={onBack} />
         <Button
           variant="ghost"
           size="icon"
@@ -237,10 +228,9 @@ export function AIChatSidebar({
         <div className="ai-capability-strip" aria-label="当前 Agent 功能">
           {enabledCapabilities.length > 0 ? (
             enabledCapabilities.map(({ label, icon: Icon }) => (
-              <span key={label}>
-                <Icon aria-hidden="true" />
+              <MetaTag key={label} icon={Icon}>
                 {label}
-              </span>
+              </MetaTag>
             ))
           ) : (
             <small>暂未配置可用功能</small>

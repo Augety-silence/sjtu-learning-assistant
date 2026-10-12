@@ -5,7 +5,9 @@
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts"],
+  "exclude": ["**/* 2.*", "**/* 3.*", "**/* 4.*"]
 }

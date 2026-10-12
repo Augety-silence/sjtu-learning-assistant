@@ -1,0 +1,91 @@
+/* Preserve the workbench brand geometry in every workspace. */
+.app-brand {
+  height: 48px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 0 8px;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  letter-spacing: 0;
+  text-align: left;
+}
+
+.app-brand .app-brand-mark {
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 3px;
+  object-fit: contain;
+  border: 1px solid var(--aura-border);
+  border-radius: 11px;
+  background: var(--aura-control);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+}
+
+.app-brand .app-brand-copy {
+  display: block;
+  min-width: 0;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.app-brand .app-brand-title {
+  display: block;
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.app-brand .app-brand-subtitle {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+button.app-brand {
+  cursor: pointer;
+}
+
+button.app-brand:hover {
+  background: var(--ai-control-hover, var(--surface-hover));
+}
+
+button.app-brand:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Match the home sidebar's 14px top inset and 11px horizontal inset. */
+.app-brand-header {
+  height: 72px;
+  padding: 12px 11px 8px;
+}
+
+.app-brand-header .app-brand {
+  margin-bottom: 0;
+}
+
+@media (max-width: 1199px) and (min-width: 600px) {
+  .sidebar .app-brand {
+    padding-inline: 12px;
+  }
+
+  .sidebar .app-brand .app-brand-copy {
+    display: none;
+  }
+}

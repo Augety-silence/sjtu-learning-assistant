@@ -4,6 +4,11 @@ export const motionDuration = {
   control: 0.16,
   enter: 0.22,
   panel: 0.3,
+  contentReveal: 0.32,
+  loadedReveal: 0.42,
+  overlayEnter: 0.28,
+  popoverEnter: 0.2,
+  detailReveal: 0.36,
 } as const;
 
 export const motionEase = {

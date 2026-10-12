@@ -1,0 +1,52 @@
+/* Page frames stay still. Only a small set of content blocks enters once. */
+[data-content-reveal][data-reveal-variant="page"] {
+  animation: none;
+}
+
+[data-page-reveal="ready"][data-page-reveal-sequence="children"] > :nth-child(-n + 5):not([data-page-reveal]):not([data-modal-layer]):not([data-motion-layer]):not([role="dialog"]) {
+  --page-block-delay: 0ms;
+  animation: page-block-enter var(--content-reveal-duration, 320ms)
+    cubic-bezier(0.22, 0.8, 0.22, 1) var(--page-block-delay) backwards;
+}
+
+[data-page-reveal="ready"][data-page-reveal-sequence="children"] > :nth-child(2) { --page-block-delay: 30ms; }
+[data-page-reveal="ready"][data-page-reveal-sequence="children"] > :nth-child(3) { --page-block-delay: 60ms; }
+[data-page-reveal="ready"][data-page-reveal-sequence="children"] > :nth-child(4) { --page-block-delay: 90ms; }
+[data-page-reveal="ready"][data-page-reveal-sequence="children"] > :nth-child(5) { --page-block-delay: 120ms; }
+
+/* Assistant chrome enters immediately; thread readiness is a separate reveal.
+   History uses opacity so its narrow-screen drawer transform remains intact. */
+.ai-workspace[data-page-reveal="ready"][data-page-reveal-sequence="manual"] .ai-sidebar {
+  animation: page-block-fade 260ms cubic-bezier(0.22, 0.8, 0.22, 1) backwards;
+}
+
+.ai-workspace[data-page-reveal="ready"][data-page-reveal-sequence="manual"] :is([data-page-reveal-part="heading"], .ai-composer) {
+  animation: page-block-enter 320ms cubic-bezier(0.22, 0.8, 0.22, 1) 30ms backwards;
+}
+
+.ai-workspace[data-page-reveal="ready"][data-page-reveal-sequence="manual"] .ai-composer {
+  animation-delay: 60ms;
+}
+
+@keyframes page-block-enter {
+  from { opacity: 0.64; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes page-block-fade {
+  from { opacity: 0.64; }
+  to { opacity: 1; }
+}
+
+/* Both the JS preference and the native media query suppress displacement. */
+[data-page-reveal="reduced"] > *,
+.ai-workspace[data-page-reveal="reduced"] :is(.ai-sidebar, [data-page-reveal-part="heading"], .ai-composer) {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-page-reveal] > *,
+  .ai-workspace[data-page-reveal] :is(.ai-sidebar, [data-page-reveal-part="heading"], .ai-composer) {
+    animation: none !important;
+  }
+}

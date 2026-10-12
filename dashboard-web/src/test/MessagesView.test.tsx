@@ -8,7 +8,7 @@ import {
   markMessagesRead,
   openExternal,
 } from "@/lib/api";
-import type { MessageItem } from "@/lib/types";
+import type { MessageDetail, MessageItem } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
@@ -66,6 +66,64 @@ afterEach(() => {
 });
 
 describe("MessagesView", () => {
+  it("消息框先出现，异步正文准备后才进入详情显现", async () => {
+    let finish: ((value: MessageDetail) => void) | undefined;
+    vi.mocked(getMessageDetail).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<MessagesView />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "打开消息详情：邮件一" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(screen.getByRole("button", { name: "关闭消息详情" })).toBeTruthy();
+    expect(screen.getByText("正在加载消息详情…")).toBeTruthy();
+    expect(dialog.querySelector('[data-content-reveal="ready"]')).toBeNull();
+    finish?.({
+      title: "邮件一",
+      source_label: "老师",
+      occurred_at: null,
+      body: "等待后返回的正文",
+      body_html: null,
+      format: "text",
+      pending_body_sync: false,
+      attachments: [],
+      resources: [],
+      url: null,
+      is_unread: false,
+    });
+    const body = await screen.findByText("等待后返回的正文");
+    const reveal = body.closest("[data-content-reveal]") as HTMLElement;
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(reveal.style.getPropertyValue("--content-reveal-duration")).toBe(
+      "360ms",
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("只展示当前平台对应的消息快捷键", async () => {
+    const platform = vi
+      .spyOn(window.navigator, "platform", "get")
+      .mockReturnValue("MacIntel");
+    const { unmount } = render(<MessagesView />);
+    expect(
+      await screen.findByText("J/K 选择 · ↩ 打开 · R 已读 · ⇧R 全部已读"),
+    ).toBeTruthy();
+    unmount();
+
+    platform.mockReturnValue("Win32");
+    render(<MessagesView />);
+    expect(
+      await screen.findByText(
+        "J/K 选择 · Enter 打开 · R 已读 · Shift+R 全部已读",
+      ),
+    ).toBeTruthy();
+    platform.mockRestore();
+  });
+
   it("显示纯文本 fallback，仅在有 URL 时提供 Canvas 操作", async () => {
     render(<MessagesView />);
 
@@ -176,12 +234,12 @@ describe("MessagesView", () => {
   it.each(["按钮", "Escape", "遮罩"])(
     "%s 关闭详情后恢复实际触发按钮并恢复背景属性",
     async (method) => {
-      render(<MessagesView />);
+      const rendered = render(<MessagesView />);
       const trigger = await screen.findByRole("button", {
         name: "打开消息详情：邮件一",
       });
-      const background = trigger.closest<HTMLElement>(".list-surface");
-      background?.setAttribute("aria-hidden", "false");
+      const background = rendered.container;
+      background.setAttribute("aria-hidden", "false");
       fireEvent.click(trigger);
 
       const dialog = await screen.findByRole("dialog");
@@ -192,7 +250,7 @@ describe("MessagesView", () => {
       const close = screen.getByRole("button", { name: "关闭消息详情" });
       await waitFor(() => expect(document.activeElement).toBe(close));
       expect(dialog.getAttribute("aria-modal")).toBe("true");
-      expect(background?.getAttribute("aria-hidden")).toBe("true");
+      expect(background.getAttribute("aria-hidden")).toBe("true");
 
       fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
       expect(dialog.contains(document.activeElement)).toBe(true);
@@ -211,8 +269,8 @@ describe("MessagesView", () => {
 
       expect(screen.queryByRole("dialog")).toBeNull();
       await waitFor(() => expect(document.activeElement).toBe(trigger));
-      expect(background?.getAttribute("aria-hidden")).toBe("false");
-      expect(background?.hasAttribute("inert")).toBe(false);
+      expect(background.getAttribute("aria-hidden")).toBe("false");
+      expect(background.hasAttribute("inert")).toBe(false);
     },
   );
 

@@ -1,5 +1,6 @@
 import { Download, Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -140,10 +141,15 @@ export function RosterView({
       />
     );
   if (error) return <ErrorState message={error} retry={onRetry} />;
-  if (loading) return <LoadingState label="正在加载课程成员…" />;
+  if (loading)
+    return (
+      <ContentReveal className="section-stack" ready={false}>
+        <LoadingState label="正在加载课程成员…" />
+      </ContentReveal>
+    );
 
   return (
-    <div className="section-stack">
+    <ContentReveal className="section-stack" ready={!loading}>
       <div className="view-intro">
         <div>
           <h2>课程花名册</h2>
@@ -324,6 +330,6 @@ export function RosterView({
           </Table>
         </div>
       )}
-    </div>
+    </ContentReveal>
   );
 }

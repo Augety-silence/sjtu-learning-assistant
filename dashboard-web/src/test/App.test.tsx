@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import { getAICapabilities } from "@/lib/aiCapabilities";
 import {
   getAssignmentDetail,
   getAssignments,
@@ -25,9 +27,18 @@ import type {
   MessageDetail,
   MessageItem,
   OverviewData,
+  SyncStatus,
   ThemeMode,
+  TranscriptJob,
 } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -50,6 +61,11 @@ vi.mock("@/lib/api", async (importOriginal) => {
     startTranscriptBatch: vi.fn(),
   };
 });
+
+vi.mock("@/lib/aiCapabilities", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/aiCapabilities")>()),
+  getAICapabilities: vi.fn(),
+}));
 
 const targetMessage: MessageItem = {
   source_id: "mail-target",
@@ -154,9 +170,65 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function controlIntervals() {
+  const intervals: Array<{
+    id: number;
+    delay: number;
+    active: boolean;
+    tick: () => void;
+  }> = [];
+  let nextId = 0;
+  vi.spyOn(window, "setInterval").mockImplementation(((
+    handler: TimerHandler,
+    delay = 0,
+  ) => {
+    const id = ++nextId;
+    intervals.push({
+      id,
+      delay: Number(delay),
+      active: true,
+      tick: () => {
+        if (typeof handler === "function") handler();
+      },
+    });
+    return id;
+  }) as typeof window.setInterval);
+  vi.spyOn(window, "clearInterval").mockImplementation((id) => {
+    const interval = intervals.find((item) => item.id === Number(id));
+    if (interval) interval.active = false;
+  });
+  return {
+    intervals,
+    latest(delay: number) {
+      return [...intervals]
+        .reverse()
+        .find((item) => item.delay === delay && item.active);
+    },
+  };
+}
+
+function statusCallCount() {
+  return vi
+    .mocked(invoke)
+    .mock.calls.filter(([action]) => action === "sync_status").length;
+}
+
 beforeEach(() => {
   window.location.hash = "#/overview";
   vi.clearAllMocks();
+  vi.mocked(getAICapabilities).mockResolvedValue({
+    schema_version: 1,
+    tasks: [],
+    preflight: {
+      enabled: true,
+      configured: true,
+      ready_for_request: true,
+      connection_verified: false,
+      model: "deepseek-chat",
+      reasons: [],
+      streaming_implemented: false,
+    },
+  });
   syncTriggered = false;
   settingsTheme = "system";
   vi.stubGlobal(
@@ -364,6 +436,193 @@ describe("课程视频首帧导航", () => {
       expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
     );
     expect(startTranscriptBatch).not.toHaveBeenCalledWith(13, ["video-12"]);
+  });
+});
+
+describe("后台轮询状态回归", () => {
+  const idleStatus: SyncStatus = {
+    status: "idle",
+    last_success_at: "2026-10-10T10:00:00+08:00",
+    last_canvas_success_at: "2026-10-10T10:00:00+08:00",
+    last_run_status: "success",
+    last_run_at: "2026-10-10T10:00:00+08:00",
+  };
+
+  it("sync_status 请求未完成时，定时轮询不会启动第二个请求", async () => {
+    const timers = controlIntervals();
+    const pendingStatus = deferred<SyncStatus>();
+    let syncCalls = 0;
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return new Promise<never>(() => undefined);
+      if (action === "overview") return overview as never;
+      if (action === "sync_status") {
+        syncCalls += 1;
+        return pendingStatus.promise as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+
+    render(<App />);
+    await waitFor(() => expect(syncCalls).toBe(1));
+    const timer = timers.latest(5000);
+    expect(timer).toBeTruthy();
+    await act(async () => {
+      timer?.tick();
+      await Promise.resolve();
+    });
+
+    expect(syncCalls).toBe(1);
+    pendingStatus.resolve(idleStatus);
+  });
+
+  it("页面隐藏时暂停轮询，重新可见时立即刷新", async () => {
+    const timers = controlIntervals();
+    let hidden = true;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return new Promise<never>(() => undefined);
+      if (action === "overview") return overview as never;
+      if (action === "sync_status") return idleStatus as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+
+    render(<App />);
+    await act(async () => {
+      timers.latest(5000)?.tick();
+      await Promise.resolve();
+    });
+    expect(statusCallCount()).toBe(0);
+
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(statusCallCount()).toBeGreaterThan(0));
+    const callsWhileVisible = statusCallCount();
+
+    hidden = true;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      timers.latest(5000)?.tick();
+      await Promise.resolve();
+    });
+    expect(statusCallCount()).toBe(callsWhileVisible);
+
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(statusCallCount()).toBeGreaterThan(callsWhileVisible),
+    );
+  });
+
+  it("相同 sync 状态不会提交新的 App 页面 render", async () => {
+    const timers = controlIntervals();
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return new Promise<never>(() => undefined);
+      if (action === "overview") return overview as never;
+      if (action === "sync_status") return { ...idleStatus } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    const onRender = vi.fn();
+
+    render(
+      <Profiler id="app" onRender={onRender}>
+        <App />
+      </Profiler>,
+    );
+    await screen.findByRole("heading", { level: 1, name: "概览" });
+    await screen.findByRole("heading", { level: 2, name: "最新消息" });
+    await waitFor(() => expect(statusCallCount()).toBeGreaterThanOrEqual(2));
+    const commitsBeforeRefresh = onRender.mock.calls.length;
+
+    await act(async () => {
+      timers.latest(5000)?.tick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(commitsBeforeRefresh);
+  });
+});
+
+describe("课程切换时字幕任务轮询隔离", () => {
+  it("单课程慢请求不重叠，切课程后迟到响应不会覆盖当前课程", async () => {
+    window.location.hash = "#/videos";
+    const timers = controlIntervals();
+    const courseARequest = deferred<{ items: TranscriptJob[] }>();
+    const courseBRequest = deferred<{ items: TranscriptJob[] }>();
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") {
+        return {
+          status: "idle",
+          last_success_at: null,
+          last_run_status: null,
+          last_run_at: null,
+        } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getTranscriptJobs).mockImplementation((courseId) =>
+      courseId === 12 ? courseARequest.promise : courseBRequest.promise,
+    );
+    vi.mocked(getCourseMedia).mockImplementation(async (courseId) =>
+      courseMedia(courseId, `${courseId === 12 ? "A" : "B"} 专属录像`),
+    );
+
+    render(<App />);
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledWith(12));
+    await act(async () => {
+      timers.latest(2500)?.tick();
+      await Promise.resolve();
+    });
+    expect(getTranscriptJobs).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "选择课程" }));
+    fireEvent.click(screen.getByRole("option", { name: "课程 B" }));
+    expect(await screen.findByText("B 专属录像")).toBeTruthy();
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledWith(13));
+    await act(async () => {
+      timers.latest(2500)?.tick();
+      await Promise.resolve();
+    });
+    expect(getTranscriptJobs).toHaveBeenCalledTimes(2);
+
+    const courseBJob: TranscriptJob = {
+      id: "job-b",
+      batch_id: "batch-b",
+      source_id: "video-13",
+      title: "B 专属录像",
+      status: "completed",
+      stage: "completed",
+      progress: 100,
+      attempts: 1,
+    };
+    await act(async () => {
+      courseBRequest.resolve({ items: [courseBJob] });
+      await Promise.resolve();
+    });
+    expect(
+      await screen.findByRole("button", { name: "已整理 1" }),
+    ).toBeTruthy();
+
+    const courseAJob: TranscriptJob = {
+      ...courseBJob,
+      id: "job-a",
+      source_id: "video-12",
+      title: "A 迟到任务",
+    };
+    await act(async () => {
+      courseARequest.resolve({ items: [courseAJob] });
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "已整理 1" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "已整理 0" })).toBeNull();
   });
 });
 
@@ -580,5 +839,216 @@ describe("global operation toast", () => {
     ).toBeTruthy();
     expect(document.querySelector(".global-notice")).toBeNull();
     expect(document.querySelector(".content > .notice")).toBeNull();
+  });
+});
+
+describe("bounded course and video reads", () => {
+  function capabilitiesFrom(request: Promise<AppCapabilities>) {
+    const original = vi.mocked(invoke).getMockImplementation();
+    vi.mocked(invoke).mockImplementation((action, payload) =>
+      action === "capabilities"
+        ? (request as never)
+        : (original?.(action, payload) as never),
+    );
+  }
+  function capabilityCalls() {
+    return vi
+      .mocked(invoke)
+      .mock.calls.filter(([action]) => action === "capabilities").length;
+  }
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  it("stops the course skeleton after 30 seconds, ignores late success and permits a fresh retry", async () => {
+    vi.useFakeTimers();
+    window.location.hash = "#/videos";
+    const request = deferred<AppCapabilities>();
+    capabilitiesFrom(request.promise);
+    const { container } = render(<App />);
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(
+      screen.getAllByText("课程权限确认超时，请重新检查。")[0],
+    ).toBeTruthy();
+    expect(
+      container.querySelector('.video-workbench[data-state="loading"]'),
+    ).toBeNull();
+    await act(async () => {
+      request.resolve(learnerCapabilities());
+    });
+    expect(getCourseMedia).not.toHaveBeenCalled();
+    expect(screen.queryByText("A 专属录像")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    await flush();
+    expect(capabilityCalls()).toBe(2);
+    expect(screen.getByText("A 专属录像")).toBeTruthy();
+  });
+
+  it("allows one stale course read replacement and bounds repeated retries", async () => {
+    vi.useFakeTimers();
+    window.location.hash = "#/videos";
+    const request = deferred<AppCapabilities>();
+    capabilitiesFrom(request.promise);
+    const { unmount } = render(<App />);
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    await flush();
+    expect(capabilityCalls()).toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(
+      screen.getAllByText("课程权限确认超时，请重新检查。")[0],
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    await flush();
+    expect(
+      screen.getAllByText(
+        "同一资源的两次读取均未响应，请重新打开应用后重试。",
+      )[0],
+    ).toBeTruthy();
+    unmount();
+    await act(async () => {
+      request.resolve(learnerCapabilities());
+    });
+    expect(capabilityCalls()).toBe(2);
+    expect(getCourseMedia).not.toHaveBeenCalled();
+  });
+
+  it("shows the first media failure instead of a permanent skeleton and retries successfully", async () => {
+    window.location.hash = "#/videos";
+    capabilitiesFrom(Promise.resolve(learnerCapabilities()));
+    vi.mocked(getCourseMedia).mockRejectedValueOnce(
+      new Error("录像服务暂不可用"),
+    );
+    const { container } = render(<App />);
+    expect(await screen.findAllByText("录像服务暂不可用")).toBeTruthy();
+    expect(
+      container.querySelector('.video-workbench[data-state="loading"]'),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByText("A 专属录像")).toBeTruthy();
+    expect(getCourseMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it("times out media, ignores late results and starts a new read after the old read settles", async () => {
+    vi.useFakeTimers();
+    window.location.hash = "#/videos";
+    capabilitiesFrom(Promise.resolve(learnerCapabilities()));
+    const request = deferred<ReturnType<typeof courseMedia>>();
+    vi.mocked(getCourseMedia).mockReturnValueOnce(request.promise);
+    render(<App />);
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(
+      screen.getAllByText("课程录像读取超时，请检查连接后重新加载。")[0],
+    ).toBeTruthy();
+    await act(async () => {
+      request.resolve(courseMedia(12, "迟到录像"));
+    });
+    expect(screen.queryByText("迟到录像")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    await flush();
+    expect(getCourseMedia).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("A 专属录像")).toBeTruthy();
+  });
+
+  it("shares the fresh media replacement when leaving and reentering videos", async () => {
+    vi.useFakeTimers();
+    window.location.hash = "#/videos";
+    capabilitiesFrom(Promise.resolve(learnerCapabilities()));
+    const request = deferred<ReturnType<typeof courseMedia>>();
+    const replacement = deferred<ReturnType<typeof courseMedia>>();
+    vi.mocked(getCourseMedia)
+      .mockReturnValueOnce(request.promise)
+      .mockReturnValueOnce(replacement.promise);
+    render(<App />);
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    await flush();
+    expect(getCourseMedia).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "概览" }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "课程视频" }));
+    await flush();
+    expect(getCourseMedia).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      request.resolve(courseMedia(12, "旧录像不能覆盖"));
+    });
+    expect(screen.queryByText("旧录像不能覆盖")).toBeNull();
+    await act(async () => {
+      replacement.resolve(courseMedia(12, "恢复后的录像"));
+    });
+    expect(screen.getByText("恢复后的录像")).toBeTruthy();
+  });
+
+  it("shows loaded videos immediately when optional media capabilities never return", async () => {
+    vi.useFakeTimers();
+    window.location.hash = "#/videos";
+    capabilitiesFrom(Promise.resolve(learnerCapabilities()));
+    vi.mocked(getMediaCapabilities).mockReturnValueOnce(
+      new Promise(() => undefined),
+    );
+    const { container, unmount } = render(<App />);
+    await flush();
+    expect(screen.getByText("A 专属录像")).toBeTruthy();
+    expect(
+      container.querySelector('.video-workbench[data-state="loading"]'),
+    ).toBeNull();
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(getMediaCapabilities).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("视频AI配置与材料状态反馈", () => {
+  it("配置失败明确显示原因并保留录像，同时能打开设置", async () => {
+    vi.mocked(getAICapabilities).mockRejectedValue(new Error("AI配置读取失败"));
+    window.location.hash = "#/videos";
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((action, payload) =>
+      action === "capabilities"
+        ? Promise.resolve(learnerCapabilities() as never)
+        : original(action, payload),
+    );
+    const { container } = render(<App />);
+    expect(await screen.findByText(/AI配置读取失败/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "配置 AI" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "配置 AI" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/settings"));
+    expect(container.querySelector(".workspace-scene")).toBeTruthy();
+  });
+
+  it("材料状态读取失败可见且不会阻止视频列表加载", async () => {
+    window.location.hash = "#/videos";
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      if (action === "overview") return overview as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getTranscriptJobs).mockRejectedValue(
+      new Error("材料状态读取失败"),
+    );
+    render(<App />);
+    expect(await screen.findByText("A 专属录像")).toBeTruthy();
+    expect(await screen.findByText("材料状态读取失败")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(2));
   });
 });

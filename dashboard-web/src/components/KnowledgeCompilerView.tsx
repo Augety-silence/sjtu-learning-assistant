@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import {
@@ -226,7 +227,7 @@ export function KnowledgeCompilerView() {
   if (!task && error) return <ErrorState message={error} retry={loadStatus} />;
 
   return (
-    <div className="section-stack knowledge-page">
+    <ContentReveal className="section-stack knowledge-page" afterLoad>
       <section className="knowledge-hero">
         <div className="knowledge-hero-mark" aria-hidden="true">
           <BrainCircuit />
@@ -494,6 +495,6 @@ export function KnowledgeCompilerView() {
           </>
         )}
       </section>
-    </div>
+    </ContentReveal>
   );
 }

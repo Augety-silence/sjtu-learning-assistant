@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 
+import { useReducedMotion } from "motion/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+
+vi.mock("motion/react", async (importOriginal) => {
+  const original = await importOriginal<typeof import("motion/react")>();
+  return { ...original, useReducedMotion: vi.fn(() => false) };
+});
 
 afterEach(() => {
   cleanup();
@@ -20,6 +26,29 @@ describe("shared states", () => {
     expect(
       container.querySelector('[data-motion-surface="state"]'),
     ).toBeTruthy();
+  });
+
+  it.each([
+    ["loading", <LoadingState label="读取中" />],
+    ["empty", <EmptyState title="暂无内容" description="稍后再试" />],
+    ["error", <ErrorState message="请求失败" />],
+  ])("%s 入场不移动布局，减少动态效果时立即可见", (_name, state) => {
+    vi.mocked(useReducedMotion).mockReturnValue(false);
+    const normal = render(state);
+    const surface = normal.container.querySelector<HTMLElement>(
+      '[data-motion-surface="state"]',
+    );
+    expect(surface?.style.transform).not.toMatch(/translate|scale/);
+    normal.unmount();
+
+    vi.mocked(useReducedMotion).mockReturnValue(true);
+    const reduced = render(state);
+    const reducedSurface = reduced.container.querySelector<HTMLElement>(
+      '[data-motion-surface="state"]',
+    );
+    expect(reducedSurface?.style.opacity).toBe("1");
+    expect(reducedSurface?.style.transform).not.toMatch(/translate|scale/);
+    vi.mocked(useReducedMotion).mockReturnValue(false);
   });
 
   it("EmptyState 呈现场景 action", () => {

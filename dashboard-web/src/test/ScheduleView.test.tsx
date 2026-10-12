@@ -67,7 +67,7 @@ describe("ScheduleView", () => {
     expect(screen.queryByLabelText(/密码/)).toBeNull();
   });
 
-  it("在固定状态槽显示 Canvas 同步状态且不插入新行", async () => {
+  it("在固定状态槽显示本机读取状态且不插入新行", async () => {
     render(
       <ScheduleView
         canvasEvents={[]}
@@ -76,9 +76,22 @@ describe("ScheduleView", () => {
         onMonthChange={vi.fn()}
       />,
     );
-    const live = await screen.findByText("正在同步 Canvas 日历…");
+    const live = await screen.findByText("正在读取本机同步数据…");
     expect(live.className).toContain("calm-utility-live");
     expect(document.querySelectorAll(".calm-utility-row")).toHaveLength(1);
+  });
+
+  it("持续展示 Canvas 数据落地时间，避免把未加载误认为无作业", async () => {
+    render(
+      <ScheduleView
+        canvasEvents={[]}
+        canvasSyncedAt="2026-10-10T12:30:00+08:00"
+        month={new Date(2026, 9, 1)}
+        onMonthChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText(/Canvas 数据已落地/)).toBeTruthy();
+    expect(screen.queryByText("正在同步 Canvas 日历…")).toBeNull();
   });
 
   it("loads the full visible calendar grid and merges Canvas with local events once", async () => {

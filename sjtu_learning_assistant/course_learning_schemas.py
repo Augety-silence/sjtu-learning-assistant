@@ -609,7 +609,7 @@ class OrchestratorResult(StrictSchema):
             "latency_ms", "confidence", "status",
         }
         for index, event in enumerate(events):
-            _strict_keys(event, expected_event_fields, f"$.events[{index}]")
+            _strict_keys(event, expected_event_fields | ({"diagnostics"} if "diagnostics" in event else set()), f"$.events[{index}]")
             _string(event["stage"], f"$.events[{index}].stage", limit=64)
             _string(event["agent"], f"$.events[{index}].agent", limit=64)
             _string(event["model"], f"$.events[{index}].model", limit=256)
@@ -622,6 +622,34 @@ class OrchestratorResult(StrictSchema):
             if event["confidence"] is not None:
                 _number(event["confidence"], f"$.events[{index}].confidence")
             _string(event["status"], f"$.events[{index}].status", limit=64)
+            if "diagnostics" in event:
+                diagnostic_path = f"$.events[{index}].diagnostics"
+                diagnostic = _mapping(event["diagnostics"], diagnostic_path)
+                _strict_keys(diagnostic, {"category", "schema_path", "content_length", "finish_reason", "status_code"}, diagnostic_path)
+                category = _string(diagnostic["category"], diagnostic_path + ".category", limit=64)
+                if category not in {
+                    "ok", "schema", "truncated", "timeout", "network", "error", "authentication",
+                    "endpoint_or_model", "request_parameters", "rate_limit_or_quota", "upstream_service",
+                    "http_error", "response_format", "client_error", "validation", "unsupported_tools",
+                }:
+                    _fail(diagnostic_path + ".category", "unknown diagnostic category")
+                allowed_paths = {"$", "$.terms"} | {
+                    "$." + field.name for schema in (TermCandidate, CorrectionResult, CorrectionChange,
+                                                       UncertainSpan, CriticResult, MemoryDelta)
+                    for field in fields(schema)
+                }
+                schema_path = _optional_string(diagnostic["schema_path"], diagnostic_path + ".schema_path", limit=64)
+                if schema_path is not None and schema_path not in allowed_paths:
+                    _fail(diagnostic_path + ".schema_path", "unknown diagnostic schema path")
+                if diagnostic["content_length"] is not None:
+                    _integer(diagnostic["content_length"], diagnostic_path + ".content_length")
+                finish = _optional_string(diagnostic["finish_reason"], diagnostic_path + ".finish_reason", limit=64)
+                if finish not in {None, "stop", "length", "tool_calls", "content_filter"}:
+                    _fail(diagnostic_path + ".finish_reason", "unknown finish reason")
+                if diagnostic["status_code"] is not None:
+                    code = _integer(diagnostic["status_code"], diagnostic_path + ".status_code", minimum=100)
+                    if code > 599:
+                        _fail(diagnostic_path + ".status_code", "invalid HTTP status code")
         if self.status not in {"completed", "completed_with_warnings", "partial", "failed"}:
             _fail("$.status", "invalid orchestrator status")
         if self.status == "failed" and (self.chunks or self.corrected_transcript.strip()):

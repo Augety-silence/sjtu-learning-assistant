@@ -40,6 +40,13 @@ describe("CSS semantic tokens", () => {
       "--aura-control",
       "--aura-border",
       "--aura-shadow",
+      "--glass-base-surface",
+      "--glass-card-surface",
+      "--glass-floating-surface",
+      "--glass-optical-edge",
+      "--glass-base-filter",
+      "--glass-card-filter",
+      "--glass-floating-filter",
     ]) {
       expect(css).toContain(token);
     }

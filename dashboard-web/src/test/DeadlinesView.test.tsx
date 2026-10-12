@@ -86,6 +86,32 @@ describe("groupDeadlines", () => {
 });
 
 describe("DeadlinesView responsive semantics", () => {
+  it("keeps the toolbar focused and the page reveal stable while a new range loads", async () => {
+    const { container } = render(<DeadlinesView embedded />);
+    await screen.findByRole("table");
+    const page = container.querySelector("[data-page-reveal]");
+    const range = screen.getByRole("tab", { name: "24 小时" });
+    let finishRequest: ((value: { items: Deadline[] }) => void) | undefined;
+    vi.mocked(invoke).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRequest = resolve;
+        }),
+    );
+    range.focus();
+    fireEvent.mouseDown(range, { button: 0, ctrlKey: false });
+    expect(page?.getAttribute("data-content-reveal")).toBe("loading");
+    expect(page?.getAttribute("data-page-reveal")).toBe("ready");
+    expect(document.activeElement).toBe(range);
+    finishRequest?.({ items: groupedItems });
+    await waitFor(() =>
+      expect(page?.getAttribute("data-content-reveal")).toBe("ready"),
+    );
+    expect(container.querySelector("[data-page-reveal]")).toBe(page);
+    expect(page?.getAttribute("data-page-reveal")).toBe("ready");
+    expect(document.activeElement).toBe(range);
+  });
+
   it("600px 使用语义表格和分组 tbody", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,

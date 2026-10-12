@@ -1,5 +1,6 @@
 import { Download, Eye } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import {
   RichPreviewContent,
   type RichPreviewContentProps,
@@ -276,7 +277,7 @@ export function GradingView({
   if (loading) return <LoadingState label="正在加载作业提交…" />;
 
   return (
-    <div className="section-stack assignments-page">
+    <ContentReveal className="section-stack assignments-page" afterLoad>
       <div className="view-intro">
         <div>
           <h2>作业批改</h2>
@@ -620,6 +621,6 @@ export function GradingView({
           </section>
         </div>
       )}
-    </div>
+    </ContentReveal>
   );
 }

@@ -1,7 +1,10 @@
 import { motion, useIsPresent, useReducedMotion } from "motion/react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { ContentReveal } from "@/components/ContentReveal";
 import { RichPreviewContent } from "@/components/RichPreviewContent";
 import { Button } from "@/components/ui/Button";
+import { motionDuration, motionEase } from "@/lib/motion";
 import { type PreviewerKind, selectPreviewer } from "@/lib/previewerRegistry";
 import type { MaterialPreview } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
@@ -64,25 +67,41 @@ export function FilePreviewDialog({
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
   const previewer = selectedPreviewer(preview);
+  const mediaKey =
+    preview.kind === "text" ? null : `${preview.kind}:${preview.data_url}`;
+  const [readyMediaKey, setReadyMediaKey] = useState<string | null>(null);
+  const latestMediaKey = useRef(mediaKey);
+  latestMediaKey.current = mediaKey;
+  const mediaReady =
+    preview.kind === "text" ||
+    previewer === "unsupported" ||
+    readyMediaKey === mediaKey;
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: closeButtonRef,
     active: isPresent,
   });
 
-  return (
-    <motion.div
+  return createPortal(
+    <div
       className="message-dialog-layer material-preview-layer"
       data-modal-layer
       data-motion-layer="modal"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: reduceMotion ? 1 : 0.01 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: reduceMotion ? 1 : 0 }}
-      transition={{ duration: reduceMotion ? 0 : isPresent ? 0.14 : 0.12 }}
     >
-      <button
+      <motion.button
         type="button"
         className="message-dialog-backdrop"
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.control
+              : motionDuration.fast,
+        }}
         aria-label="点击遮罩关闭文件预览"
         disabled={!isPresent}
         onClick={onClose}
@@ -96,12 +115,17 @@ export function FilePreviewDialog({
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="modal"
         tabIndex={-1}
-        initial={reduceMotion ? false : { opacity: 0.9, y: 6, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={reduceMotion ? undefined : { opacity: 0.88, y: 4, scale: 0.99 }}
+        initial={reduceMotion ? false : { opacity: 0.55 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{
-          duration: reduceMotion ? 0 : isPresent ? 0.18 : 0.14,
-          ease: [0.16, 1, 0.3, 1],
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.overlayEnter
+              : motionDuration.fast,
+          ease: motionEase.out,
         }}
       >
         <header className="material-preview-header">
@@ -120,10 +144,45 @@ export function FilePreviewDialog({
             关闭
           </Button>
         </header>
-        <div className="material-preview-content">
+        <ContentReveal
+          className="material-preview-content"
+          style={{ position: "relative" }}
+          variant="detail"
+          ready={mediaReady}
+          aria-busy={!mediaReady}
+          onLoadCapture={async (event) => {
+            const target = event.target;
+            const requestedMediaKey = mediaKey;
+            if (target instanceof HTMLImageElement && target.decode) {
+              try {
+                await target.decode();
+              } catch {
+                // The load event still allows a useful preview if decode is unavailable.
+              }
+            } else if (
+              !(target instanceof HTMLIFrameElement) &&
+              !(target instanceof HTMLImageElement)
+            ) {
+              return;
+            }
+            // iframe load is a reveal trigger, not proof that PDF pixels have painted.
+            if (latestMediaKey.current === requestedMediaKey)
+              setReadyMediaKey(requestedMediaKey);
+          }}
+          onErrorCapture={() => setReadyMediaKey(mediaKey)}
+        >
+          {!mediaReady && (
+            <span
+              role="status"
+              style={{ position: "absolute", top: 12, left: 12 }}
+            >
+              正在准备预览内容…
+            </span>
+          )}
           {renderPreview(preview, previewer)}
-        </div>
+        </ContentReveal>
       </motion.section>
-    </motion.div>
+    </div>,
+    document.body,
   );
 }

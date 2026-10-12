@@ -21,11 +21,12 @@ function PersonalizationSurface({ children }: { children: React.ReactNode }) {
       aria-modal="false"
       aria-hidden={!isPresent}
       inert={!isPresent ? true : undefined}
-      initial={{ opacity: 0.72, y: 5, scale: 0.985 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 4, scale: 0.99 }}
+      initial={{ opacity: 0.65 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{
-        duration: isPresent ? motionDuration.panel : motionDuration.control,
+        type: "tween",
+        duration: isPresent ? motionDuration.popoverEnter : motionDuration.fast,
         ease: motionEase.out,
       }}
     >
@@ -183,20 +184,6 @@ export function AIChatSettingsPanel({
                 回复语言与附件预算会保存为偏好；当前 Agent
                 运行时尚未提供安全扩展点，因此不会改写既有请求契约。
               </p>
-              <label className="ai-preference-toggle">
-                <span>
-                  <strong>自动打开 Activity</strong>
-                  <small>发送任务时展开执行轨迹</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={preferences.ai_auto_open_activity}
-                  disabled={saving}
-                  onChange={(event) =>
-                    onChange({ ai_auto_open_activity: event.target.checked })
-                  }
-                />
-              </label>
               <label className="ai-preference-toggle">
                 <span>
                   <strong>代码块行号</strong>

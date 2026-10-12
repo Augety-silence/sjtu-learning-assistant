@@ -5,13 +5,21 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useIsPresent,
+  useReducedMotion,
+} from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import assignmentSubmittedIllustration from "@/assets/empty-states/assignment-submitted.webp";
+import { ContentReveal } from "@/components/ContentReveal";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
+import { MetaTag } from "@/components/ui/CompactControls";
 import {
   getAssignmentDetail,
   getAssignments,
@@ -23,6 +31,7 @@ import {
   submitAssignmentUrl,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AssignmentCategory,
   AssignmentItem,
@@ -167,6 +176,7 @@ function SubmissionConfirmDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
 
   useModalFocus(dialogRef, onCancel, {
     initialFocusRef: cancelRef,
@@ -174,20 +184,27 @@ function SubmissionConfirmDialog({
     active: isPresent,
   });
 
-  return (
-    <motion.div
+  return createPortal(
+    <div
       className="confirm-layer"
       data-modal-layer
       data-motion-layer="modal"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: 0.01 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: isPresent ? 0.14 : 0.12 }}
     >
-      <button
+      <motion.button
         type="button"
         className="confirm-backdrop"
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.control
+              : motionDuration.fast,
+        }}
         aria-label="取消提交"
         disabled={submitting || !isPresent}
         onClick={onCancel}
@@ -207,12 +224,17 @@ function SubmissionConfirmDialog({
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="modal"
         tabIndex={-1}
-        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        initial={reduceMotion ? false : { opacity: 0.55 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{
-          duration: isPresent ? 0.18 : 0.14,
-          ease: [0.16, 1, 0.3, 1],
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.overlayEnter
+              : motionDuration.fast,
+          ease: motionEase.out,
         }}
       >
         <h3 id="confirm-title">确认提交作业？</h3>
@@ -246,7 +268,8 @@ function SubmissionConfirmDialog({
           </Button>
         </div>
       </motion.section>
-    </motion.div>
+    </div>,
+    document.body,
   );
 }
 
@@ -447,7 +470,10 @@ export function AssignmentsView({
 
   const hasType = (type: string) => selected?.submission_types.includes(type);
   return (
-    <div className="section-stack assignments-page">
+    <ContentReveal
+      className="section-stack assignments-page"
+      ready={items !== null || Boolean(error)}
+    >
       <div className="view-intro">
         <div>
           <h2>作业工作台</h2>
@@ -524,10 +550,13 @@ export function AssignmentsView({
                     <h3>{selected.name}</h3>
                   </div>
                   {!selected.requires_external_submission ? (
-                    <span className="assignment-native-badge">
-                      <ShieldCheck aria-hidden="true" />
+                    <MetaTag
+                      className="assignment-native-badge"
+                      icon={ShieldCheck}
+                      tone="info"
+                    >
                       App 内提交
-                    </span>
+                    </MetaTag>
                   ) : null}
                 </div>
                 <dl className="assignment-meta">
@@ -748,6 +777,6 @@ export function AssignmentsView({
           />
         )}
       </AnimatePresence>
-    </div>
+    </ContentReveal>
   );
 }

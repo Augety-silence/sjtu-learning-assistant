@@ -1,4 +1,9 @@
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useIsPresent,
+  useReducedMotion,
+} from "motion/react";
 import {
   type KeyboardEvent,
   type MouseEvent,
@@ -8,6 +13,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
@@ -17,6 +24,7 @@ import {
   revealMailAttachment,
 } from "@/lib/api";
 import { formatSize } from "@/lib/format";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   MailMessageAttachment,
   MessageDetail,
@@ -149,25 +157,36 @@ function MessageImagePreview({
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
+  const [readySrc, setReadySrc] = useState<string | null>(null);
+  const currentSrc = useRef(src);
+  currentSrc.current = src;
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: closeButtonRef,
     active: isPresent,
   });
 
-  return (
-    <motion.div
+  return createPortal(
+    <div
       className="message-dialog-layer message-image-preview-layer"
       data-modal-layer
       data-motion-layer="modal"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: 0.01 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: isPresent ? 0.14 : 0.12 }}
     >
-      <button
+      <motion.button
         type="button"
         className="message-dialog-backdrop"
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.control
+              : motionDuration.fast,
+        }}
         aria-label="关闭图片预览"
         disabled={!isPresent}
         onClick={onClose}
@@ -181,12 +200,17 @@ function MessageImagePreview({
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="modal"
         tabIndex={-1}
-        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        initial={reduceMotion ? false : { opacity: 0.55 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{
-          duration: isPresent ? 0.18 : 0.14,
-          ease: [0.16, 1, 0.3, 1],
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.overlayEnter
+              : motionDuration.fast,
+          ease: motionEase.out,
         }}
       >
         <header className="message-image-preview-header">
@@ -201,11 +225,33 @@ function MessageImagePreview({
             关闭
           </Button>
         </header>
-        <div className="message-image-preview-stage">
-          <img src={src} alt={alt || "正文图片"} />
-        </div>
+        <ContentReveal
+          className="message-image-preview-stage"
+          variant="detail"
+          ready={readySrc === src}
+          aria-busy={readySrc !== src}
+        >
+          {readySrc !== src && <span role="status">正在准备图片…</span>}
+          <img
+            src={src}
+            alt={alt || "正文图片"}
+            onLoad={async (event) => {
+              const image = event.currentTarget;
+              if (image.decode) {
+                try {
+                  await image.decode();
+                } catch {
+                  /* The loaded image remains usable. */
+                }
+              }
+              if (currentSrc.current === src) setReadySrc(src);
+            }}
+            onError={() => setReadySrc(src)}
+          />
+        </ContentReveal>
       </motion.section>
-    </motion.div>
+    </div>,
+    document.body,
   );
 }
 

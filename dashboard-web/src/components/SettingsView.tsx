@@ -13,7 +13,12 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useIsPresent,
+  useReducedMotion,
+} from "motion/react";
 import {
   type FormEvent,
   type RefObject,
@@ -24,6 +29,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import settingsFirstConfigIllustration from "@/assets/empty-states/settings-first-config.webp";
+import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -39,6 +45,7 @@ import {
   testAiConnection,
   updateSettings,
 } from "@/lib/api";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type { SettingsStatus, ThemeMode, UpdateCheckResult } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
@@ -395,7 +402,7 @@ export function SettingsView({
   const isFirstConfig = !Object.values(savedByKind).some(Boolean);
 
   return (
-    <div className="section-stack settings-page">
+    <ContentReveal className="section-stack settings-page" afterLoad>
       <div className="view-intro">
         <div>
           <h2>系统设置</h2>
@@ -679,7 +686,7 @@ export function SettingsView({
           />
         )}
       </AnimatePresence>
-    </div>
+    </ContentReveal>
   );
 }
 
@@ -723,6 +730,7 @@ function ConfigDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
   const meta = configMeta[kind];
   const canSave =
     (kind === "mail" ? Boolean(mailAccount.trim()) : true) &&
@@ -736,35 +744,59 @@ function ConfigDialog({
   });
 
   return createPortal(
-    <motion.div
+    <div
       className="config-dialog-layer"
+      style={{ background: "transparent" }}
       data-modal-layer
       data-motion-layer="modal"
       role="presentation"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: 0.01 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: isPresent ? 0.14 : 0.12 }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
+      <motion.div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "var(--shadow-overlay)",
+          pointerEvents: isPresent ? "auto" : "none",
+        }}
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.control
+              : motionDuration.fast,
+        }}
+        onMouseDown={onClose}
+      />
       <motion.section
         ref={dialogRef}
         className="config-dialog"
+        style={{ position: "relative" }}
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-dialog-title"
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="modal"
         tabIndex={-1}
-        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        initial={reduceMotion ? false : { opacity: 0.55 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{
-          duration: isPresent ? 0.18 : 0.14,
-          ease: [0.16, 1, 0.3, 1],
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.overlayEnter
+              : motionDuration.fast,
+          ease: motionEase.out,
         }}
       >
         <header>
@@ -874,7 +906,7 @@ function ConfigDialog({
           </footer>
         </form>
       </motion.section>
-    </motion.div>,
+    </div>,
     document.body,
   );
 }

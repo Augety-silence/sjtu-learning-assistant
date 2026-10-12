@@ -232,6 +232,9 @@ describe("MessageDetailContent", () => {
 
     fireEvent.keyDown(image, { key: "Enter" });
     let preview = screen.getByRole("dialog", { name: "正文图片预览" });
+    expect(preview.closest("[data-modal-layer]")?.parentElement).toBe(
+      document.body,
+    );
     expect(preview.querySelector("img")?.getAttribute("src")).toBe(
       "data:image/png;base64,preview",
     );

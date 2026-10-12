@@ -2,6 +2,7 @@ import { CloudUpload, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import backupFinishedIllustration from "@/assets/empty-states/backup-finished.webp";
 import { ArchiveManager } from "@/components/archive/ArchiveManager";
+import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { getBackupStatus, startCloudBackup } from "@/lib/api";
@@ -176,7 +177,7 @@ export function BackupView() {
     backup.status === "finished" && Boolean(backup.last_result);
 
   return (
-    <div className="section-stack backup-page">
+    <ContentReveal className="section-stack backup-page" afterLoad>
       <div className="view-intro backup-intro">
         <div>
           <h2>Canvas、邮件与 AI 附件云端归档</h2>
@@ -332,6 +333,6 @@ export function BackupView() {
       <ArchiveManager />
 
       {backup.last_result && <ResultSummary result={backup.last_result} />}
-    </div>
+    </ContentReveal>
   );
 }

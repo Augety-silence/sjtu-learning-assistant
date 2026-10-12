@@ -1,9 +1,15 @@
 import { Activity, ArrowUp, PanelLeftOpen, PanelRightOpen } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import {
+  AnimatePresence,
+  motion,
+  useIsPresent,
+  useReducedMotion,
+} from "motion/react";
 import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,6 +19,8 @@ import { AIChatComposer } from "@/components/AIChatComposer";
 import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { AIChatTracePanel } from "@/components/AIChatTracePanel";
+import { InlineAgentExecution } from "@/components/AIExecutionCard";
+import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import {
   createAiChatSession,
@@ -66,17 +74,11 @@ const depths: Array<{
   { value: "deep", label: "深度", detail: "更多推理步骤" },
 ];
 
-const thinkingStages = [
-  "正在规划检索步骤",
-  "正在调用本地只读工具",
-  "正在整理检索结果",
-] as const;
-
 const defaultPreferences: AIChatPreferences = {
   ai_chat_send_shortcut: "enter",
   ai_reply_language: "auto",
   ai_attachment_context_budget: "balanced",
-  ai_auto_open_activity: true,
+  ai_auto_open_activity: false,
   ai_code_line_numbers: false,
 };
 
@@ -109,7 +111,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
   const [busy, setBusy] = useState(false);
-  const [busyStage, setBusyStage] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -123,22 +124,48 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
   const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() => false);
-  const wideActivityRef = useRef(
-    typeof window === "undefined" ? true : window.innerWidth >= 1280,
-  );
   const pendingQueueRef = useRef<PendingChatRequest[]>([]);
   const pendingMessageCounterRef = useRef(0);
   const restoreComposerFocusRef = useRef(false);
+  const isPresent = useIsPresent();
+  const isPresentRef = useRef(isPresent);
+  isPresentRef.current = isPresent;
   const shouldReduceMotion = useReducedMotion();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activityToggleRef = useRef<HTMLButtonElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const pendingComposerFocusRef = useRef(false);
+  const focusIfPresent = useCallback((target: HTMLElement | null) => {
+    if (
+      !isPresentRef.current ||
+      !target?.isConnected ||
+      target.closest("[inert]")
+    )
+      return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }, []);
+  useEffect(() => {
+    isPresentRef.current = isPresent;
+    return () => {
+      isPresentRef.current = false;
+    };
+  }, [isPresent]);
   useEffect(() => {
     const pendingPrompt = window.localStorage.getItem("ai-chat-pending-prompt");
     if (!pendingPrompt) return;
     window.localStorage.removeItem("ai-chat-pending-prompt");
     setDraft(pendingPrompt);
-    window.setTimeout(() => textareaRef.current?.focus(), 60);
+    pendingComposerFocusRef.current = true;
   }, []);
+  useEffect(() => {
+    if (!isPresent || !pendingComposerFocusRef.current) return;
+    const timer = window.setTimeout(() => {
+      focusIfPresent(textareaRef.current);
+      pendingComposerFocusRef.current = false;
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [isPresent, focusIfPresent]);
   const dragDepthRef = useRef(0);
   const {
     leftWidth,
@@ -256,29 +283,19 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => {
-    if (!busy) {
-      setBusyStage(0);
-      return;
-    }
-    const timer = window.setInterval(() => {
-      setBusyStage((stage) => (stage + 1) % thinkingStages.length);
-    }, 1400);
-    return () => window.clearInterval(timer);
-  }, [busy]);
-
-  useEffect(() => {
+    if (!isPresent) return;
     const handleWorkspaceResize = () => {
-      const isWide = window.innerWidth >= 1280;
-      if (isWide !== wideActivityRef.current) {
-        wideActivityRef.current = isWide;
-        setActivityOpen(isWide);
-      }
       if (window.innerWidth >= 1050) setHistoryOpen(false);
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setHistoryOpen(false);
-        if (window.innerWidth < 850) setActivityOpen(false);
+        if (activityOpen) {
+          setActivityOpen(false);
+          window.requestAnimationFrame(() =>
+            focusIfPresent(activityToggleRef.current),
+          );
+        }
       }
     };
     window.addEventListener("resize", handleWorkspaceResize);
@@ -287,14 +304,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       window.removeEventListener("resize", handleWorkspaceResize);
       window.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [activityOpen, isPresent, focusIfPresent]);
 
   useEffect(() => {
+    if (!isPresent) return;
     endRef.current?.scrollIntoView?.({
       behavior: shouldReduceMotion ? "auto" : "smooth",
       block: "end",
     });
-  }, [active?.messages, busy, shouldReduceMotion]);
+  }, [active?.messages, busy, shouldReduceMotion, isPresent]);
 
   const updatePreference = async (change: Partial<AIChatPreferences>) => {
     if (settingsSaving) return;
@@ -382,7 +400,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     }
     if (failure) setError(`部分附件未能添加：${failure}`);
     setAttachmentBusy(false);
-    window.setTimeout(() => textareaRef.current?.focus(), 0);
+    window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
   };
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
@@ -410,11 +428,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setError(reason instanceof Error ? reason.message : "附件上传或解析失败");
     } finally {
       setAttachmentBusy(false);
-      window.setTimeout(() => textareaRef.current?.focus(), 0);
+      window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
     }
   };
 
-  const revealAttachment = async (attachmentId: number) => {
+  const revealAttachment = useCallback(async (attachmentId: number) => {
     try {
       await revealAiAttachment(attachmentId);
     } catch (reason) {
@@ -422,7 +440,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         reason instanceof Error ? reason.message : "无法在 Finder 中显示附件",
       );
     }
-  };
+  }, []);
+
+  const openActivity = useCallback(() => setActivityOpen(true), []);
 
   async function runSubmission(request: PendingChatRequest) {
     const attachmentIds = request.attachments.map(
@@ -508,7 +528,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         void runSubmission(next);
       } else {
         setBusy(false);
-        window.setTimeout(() => textareaRef.current?.focus(), 0);
+        window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
       }
     }
   }
@@ -518,8 +538,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       content.trim() ||
       (attachments.length > 0 ? "请总结并分析这些附件。" : "");
     if (!text || attachmentBusy || !active || !selectedPresetId) return;
-    if (preferences.ai_auto_open_activity) setActivityOpen(true);
-
     pendingMessageCounterRef.current += 1;
     const optimisticId = `pending-${Date.now()}-${pendingMessageCounterRef.current}`;
     const selectedAttachments = attachments;
@@ -552,7 +570,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (busy) {
       pendingQueueRef.current.push(request);
       setQueuedMessageIds((current) => [...current, optimisticId]);
-      window.setTimeout(() => textareaRef.current?.focus(), 0);
+      window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
       return;
     }
     void runSubmission(request);
@@ -565,12 +583,22 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setActivityOpen((open) => !open);
     if (restoreComposerFocusRef.current) {
       window.requestAnimationFrame(() => {
-        input?.focus();
-        if (selectionStart !== null && selectionEnd !== null) {
+        if (
+          focusIfPresent(input) &&
+          selectionStart !== null &&
+          selectionEnd !== null
+        ) {
           input?.setSelectionRange(selectionStart, selectionEnd);
         }
       });
     }
+  };
+
+  const closeActivity = () => {
+    setActivityOpen(false);
+    window.requestAnimationFrame(() =>
+      focusIfPresent(activityToggleRef.current),
+    );
   };
 
   const removeSession = async (sessionId: string) => {
@@ -589,13 +617,16 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const hasMessages = Boolean(active?.messages.length);
+  const tracesById = useMemo(
+    () => new Map(active?.traces.map((trace) => [trace.id, trace]) ?? []),
+    [active?.traces],
+  );
 
   return (
-    <motion.main
+    <ContentReveal
+      as="main"
+      sequence="manual"
       className="ai-workspace"
-      initial={shouldReduceMotion ? false : { opacity: 0.72, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: motionDuration.enter, ease: motionEase.out }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -665,7 +696,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           }
           aria-label="AI Agent 对话"
         >
-          <header className="ai-conversation-header">
+          <header
+            className="ai-conversation-header"
+            data-page-reveal-part="heading"
+          >
             <Button
               variant="ghost"
               size="icon"
@@ -685,10 +719,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               </span>
             </div>
             <Button
+              ref={activityToggleRef}
               variant={activityOpen ? "outline" : "ghost"}
               size="sm"
               className="ai-activity-toggle"
               aria-expanded={activityOpen}
+              aria-controls="ai-activity-panel"
               aria-label="切换 Activity 检索轨迹"
               onPointerDown={() => {
                 restoreComposerFocusRef.current =
@@ -720,7 +756,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             </div>
           )}
 
-          <div className="ai-chat-thread" aria-live="polite">
+          <ContentReveal
+            variant="detail"
+            ready={!loading}
+            className="ai-chat-thread"
+            data-page-reveal-part="thread"
+            aria-live="polite"
+          >
             {loading ? (
               <motion.div
                 className="ai-thinking ai-initial-loading"
@@ -762,22 +804,28 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               </div>
             ) : (
               <div className="ai-chat-messages">
-                {active?.messages.map((message) => (
-                  <AIChatMessageBubble
-                    key={message.id}
-                    message={message}
-                    onOpenActivity={() => setActivityOpen(true)}
-                    onRevealAttachment={(id) => void revealAttachment(id)}
-                    showCodeLineNumbers={preferences.ai_code_line_numbers}
-                    animateEntry={motionMessageIds.includes(message.id)}
-                    queued={queuedMessageIds.includes(message.id)}
-                  />
-                ))}
+                {active?.messages.map((message) => {
+                  const trace = message.trace_id
+                    ? tracesById.get(message.trace_id)
+                    : null;
+                  return (
+                    <AIChatMessageBubble
+                      key={message.id}
+                      message={message}
+                      trace={trace}
+                      agentName={selectedPreset?.name ?? "学习 Agent"}
+                      onOpenActivity={openActivity}
+                      onRevealAttachment={revealAttachment}
+                      showCodeLineNumbers={preferences.ai_code_line_numbers}
+                      animateEntry={motionMessageIds.includes(message.id)}
+                      queued={queuedMessageIds.includes(message.id)}
+                    />
+                  );
+                })}
                 <AnimatePresence>
                   {busy && (
                     <motion.div
-                      className="ai-thinking"
-                      role="status"
+                      className="ai-inline-execution"
                       initial={
                         shouldReduceMotion ? false : { opacity: 0.72, y: 3 }
                       }
@@ -788,18 +836,18 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                         ease: motionEase.out,
                       }}
                     >
-                      <span aria-hidden="true" />
-                      <span className="ai-thinking-copy">
-                        <strong>Agent 正在检索本地学习数据…</strong>
-                        <small>{thinkingStages[busyStage]}</small>
-                      </span>
+                      <InlineAgentExecution
+                        running
+                        agentName={selectedPreset?.name ?? "学习 Agent"}
+                        onOpenActivity={openActivity}
+                      />
                     </motion.div>
                   )}
                 </AnimatePresence>
                 <div ref={endRef} />
               </div>
             )}
-          </div>
+          </ContentReveal>
 
           <AIChatComposer
             draft={draft}
@@ -839,8 +887,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           role="separator"
           aria-label="调整 Activity 栏宽度"
           aria-orientation="vertical"
-          aria-valuemin={260}
-          aria-valuemax={420}
+          aria-valuemin={300}
+          aria-valuemax={340}
           aria-valuenow={rightWidth}
           tabIndex={activityOpen ? 0 : -1}
           onPointerDown={(event) => beginResize("right", event)}
@@ -851,12 +899,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
         <AIChatTracePanel
           open={activityOpen}
-          onClose={() => setActivityOpen(false)}
+          onClose={closeActivity}
           preset={selectedPreset}
           traces={active?.traces ?? []}
           busy={busy}
         />
       </div>
-    </motion.main>
+    </ContentReveal>
   );
 }

@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import {
@@ -316,7 +317,7 @@ export function LocalProjectsView({
     return <ErrorState message={error} retry={load} />;
 
   return (
-    <div className="section-stack local-projects-page">
+    <ContentReveal className="section-stack local-projects-page" afterLoad>
       <section className="local-projects-hero">
         <div>
           <span className="knowledge-eyebrow">LOCAL PROJECT WORKSPACE</span>
@@ -444,6 +445,6 @@ export function LocalProjectsView({
           </Button>
         </section>
       )}
-    </div>
+    </ContentReveal>
   );
 }

@@ -1,5 +1,6 @@
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ContentReveal } from "@/components/ContentReveal";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -37,6 +38,13 @@ function isEditableTarget(target: EventTarget | null) {
       ),
     )
   );
+}
+
+function messageShortcutHint() {
+  const platform = navigator.platform || navigator.userAgent;
+  return /Mac|iPhone|iPad/i.test(platform)
+    ? "J/K 选择 · ↩ 打开 · R 已读 · ⇧R 全部已读"
+    : "J/K 选择 · Enter 打开 · R 已读 · Shift+R 全部已读";
 }
 
 export function MessagesView() {
@@ -250,11 +258,14 @@ export function MessagesView() {
   const unreadCount = items?.filter((item) => item.is_unread).length ?? 0;
 
   return (
-    <div className="section-stack messages-page">
+    <ContentReveal
+      className="section-stack messages-page"
+      ready={items !== null || Boolean(error)}
+    >
       <div className="view-intro">
         <div>
           <h2>消息收件箱</h2>
-          <p>在应用内安全阅读消息详情；j/k 选择，Enter 打开，r/⇧R 标记已读。</p>
+          <p>{messageShortcutHint()}</p>
         </div>
         <div className="message-toolbar">
           <Tabs
@@ -383,6 +394,6 @@ export function MessagesView() {
           />
         )}
       </AnimatePresence>
-    </div>
+    </ContentReveal>
   );
 }

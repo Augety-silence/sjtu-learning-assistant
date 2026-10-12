@@ -6,6 +6,10 @@ import { ToastProvider } from "./components/Toast";
 import "./index.css";
 import "./aura-pages.css";
 import "./ai-chat-aura.css";
+import "./app-brand.css";
+import "./performance.css";
+import "./workspace-motion.css";
+import "./page-motion.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

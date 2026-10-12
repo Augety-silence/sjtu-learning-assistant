@@ -1,4 +1,3 @@
-import { motion, useReducedMotion } from "motion/react";
 import {
   type ReactNode,
   useCallback,
@@ -16,6 +15,7 @@ import {
 } from "@/components/AssignmentsView";
 import { BackupView } from "@/components/BackupView";
 import type { CalendarEventItem } from "@/components/CalendarView";
+import { ContentReveal } from "@/components/ContentReveal";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
   type GradeAssignment,
@@ -37,8 +37,11 @@ import {
 import { ScheduleView } from "@/components/ScheduleView";
 import { SettingsView } from "@/components/SettingsView";
 import { useToast } from "@/components/Toast";
+import { Button } from "@/components/ui/Button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { type CourseVideoItem, VideosView } from "@/components/VideosView";
+import { WorkspaceTransition } from "@/components/WorkspaceTransition";
+import { explainAIReadiness, getAICapabilities } from "@/lib/aiCapabilities";
 import {
   cancelTranscriptJob,
   createVideoScreenshotPdf,
@@ -61,7 +64,10 @@ import {
   startTranscriptBatch,
   updateGrading,
 } from "@/lib/api";
-import { motionDuration, motionEase } from "@/lib/motion";
+import {
+  type BoundedReadRequest,
+  createBoundedReadPool,
+} from "@/lib/boundedReadPool";
 import { applyThemeMode } from "@/lib/theme";
 import type {
   AppCapabilities,
@@ -106,6 +112,14 @@ const baseViews: ViewName[] = [
   "ai-chat",
   "settings",
 ];
+
+type ReadRequest = BoundedReadRequest;
+
+function useBoundedReadRequests(): ReadRequest {
+  const pool = useRef<ReadRequest | null>(null);
+  if (!pool.current) pool.current = createBoundedReadPool();
+  return pool.current;
+}
 
 type ScheduleMode = "calendar" | "deadlines";
 
@@ -218,11 +232,13 @@ function adaptCalendarEvent(
 
 function ScheduleAdapter({
   mode,
+  syncStatus,
   onModeChange,
   onNavigateAssignments,
   onAskAI,
 }: {
   mode: ScheduleMode;
+  syncStatus: SyncStatus | null;
   onModeChange: (mode: ScheduleMode) => void;
   onNavigateAssignments: (target?: AssignmentTarget) => void;
   onAskAI: (prompt: string) => void;
@@ -265,6 +281,7 @@ function ScheduleAdapter({
       canvasEvents={events}
       canvasLoading={loading}
       canvasError={error}
+      canvasSyncedAt={syncStatus?.last_canvas_success_at ?? null}
       month={month}
       onMonthChange={setMonth}
       onRetryCanvas={loadCanvas}
@@ -571,7 +588,7 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
     await load();
   };
   return (
-    <div className="section-stack">
+    <ContentReveal className="section-stack" ready={!loading}>
       {assignments.length > 1 && (
         <div className="finder-toolbar">
           <label>
@@ -608,7 +625,7 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
           invoke("material_download", { source_id: attachment.id })
         }
       />
-    </div>
+    </ContentReveal>
   );
 }
 
@@ -661,8 +678,11 @@ function VideosAdapter({
   onCourseChange,
   courseResolved,
   courseResolutionFailed,
+  courseResolutionMessage,
   onResolveCourseRetry,
   refreshVersion,
+  readRequest,
+  onOpenAISettings,
 }: {
   courseId: number | null;
   courseName: string;
@@ -670,25 +690,79 @@ function VideosAdapter({
   onCourseChange: (courseId: number) => void;
   courseResolved: boolean;
   courseResolutionFailed: boolean;
+  courseResolutionMessage: string;
   onResolveCourseRetry: () => void;
   refreshVersion: number;
+  readRequest: ReadRequest;
+  onOpenAISettings: () => void;
 }) {
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
   const [loadedCourseId, setLoadedCourseId] = useState<number | null>(null);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
+  const [toolError, setToolError] = useState<string | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [taskRetry, setTaskRetry] = useState(0);
+  const [aiReadiness, setAIReadiness] = useState<{
+    configured: boolean;
+    message: string;
+    model: string;
+    connectionVerified: boolean;
+    status: "checking" | "ready" | "blocked" | "unknown";
+  }>({
+    status: "checking",
+    configured: false,
+    message: "正在检查 AI 配置…",
+    model: "",
+    connectionVerified: false,
+  });
+  useEffect(() => {
+    const controller = new AbortController();
+    void readRequest(
+      "ai_capabilities:videos",
+      () => getAICapabilities("videos"),
+      controller.signal,
+      "AI 配置读取超时，请检查设置。",
+    )
+      .then(({ preflight }) => {
+        if (controller.signal.aborted) return;
+        setAIReadiness({
+          status: preflight.ready_for_request ? "ready" : "blocked",
+          configured: preflight.ready_for_request,
+          message: explainAIReadiness(preflight),
+          model: preflight.model,
+          connectionVerified: preflight.connection_verified,
+        });
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setAIReadiness({
+          status: "unknown",
+          configured: false,
+          message: messageFrom(reason, "AI 配置暂时无法读取，请检查设置。"),
+          model: "",
+          connectionVerified: false,
+        });
+      });
+    return () => controller.abort();
+  }, [readRequest, refreshVersion, taskRetry]);
   const [transcriptJobs, setTranscriptJobs] = useState<TranscriptJob[]>([]);
   const [transcriptCourseId, setTranscriptCourseId] = useState<number | null>(
     null,
   );
   const mediaRequestSequence = useRef(0);
+  const mediaWait = useRef<AbortController | null>(null);
   const activeCourseId = useRef(courseId);
   activeCourseId.current = courseId;
   const load = useCallback(async () => {
     const request = ++mediaRequestSequence.current;
+    mediaWait.current?.abort();
+    const controller = new AbortController();
+    mediaWait.current = controller;
     setVideos([]);
     setSlidesPdfAvailable(false);
+    setToolError(null);
     setError(null);
     if (!courseId) {
       setLoading(false);
@@ -696,33 +770,19 @@ function VideosAdapter({
     }
     setLoading(true);
     try {
-      const result = await getCourseMedia(courseId);
-      if (
-        mediaRequestSequence.current !== request ||
-        activeCourseId.current !== courseId
-      )
-        return;
-      let canCreateSlides = false;
-      try {
-        const mediaCapabilities = await getMediaCapabilities();
-        if (
-          mediaRequestSequence.current !== request ||
-          activeCourseId.current !== courseId
-        )
-          return;
-        canCreateSlides = Boolean(
-          mediaCapabilities.video_screenshot_pdf?.available,
-        );
-      } catch {
-        // Optional local tooling must not prevent the course video list loading.
-      }
+      const result = await readRequest(
+        `course_media:${courseId}`,
+        () => getCourseMedia(courseId),
+        controller.signal,
+        "课程录像读取超时，请检查连接后重新加载。",
+      );
       if (
         mediaRequestSequence.current !== request ||
         activeCourseId.current !== courseId
       )
         return;
       setLoadedCourseId(courseId);
-      setSlidesPdfAvailable(canCreateSlides);
+      setSlidesPdfAvailable(false);
       setVideos(
         result.items
           .filter((item) => item.media_kind === "video")
@@ -733,10 +793,44 @@ function VideosAdapter({
               supportsSlidesPdf:
                 video.source === "video_space"
                   ? video.supportsSlidesPdf
-                  : video.source === "canvas" && canCreateSlides,
+                  : false,
             };
           }),
       );
+      // Optional tooling must not delay showing the already loaded videos.
+      void readRequest(
+        "media_capabilities",
+        getMediaCapabilities,
+        controller.signal,
+        "视频工具能力读取超时。",
+      )
+        .then((capabilities) => {
+          if (
+            controller.signal.aborted ||
+            mediaRequestSequence.current !== request ||
+            activeCourseId.current !== courseId
+          )
+            return;
+          const canCreateSlides = Boolean(
+            capabilities.video_screenshot_pdf?.available,
+          );
+          setSlidesPdfAvailable(canCreateSlides);
+          setVideos((current) =>
+            current.map((video) =>
+              video.source === "canvas"
+                ? { ...video, supportsSlidesPdf: canCreateSlides }
+                : video,
+            ),
+          );
+        })
+        .catch((reason) => {
+          if (
+            !controller.signal.aborted &&
+            mediaRequestSequence.current === request
+          ) {
+            setToolError(messageFrom(reason, "视频导出工具暂不可用。"));
+          }
+        });
     } catch (reason) {
       if (
         mediaRequestSequence.current === request &&
@@ -750,8 +844,14 @@ function VideosAdapter({
       )
         setLoading(false);
     }
-  }, [courseId, refreshVersion]);
-  useEffect(() => void load(), [load]);
+  }, [courseId, refreshVersion, readRequest]);
+  useEffect(() => {
+    void load();
+    return () => {
+      mediaRequestSequence.current += 1;
+      mediaWait.current?.abort();
+    };
+  }, [load]);
   useEffect(() => {
     setTranscriptCourseId(null);
     if (!courseId) {
@@ -759,133 +859,189 @@ function VideosAdapter({
       return;
     }
     let active = true;
+    let pending = false;
+    const controller = new AbortController();
     const refresh = async () => {
+      if (!active || pending || document.hidden) return;
+      pending = true;
       try {
-        const result = await getTranscriptJobs(courseId);
+        const result = await readRequest(
+          `transcript_jobs:${courseId}`,
+          () => getTranscriptJobs(courseId),
+          controller.signal,
+          "学习材料状态读取超时，视频仍可播放。",
+        );
         if (active) {
           setTranscriptCourseId(courseId);
-          setTranscriptJobs(result.items);
+          setTranscriptError(null);
+          setTranscriptJobs((current) =>
+            JSON.stringify(current) === JSON.stringify(result.items)
+              ? current
+              : result.items,
+          );
         }
-      } catch {
-        // Video loading and playback stay available if transcript recovery fails.
+      } catch (reason) {
+        if (active)
+          setTranscriptError(
+            messageFrom(reason, "学习材料状态读取失败，视频仍可播放。"),
+          );
+      } finally {
+        pending = false;
       }
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2500);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       active = false;
+      controller.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
     };
-  }, [courseId]);
+  }, [courseId, readRequest, taskRetry]);
   const visibleVideos = loadedCourseId === courseId ? videos : [];
   return (
-    <VideosView
-      videos={visibleVideos}
-      courseId={courseId}
-      courseName={courseName}
-      courseOptions={courseOptions}
-      onCourseChange={onCourseChange}
-      transcriptJobs={transcriptCourseId === courseId ? transcriptJobs : []}
-      loading={
-        !courseResolved ||
-        (Boolean(courseId) && (loading || loadedCourseId !== courseId))
-      }
-      error={
-        courseResolutionFailed
-          ? "暂时无法确认课程视频权限，请重新检查。"
-          : error
-      }
-      permissionDenied={courseResolved && !courseResolutionFailed && !courseId}
-      onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
-      onStartTranscript={async (selectedVideos) => {
-        if (!courseId) throw new Error("请先选择课程。");
-        if (
-          loadedCourseId !== courseId ||
-          selectedVideos.some(
-            (selectedVideo) =>
-              !visibleVideos.some((video) => video.id === selectedVideo.id),
+    <>
+      {(toolError || transcriptError) && (
+        <div className="inline-notice" role="status">
+          <span>{transcriptError || toolError}</span>
+          <Button
+            variant="link"
+            size="sm"
+            onClick={() => {
+              setTaskRetry((value) => value + 1);
+              if (toolError) void load();
+            }}
+          >
+            重新检查
+          </Button>
+        </div>
+      )}
+      <VideosView
+        videos={visibleVideos}
+        aiReadiness={aiReadiness}
+        onOpenAISettings={onOpenAISettings}
+        courseId={courseId}
+        courseName={courseName}
+        courseOptions={courseOptions}
+        onCourseChange={onCourseChange}
+        transcriptJobs={transcriptCourseId === courseId ? transcriptJobs : []}
+        loading={
+          !courseResolved ||
+          (Boolean(courseId) &&
+            (loading || (!error && loadedCourseId !== courseId)))
+        }
+        error={
+          courseResolutionFailed
+            ? courseResolutionMessage ||
+              "暂时无法确认课程视频权限，请重新检查。"
+            : error
+        }
+        permissionDenied={
+          courseResolved && !courseResolutionFailed && !courseId
+        }
+        onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
+        onStartTranscript={async (selectedVideos) => {
+          if (!courseId) throw new Error("请先选择课程。");
+          if (
+            loadedCourseId !== courseId ||
+            selectedVideos.some(
+              (selectedVideo) =>
+                !visibleVideos.some((video) => video.id === selectedVideo.id),
+            )
           )
-        )
-          throw new Error("课程已切换，请在当前课程重新选择录像。");
-        const batch = await startTranscriptBatch(
-          courseId,
-          selectedVideos.map((video) => video.id),
-        );
-        setTranscriptJobs((current) => [...batch.jobs, ...current]);
-      }}
-      onRetryTranscript={async (job) => {
-        const batch = await retryTranscriptJob(job.id);
-        setTranscriptJobs((current) => [...batch.jobs, ...current]);
-      }}
-      onCancelTranscript={async (job) => {
-        const batch = await cancelTranscriptJob(job.id);
-        setTranscriptJobs((current) => [
-          ...batch.jobs,
-          ...current.filter((item) => item.id !== job.id),
-        ]);
-      }}
-      onRevealTranscript={async (artifact: TranscriptArtifact) => {
-        await revealTranscriptArtifact(artifact.id);
-      }}
-      onPlay={async (video) => {
-        const playback = await getVideoPlayback(video.id);
-        if (!playback.available) {
-          throw new Error("该视频当前不可播放。");
+            throw new Error("课程已切换，请在当前课程重新选择录像。");
+          const batch = await startTranscriptBatch(
+            courseId,
+            selectedVideos.map((video) => video.id),
+          );
+          if (activeCourseId.current !== courseId) return;
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs((current) => [...batch.jobs, ...current]);
+        }}
+        onRetryTranscript={async (job) => {
+          const batch = await retryTranscriptJob(job.id);
+          if (activeCourseId.current !== courseId) return;
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs((current) => [...batch.jobs, ...current]);
+        }}
+        onCancelTranscript={async (job) => {
+          const batch = await cancelTranscriptJob(job.id);
+          if (activeCourseId.current !== courseId) return;
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs((current) => [
+            ...batch.jobs,
+            ...current.filter((item) => item.id !== job.id),
+          ]);
+        }}
+        onRevealTranscript={async (artifact: TranscriptArtifact) => {
+          await revealTranscriptArtifact(artifact.id);
+        }}
+        onPlay={async (video) => {
+          const playback = await getVideoPlayback(video.id);
+          if (!playback.available) {
+            throw new Error("该视频当前不可播放。");
+          }
+          if (
+            playback.action === "play_remote_video" &&
+            typeof playback.url === "string"
+          ) {
+            return { url: playback.url };
+          }
+          if (playback.action !== "play_course_media") {
+            throw new Error("该视频当前不可播放。");
+          }
+          await invoke("material_open", { source_id: playback.source_id });
+          return { kind: "external_opened" as const };
+        }}
+        onLoadSubtitles={async (video) => {
+          try {
+            const subtitles = await getVideoSubtitles(video.id);
+            return {
+              subtitleVtt: subtitles.vtt,
+              subtitleStatus: subtitles.status,
+              subtitleMessage: subtitles.message,
+            };
+          } catch (reason) {
+            return {
+              subtitleStatus: "error" as const,
+              subtitleMessage: messageFrom(
+                reason,
+                "字幕加载失败，请稍后重试。",
+              ),
+            };
+          }
+        }}
+        onDownload={(video) =>
+          invoke("material_download", { source_id: video.id })
         }
-        if (
-          playback.action === "play_remote_video" &&
-          typeof playback.url === "string"
-        ) {
-          return { url: playback.url };
-        }
-        if (playback.action !== "play_course_media") {
-          throw new Error("该视频当前不可播放。");
-        }
-        await invoke("material_open", { source_id: playback.source_id });
-      }}
-      onLoadSubtitles={async (video) => {
-        try {
-          const subtitles = await getVideoSubtitles(video.id);
+        onDownloadSubtitle={(video) => {
+          if (!video.subtitleId) throw new Error("该视频没有可下载的字幕。");
+          return invoke("material_download", { source_id: video.subtitleId });
+        }}
+        onCreateSlidesPdf={async (video) => {
+          if (video.source !== "video_space" && !slidesPdfAvailable) {
+            throw new Error("本地视频截图 PDF 当前不可用。");
+          }
+          const result =
+            video.source === "video_space"
+              ? await createVideoSlidesPdf(video.id)
+              : await createVideoScreenshotPdf(video.id);
+          await revealAcademicExport(result.reveal_token);
           return {
-            subtitleVtt: subtitles.vtt,
-            subtitleStatus: subtitles.status,
-            subtitleMessage: subtitles.message,
+            scope: "video" as const,
+            open: async () => {
+              await revealAcademicExport(result.reveal_token);
+            },
           };
-        } catch (reason) {
-          return {
-            subtitleStatus: "error" as const,
-            subtitleMessage: messageFrom(reason, "字幕加载失败，请稍后重试。"),
-          };
-        }
-      }}
-      onDownload={(video) =>
-        invoke("material_download", { source_id: video.id })
-      }
-      onDownloadSubtitle={(video) => {
-        if (!video.subtitleId) throw new Error("该视频没有可下载的字幕。");
-        return invoke("material_download", { source_id: video.subtitleId });
-      }}
-      onCreateSlidesPdf={async (video) => {
-        if (video.source !== "video_space" && !slidesPdfAvailable) {
-          throw new Error("本地视频截图 PDF 当前不可用。");
-        }
-        const result =
-          video.source === "video_space"
-            ? await createVideoSlidesPdf(video.id)
-            : await createVideoScreenshotPdf(video.id);
-        await revealAcademicExport(result.reveal_token);
-        return {
-          scope: "video" as const,
-          open: async () => {
-            await revealAcademicExport(result.reveal_token);
-          },
-        };
-      }}
-    />
+        }}
+      />
+    </>
   );
 }
 
 export default function App() {
+  const readRequest = useBoundedReadRequests();
   const [view, setViewState] = useState<ViewName>(initialView);
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("calendar");
   const [assignmentTarget, setAssignmentTarget] =
@@ -900,8 +1056,8 @@ export default function App() {
   );
   const [capabilitiesInitialized, setCapabilitiesInitialized] = useState(false);
   const [capabilitiesFailed, setCapabilitiesFailed] = useState(false);
+  const [capabilitiesError, setCapabilitiesError] = useState("");
   const { showToast } = useToast();
-  const shouldReduceMotion = useReducedMotion();
   const availableViews = useMemo(
     () => availableViewsFor(capabilities),
     [capabilities],
@@ -998,26 +1154,37 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     setCapabilitiesInitialized(false);
     setCapabilitiesFailed(false);
-    void invoke<AppCapabilities>("capabilities")
+    setCapabilitiesError("");
+    void readRequest(
+      "capabilities",
+      () => invoke<AppCapabilities>("capabilities"),
+      controller.signal,
+      "课程权限确认超时，请重新检查。",
+    )
       .then((result) => {
         if (active) {
           setCapabilities(result);
           setCapabilitiesInitialized(true);
         }
       })
-      .catch(() => {
+      .catch((reason) => {
         if (active) {
           setCapabilities(null);
           setCapabilitiesFailed(true);
+          setCapabilitiesError(
+            messageFrom(reason, "暂时无法确认课程视频权限，请重新检查。"),
+          );
           setCapabilitiesInitialized(true);
         }
       });
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [dataVersion]);
+  }, [dataVersion, readRequest]);
 
   useEffect(() => {
     if (capabilities && !availableViews.includes(view)) setView("overview");
@@ -1029,10 +1196,15 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  const statusRequestPending = useRef(false);
   const loadStatus = useCallback(async () => {
+    if (statusRequestPending.current) return;
+    statusRequestPending.current = true;
     try {
       const next = await invoke<SyncStatus>("sync_status");
-      setSyncStatus(next);
+      setSyncStatus((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
       if (syncRequested && next.status === "idle") {
         setSyncRequested(false);
         showToast({
@@ -1047,16 +1219,34 @@ export default function App() {
       }
     } catch {
       setSyncStatus(null);
+    } finally {
+      statusRequestPending.current = false;
     }
   }, [showToast, syncRequested]);
 
   useEffect(() => {
-    void loadStatus();
+    let active = true;
+    let pending = false;
+    const refresh = async () => {
+      if (!active || pending || document.hidden) return;
+      pending = true;
+      try {
+        await loadStatus();
+      } finally {
+        pending = false;
+      }
+    };
+    void refresh();
     const timer = window.setInterval(
-      () => void loadStatus(),
+      () => void refresh(),
       syncRequested || syncStatus?.status === "syncing" ? 1200 : 5000,
     );
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [loadStatus, syncRequested, syncStatus?.status]);
 
   const triggerSync = async () => {
@@ -1089,135 +1279,136 @@ export default function App() {
   };
 
   const syncing = syncRequested || syncStatus?.status === "syncing";
-  if (view === "ai-chat") {
-    return <AIChatView onBack={() => setView("overview")} />;
-  }
   return (
-    <AppShell
-      view={view}
-      availableViews={availableViews}
-      setView={setView}
-      drawerOpen={drawerOpen}
-      setDrawerOpen={setDrawerOpen}
-      syncStatus={syncStatus}
-      syncing={syncing}
-      onSync={() => void triggerSync()}
-      headerActions={headerActions}
-    >
-      <motion.div
-        key={view}
-        className="view-transition"
-        initial={shouldReduceMotion ? false : { opacity: 0.72, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{
-          duration: motionDuration.enter,
-          ease: motionEase.out,
-        }}
-      >
-        {view === "overview" && (
-          <OverviewView key={dataVersion} navigate={setView} />
-        )}
-        {view === "calendar" && (
-          <ScheduleAdapter
-            key={dataVersion}
-            mode={scheduleMode}
-            onModeChange={setScheduleMode}
-            onNavigateAssignments={(target) => {
-              setAssignmentTarget(target ?? null);
-              setView("assignments");
-            }}
-            onAskAI={(prompt) => {
-              window.localStorage.setItem("ai-chat-pending-prompt", prompt);
-              setView("ai-chat");
-            }}
-          />
-        )}
-        {view === "messages" && <MessagesView key={dataVersion} />}
-        {view === "assignments" && (
-          <AssignmentsView
-            key={dataVersion}
-            initialTarget={assignmentTarget}
-            onInitialTargetHandled={() => setAssignmentTarget(null)}
-          />
-        )}
-        {view === "materials" && <MaterialsView key={dataVersion} />}
-        {view === "grades" && (
-          <div className="section-stack">
-            {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-            <GradesAdapter
-              key={`${dataVersion}:${staffCourseId}`}
-              courseId={staffCourseId}
-            />
+    <WorkspaceTransition mode={view === "ai-chat" ? "assistant" : "workbench"}>
+      {view === "ai-chat" ? (
+        <AIChatView onBack={() => setView("overview")} />
+      ) : (
+        <AppShell
+          view={view}
+          availableViews={availableViews}
+          setView={setView}
+          drawerOpen={drawerOpen}
+          setDrawerOpen={setDrawerOpen}
+          syncStatus={syncStatus}
+          syncing={syncing}
+          onSync={() => void triggerSync()}
+          headerActions={headerActions}
+        >
+          <div key={view} className="view-transition">
+            {view === "overview" && (
+              <OverviewView key={dataVersion} navigate={setView} />
+            )}
+            {view === "calendar" && (
+              <ScheduleAdapter
+                key={dataVersion}
+                mode={scheduleMode}
+                syncStatus={syncStatus}
+                onModeChange={setScheduleMode}
+                onNavigateAssignments={(target) => {
+                  setAssignmentTarget(target ?? null);
+                  setView("assignments");
+                }}
+                onAskAI={(prompt) => {
+                  window.localStorage.setItem("ai-chat-pending-prompt", prompt);
+                  setView("ai-chat");
+                }}
+              />
+            )}
+            {view === "messages" && <MessagesView key={dataVersion} />}
+            {view === "assignments" && (
+              <AssignmentsView
+                key={dataVersion}
+                initialTarget={assignmentTarget}
+                onInitialTargetHandled={() => setAssignmentTarget(null)}
+              />
+            )}
+            {view === "materials" && <MaterialsView key={dataVersion} />}
+            {view === "grades" && (
+              <div className="section-stack">
+                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                <GradesAdapter
+                  key={`${dataVersion}:${staffCourseId}`}
+                  courseId={staffCourseId}
+                />
+              </div>
+            )}
+            {view === "roster" && (
+              <div className="section-stack">
+                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                <RosterAdapter
+                  key={`${dataVersion}:${staffCourseId}`}
+                  courseId={staffCourseId}
+                />
+              </div>
+            )}
+            {view === "grading" && (
+              <div className="section-stack">
+                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                <GradingAdapter
+                  key={`${dataVersion}:${staffCourseId}`}
+                  courseId={staffCourseId}
+                />
+              </div>
+            )}
+            {view === "videos" && (
+              <VideosAdapter
+                courseId={learnerCourseId}
+                courseName={
+                  learnerCourses.find(
+                    (course) => courseNumber(course) === learnerCourseId,
+                  )?.course_name || "未命名课程"
+                }
+                courseOptions={learnerCourses.flatMap((course) => {
+                  const id = courseNumber(course);
+                  return id
+                    ? [
+                        {
+                          id,
+                          name:
+                            course.course_name || `课程 ${course.course_id}`,
+                        },
+                      ]
+                    : [];
+                })}
+                onCourseChange={setSelectedLearnerCourseId}
+                readRequest={readRequest}
+                onOpenAISettings={() => setView("settings")}
+                courseResolved={capabilitiesInitialized}
+                courseResolutionFailed={capabilitiesFailed}
+                courseResolutionMessage={capabilitiesError}
+                onResolveCourseRetry={() =>
+                  setDataVersion((value) => value + 1)
+                }
+                refreshVersion={dataVersion}
+              />
+            )}
+            {view === "backup" && <BackupView />}
+            {view === "local-projects" && (
+              <LocalProjectsView
+                onCompile={(project) => {
+                  window.localStorage.setItem(
+                    "knowledge-compiler-source",
+                    project.source_root,
+                  );
+                  window.localStorage.setItem(
+                    "knowledge-compiler-target",
+                    project.target_root,
+                  );
+                  setView("knowledge");
+                }}
+              />
+            )}
+            {view === "knowledge" && <KnowledgeCompilerView />}
+            {view === "settings" && (
+              <SettingsView
+                onArchiveChanged={() => setDataVersion((value) => value + 1)}
+                onThemeModeChange={setThemeMode}
+              />
+            )}
           </div>
-        )}
-        {view === "roster" && (
-          <div className="section-stack">
-            {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-            <RosterAdapter
-              key={`${dataVersion}:${staffCourseId}`}
-              courseId={staffCourseId}
-            />
-          </div>
-        )}
-        {view === "grading" && (
-          <div className="section-stack">
-            {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-            <GradingAdapter
-              key={`${dataVersion}:${staffCourseId}`}
-              courseId={staffCourseId}
-            />
-          </div>
-        )}
-        {view === "videos" && (
-          <VideosAdapter
-            courseId={learnerCourseId}
-            courseName={
-              learnerCourses.find(
-                (course) => courseNumber(course) === learnerCourseId,
-              )?.course_name || "未命名课程"
-            }
-            courseOptions={learnerCourses.flatMap((course) => {
-              const id = courseNumber(course);
-              return id
-                ? [
-                    {
-                      id,
-                      name: course.course_name || `课程 ${course.course_id}`,
-                    },
-                  ]
-                : [];
-            })}
-            onCourseChange={setSelectedLearnerCourseId}
-            courseResolved={capabilitiesInitialized}
-            courseResolutionFailed={capabilitiesFailed}
-            onResolveCourseRetry={() => setDataVersion((value) => value + 1)}
-            refreshVersion={dataVersion}
-          />
-        )}
-        {view === "backup" && <BackupView />}
-        {view === "local-projects" && (
-          <LocalProjectsView
-            onCompile={(project) => {
-              window.localStorage.setItem(
-                "knowledge-compiler-source",
-                project.source_root,
-              );
-              window.localStorage.setItem(
-                "knowledge-compiler-target",
-                project.target_root,
-              );
-              setView("knowledge");
-            }}
-          />
-        )}
-        {view === "knowledge" && <KnowledgeCompilerView />}
-        {view === "settings" && (
-          <SettingsView
-            onArchiveChanged={() => setDataVersion((value) => value + 1)}
-            onThemeModeChange={setThemeMode}
-          />
-        )}
-      </motion.div>
-    </AppShell>
+        </AppShell>
+      )}
+    </WorkspaceTransition>
   );
 }

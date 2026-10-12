@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import deadlinesClearIllustration from "@/assets/empty-states/deadlines-clear.webp";
+import { ContentReveal } from "@/components/ContentReveal";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -136,7 +137,10 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
   };
 
   return (
-    <div className="section-stack deadlines-page">
+    <ContentReveal
+      className="section-stack deadlines-page"
+      ready={items !== null || Boolean(error)}
+    >
       <div className="calm-deadline-toolbar">
         <div>
           <h2>待处理任务</h2>
@@ -252,6 +256,6 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
           </Table>
         </div>
       )}
-    </div>
+    </ContentReveal>
   );
 }

@@ -2,15 +2,164 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from sqlalchemy.orm import Session
+
+from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.dashboard_service import (
     DashboardError,
     DashboardService,
     NotFoundError,
 )
+from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
+from sjtu_learning_assistant.models import Assignment, Course, SyncState
+
+
+class DashboardOverviewTests(unittest.TestCase):
+    def test_overview_returns_five_nearest_deadlines_without_seven_day_cutoff(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            now = datetime(2026, 10, 10, 8, tzinfo=timezone.utc)
+            engine = create_database_engine(
+                default_sqlite_url(Path(directory) / "dashboard.db")
+            )
+            bootstrap_sqlite(engine)
+            with Session(engine) as session, session.begin():
+                course = Course(
+                    source_id="course-1",
+                    name="测试课程",
+                    course_code="TEST001",
+                    term_name="2026 秋",
+                    raw_data={},
+                )
+                session.add(course)
+                session.flush()
+                for days in (1, 3, 6, 8, 12, 20):
+                    session.add(
+                        Assignment(
+                            source_id=f"deadline-{days}",
+                            course_id=course.id,
+                            name=f"第 {days} 天截止",
+                            due_at=now + timedelta(days=days),
+                            is_active=True,
+                            last_seen_at=now,
+                            raw_data={},
+                        )
+                    )
+                session.add(
+                    Assignment(
+                        source_id="already-submitted",
+                        course_id=course.id,
+                        name="已提交作业",
+                        due_at=now + timedelta(hours=12),
+                        submission_state="submitted",
+                        is_active=True,
+                        last_seen_at=now,
+                        raw_data={},
+                    )
+                )
+
+            service = DashboardService(engine, now_provider=lambda: now)
+            overview = service.overview()
+            engine.dispose()
+
+        self.assertEqual(3, overview["upcoming_deadlines"])
+        self.assertEqual(
+            [
+                "deadline-1",
+                "deadline-3",
+                "deadline-6",
+                "deadline-8",
+                "deadline-12",
+            ],
+            [item["source_id"] for item in overview["deadlines"]],
+        )
+
+
+class DashboardCalendarTests(unittest.TestCase):
+    def test_calendar_reads_assignments_landed_by_canvas_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            now = datetime(2026, 10, 10, 8, tzinfo=timezone.utc)
+            engine = create_database_engine(
+                default_sqlite_url(Path(directory) / "calendar.db")
+            )
+            bootstrap_sqlite(engine)
+            with Session(engine) as session, session.begin():
+                course = Course(
+                    source_id="123",
+                    name="本地同步课程",
+                    course_code="LOCAL001",
+                    term_name="2026 秋",
+                    raw_data={},
+                )
+                other_course = Course(
+                    source_id="456",
+                    name="其他课程",
+                    course_code="OTHER001",
+                    term_name="2026 秋",
+                    raw_data={},
+                )
+                session.add_all([course, other_course])
+                session.flush()
+                session.add_all(
+                    [
+                        Assignment(
+                            source_id="assignment-1",
+                            course_id=course.id,
+                            name="数据库中的作业",
+                            due_at=now + timedelta(days=2),
+                            submission_state="unsubmitted",
+                            url="https://oc.sjtu.edu.cn/courses/123/assignments/1",
+                            is_active=True,
+                            last_seen_at=now,
+                            raw_data={
+                                "created_at": "2026-10-01T01:00:00Z",
+                                "unlock_at": "2026-10-02T01:00:00Z",
+                            },
+                        ),
+                        Assignment(
+                            source_id="assignment-2",
+                            course_id=other_course.id,
+                            name="应被课程筛选排除",
+                            due_at=now + timedelta(days=3),
+                            is_active=True,
+                            last_seen_at=now,
+                            raw_data={},
+                        ),
+                    ]
+                )
+                session.add(
+                    SyncState(
+                        source="canvas",
+                        resource="courses",
+                        last_sync_at=now,
+                        last_success_at=now,
+                        status="success",
+                    )
+                )
+
+            service = DashboardService(engine, now_provider=lambda: now)
+            calendar = service.calendar(2026, 10, course_ids=[123])
+            sync_status = service.sync_status()
+            engine.dispose()
+
+        self.assertEqual(
+            ["assignment-1"],
+            [item["id"] for item in calendar["month_events"]],
+        )
+        self.assertEqual(
+            ["assignment-1"],
+            [item["id"] for item in calendar["upcoming_events"]],
+        )
+        self.assertEqual("course_123", calendar["month_events"][0]["context_code"])
+        self.assertEqual(
+            "2026-10-10T16:00:00+08:00", sync_status["last_canvas_success_at"]
+        )
 
 
 class DashboardFileSafetyTests(unittest.TestCase):

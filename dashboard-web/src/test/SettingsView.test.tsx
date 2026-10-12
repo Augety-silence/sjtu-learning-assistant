@@ -59,6 +59,24 @@ const status: SettingsStatus = {
 };
 
 describe("SettingsView", () => {
+  it("设置读取完成后显现正文，使用较长的淡入时长", async () => {
+    let finish: ((value: SettingsStatus) => void) | undefined;
+    vi.mocked(getSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { container } = render(<SettingsView />);
+    expect(screen.getByText("正在读取系统设置…")).toBeTruthy();
+    finish?.(status);
+    await screen.findAllByRole("button", { name: "修改配置" });
+    const root = container.querySelector(".settings-page") as HTMLElement;
+    expect(root.getAttribute("data-content-reveal")).toBe("ready");
+    expect(root.style.getPropertyValue("--content-reveal-duration")).toBe(
+      "420ms",
+    );
+  });
+
   afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();

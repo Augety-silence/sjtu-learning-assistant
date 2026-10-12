@@ -74,6 +74,28 @@ beforeEach(() => {
 });
 
 describe("AssignmentsView", () => {
+  it("等待后显现作业正文，同时保持分类按钮和原根节点", async () => {
+    let finish:
+      | ((value: { category: "today"; items: AssignmentItem[] }) => void)
+      | undefined;
+    vi.mocked(api.getAssignments).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { container } = render(<AssignmentsView />);
+    const root = container.querySelector(".assignments-page") as HTMLElement;
+    expect(root.getAttribute("data-content-reveal")).toBe("loading");
+    expect(screen.getByRole("tab", { name: "今天" })).toBeTruthy();
+    finish?.({ category: "today", items: [assignment] });
+    await screen.findByText("项目报告");
+    expect(container.querySelector(".assignments-page")).toBe(root);
+    expect(root.getAttribute("data-content-reveal")).toBe("ready");
+    expect(root.style.getPropertyValue("--content-reveal-duration")).toBe(
+      "420ms",
+    );
+  });
+
   it("offers all eight classifications and reloads the selected category", async () => {
     render(<AssignmentsView />);
     for (const label of [
@@ -236,6 +258,11 @@ describe("AssignmentsView", () => {
       target: { value: "我的答案" },
     });
     fireEvent.click(screen.getByRole("button", { name: "准备提交文本" }));
+    expect(
+      screen.getByRole("alertdialog").closest("[data-modal-layer]")
+        ?.parentElement,
+    ).toBe(document.body);
+    expect(api.submitAssignmentText).not.toHaveBeenCalled();
     expect(screen.getByRole("alertdialog").textContent).toContain("人机交互");
     expect(screen.getByRole("alertdialog").textContent).toContain("文本提交");
     fireEvent.click(screen.getByRole("button", { name: "确认提交" }));

@@ -150,6 +150,7 @@ describe("VideosView", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("listbox").parentElement).toBe(document.body);
     const option = screen.getByRole("option", {
       name: "文本分析与大语言模型（长课程名称）",
     });
@@ -268,9 +269,7 @@ describe("VideosView", () => {
     });
     expect((loading as HTMLButtonElement).disabled).toBe(true);
     expect(loading.getAttribute("aria-busy")).toBe("true");
-    expect(
-      document.querySelector(".video-play-state[role=status]")?.textContent,
-    ).toContain("正在加载");
+    expect(screen.getByRole("status", { name: "正在加载" })).toBeTruthy();
 
     fireEvent.click(loading);
     fireEvent.keyDown(loading, { key: "Enter" });
@@ -354,9 +353,10 @@ describe("VideosView", () => {
     const play = screen.getByRole("button", { name: "播放 第一讲" });
     expect(play.classList.contains("video-recording-play-target")).toBe(true);
     expect(container.querySelector(".video-play-action")).toBeNull();
-    expect(container.querySelector(".video-play-state")?.textContent).toBe(
-      "点击行播放",
-    );
+    expect(container.querySelector(".video-play-state")?.textContent).toBe("");
+    expect(
+      container.querySelector(".video-play-state")?.getAttribute("aria-label"),
+    ).toBe("播放");
     expect(
       container.querySelector(".video-recording-title-row .video-more"),
     ).toBeTruthy();
@@ -590,7 +590,7 @@ describe("VideosView", () => {
     ]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
-    const organize = screen.getByRole("button", { name: "整理未完成 3 节" });
+    const organize = screen.getByRole("button", { name: "整理未完成 1 节" });
     expect(organize.className).toContain("border-component");
     expect(organize.className).not.toContain("bg-primary ");
   });
@@ -718,7 +718,7 @@ describe("VideosView", () => {
     );
     render(
       <VideosView
-        videos={videos}
+        videos={[{ ...videos[0], source: "video_space" }, videos[2]]}
         onLoadSubtitles={onLoadSubtitles}
         onStartTranscript={onStartTranscript}
       />,
@@ -727,10 +727,6 @@ describe("VideosView", () => {
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "载入播放器字幕" }));
     await waitFor(() => expect(onLoadSubtitles).toHaveBeenCalledOnce());
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Canvas" }), {
-      button: 0,
-      ctrlKey: false,
-    });
 
     fireEvent.click(screen.getByRole("button", { name: "第一讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "整理学习材料" }));
@@ -849,16 +845,18 @@ describe("VideosView", () => {
     );
 
     const action = screen.getByRole("button", {
-      name: "整理未完成 2 节",
+      name: "整理未完成 1 节",
     });
     fireEvent.click(action);
     fireEvent.click(action);
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith([videos[0], videos[2]]);
+    expect(start).toHaveBeenCalledWith([videos[2]]);
     expect(action.getAttribute("aria-busy")).toBe("true");
     await act(async () => finish?.());
     expect(
-      await screen.findByText("开始整理 2 节，跳过 1 节已完成/处理中。"),
+      await screen.findByText(
+        "开始整理 1 节，跳过 2 节已完成、处理中或不支持整理。",
+      ),
     ).toBeTruthy();
   });
 
@@ -924,10 +922,10 @@ describe("VideosView", () => {
       fireEvent.click(screen.getByRole("button", { name: /处理中 \d+/ }));
       expect(screen.getAllByText("第三讲").length).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: /全部 \d+/ }));
-      fireEvent.click(screen.getByRole("button", { name: "整理未完成 2 节" }));
-      await waitFor(() =>
-        expect(start).toHaveBeenCalledWith(Array.of(videos[0], videos[1])),
-      );
+      const organize = screen.getByRole("button", { name: "整理未完成 0 节" });
+      expect((organize as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(organize);
+      expect(start).not.toHaveBeenCalled();
     },
   );
 
@@ -1857,7 +1855,7 @@ describe("VideosView", () => {
     expect(screen.queryByText("旧任务不应出现")).toBeNull();
   });
 
-  it("查看学习材料同步播放器资源但保持暂停，播放按钮仍触发播放", async () => {
+  it("查看学习材料直接切换选中录像，无需请求播放地址", async () => {
     const playMedia = vi
       .spyOn(HTMLMediaElement.prototype, "play")
       .mockResolvedValue(undefined);
@@ -1891,12 +1889,13 @@ describe("VideosView", () => {
     await waitFor(() => expect(playMedia).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "查看学习材料" }));
-    expect(await findPlayer("第三讲")).toBeTruthy();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(queryPlayer("第一讲")).toBeNull();
+    expect(queryPlayer("第三讲")).toBeNull();
+    expect(screen.getByText("已选择当前录像")).toBeTruthy();
     expect(playMedia).toHaveBeenCalledTimes(1);
   });
 
-  it("新录像地址加载失败时清除旧画面并显示当前节错误", async () => {
+  it("查看另一节材料清除旧画面且不受该节播放地址失败影响", async () => {
     const completed = [videos[0], videos[2]].map((video, index) => ({
       id: `done-${index}`,
       batch_id: "batch",
@@ -1922,11 +1921,8 @@ describe("VideosView", () => {
     fireEvent.click(screen.getByRole("button", { name: "第三讲 更多操作" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "查看学习材料" }));
 
-    expect(await screen.findByText("第三讲 无法载入")).toBeTruthy();
-    expect(
-      screen.getByText("第三讲 无法载入").closest('[role="alert"]')
-        ?.textContent,
-    ).toContain("地址已失效");
+    expect(screen.getByText("已选择当前录像")).toBeTruthy();
+    expect(screen.queryByText("第三讲 无法载入")).toBeNull();
     expect(queryPlayer("第一讲")).toBeNull();
   });
 

@@ -25,7 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
-import appLogo from "@/assets/app-logo.png";
+import { AppBrand } from "@/components/AppBrand";
 import { Button } from "@/components/ui/Button";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { SyncStatus, ViewName } from "@/lib/types";
@@ -165,13 +165,7 @@ function MobileDrawer({
           ease: motionEase.out,
         }}
       >
-        <div className="brand">
-          <img className="brand-mark" src={appLogo} alt="SJTU 学习助手标志" />
-          <div>
-            <p>SJTU</p>
-            <span>学习助手</span>
-          </div>
-        </div>
+        <AppBrand />
         <div className="sidebar-scroll">
           <NavItems
             items={items}
@@ -248,13 +242,13 @@ export function AppShell({
   useEffect(() => {
     if (previousViewRef.current === view) return;
     previousViewRef.current = view;
-    headingRef.current?.focus();
+    headingRef.current?.focus({ preventScroll: true });
   }, [view]);
 
   useEffect(() => {
     if (!drawerOpen && navigatingRef.current) {
       navigatingRef.current = false;
-      headingRef.current?.focus();
+      headingRef.current?.focus({ preventScroll: true });
     }
   }, [drawerOpen, view]);
 
@@ -271,13 +265,7 @@ export function AppShell({
   return (
     <div className="app-shell" data-aura-shell>
       <aside className="sidebar" data-aura-surface="navigation">
-        <div className="brand">
-          <img className="brand-mark" src={appLogo} alt="SJTU 学习助手标志" />
-          <div>
-            <p>SJTU</p>
-            <span>学习助手</span>
-          </div>
-        </div>
+        <AppBrand />
         <div className="sidebar-scroll">
           <NavItems
             items={visiblePrimaryNavigation}

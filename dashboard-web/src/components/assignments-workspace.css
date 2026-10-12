@@ -120,27 +120,24 @@
 }
 
 .assignment-native-badge {
-  display: inline-flex;
-  min-height: 30px;
+  min-height: var(--compact-meta-height);
   flex: none;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
+  padding: 3px 8px;
   border: 1px solid color-mix(
     in srgb,
-    var(--status-success) 24%,
+    var(--status-info) 24%,
     var(--aura-border)
   );
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--status-success-bg) 72%, transparent);
-  color: var(--status-success);
+  border-radius: var(--compact-radius);
+  background: color-mix(in srgb, var(--status-info-bg) 72%, transparent);
+  color: var(--status-info);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .assignment-native-badge svg {
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
 }
 
 .assignments-page .assignment-meta {

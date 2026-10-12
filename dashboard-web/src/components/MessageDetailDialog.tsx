@@ -1,4 +1,4 @@
-import { motion, useIsPresent } from "motion/react";
+import { motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
   type RefObject,
   useCallback,
@@ -6,12 +6,15 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import { ContentReveal } from "@/components/ContentReveal";
 import { MessageDetailContent } from "@/components/MessageDetailContent";
 import { LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { getMessageDetail, markMessagesRead, openExternal } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { motionDuration, motionEase } from "@/lib/motion";
 import type { MessageDetail, MessageItem, MessageKind } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
@@ -43,6 +46,7 @@ export function MessageDetailDialog({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
   const { showToast } = useToast();
 
   useModalFocus(dialogRef, onClose, {
@@ -116,20 +120,27 @@ export function MessageDetailDialog({
     [showToast],
   );
 
-  return (
-    <motion.div
+  return createPortal(
+    <div
       className="message-dialog-layer"
       data-modal-layer
       data-motion-layer="modal"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: 0.01 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: isPresent ? 0.14 : 0.12 }}
     >
-      <button
+      <motion.button
         type="button"
         className="message-dialog-backdrop"
+        initial={reduceMotion ? false : { opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.control
+              : motionDuration.fast,
+        }}
         aria-label="点击遮罩关闭消息详情"
         disabled={!isPresent}
         onClick={onClose}
@@ -143,12 +154,17 @@ export function MessageDetailDialog({
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="modal"
         tabIndex={-1}
-        initial={{ opacity: 0.9, y: 6, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0.88, y: 4, scale: 0.99 }}
+        initial={reduceMotion ? false : { opacity: 0.55 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         transition={{
-          duration: isPresent ? 0.18 : 0.14,
-          ease: [0.16, 1, 0.3, 1],
+          type: "tween",
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.overlayEnter
+              : motionDuration.fast,
+          ease: motionEase.out,
         }}
       >
         <header className="message-dialog-header">
@@ -183,7 +199,17 @@ export function MessageDetailDialog({
         ) : detail === null ? (
           <LoadingState label="正在加载消息详情…" />
         ) : (
-          <>
+          <ContentReveal
+            variant="detail"
+            afterLoad
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              flex: 1,
+              gap: 16,
+            }}
+          >
             <div className="message-detail-meta">
               <span>{detail.source_label}</span>
               <span>{formatDateTime(detail.occurred_at)}</span>
@@ -215,9 +241,10 @@ export function MessageDetailDialog({
                 </Button>
               )}
             </footer>
-          </>
+          </ContentReveal>
         )}
       </motion.section>
-    </motion.div>
+    </div>,
+    document.body,
   );
 }

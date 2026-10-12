@@ -1,0 +1,632 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { type CourseVideoItem, VideosView } from "@/components/VideosView";
+import type { TranscriptJob } from "@/lib/types";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
+
+vi.mock("@/lib/api", () => ({
+  getTranscriptArtifacts: vi.fn(async () => ({
+    items: [
+      {
+        id: "summary",
+        kind: "summary",
+        label: "讲义",
+        content_type: "text/markdown",
+      },
+    ],
+  })),
+  getTranscriptV2Artifacts: vi.fn(async () => ({
+    available: false,
+    items: [],
+  })),
+  readTranscriptArtifact: vi.fn(async () => ({ content: "可阅读的原有讲义" })),
+  readTranscriptV2Artifact: vi.fn(),
+}));
+const lesson: CourseVideoItem = {
+  id: "a",
+  title: "甲课",
+  courseName: "课程",
+  source: "video_space",
+  supportsSubtitle: true,
+  playable: true,
+  supportsSlidesPdf: true,
+};
+const other = { ...lesson, id: "b", title: "乙课" };
+const completed: TranscriptJob = {
+  id: "job",
+  batch_id: "batch",
+  source_id: "b",
+  title: "乙课",
+  status: "completed",
+  stage: "completed",
+  progress: 100,
+  attempts: 1,
+};
+function menu(title: string, action: string) {
+  fireEvent.click(screen.getByRole("button", { name: `${title} 更多操作` }));
+  fireEvent.click(screen.getByRole("menuitem", { name: action }));
+}
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe("video action capabilities and isolation", () => {
+  it("keeps a partial job partial and opens existing results without starting a new request", async () => {
+    const retry = vi.fn();
+    render(
+      <VideosView
+        videos={[other]}
+        transcriptJobs={[{ ...completed, status: "partial", progress: 64 }]}
+        onPlay={async () => ({ url: "https://example.test/video.mp4" })}
+        onRetryTranscript={retry}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 乙课" }));
+    const open = await screen.findByRole("button", { name: "查看已有结果" });
+    expect(screen.queryByText("失败可重试")).toBeNull();
+    expect(screen.getAllByText("部分完成").length).toBeGreaterThan(0);
+    fireEvent.click(open);
+    expect(await screen.findByText("可阅读的原有讲义")).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("keeps completed legacy learning material readable without labeling it failed", () => {
+    render(<VideosView videos={[other]} transcriptJobs={[completed]} />);
+    menu("乙课", "查看学习材料");
+    expect(
+      screen.getByText("学习材料已生成，可查看总结；可在详情中补充 AI 校对。"),
+    ).toBeTruthy();
+    expect(screen.queryByText("失败可重试")).toBeNull();
+    expect(screen.getByRole("button", { name: "查看 AI 总结" })).toBeTruthy();
+  });
+
+  it("labels usable learning material with incomplete AI review as partial", () => {
+    render(
+      <VideosView
+        videos={[other]}
+        transcriptJobs={[{ ...completed, phase1_status: "partial" }]}
+      />,
+    );
+    menu("乙课", "查看学习材料");
+    expect(
+      screen.getByText(
+        "学习材料可阅读，AI 校对尚未通过；可在详情中补充或重试。",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("失败可重试")).toBeNull();
+    expect(screen.getByRole("button", { name: "查看 AI 总结" })).toBeTruthy();
+  });
+
+  it("does not keep playback busy while subtitles are pending and allows AI organization", async () => {
+    let finishSubtitle:
+      | ((value: { subtitleMessage: string }) => void)
+      | undefined;
+    const start = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPlay={async () => ({ url: "https://example.test/video.mp4" })}
+        onLoadSubtitles={() =>
+          new Promise((resolve) => {
+            finishSubtitle = resolve;
+          })
+        }
+        onStartTranscript={start}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "播放 甲课" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    menu("甲课", "整理学习材料");
+    await waitFor(() => expect(start).toHaveBeenCalledWith([lesson]));
+    await act(async () => finishSubtitle?.({ subtitleMessage: "字幕已载入" }));
+  });
+
+  it("loads subtitles for a newly selected video without losing the request to selection changes", async () => {
+    const url = URL.createObjectURL;
+    const revoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:subtitle-new");
+    URL.revokeObjectURL = vi.fn();
+    const load = vi.fn(async () => ({
+      subtitleVtt: "WEBVTT\n\n00:00.000 --> 00:01.000\n字幕",
+      subtitleMessage: "字幕已准备",
+    }));
+    render(<VideosView videos={[lesson]} onLoadSubtitles={load} />);
+    menu("甲课", "载入播放器字幕");
+    expect(await screen.findByText("字幕已准备")).toBeTruthy();
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+    cleanup();
+    URL.createObjectURL = url;
+    URL.revokeObjectURL = revoke;
+  });
+
+  it("shows external-open success, skips remote subtitles and releases playback busy", async () => {
+    const subtitles = vi.fn(async () => ({ subtitleMessage: "远程字幕" }));
+    const playback = vi.fn(async () => ({ kind: "external_opened" as const }));
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPlay={playback}
+        onLoadSubtitles={subtitles}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    expect(
+      await screen.findByText("已在本地播放器或外部应用打开"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("可在外部应用观看录像，或继续使用下方学习工具。"),
+    ).toBeTruthy();
+    expect(screen.queryByText("该节录像未返回可播放地址。")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(subtitles).not.toHaveBeenCalled();
+    const play = screen.getByRole("button", {
+      name: "播放 甲课",
+    }) as HTMLButtonElement;
+    expect(play.disabled).toBe(false);
+    expect(play.getAttribute("aria-busy")).toBeNull();
+    fireEvent.click(play);
+    await waitFor(() => expect(playback).toHaveBeenCalledTimes(2));
+  });
+
+  it("deduplicates the same learning resource while allowing another resource", async () => {
+    let finish: (() => void) | undefined;
+    const start = vi.fn((items: CourseVideoItem[]) =>
+      items[0].id === "a"
+        ? new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(),
+    );
+    render(<VideosView videos={[lesson, other]} onStartTranscript={start} />);
+    menu("甲课", "整理学习材料");
+    fireEvent.click(screen.getByRole("button", { name: "甲课 更多操作" }));
+    expect(
+      (screen.getByRole("menuitem", { name: "正在整理…" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("menuitem", { name: "生成 AI 总结" }));
+    expect(start).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    menu("乙课", "整理学习材料");
+    expect(start).toHaveBeenCalledTimes(2);
+    await act(async () => finish?.());
+  });
+
+  it("keeps reading existing materials available during an export without fetching playback", async () => {
+    let finish: (() => void) | undefined;
+    const playback = vi.fn();
+    render(
+      <VideosView
+        videos={[lesson, other]}
+        transcriptJobs={[completed]}
+        onPlay={playback}
+        onCreateSlidesPdf={() =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+        }
+      />,
+    );
+    menu("甲课", "生成课件 PDF");
+    menu("乙课", "查看学习材料");
+    expect(playback).not.toHaveBeenCalled();
+    expect(screen.getByText("已选择当前录像")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "查看 AI 总结" }));
+    expect(await screen.findByText("可阅读的原有讲义")).toBeTruthy();
+    await act(async () => finish?.());
+  });
+
+  it("excludes unsupported sources and missing subtitles consistently from bulk submission", async () => {
+    const canvas = {
+      ...lesson,
+      id: "canvas",
+      title: "Canvas课",
+      source: "canvas" as const,
+    };
+    const noSubtitle = {
+      ...lesson,
+      id: "empty",
+      title: "无字幕课",
+      supportsSubtitle: false,
+    };
+    const start = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[lesson, canvas, noSubtitle]}
+        onStartTranscript={start}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Canvas课 更多操作" }));
+    expect(
+      (
+        screen.getByRole("menuitem", {
+          name: "整理学习材料",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(screen.getByText(/此来源尚未接入字幕整理/)).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "整理未完成 1 节" }));
+    await waitFor(() => expect(start).toHaveBeenCalledWith([lesson]));
+  });
+
+  it("blocks new AI tasks without configuration but preserves reading and a settings action", async () => {
+    const start = vi.fn();
+    const settings = vi.fn();
+    render(
+      <VideosView
+        videos={[lesson, other]}
+        transcriptJobs={[completed]}
+        onStartTranscript={start}
+        aiReadiness={{ configured: false, message: "尚未配置模型", model: "" }}
+        onOpenAISettings={settings}
+      />,
+    );
+    menu("甲课", "整理学习材料");
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "配置 AI" }));
+    expect(settings).toHaveBeenCalledOnce();
+    menu("乙课", "查看 AI 总结");
+    expect(await screen.findByText("可阅读的原有讲义")).toBeTruthy();
+  });
+  it.each(["organize", "retry", "cancel", "export"] as const)(
+    "ignores late %s UI effects after switching courses while the callback completes",
+    async (kind) => {
+      let finish: (() => void) | undefined;
+      const action = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const oldJob: TranscriptJob = {
+        ...completed,
+        source_id: lesson.id,
+        title: lesson.title,
+        status: kind === "cancel" ? "queued" : "failed",
+        progress: kind === "cancel" ? 10 : 100,
+      };
+      const callbacks = {
+        onStartTranscript: action,
+        onRetryTranscript: action,
+        onCancelTranscript: action,
+        onCreateSlidesPdf: action,
+        onPlay: async () => ({ url: "https://example.test/lesson.mp4" }),
+      };
+      const { rerender } = render(
+        <VideosView
+          courseId={12}
+          videos={[lesson]}
+          transcriptJobs={kind === "retry" || kind === "cancel" ? [oldJob] : []}
+          {...callbacks}
+        />,
+      );
+      if (kind === "cancel")
+        fireEvent.click(screen.getByRole("button", { name: "取消" }));
+      else
+        menu(
+          lesson.title,
+          kind === "retry"
+            ? "重试整理学习材料"
+            : kind === "export"
+              ? "生成课件 PDF"
+              : "整理学习材料",
+        );
+      expect(action).toHaveBeenCalledOnce();
+      rerender(<VideosView courseId={13} videos={[other]} {...callbacks} />);
+      fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
+      const selection = screen.getByRole("checkbox", {
+        name: "选择 乙课",
+      }) as HTMLInputElement;
+      fireEvent.click(selection);
+      await act(async () => finish?.());
+      expect(action).toHaveBeenCalledOnce();
+      expect(selection.checked).toBe(true);
+      expect(screen.getByLabelText("批量操作").textContent).toContain(
+        "已选择 1 项",
+      );
+      for (const text of [
+        "已开始整理本节学习材料。",
+        "已重新开始整理本节学习材料。",
+        "任务已取消。",
+        "课件已生成（临时文件）。",
+      ])
+        expect(screen.queryByText(text)).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
+
+  it("does not let an old summary completion clear the new course pending summary or open old results", async () => {
+    let finishOld: (() => void) | undefined;
+    let finishNew: (() => void) | undefined;
+    const start = vi.fn(
+      (items: CourseVideoItem[]) =>
+        new Promise<void>((resolve) => {
+          if (items[0].id === lesson.id) finishOld = resolve;
+          else finishNew = resolve;
+        }),
+    );
+    const { rerender } = render(
+      <VideosView courseId={12} videos={[lesson]} onStartTranscript={start} />,
+    );
+    menu(lesson.title, "生成 AI 总结");
+    rerender(
+      <VideosView courseId={13} videos={[other]} onStartTranscript={start} />,
+    );
+    menu(other.title, "生成 AI 总结");
+    await act(async () => finishOld?.());
+    expect(screen.queryByText("已开始生成 AI 总结。")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "乙课 更多操作" }));
+    expect(
+      (
+        screen.getByRole("menuitem", {
+          name: "AI 总结生成中",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await act(async () => finishNew?.());
+    const newJob = { ...completed, phase1_status: "completed" as const };
+    rerender(
+      <VideosView
+        courseId={13}
+        videos={[other]}
+        transcriptJobs={[newJob]}
+        onStartTranscript={start}
+      />,
+    );
+    expect(await screen.findByText("可阅读的原有讲义")).toBeTruthy();
+  });
+
+  it("does not show an old course failure or cache its late PDF as a current artifact", async () => {
+    let failOld: ((reason: Error) => void) | undefined;
+    let finishPdf:
+      | ((value: { scope: "video"; url: string }) => void)
+      | undefined;
+    const start = vi.fn(
+      () =>
+        new Promise<void>((_, reject) => {
+          failOld = reject;
+        }),
+    );
+    const pdf = vi.fn(
+      () =>
+        new Promise<{ scope: "video"; url: string }>((resolve) => {
+          finishPdf = resolve;
+        }),
+    );
+    const play = async () => ({ url: "https://example.test/video.mp4" });
+    // Reused provider ID exposes a stale artifact even when the new course has no export.
+    const newCourseLesson = { ...other, id: lesson.id };
+    const { rerender } = render(
+      <VideosView
+        courseId={12}
+        videos={[lesson]}
+        onStartTranscript={start}
+        onCreateSlidesPdf={pdf}
+        onPlay={play}
+      />,
+    );
+    menu(lesson.title, "整理学习材料");
+    menu(lesson.title, "生成课件 PDF");
+    rerender(
+      <VideosView
+        courseId={13}
+        videos={[newCourseLesson]}
+        onStartTranscript={start}
+        onCreateSlidesPdf={pdf}
+        onPlay={play}
+      />,
+    );
+    await act(async () => {
+      failOld?.(new Error("旧课程服务异常"));
+      finishPdf?.({ scope: "video", url: "https://example.test/old.pdf" });
+    });
+    expect(screen.queryByText("旧课程服务异常")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "播放 乙课" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "播放 乙课" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "课件" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.queryByText("课件已生成（临时文件）")).toBeNull();
+    expect(screen.queryByText("课程课件已生成（临时文件）")).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开" })).toBeNull();
+  });
+  it("bounds a stuck playback read, allows a retry and ignores its late old address", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let finishOld: ((value: { url: string }) => void) | undefined;
+    const playback = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ url: "https://example.test/recovered.mp4" });
+    render(<VideosView videos={[lesson]} onPlay={playback} />);
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(
+      document.querySelector('.video-player-empty[role="alert"]')?.textContent,
+    ).toContain("播放地址读取超时，可重新选择播放");
+    const retry = screen.getByRole("button", {
+      name: "播放 甲课",
+    }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    fireEvent.click(retry);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(playback).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(
+      "https://example.test/recovered.mp4",
+    );
+    await act(async () => {
+      finishOld?.({ url: "https://example.test/stale.mp4" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(
+      "https://example.test/recovered.mp4",
+    );
+  });
+
+  it("bounds a stuck manual subtitle read, shows recovery and ignores late old subtitles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let finishOld: ((value: { subtitleMessage: string }) => void) | undefined;
+    const subtitles = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ subtitleMessage: "新字幕已准备" });
+    render(<VideosView videos={[lesson]} onLoadSubtitles={subtitles} />);
+    menu(lesson.title, "载入播放器字幕");
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(
+      screen.getAllByText("字幕读取超时，可从录像更多操作重新载入字幕。")
+        .length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "甲课 更多操作" }));
+    expect(
+      (
+        screen.getByRole("menuitem", {
+          name: "载入播放器字幕",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("menuitem", { name: "载入播放器字幕" }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("新字幕已准备")).toBeTruthy();
+    await act(async () => {
+      finishOld?.({ subtitleMessage: "旧字幕迟到" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.queryByText("旧字幕迟到")).toBeNull();
+    expect(screen.getByText("新字幕已准备")).toBeTruthy();
+    expect(subtitles).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps playback free while background subtitles time out and lets manual subtitles recover", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const subtitles = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockResolvedValueOnce({ subtitleMessage: "重新载入成功" });
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPlay={async () => ({ url: "https://example.test/lesson.mp4" })}
+        onLoadSubtitles={subtitles}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(
+      (screen.getByRole("button", { name: "播放 甲课" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "字幕" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(
+      screen.getByText("字幕读取超时，可从录像更多操作重新载入字幕。"),
+    ).toBeTruthy();
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(
+      "https://example.test/lesson.mp4",
+    );
+    menu(lesson.title, "载入播放器字幕");
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("重新载入成功")).toBeTruthy();
+  });
+
+  it("aborts only stale UI waits on course change and keeps late playback and subtitle results out", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let finishPlay: ((value: { url: string }) => void) | undefined;
+    let finishSubtitle:
+      | ((value: { subtitleMessage: string }) => void)
+      | undefined;
+    const playback = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishPlay = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ url: "https://example.test/new-course.mp4" });
+    const subtitles = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishSubtitle = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ subtitleMessage: "新课程字幕" });
+    const { rerender } = render(
+      <VideosView
+        courseId={12}
+        videos={[lesson]}
+        onPlay={playback}
+        onLoadSubtitles={subtitles}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    menu(lesson.title, "载入播放器字幕");
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    rerender(
+      <VideosView
+        courseId={13}
+        videos={[other]}
+        onPlay={playback}
+        onLoadSubtitles={subtitles}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 乙课" }));
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    await act(async () => {
+      finishPlay?.({ url: "https://example.test/old-course.mp4" });
+      finishSubtitle?.({ subtitleMessage: "旧课程字幕" });
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(document.querySelector("video source")?.getAttribute("src")).toBe(
+      "https://example.test/new-course.mp4",
+    );
+    expect(screen.queryByText("旧课程字幕")).toBeNull();
+    expect(screen.queryByText("读取已取消。")).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "播放 乙课" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+});

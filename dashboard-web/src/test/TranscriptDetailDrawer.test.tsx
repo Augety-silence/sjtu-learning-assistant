@@ -103,6 +103,10 @@ function chooseTab(name: string) {
   });
 }
 
+function openAiReview() {
+  chooseTab("AI 校对");
+}
+
 beforeEach(() => {
   getV1.mockResolvedValue({
     items: [
@@ -243,16 +247,12 @@ describe("TranscriptDetailDrawer Phase1", () => {
 
     renderDrawer();
 
+    expect(screen.queryByText("课程语境驱动的深度校对结果")).toBeNull();
+    openAiReview();
     expect(
-      await screen.findByText("本节尚未生成深度校对，可重新执行字幕AI整理"),
+      await screen.findByText("本节尚未生成深度校对，可重新执行字幕 AI 整理"),
     ).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "AI校对字幕" })).toHaveProperty(
-      "disabled",
-      true,
-    );
-    expect(
-      await screen.findByRole("heading", { name: "本节要点" }),
-    ).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "AI校对字幕" })).toBeNull();
     expect(readV2).not.toHaveBeenCalled();
   });
 
@@ -318,6 +318,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     await waitFor(() => expect(getV2).toHaveBeenCalledTimes(1));
     expect(readV2).not.toHaveBeenCalled();
 
+    openAiReview();
     chooseTab("AI校对字幕");
     expect(
       await screen.findByText("原始字幕未被覆盖", { exact: false }),
@@ -340,6 +341,8 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(screen.getByText("低置信片段未自动修改")).toBeTruthy();
 
     chooseTab("本节要点");
+    expect(screen.queryByText("课程语境驱动的深度校对结果")).toBeNull();
+    openAiReview();
     chooseTab("AI校对字幕");
     await waitFor(() => expect(readV2).toHaveBeenCalledTimes(4));
   });
@@ -351,7 +354,8 @@ describe("TranscriptDetailDrawer Phase1", () => {
     );
 
     renderDrawer();
-    await screen.findByRole("tab", { name: "修改对比" });
+    await screen.findByRole("tab", { name: "AI 校对" });
+    openAiReview();
     chooseTab("修改对比");
 
     expect(await screen.findByText("未发现可展示的字幕修改。")).toBeTruthy();
@@ -366,7 +370,8 @@ describe("TranscriptDetailDrawer Phase1", () => {
       );
 
     renderDrawer();
-    await screen.findByRole("tab", { name: "AI校对字幕" });
+    await screen.findByRole("tab", { name: "AI 校对" });
+    openAiReview();
     chooseTab("AI校对字幕");
     expect(await screen.findByText("校对工件暂时不可读")).toBeTruthy();
 
@@ -385,7 +390,8 @@ describe("TranscriptDetailDrawer Phase1", () => {
       ),
     );
     const view = renderDrawer();
-    await screen.findByRole("tab", { name: "AI校对字幕" });
+    await screen.findByRole("tab", { name: "AI 校对" });
+    openAiReview();
     chooseTab("AI校对字幕");
     expect(await screen.findByText("第一份校对")).toBeTruthy();
 
@@ -400,6 +406,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
       />,
     );
     await waitFor(() => expect(getV2).toHaveBeenLastCalledWith(nextJob.id));
+    openAiReview();
     chooseTab("AI校对字幕");
 
     expect(await screen.findByText("第二份校对")).toBeTruthy();
@@ -442,13 +449,13 @@ describe("TranscriptDetailDrawer Phase1", () => {
         status: "failed",
       },
     });
-    const { container } = renderDrawer();
+    renderDrawer();
 
     const summary = await screen.findByText("质量诊断：AI 校对未通过");
     const details = summary.closest("details");
     expect(details?.hasAttribute("open")).toBe(false);
     expect(details?.querySelector(".transcript-quality-warning")).toBeTruthy();
-    const progress = container.querySelector(".transcript-progress-block");
+    const progress = document.querySelector(".transcript-progress-block");
     expect(
       progress &&
         progress.compareDocumentPosition(details as Node) &
@@ -456,7 +463,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     ).toBeTruthy();
   });
 
-  it("从 summary/study_guide/practice_items 读取自编练习并默认折叠答案", async () => {
+  it("优先从 summary_json 的真实 study_guide.questions 读取主动练习", async () => {
     getV2.mockResolvedValue({
       available: false,
       status: null,
@@ -465,23 +472,47 @@ describe("TranscriptDetailDrawer Phase1", () => {
       warnings: [],
       items: [],
     });
-    readV1.mockResolvedValue({
-      id: `${job.id}:summary`,
-      kind: "summary",
-      content: JSON.stringify({
-        summary: { knowledge_points: ["边际贡献"] },
-        study_guide: {
-          practice_items: [
-            { question: "边际贡献如何计算？", answer: "销售收入减变动成本。" },
-            {
-              question: "写出保本点公式。",
-              reference_answer: "固定成本除以单位边际贡献。",
-            },
-          ],
+    getV1.mockResolvedValue({
+      items: [
+        {
+          id: `${job.id}:summary`,
+          kind: "summary",
+          label: "本节要点",
+          content_type: "text/markdown",
         },
-      }),
+        {
+          id: `${job.id}:summary_json`,
+          kind: "summary_json",
+          label: "要点数据",
+          content_type: "application/json",
+        },
+      ],
     });
+    readV1.mockImplementation(async (artifactId) => ({
+      id: artifactId,
+      kind: artifactId.endsWith("summary_json") ? "summary_json" : "summary",
+      content: artifactId.endsWith("summary_json")
+        ? JSON.stringify({
+            knowledge_points: ["边际贡献"],
+            study_guide: {
+              questions: [
+                {
+                  prompt: "边际贡献如何计算？",
+                  answer: "销售收入减变动成本。",
+                  source: "自编练习或例子",
+                },
+                {
+                  prompt: "写出保本点公式。",
+                  answer: "固定成本除以单位边际贡献。",
+                  source: "自编练习或例子",
+                },
+              ],
+            },
+          })
+        : "# 不应读取这个 Markdown 回退",
+    }));
     renderDrawer();
+    expect(await screen.findByText("边际贡献")).toBeTruthy();
     chooseTab("主动练习");
 
     expect(await screen.findByText("【自编练习】")).toBeTruthy();
@@ -490,6 +521,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(answers).toHaveLength(2);
     expect(answers[0].closest("details")?.hasAttribute("open")).toBe(false);
     expect(screen.queryByText("本节暂无自编练习。")).toBeNull();
+    expect(readV1).toHaveBeenCalledWith(`${job.id}:summary_json`);
   });
 
   it("质量页与材料顶部显示高风险警告和具体指标", async () => {
@@ -525,6 +557,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
         "AI 校对未通过，关键术语、数字和公式请对照视频核实",
       ),
     ).toBeTruthy();
+    openAiReview();
     chooseTab("质量");
     await waitFor(() =>
       expect(
@@ -535,5 +568,94 @@ describe("TranscriptDetailDrawer Phase1", () => {
     );
     expect(screen.getAllByText(/Critic 通过率 0%/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/待确认占比 80%/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("live artifact recovery", () => {
+  it("refreshes artifact lists for the same job when processing finishes", async () => {
+    getV1.mockResolvedValueOnce({ items: [] });
+    getV2
+      .mockResolvedValueOnce({
+        available: false,
+        status: null,
+        pipeline_status: null,
+        quality: null,
+        warnings: [],
+        items: [],
+      })
+      .mockResolvedValueOnce(v2List());
+    const processing = { ...job, status: "organizing" as const, progress: 70 };
+    const { rerender } = render(
+      <TranscriptDetailDrawer job={processing} onClose={vi.fn()} />,
+    );
+    await waitFor(() => expect(getV1).toHaveBeenCalledTimes(1));
+    await screen.findByText("该阶段尚未生成此类学习材料，完成后会自动更新。");
+    rerender(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    expect(
+      await screen.findByRole("heading", { name: "本节要点" }),
+    ).toBeTruthy();
+    expect(getV1).toHaveBeenCalledTimes(2);
+    expect(getV2).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers an explicit supplement for legacy completion and prevents repeated retries", async () => {
+    getV2.mockResolvedValue({
+      available: false,
+      status: null,
+      pipeline_status: null,
+      quality: null,
+      warnings: [],
+      items: [],
+    });
+    let finish: (() => void) | undefined;
+    const retry = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const close = vi.fn();
+    render(
+      <TranscriptDetailDrawer job={job} onClose={close} onRetry={retry} />,
+    );
+    openAiReview();
+    const supplement = await screen.findByRole("button", {
+      name: "补充生成 AI 校对",
+    });
+    fireEvent.click(supplement);
+    fireEvent.click(supplement);
+    expect(retry).toHaveBeenCalledOnce();
+    expect((supplement as HTMLButtonElement).disabled).toBe(true);
+    await import("@/test/render").then(({ act }) =>
+      act(async () => finish?.()),
+    );
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  });
+
+  it("provides an explicit recovery when the completed job has no requested learning artifact", async () => {
+    getV1.mockResolvedValue({ items: [] });
+    getV2.mockResolvedValue(v2List());
+    const retry = vi.fn(async () => undefined);
+    render(
+      <TranscriptDetailDrawer job={job} onClose={vi.fn()} onRetry={retry} />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "补充整理学习材料" }),
+    );
+    expect(retry).toHaveBeenCalledWith(job);
+  });
+
+  it("retries a failed V1 read without requiring task mutation permissions", async () => {
+    readV1.mockRejectedValueOnce(new Error("读取失败")).mockResolvedValueOnce({
+      id: `${job.id}:summary`,
+      kind: "summary",
+      content: "重读后讲义",
+    });
+    render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重试加载学习材料" }),
+    );
+    expect(await screen.findByText("重读后讲义")).toBeTruthy();
+    expect(readV1).toHaveBeenCalledTimes(2);
   });
 });

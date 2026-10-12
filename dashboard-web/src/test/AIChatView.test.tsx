@@ -175,9 +175,34 @@ describe("AIChatView", () => {
     ]) {
       expect(screen.getByText(capability)).toBeTruthy();
     }
+    expect(screen.getByRole("button", { name: "模型：自动" }).textContent).toBe(
+      "模型：自动",
+    );
+    expect(
+      screen.getByRole("button", { name: "推理强度：标准" }).textContent,
+    ).toBe("推理：标准");
     expect(
       screen.getByText("简洁时间线展示检索与整理进度", { exact: false }),
     ).toBeTruthy();
+  });
+
+  it("supports arrow navigation, Escape, and focus return in compact choices", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    const trigger = await screen.findByRole("button", { name: "模型：自动" });
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const selected = await screen.findByRole("option", { name: /^自动/ });
+    await waitFor(() => expect(document.activeElement).toBe(selected));
+
+    fireEvent.keyDown(selected, { key: "ArrowDown" });
+    const next = screen.getByRole("option", { name: /^DeepSeek Flash/ });
+    expect(document.activeElement).toBe(next);
+
+    fireEvent.keyDown(next, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("listbox", { name: "模型" })).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
   });
 
   it("sends model, depth and preset and renders the returned trace", async () => {
@@ -189,7 +214,7 @@ describe("AIChatView", () => {
     fireEvent.change(input, { target: { value: "最近有什么消息？" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(await screen.findByText("查看推理过程")).toBeTruthy();
+    expect(await screen.findByText("查看过程")).toBeTruthy();
     const animatedReply = document.querySelector(
       '[data-motion-entry="assistant"]',
     );
@@ -202,17 +227,16 @@ describe("AIChatView", () => {
       "deep",
       "general",
     );
-    expect(screen.getByText("检索截止日期")).toBeTruthy();
-    expect(screen.getByText("命中 3 项")).toBeTruthy();
-    expect(screen.getByText(/已完成 · 调用 1 次 · 命中 3 项/)).toBeTruthy();
+    expect(screen.getAllByText("检索截止日期").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("命中 3 项").length).toBeGreaterThan(0);
+    expect(screen.getByText(/已完成 · 1 项操作 · 命中 3 项/)).toBeTruthy();
     expect(screen.getByRole("article", { name: "你的消息" })).toBeTruthy();
     expect(
-      document.querySelector(
-        ".ai-message-user .ai-message-avatar img[src*=user-avatar]",
-      ),
-    ).toBeTruthy();
+      document.querySelector(".ai-message-user .ai-message-avatar"),
+    ).toBeNull();
     expect(screen.queryByText("你", { exact: true })).toBeNull();
-    expect(screen.getByText("预检索")).toBeTruthy();
+    expect(screen.getAllByText("预检索").length).toBeGreaterThan(0);
+    expect(screen.queryByText("查看推理过程")).toBeNull();
     expect(screen.getAllByRole("button", { name: "复制消息" })).toHaveLength(2);
   });
 
@@ -232,11 +256,13 @@ describe("AIChatView", () => {
     fireEvent.change(input, { target: { value: "检索本学期课程" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(await screen.findByText("Agent 正在检索本地学习数据…")).toBeTruthy();
     expect(
-      container.querySelector(".ai-chat-messages > .ai-thinking"),
+      await screen.findByText("请求已发送，正在等待 Agent 返回"),
     ).toBeTruthy();
-    expect(screen.getByText("正在规划检索步骤")).toBeTruthy();
+    expect(
+      container.querySelector(".ai-chat-messages > .ai-inline-execution"),
+    ).toBeTruthy();
+    expect(screen.queryByText("正在规划检索步骤")).toBeNull();
 
     resolveMessage?.({
       session: {
@@ -312,11 +338,32 @@ describe("AIChatView", () => {
       traces: [trace],
     });
 
-    render(<AIChatView onBack={vi.fn()} />);
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
     expect(await screen.findByText("历史回答")).toBeTruthy();
-    fireEvent.click(screen.getByText("检索截止日期"));
-    expect(screen.getByText("安全参数")).toBeTruthy();
-    expect(screen.getByText("结果摘要")).toBeTruthy();
+    const inlineExecution = container.querySelector(
+      ".ai-message-assistant .ai-execution-card > summary",
+    );
+    expect(inlineExecution).toBeTruthy();
+    expect(
+      (inlineExecution?.parentElement as HTMLDetailsElement | null)?.open,
+    ).toBe(false);
+    fireEvent.click(inlineExecution as HTMLElement);
+    expect(
+      (inlineExecution?.parentElement as HTMLDetailsElement | null)?.open,
+    ).toBe(true);
+    const inlineTool = container.querySelector(
+      ".ai-message-assistant .ai-execution-detail .ai-tool-run > summary",
+    );
+    expect(inlineTool).toBeTruthy();
+    expect((inlineTool?.parentElement as HTMLDetailsElement | null)?.open).toBe(
+      false,
+    );
+    fireEvent.click(inlineTool as HTMLElement);
+    expect((inlineTool?.parentElement as HTMLDetailsElement | null)?.open).toBe(
+      true,
+    );
+    expect(inlineTool?.parentElement?.textContent).toContain("安全参数");
+    expect(inlineTool?.parentElement?.textContent).toContain("结果摘要");
   });
 
   it("switches the active preset before creating a new conversation", async () => {
@@ -426,7 +473,7 @@ describe("AIChatView", () => {
     }
   });
 
-  it("keeps avatar, message body and copy action in one stable row", async () => {
+  it("keeps the user message compact without a detached avatar", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     const input = await screen.findByRole("textbox", { name: "输入问题" });
     fireEvent.change(input, { target: { value: "检查消息布局" } });
@@ -437,10 +484,8 @@ describe("AIChatView", () => {
       expect((input as HTMLTextAreaElement).style.height).toBe("42px");
     });
     const article = await screen.findByRole("article", { name: "你的消息" });
-    expect(article.children[0].classList.contains("ai-message-avatar")).toBe(
-      true,
-    );
-    expect(article.children[1].classList.contains("ai-message-body")).toBe(
+    expect(article.querySelector(".ai-message-avatar")).toBeNull();
+    expect(article.children[0].classList.contains("ai-message-body")).toBe(
       true,
     );
     expect(
@@ -515,7 +560,7 @@ describe("AIChatView", () => {
       screen
         .getByRole("button", { name: "切换 Activity 检索轨迹" })
         .getAttribute("aria-expanded"),
-    ).toBe("true");
+    ).toBe("false");
   });
 
   it("keeps Activity non-modal and preserves composer focus and draft", async () => {
@@ -526,6 +571,7 @@ describe("AIChatView", () => {
     const activityToggle = screen.getByRole("button", {
       name: "切换 Activity 检索轨迹",
     });
+    expect(activityToggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.pointerDown(activityToggle);
     fireEvent.click(activityToggle);
 
@@ -536,6 +582,12 @@ describe("AIChatView", () => {
       screen.getByRole("complementary", { name: "Activity 检索轨迹" }),
     ).toBeTruthy();
     expect(input.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(activityToggle.getAttribute("aria-expanded")).toBe("false");
+      expect(document.activeElement).toBe(activityToggle);
+    });
   });
 
   it("queues a follow-up while Agent is running and sends it next", async () => {
@@ -570,7 +622,7 @@ describe("AIChatView", () => {
     const input = await screen.findByRole("textbox", { name: "输入问题" });
     fireEvent.change(input, { target: { value: "检索本学期课程" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findByText("Agent 正在检索本地学习数据…");
+    await screen.findByText("请求已发送，正在等待 Agent 返回");
 
     fireEvent.change(input, { target: { value: "只看安泰的课程" } });
     expect(
