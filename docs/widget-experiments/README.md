@@ -68,3 +68,38 @@ import { ReadyRangeBar } from "@/components/experiments/ReadyRangeBar";
   onSeekMs={(ms) => onSeek(ms / 1000)}
 />
 ```
+
+### 2. EvidencePeek · 可展开的字幕证据
+
+文件：`dashboard-web/src/components/experiments/EvidencePeek.tsx` / `evidence-peek.css`（前缀 `slw-evidence-`）
+
+| Prop | 类型 | 说明 |
+| --- | --- | --- |
+| `quote` | `string \| null` | 字幕引文。缺失或只有空白时显示"未提供字幕引文。" |
+| `sourceLabel` | `string \| null` | 来源标签。缺失时显示"来源未标注" |
+| `startMs` / `endMs` | `number \| null` | 时间（毫秒）。开始时间非法时显示"时间未知"；结束时间缺失或不晚于开始时间时只显示开始时间，不补造结束时间（`resolveEvidenceTiming` 单独导出） |
+| `onSeekMs` | `(ms) => void` | 可选。传入且时间有效时，展开后显示"跳到 mm:ss"按钮，**只有点击该按钮才会调用**；时间无效时改为说明"缺少有效时间，无法跳转视频。" |
+| `variant` | `"inline" \| "popover"` | 默认 `inline`（推荐）。`popover` 为轻浮层 |
+| `motion` | `"auto" \| "static"` | `inline` 用高度 + 淡入（`motionDuration.enter`），`popover` 用 4px 位移 + 淡入（`motionDuration.popoverEnter`） |
+| `defaultOpen` | `boolean` | 非受控初始状态，主要用于预览 |
+
+默认只显示紧凑的"来源 · 时间"触发按钮（带 `aria-expanded` / `aria-controls`）。键盘：Tab 聚焦，Enter/空格展开或收起；展开后焦点仍留在触发按钮上，不会自动移到跳转按钮；在组件内任意位置按 `Escape` 收起并把焦点还给触发按钮。`popover` 额外支持点击外部或焦点离开组件时收起，这种情况下不移动焦点。组件全部使用 `span`，可以直接嵌在 `<p>` 或列表项里。
+
+**推荐 inline**：展开内容在文档流内，不会被滚动容器裁切，也不会遮住相邻知识点；窄面板（如同步学习侧栏）里表现稳定；焦点和关闭逻辑最简单。`popover` 只建议用在行高紧凑、不希望撑开布局的密集列表中，并且宿主容器不能设置 `overflow: hidden`。
+
+最小插入示例（讲义知识点后附证据）：
+
+```tsx
+import { EvidencePeek } from "@/components/experiments/EvidencePeek";
+
+<p>
+  {point.text}
+  <EvidencePeek
+    quote={point.evidence?.quote}
+    sourceLabel={point.evidence?.sourceLabel}
+    startMs={point.evidence?.startMs}
+    endMs={point.evidence?.endMs}
+    onSeekMs={(ms) => onSeek(ms / 1000)}
+  />
+</p>
+```

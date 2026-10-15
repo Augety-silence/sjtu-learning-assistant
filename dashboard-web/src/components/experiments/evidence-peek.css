@@ -1,0 +1,138 @@
+/* EvidencePeek — prefix slw-evidence-. Theme variables only. */
+
+.slw-evidence {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: baseline;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Inline variant occupies its own line so expanding never reflows the
+   surrounding sentence; the trigger itself stays compact. */
+.slw-evidence[data-variant="inline"] {
+  display: block;
+}
+
+.slw-evidence-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-height: var(--compact-meta-height);
+  padding: 2px 6px;
+  border: 1px solid var(--border-workspace-strong);
+  border-radius: var(--compact-radius);
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-control) var(--ease-motion-out),
+    border-color var(--motion-control) var(--ease-motion-out);
+}
+
+.slw-evidence-trigger:hover {
+  background: var(--surface-hover);
+}
+
+.slw-evidence-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.slw-evidence-trigger[aria-expanded="true"] {
+  border-color: var(--border-accent-soft);
+  color: var(--text-primary);
+  background: var(--surface-accent-soft);
+}
+
+.slw-evidence-trigger > svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}
+
+.slw-evidence-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slw-evidence-chevron {
+  transition: transform var(--motion-control) var(--ease-motion-out);
+}
+
+.slw-evidence-trigger[aria-expanded="true"] .slw-evidence-chevron {
+  transform: rotate(180deg);
+}
+
+.slw-evidence[data-motion="static"] .slw-evidence-chevron,
+.slw-evidence[data-motion="static"] .slw-evidence-trigger {
+  transition: none;
+}
+
+.slw-evidence-panel {
+  display: block;
+  overflow: hidden;
+}
+
+.slw-evidence-panel-inner {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-accent-soft);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-subtle);
+}
+
+.slw-evidence-panel-popover {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  width: min(360px, calc(100vw - 32px));
+  overflow: visible;
+}
+
+.slw-evidence-panel-popover .slw-evidence-panel-inner {
+  border: 1px solid var(--border-workspace-strong);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  box-shadow: 0 8px 24px var(--shadow-overlay);
+}
+
+.slw-evidence-quote {
+  display: block;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.slw-evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  color: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.slw-evidence-missing {
+  display: block;
+  color: var(--status-warning);
+}
+
+.slw-evidence-seek {
+  justify-self: start;
+}
+
+.slw-evidence-seek svg {
+  width: 13px;
+  height: 13px;
+}
