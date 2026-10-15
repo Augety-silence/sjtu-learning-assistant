@@ -143,3 +143,49 @@ const [openId, setOpenId] = useState<string | null>(null);
   />
 ))}
 ```
+
+### 4. MaterialUpdateNotice · 材料更新轻提示
+
+文件：`dashboard-web/src/components/experiments/MaterialUpdateNotice.tsx` / `material-update-notice.css`（前缀 `slw-update-`）
+
+| Prop | 类型 | 说明 |
+| --- | --- | --- |
+| `revision` | `string \| number \| null` | 材料的修订号（例如 `learningRevision`），只做相等比较。第一个有效值作为基线，不提示；之后出现**不同的**有效值才提示。`null`、`undefined`、`""`、`NaN` 视为未知，直接忽略，也不会覆盖基线 |
+| `message` | `string \| null` | 可选的附加说明，由宿主提供，原样显示（窄屏时省略号截断） |
+| `onView` | `() => void` | 可选。传入后显示"查看"按钮，**只有用户点击时才调用**，调用后提示收起 |
+| `autoHideMs` | `number \| null` | 自动收起时间，默认 6000。鼠标悬停或焦点在提示内时暂停；`null` / `0` 表示一直保留到用户关闭 |
+| `motion` | `"auto" \| "static"` | 轻动效为 4px 横移 + 淡入（`motionDuration.popoverEnter`），收起只淡出；减少动态效果时直接显示和移除 |
+
+行为约定：
+
+- 提示文字固定为"材料有更新"，不推断"已全部完成"或"可以开始复习"。
+- 同一修订号的轮询、父组件普通重渲染、StrictMode 的双次 effect 都不会重播。提示可见期间修订号继续变化时，沿用同一个元素，不重新入场，只把自动收起计时重新开始，所以快速连续更新时不会闪烁。
+- 外层 `role="status"` + `aria-live="polite"` 常驻，提示插入时由读屏礼貌播报；组件不调用 `focus()`、`scrollIntoView()` 或 `scrollTo()`。
+- 计时器在收起、暂停和卸载时都会清理；hook `useRevisionChange(revision)` 单独导出，宿主也可以只用它判断"是否真的有新修订"。
+
+**推荐**：放在同步讲义面板副标题右侧，`revision` 直接接面板已有的 `learningRevision`（或 `sourceVersion`），`onView` 接到"滚动到最新段落"这类宿主自己的动作上。滚动由宿主在用户点击后执行，组件本身不滚动。
+
+最小插入示例：
+
+```tsx
+import { MaterialUpdateNotice } from "@/components/experiments/MaterialUpdateNotice";
+
+<div className="panel-subtitle">
+  <span>同步讲义</span>
+  <MaterialUpdateNotice
+    revision={learningRevision}
+    onView={() => scrollToLatestSection()}
+  />
+</div>
+```
+
+## 推荐汇总
+
+| 组件 | 推荐形态 | 建议接入点 | 注意 |
+| --- | --- | --- | --- |
+| ReadyRangeBar | 带 `onSeekMs` 的二次确认时间带 | 同步学习面板顶部 | 放在视频正下方时建议只读 |
+| EvidencePeek | `inline` | 讲义知识点、纠错说明、待核对项 | `popover` 只用于密集列表，且容器不能裁切 |
+| RecallCard | `expand` | 视频讲义复习题区 | 展开状态由宿主管理，可做"一次只展开一张" |
+| MaterialUpdateNotice | 默认 6 秒自动收起 | 同步讲义面板副标题旁 | `revision` 必须是稳定的修订号，不要传时间戳或每次轮询都变的值 |
+
+四个组件都只依赖 props 和回调，没有请求接口、没有全局状态，可以单独挑选接入。

@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import { EvidencePeekDemo } from "./EvidencePeekDemo";
+import { MaterialUpdateNoticeDemo } from "./MaterialUpdateNoticeDemo";
 import { ReadyRangeBarDemo } from "./ReadyRangeBarDemo";
 import { RecallCardDemo } from "./RecallCardDemo";
 
@@ -37,5 +38,13 @@ export const widgetExperiments: WidgetExperiment[] = [
       "先显示题目，用户主动选择后才显示外部提供的参考答案。不记录正确率或掌握状态。",
     futureSlot: "视频讲义的复习题区",
     Demo: RecallCardDemo,
+  },
+  {
+    id: "material-update-notice",
+    title: "MaterialUpdateNotice · 材料更新轻提示",
+    summary:
+      "修订号真正变化时显示一次“材料有更新”。不推断是否全部完成，不抢焦点、不滚动。",
+    futureSlot: "视频同步讲义面板的副标题旁",
+    Demo: MaterialUpdateNoticeDemo,
   },
 ];

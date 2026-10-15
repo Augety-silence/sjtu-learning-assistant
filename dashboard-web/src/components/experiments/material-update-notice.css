@@ -1,0 +1,93 @@
+/* MaterialUpdateNotice — prefix slw-update-. Theme variables only. */
+
+.slw-update {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.slw-update-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--compact-meta-height);
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border-accent-soft);
+  border-radius: var(--compact-radius);
+  color: var(--text-primary);
+  background: var(--surface-accent-soft);
+}
+
+.slw-update-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  color: var(--action-primary);
+}
+
+.slw-update-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.slw-update-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.slw-update-message {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slw-update-notice .slw-update-view {
+  min-height: 0;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slw-update-close {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-caption);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color var(--motion-control) var(--ease-motion-out);
+}
+
+.slw-update-close:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.slw-update-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.slw-update-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+.slw-update[data-motion="static"] .slw-update-close {
+  transition: none;
+}
