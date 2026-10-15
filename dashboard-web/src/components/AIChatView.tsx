@@ -347,6 +347,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       if (window.innerWidth >= 1050) setHistoryOpen(false);
     };
     const handleEscape = (event: KeyboardEvent) => {
+      // A nested popover (settings menu etc.) already handled this Escape.
+      if (event.defaultPrevented) return;
       if (event.key === "Escape") {
         setHistoryOpen(false);
         if (activityOpen) {

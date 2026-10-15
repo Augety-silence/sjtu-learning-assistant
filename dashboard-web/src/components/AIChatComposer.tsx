@@ -327,10 +327,12 @@ export function AIChatComposer({
           placeholder="让 Agent 检索课程、文件、截止日期或消息…"
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
+            // Ignore Enter while an IME (e.g. Chinese pinyin) is composing a candidate.
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             const shouldSend =
               event.key === "Enter" &&
               !event.shiftKey &&
-              (sendShortcut === "enter" || event.metaKey);
+              (sendShortcut === "enter" || event.metaKey || event.ctrlKey);
             if (shouldSend) {
               event.preventDefault();
               onSubmit(draft);
