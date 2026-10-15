@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { EvidencePeekDemo } from "./EvidencePeekDemo";
 import { ReadyRangeBarDemo } from "./ReadyRangeBarDemo";
+import { RecallCardDemo } from "./RecallCardDemo";
 
 export interface WidgetExperiment {
   id: string;
@@ -28,5 +29,13 @@ export const widgetExperiments: WidgetExperiment[] = [
       "默认只显示来源与时间，展开后查看引文并可主动跳转。缺少来源或时间时如实显示。",
     futureSlot: "讲义知识点、纠错说明、待核对项",
     Demo: EvidencePeekDemo,
+  },
+  {
+    id: "recall-card",
+    title: "RecallCard · 先想再看的复习卡",
+    summary:
+      "先显示题目，用户主动选择后才显示外部提供的参考答案。不记录正确率或掌握状态。",
+    futureSlot: "视频讲义的复习题区",
+    Demo: RecallCardDemo,
   },
 ];

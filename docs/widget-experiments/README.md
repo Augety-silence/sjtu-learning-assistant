@@ -103,3 +103,43 @@ import { EvidencePeek } from "@/components/experiments/EvidencePeek";
   />
 </p>
 ```
+
+### 3. RecallCard · 先想再看的复习卡
+
+文件：`dashboard-web/src/components/experiments/RecallCard.tsx` / `recall-card.css`（前缀 `slw-recall-`）
+
+| Prop | 类型 | 说明 |
+| --- | --- | --- |
+| `question` | `string \| null` | 题目。缺失或只有空白时显示"未提供题目。" |
+| `answer` | `string \| null` | 参考答案，完全由宿主提供。缺失时显示"未提供参考答案。可以回到视频或讲义自行核对。"，不生成任何内容 |
+| `revealed` | `boolean` | **受控**。为 `false` 时答案节点根本不渲染 |
+| `onRevealChange` | `(next: boolean) => void` | 用户点"显示答案 / 隐藏答案"时调用；是否真的切换由宿主决定 |
+| `sourceLabel` | `string \| null` | 可选的出处标签，由宿主传入 |
+| `variant` | `"expand" \| "crossfade"` | 默认 `expand`（推荐）：答案在题目下方局部展开。`crossfade`：占位提示与答案在同一位置交替淡入 |
+| `motion` | `"auto" \| "static"` | `expand` 用高度 + 淡入（`motionDuration.enter`），`crossfade` 用短淡入（`motionDuration.fast`） |
+| `label` | `string` | 题目上方的小标题，默认"复习题" |
+
+可访问性：切换按钮是原生 `<button>`，带 `aria-expanded`，展开后才加 `aria-controls` 指向答案区域（`role="region"`，名称"参考答案"）。隐藏状态下答案不在 DOM 中；带动效收起时，退场中的节点会被设为 `inert` + `aria-hidden`，所以读屏和 Tab 在任何时刻都到不了隐藏的答案。切换时焦点留在按钮上。
+
+组件不调用模型，不评判对错，也不显示正确率、掌握度或"已学会"一类的状态。
+
+**推荐 expand**：题目位置不变，答案出现在下方，阅读顺序自然；答案长短不一时不会出现两段内容叠在同一格里的高度跳动。`crossfade` 适合答案很短、需要固定卡片高度的网格布局。
+
+最小插入示例（讲义复习题区，宿主保证一次只展开一张）：
+
+```tsx
+import { RecallCard } from "@/components/experiments/RecallCard";
+
+const [openId, setOpenId] = useState<string | null>(null);
+
+{reviewQuestions.map((item) => (
+  <RecallCard
+    key={item.id}
+    question={item.question}
+    answer={item.answer}
+    sourceLabel={item.sourceLabel}
+    revealed={openId === item.id}
+    onRevealChange={(next) => setOpenId(next ? item.id : null)}
+  />
+))}
+```

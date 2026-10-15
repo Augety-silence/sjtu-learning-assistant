@@ -1,0 +1,109 @@
+/* RecallCard — prefix slw-recall-. Theme variables only. */
+
+.slw-recall {
+  display: grid;
+  gap: 8px;
+  max-width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-workspace);
+  border-radius: 12px;
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+}
+
+.slw-recall-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slw-recall-label {
+  color: var(--text-secondary);
+}
+
+.slw-recall-source {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slw-recall-question {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.slw-recall-missing {
+  color: var(--status-warning);
+}
+
+.slw-recall-slot {
+  min-width: 0;
+}
+
+/* Crossfade: placeholder and answer occupy the same cell while swapping. */
+.slw-recall-slot[data-variant="crossfade"] {
+  display: grid;
+}
+
+.slw-recall-slot[data-variant="crossfade"] > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.slw-recall-answer {
+  overflow: hidden;
+}
+
+.slw-recall-answer-inner {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-accent-soft);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-subtle);
+}
+
+.slw-recall-answer-label {
+  color: var(--text-caption);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slw-recall-answer-text {
+  font-size: 13px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.slw-recall-answer-inner .slw-recall-missing {
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.slw-recall-placeholder {
+  padding: 8px 10px;
+  border: 1px dashed var(--border-workspace-strong);
+  border-radius: 8px;
+  color: var(--text-caption);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.slw-recall-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.slw-recall-actions svg {
+  width: 14px;
+  height: 14px;
+}

@@ -217,3 +217,9 @@
   font-size: 13px;
   line-height: 21px;
 }
+
+.widget-lab-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
