@@ -4,11 +4,12 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sjtu_learning_assistant.transcript_pipeline import PIPELINE_VERSION, PROMPT_VERSION, REDUCE_FALLBACK_WARNING, SUMMARY_EMPTY_WARNING, TranscriptPipeline
 from sjtu_learning_assistant.transcript_service import AIContext, TranscriptError, TranscriptService
@@ -22,6 +23,9 @@ class TranscriptServiceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "transcripts"
         self.fetches = 0
+        self.process_marker = patch("sjtu_learning_assistant.transcript_service._process_start_marker", side_effect=lambda pid: "test-current-process" if pid == os.getpid() else None)
+        self.process_marker.start()
+        self.addCleanup(self.process_marker.stop)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -31,7 +35,7 @@ class TranscriptServiceTests(unittest.TestCase):
         return {"status": "ready", "message": "已就绪", "vtt": VTT, "cue_count": 1}
 
     def service(self, autostart=False):
-        return TranscriptService(self.root, subtitle_fetcher=self.fetch, ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False), sleeper=lambda delay: None, autostart_worker=autostart)
+        return TranscriptService(self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch, ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False), sleeper=lambda delay: None, autostart_worker=autostart)
 
     @staticmethod
     def valid_chunk():
@@ -58,6 +62,7 @@ class TranscriptServiceTests(unittest.TestCase):
 
         service = TranscriptService(
             self.root,
+            memory_root=self.root.parent / "memory",
             subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(object(), "qwen", "endpoint-hash", True),
             pipeline=ChunksThenTimeout(),
@@ -176,6 +181,7 @@ class TranscriptServiceTests(unittest.TestCase):
 
         service = TranscriptService(
             self.root,
+            memory_root=self.root.parent / "memory",
             subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(object(), "qwen", "endpoint-hash", True),
             pipeline=FailingPipeline(),
@@ -234,6 +240,7 @@ class TranscriptServiceTests(unittest.TestCase):
 
         service = TranscriptService(
             self.root,
+            memory_root=self.root.parent / "memory",
             subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(object(), "qwen", "endpoint-hash", True),
             pipeline=WarningPipeline(),
@@ -378,6 +385,7 @@ class TranscriptServiceTests(unittest.TestCase):
 
         service = TranscriptService(
             self.root,
+            memory_root=self.root.parent / "memory",
             subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(object(), "qwen", "endpoint-hash", True),
             pipeline=EmptySummaryPipeline(),
@@ -437,7 +445,7 @@ class TranscriptServiceTests(unittest.TestCase):
                 raise RuntimeError("review failed")
 
         service = TranscriptService(
-            self.root, subtitle_fetcher=self.fetch,
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
             orchestrator=FailingReview(), sleeper=lambda delay: None, autostart_worker=False,
         )
@@ -448,6 +456,8 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual("completed_with_warnings", job["stage"])
         self.assertEqual("partial", job["phase1_status"])
         self.assertNotEqual("failed", service.get_batch(batch["id"])["status"])
+        self.assertTrue(job["retryable"])
+        self.assertEqual("task_error", job["diagnostic"]["code"])
 
     def test_reused_completed_phase1_does_not_review_again(self):
         class SuccessfulReview:
@@ -457,14 +467,16 @@ class TranscriptServiceTests(unittest.TestCase):
 
             def __init__(inner_self):
                 inner_self.calls = 0
+                inner_self.force_refresh_values = []
 
             def orchestrate(inner_self, **kwargs):
                 inner_self.calls += 1
+                inner_self.force_refresh_values.append(kwargs.get("force_refresh", False))
                 visible = service.get_batch(current_batch["id"])["jobs"][0]
                 self.assertEqual("reviewing", visible["stage"])
                 raw = kwargs["raw_vtt"]
                 return SimpleNamespace(
-                    chunks=(), corrections=(), critics=(), quality={}, warnings=(),
+                    chunks=(), corrections=(), critics=(), quality={"passed": True}, warnings=(),
                     corrected_transcript=raw, uncertain=(), memory_version=None,
                     events=(), status="completed",
                     raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
@@ -472,7 +484,7 @@ class TranscriptServiceTests(unittest.TestCase):
 
         orchestrator = SuccessfulReview()
         service = TranscriptService(
-            self.root, subtitle_fetcher=self.fetch,
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
             orchestrator=orchestrator, sleeper=lambda delay: None, autostart_worker=False,
         )
@@ -485,6 +497,240 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertTrue(reused["reused"])
         self.assertTrue(reused["phase1_reused"])
         self.assertEqual(1, orchestrator.calls)
+        retried = service.retry(reused["id"])
+        current_batch = retried
+        service.run_pending()
+        self.assertEqual(2, orchestrator.calls)
+        self.assertEqual([False, True], orchestrator.force_refresh_values)
+        self.assertEqual("completed", service.get_batch(retried["id"])["jobs"][0]["phase1_status"])
+
+    def test_clean_v1_and_phase1_clear_stale_job_diagnostics(self):
+        chunk = self.valid_chunk()
+
+        class CleanPipeline:
+            def run(inner_self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
+                del ai_client, cached_chunks, kwargs
+                on_chunk(0, chunk)
+                cleaned = "# 规整字幕\n\n**00:00** 本节课强调成本分析\n"
+                on_cleaned(cleaned)
+                return SimpleNamespace(
+                    cues=chunk["cleaned_transcript"], chunks=[chunk],
+                    cleaned_markdown=cleaned,
+                    summary={"lesson_topic": "成本分析", "knowledge_points": chunk["knowledge_points"]},
+                    summary_markdown="# 成本分析\n", partial_warnings=(),
+                    reduce_diagnostics=None, summary_empty=False,
+                )
+
+        class SuccessfulReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def orchestrate(inner_self, **kwargs):
+                raw = kwargs["raw_vtt"]
+                return SimpleNamespace(
+                    chunks=(), corrections=(), critics=(), quality={"passed": True}, warnings=(),
+                    corrected_transcript=raw, uncertain=(), memory_version=None,
+                    events=(), status="completed",
+                    raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                )
+
+        service = TranscriptService(
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            pipeline=CleanPipeline(), orchestrator=SuccessfulReview(),
+            sleeper=lambda delay: None, autostart_worker=False,
+        )
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        stored = service._read_json(service._batch_path(batch["id"]))
+        stored["jobs"][0].update(
+            partial_warning=True,
+            diagnostic={"stage": "guide_generation", "code": "v1_guide_schema", "retryable": True},
+            phase1_warning="previous Phase1 timeout",
+            retryable=True,
+            auto_retryable=True,
+            next_retry_at="2026-10-15T00:00:00+00:00",
+        )
+        service._write_json(service._batch_path(batch["id"]), stored)
+
+        service.run_pending()
+
+        job = service.get_batch(batch["id"])["jobs"][0]
+        manifest = json.loads(service._manifest_path(VIDEO["source_id"]).read_text())
+        self.assertEqual("completed", manifest["status"])
+        self.assertNotIn("partial_warnings", manifest)
+        self.assertEqual("completed", job["phase1_status"])
+        self.assertNotIn("diagnostic", job)
+        self.assertNotIn("partial_warning", job)
+        self.assertNotIn("phase1_warning", job)
+        self.assertFalse(job["retryable"])
+        self.assertFalse(job["auto_retryable"])
+        self.assertNotIn("next_retry_at", job)
+
+    def test_successful_phase1_preserves_unresolved_v1_diagnostic(self):
+        chunk = self.valid_chunk()
+
+        class WarningPipeline:
+            def run(inner_self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
+                del raw_vtt, ai_client, cached_chunks, kwargs
+                on_chunk(0, chunk)
+                cleaned = "# 规整字幕\n"
+                on_cleaned(cleaned)
+                return SimpleNamespace(
+                    cues=chunk["cleaned_transcript"], chunks=[chunk], cleaned_markdown=cleaned,
+                    summary={
+                        "lesson_topic": "成本分析", "knowledge_points": chunk["knowledge_points"],
+                        "review": {"guide_generation_diagnostics": {"violation_code": "schema"}},
+                    },
+                    summary_markdown="# 成本分析\n", partial_warnings=("v1 guide warning",),
+                    reduce_diagnostics=None, summary_empty=False,
+                )
+
+        class SuccessfulReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def orchestrate(inner_self, **kwargs):
+                raw = kwargs["raw_vtt"]
+                return SimpleNamespace(
+                    chunks=(), corrections=(), critics=(), quality={"passed": True}, warnings=(),
+                    corrected_transcript=raw, uncertain=(), memory_version=None,
+                    events=(), status="completed",
+                    raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                )
+
+        service = TranscriptService(
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            pipeline=WarningPipeline(), orchestrator=SuccessfulReview(),
+            sleeper=lambda delay: None, autostart_worker=False,
+        )
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        stored = service._read_json(service._batch_path(batch["id"]))
+        stored["jobs"][0].update(
+            partial_warning=True,
+            diagnostic={"stage": "guide_generation", "code": "v1_guide_schema", "retryable": True},
+        )
+        service._write_json(service._batch_path(batch["id"]), stored)
+
+        service.run_pending()
+
+        job = service.get_batch(batch["id"])["jobs"][0]
+        self.assertEqual("completed", job["phase1_status"])
+        self.assertEqual("completed_with_warnings", job["status"])
+        self.assertTrue(job["partial_warning"])
+        self.assertEqual("v1_guide_schema", job["diagnostic"]["code"])
+
+    def test_ready_video_is_organized_before_a_slow_sibling_fetch_finishes(self):
+        entered_slow = threading.Event()
+        release_slow = threading.Event()
+        ready_fast = threading.Event()
+        fast_source = "sjtu-video:12:101"
+
+        def fetch(source_id):
+            if source_id.endswith(":99"):
+                entered_slow.set()
+                release_slow.wait(3)
+            return {"status": "ready", "message": "已就绪", "vtt": VTT, "cue_count": 1}
+
+        class SignalingPipeline(TranscriptPipeline):
+            def run(inner_self, raw_vtt, ai_client, **kwargs):
+                if "成本分析" in raw_vtt:
+                    ready_fast.set()
+                return super().run(raw_vtt, ai_client, **kwargs)
+
+        service = TranscriptService(
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            pipeline=SignalingPipeline(), sleeper=lambda _delay: None, autostart_worker=False,
+        )
+        batch = service.start_batch(
+            course_id="12", course_name="管理会计",
+            videos=[VIDEO, {"source_id": fast_source, "title": "当前播放录像"}],
+        )
+        runner = threading.Thread(target=service.run_pending)
+        runner.start()
+        try:
+            self.assertTrue(entered_slow.wait(1))
+            self.assertTrue(ready_fast.wait(1), "B 未在 A fetch 结束前进入整理")
+        finally:
+            release_slow.set()
+            runner.join(4)
+            service.close()
+
+    def test_playback_network_failure_retries_after_cooldown_and_stops_at_limit(self):
+        now = [datetime(2026, 10, 14, tzinfo=timezone.utc)]
+
+        class RecoveringReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def orchestrate(inner_self, **kwargs):
+                inner_self.calls += 1
+                if inner_self.calls == 1:
+                    raise TimeoutError("timeout with secret=do-not-persist")
+                raw = kwargs["raw_vtt"]
+                return SimpleNamespace(
+                    chunks=(), corrections=(), critics=(), quality={"passed": True}, warnings=(),
+                    corrected_transcript=raw, uncertain=(), memory_version=None, events=(), status="completed",
+                    raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                )
+
+        orchestrator = RecoveringReview()
+        service = TranscriptService(
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            orchestrator=orchestrator, sleeper=lambda _delay: None, autostart_worker=False,
+            now_provider=lambda: now[0], playback_retry_cooldown_seconds=2, playback_auto_retry_limit=1,
+        )
+        first = service.prepare_for_playback(course_id="12", course_name="管理会计", video=VIDEO)
+        service.run_pending()
+        failed = service.get_batch(first["id"])["jobs"][0]
+        self.assertEqual("timeout", failed["diagnostic"]["code"])
+        stored_text = json.dumps(failed)
+        self.assertNotIn("do-not-persist", stored_text)
+        same = service.prepare_for_playback(course_id="12", course_name="管理会计", video=VIDEO)
+        self.assertEqual(first["id"], same["id"])
+        self.assertEqual(1, orchestrator.calls)
+        now[0] += timedelta(seconds=3)
+        service.run_pending()
+        self.assertEqual(2, orchestrator.calls)
+        latest = service.jobs("12")["items"]
+        self.assertEqual("completed", next(job for job in latest if job["phase1_status"] == "completed")["phase1_status"])
+        service.close()
+
+    def test_consecutive_ai_failures_open_a_per_task_circuit(self):
+        class FailingClient:
+            calls = 0
+
+            def chat_completion(self, *_args, **_kwargs):
+                self.calls += 1
+                raise ConnectionError("private URL query and request body")
+
+        service = self.service()
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        stored_batch = service._read_json(service._batch_path(batch["id"]))
+        job = stored_batch["jobs"][0]
+        client = FailingClient()
+        with patch.dict(os.environ, {
+            "SJTU_AI_RETRY_ATTEMPTS": "2",
+            "SJTU_AI_FAILURE_CIRCUIT_THRESHOLD": "3",
+            "SJTU_AI_TASK_BUDGET_SECONDS": "60",
+        }):
+            context = service._task_context(AIContext(client, "qwen", "endpoint-hash", True), stored_batch, job)
+            for _ in range(3):
+                with self.assertRaises((ConnectionError, TranscriptError)):
+                    context.client.chat_completion([{"role": "user", "content": "test"}])
+        self.assertEqual(3, client.calls)
+        serialized = json.dumps(service.get_batch(batch["id"]))
+        self.assertNotIn("private URL", serialized)
+        self.assertNotIn("request body", serialized)
+        service.close()
 
 
     def test_unvalidated_nonempty_raw_does_not_prevent_failed_status(self):

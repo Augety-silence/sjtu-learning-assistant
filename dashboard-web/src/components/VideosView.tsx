@@ -8,7 +8,10 @@ import {
   Download,
   FileText,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
+  Move,
   NotebookPen,
   Play,
   X,
@@ -16,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useId,
@@ -29,6 +33,18 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { TranscriptQualityWarning } from "@/components/TranscriptPhase1Panels";
+import {
+  type VideoLearningSegmentsResult,
+  type VideoPlaybackPosition,
+  VideoSynchronizedLearning,
+} from "@/components/VideoSynchronizedLearning";
+
+export type {
+  VideoLearningSegment,
+  VideoLearningSegmentsResult,
+  VideoPlaybackPosition,
+} from "@/components/VideoSynchronizedLearning";
+
 import { Button } from "@/components/ui/Button";
 import {
   type CompactControlTone,
@@ -99,6 +115,11 @@ export interface SlidesPdfResult {
   open?: () => void | Promise<void>;
 }
 
+export interface VideoSlidePage {
+  index: number;
+  timeMs: number | null;
+}
+
 export interface VideosViewProps {
   videos: CourseVideoItem[];
   tasks?: VideoTaskItem[];
@@ -129,6 +150,25 @@ export interface VideosViewProps {
   onLoadSubtitles?: (
     video: CourseVideoItem,
   ) => VideoPlaybackResult | Promise<VideoPlaybackResult>;
+  onLoadSlides?: (
+    video: CourseVideoItem,
+  ) => Promise<{ status: string; message: string; pages: VideoSlidePage[] }>;
+  onLoadSlideImage?: (
+    video: CourseVideoItem,
+    pageIndex: number,
+  ) => Promise<string>;
+  onPrepareVideo?: (
+    video: CourseVideoItem,
+    position: VideoPlaybackPosition,
+  ) => Promise<void>;
+  onUpdatePlayback?: (
+    video: CourseVideoItem,
+    position: VideoPlaybackPosition,
+  ) => Promise<void>;
+  onLoadLearningSegments?: (
+    video: CourseVideoItem,
+    signal?: AbortSignal,
+  ) => Promise<VideoLearningSegmentsResult>;
   onDownload?: (video: CourseVideoItem) => void | Promise<void>;
   onDownloadSubtitle?: (video: CourseVideoItem) => void | Promise<void>;
   onCreateSlidesPdf?: (
@@ -215,6 +255,90 @@ type TemporaryPlaybackState = {
 };
 const longPressDelay = 350;
 const rewindIntervalMs = 50;
+
+type WebkitFullscreenVideo = HTMLVideoElement & {
+  webkitDisplayingFullscreen?: boolean;
+  webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+};
+
+type SlidePaneRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+type SlidePanePointer = {
+  mode: "drag" | "resize";
+  x: number;
+  y: number;
+  rect: SlidePaneRect;
+};
+
+type SubtitleCue = { startMs: number; endMs: number; text: string };
+
+function parseVttTime(value: string) {
+  const parts = value.trim().replace(",", ".").split(":");
+  if (parts.length < 2 || parts.length > 3) return null;
+  const seconds = Number(parts.pop());
+  const minutes = Number(parts.pop());
+  const hours = parts.length ? Number(parts.pop()) : 0;
+  if (![hours, minutes, seconds].every(Number.isFinite)) return null;
+  return Math.round(((hours * 60 + minutes) * 60 + seconds) * 1000);
+}
+
+function parseVttCues(value: string | null) {
+  if (!value) return [] as SubtitleCue[];
+  return value
+    .replace(/^WEBVTT[^\n]*\n+/i, "")
+    .split(/\n\s*\n/)
+    .flatMap((block) => {
+      const lines = block.trim().split(/\r?\n/);
+      const timingIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timingIndex < 0) return [];
+      const [start, end] = lines[timingIndex].split("-->");
+      const startMs = parseVttTime(start);
+      const endMs = parseVttTime(end.trim().split(/\s+/)[0]);
+      const text = lines
+        .slice(timingIndex + 1)
+        .join(" ")
+        .replace(/<[^>]*>/g, "")
+        .trim();
+      return startMs === null || endMs === null || !text
+        ? []
+        : [{ startMs, endMs, text }];
+    });
+}
+
+function formatVideoClock(seconds: number) {
+  const value = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const remainder = value % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function clampSlidePaneRect(rect: SlidePaneRect): SlidePaneRect {
+  const margin = 12;
+  const maxWidth = Math.max(320, window.innerWidth - margin * 2);
+  const maxHeight = Math.max(220, window.innerHeight - margin * 2);
+  const width = Math.min(maxWidth, Math.max(320, rect.width));
+  const height = Math.min(maxHeight, Math.max(220, rect.height));
+  return {
+    width,
+    height,
+    left: Math.min(
+      Math.max(margin, rect.left),
+      window.innerWidth - width - margin,
+    ),
+    top: Math.min(
+      Math.max(margin, rect.top),
+      window.innerHeight - height - margin,
+    ),
+  };
+}
 type JobCategory = "active" | "attention" | "history";
 type TimestampedJob = {
   createdAt?: string | null;
@@ -266,9 +390,13 @@ function jobTimestamp(job: TimestampedJob) {
   return 0;
 }
 
-function isActiveTranscriptStatus(status: string, progress: number) {
+function isActiveTranscriptStatus(
+  status: string,
+  progress: number,
+  reviewStatus?: string | null,
+) {
   return (
-    progress < 100 &&
+    (progress < 100 || reviewStatus === "running") &&
     Array.of(
       "queued",
       "fetching",
@@ -353,7 +481,11 @@ export function deriveVideoLearningState(
   const rawStatus = job.status as string;
   const phase1Status = job.phase1_status ?? job.pipeline_status;
   const failed = ["failed", "interrupted"].includes(rawStatus);
-  const processing = isActiveTranscriptStatus(rawStatus, job.progress);
+  const processing = isActiveTranscriptStatus(
+    rawStatus,
+    job.progress,
+    job.review_status,
+  );
   const partial =
     !failed &&
     !processing &&
@@ -380,7 +512,12 @@ export function deriveVideoLearningState(
     partial,
     failed,
     hasHistoricalComplete,
-    label: failed && hasHistoricalComplete ? "已有材料 · 更新失败" : undefined,
+    label:
+      rawStatus === "waiting_remote" && !processing
+        ? "字幕未就绪，可重试"
+        : failed && hasHistoricalComplete
+          ? "已有材料 · 更新失败"
+          : undefined,
   };
 }
 
@@ -441,7 +578,10 @@ function transcriptStatus(job?: TranscriptJob): UnifiedStatus {
 }
 
 function transcriptIsProcessing(job?: TranscriptJob) {
-  return Boolean(job && isActiveTranscriptStatus(job.status, job.progress));
+  return Boolean(
+    job &&
+      isActiveTranscriptStatus(job.status, job.progress, job.review_status),
+  );
 }
 
 function transcriptHasLearningMaterials(job?: TranscriptJob) {
@@ -461,6 +601,7 @@ function transcriptNeedsRetry(job?: TranscriptJob) {
   if (!job) return false;
   const phase1Status = job.phase1_status ?? job.pipeline_status;
   return (
+    (job.status === "waiting_remote" && job.progress >= 100) ||
     ["partial", "failed", "interrupted", "completed_with_warnings"].includes(
       job.status,
     ) ||
@@ -813,6 +954,11 @@ export function VideosView({
   onRetry,
   onPlay,
   onLoadSubtitles,
+  onLoadSlides,
+  onLoadSlideImage,
+  onPrepareVideo,
+  onUpdatePlayback,
+  onLoadLearningSegments,
   onDownload,
   onDownloadSubtitle,
   onCreateSlidesPdf,
@@ -822,7 +968,6 @@ export function VideosView({
   onCancelTranscript,
   onRevealTranscript,
   aiReadiness,
-  onOpenAISettings,
 }: VideosViewProps) {
   const [source, setSource] = useState<"all" | VideoSource>("all");
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
@@ -834,6 +979,28 @@ export function VideosView({
   >(null);
   const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
   const [subtitleMessage, setSubtitleMessage] = useState<string | null>(null);
+  const [subtitleVtt, setSubtitleVtt] = useState<string | null>(null);
+  const [subtitleStatus, setSubtitleStatus] =
+    useState<VideoPlaybackResult["subtitleStatus"]>();
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  const [portalFullscreen, setPortalFullscreen] = useState(false);
+  const [splitPaneOpen, setSplitPaneOpen] = useState(false);
+  const [slideStatus, setSlideStatus] = useState<
+    "idle" | "loading" | "processing" | "ready" | "empty" | "error"
+  >("idle");
+  const [slideMessage, setSlideMessage] = useState("");
+  const [slidePages, setSlidePages] = useState<VideoSlidePage[]>([]);
+  const [slideImageUrl, setSlideImageUrl] = useState<string | null>(null);
+  const [slideImageLoading, setSlideImageLoading] = useState(false);
+  const [slideImageError, setSlideImageError] = useState("");
+  const [slidePaneRect, setSlidePaneRect] = useState<SlidePaneRect>(() => ({
+    left: Math.max(16, window.innerWidth - 540),
+    top: Math.max(16, window.innerHeight - 430),
+    width: 520,
+    height: 390,
+  }));
+  const [panePointerActive, setPanePointerActive] = useState(false);
   const [learningTab, setLearningTab] = useState<LearningTab>("summary");
   const [organizationFilter, setOrganizationFilter] =
     useState<OrganizationFilter>("all");
@@ -850,6 +1017,12 @@ export function VideosView({
     message: string;
   } | null>(null);
   const [summaryRequestSettled, setSummaryRequestSettled] = useState(0);
+  const [preparationBusy, setPreparationBusy] = useState(false);
+  const [preparationAttempt, setPreparationAttempt] = useState(0);
+  const [preparationError, setPreparationError] = useState<{
+    sourceId: string;
+    message: string;
+  }>();
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<VideoMenuPosition | null>(
     null,
@@ -872,6 +1045,11 @@ export function VideosView({
   const playRequest = useRef(0);
   const autoPlaySourceId = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const playerShellRef = useRef<HTMLDivElement>(null);
+  const slideMetadataRequestRef = useRef(0);
+  const slideImageRequestRef = useRef(0);
+  const slideImageCacheRef = useRef(new Map<string, Promise<string>>());
+  const slidePanePointerRef = useRef<SlidePanePointer | null>(null);
   const listPanelRef = useRef<HTMLElement>(null);
   const menuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const menuRef = useRef<HTMLDivElement>(null);
@@ -892,7 +1070,25 @@ export function VideosView({
   const isBusy = (key: string) => operationKeys.has(key);
   const isOrganizing = (id: string) => isBusy(`learning:${id}`);
   const playerLoadedRef = useRef(false);
+  const playbackRestoreRef = useRef<{
+    currentTime: number;
+    paused: boolean;
+    playbackRate: number;
+  } | null>(null);
   const playbackRateRef = useRef<PlaybackRate>(1);
+  const preparedVideosRef = useRef(new Set<string>());
+  const selectedVideoRef = useRef(selected);
+  selectedVideoRef.current = selected;
+  const lastPlaybackUpdateRef = useRef<
+    { sourceId: string; at: number } | undefined
+  >(undefined);
+  const lastSubtitleJobRevisionRef = useRef("");
+  const prepareVideoRef = useRef(onPrepareVideo);
+  prepareVideoRef.current = onPrepareVideo;
+  const hasPrepareVideo = Boolean(onPrepareVideo);
+  const subtitleLoaderRef = useRef(onLoadSubtitles);
+  subtitleLoaderRef.current = onLoadSubtitles;
+  const hasSubtitleLoader = Boolean(onLoadSubtitles);
   const temporaryPlaybackRef = useRef<TemporaryPlaybackState | null>(null);
   const { showToast } = useToast();
   const organizationReason = useCallback(
@@ -906,6 +1102,92 @@ export function VideosView({
             : aiReadiness.message || "尚未配置 AI，先配置后再生成学习材料。"
         : null),
     [aiReadiness?.configured, aiReadiness?.message, aiReadiness?.status],
+  );
+  useEffect(() => {
+    setPreparationBusy(false);
+    const prepare = prepareVideoRef.current;
+    if (!selected || !playbackUrl || !prepare || organizationReason(selected))
+      return;
+    const key = `${courseId ?? "unscoped"}:${selected.id}`;
+    if (preparedVideosRef.current.has(key)) return;
+    preparedVideosRef.current.add(key);
+    let active = true;
+    setPreparationBusy(true);
+    setPreparationError(undefined);
+    void prepare(selected, {
+      positionSeconds: 0,
+      playbackRate: playbackRateRef.current,
+    })
+      .catch((reason) => {
+        preparedVideosRef.current.delete(key);
+        if (active)
+          setPreparationError({
+            sourceId: selected.id,
+            message:
+              reason instanceof Error
+                ? reason.message
+                : "自动整理暂未启动，可稍后重试。",
+          });
+      })
+      .finally(() => {
+        if (active) setPreparationBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    courseId,
+    hasPrepareVideo,
+    organizationReason,
+    playbackUrl,
+    preparationAttempt,
+    selected?.id,
+  ]);
+  const notifyPlayback = useCallback(
+    (
+      video: CourseVideoItem,
+      position: VideoPlaybackPosition,
+      force = false,
+    ) => {
+      if (!onUpdatePlayback || organizationReason(video)) return;
+      const last = lastPlaybackUpdateRef.current;
+      if (!force && last?.sourceId === video.id && Date.now() - last.at < 5000)
+        return;
+      lastPlaybackUpdateRef.current = { sourceId: video.id, at: Date.now() };
+      void onUpdatePlayback(video, position).catch((reason) => {
+        if (selectedVideoRef.current?.id === video.id)
+          setPreparationError({
+            sourceId: video.id,
+            message:
+              reason instanceof Error
+                ? reason.message
+                : "播放进度同步失败，正在使用已有学习材料。",
+          });
+      });
+    },
+    [onUpdatePlayback, organizationReason],
+  );
+  const seekToTime = useCallback(
+    (seconds: number) => {
+      const media = videoRef.current;
+      const video = selectedVideoRef.current;
+      if (!media || !video || !Number.isFinite(seconds)) return;
+      media.currentTime = Math.min(
+        Number.isFinite(media.duration) ? media.duration : Infinity,
+        Math.max(0, seconds),
+      );
+      setPlaybackTime(media.currentTime);
+      notifyPlayback(
+        video,
+        {
+          positionSeconds: media.currentTime,
+          playbackRate: media.playbackRate,
+        },
+        true,
+      );
+      setDetailJob(null);
+    },
+    [notifyPlayback],
   );
 
   const jobsByVideo = useMemo(
@@ -1033,6 +1315,30 @@ export function VideosView({
   const selectedTasks = selected
     ? tasks.filter((task) => task.videoId === selected.id)
     : [];
+  const subtitleCues = useMemo(() => parseVttCues(subtitleVtt), [subtitleVtt]);
+  const currentSubtitle = useMemo(
+    () =>
+      subtitleCues.find(
+        (cue) =>
+          cue.startMs <= playbackTime * 1000 &&
+          cue.endMs >= playbackTime * 1000,
+      )?.text ?? "",
+    [playbackTime, subtitleCues],
+  );
+  const timedSlidePages = useMemo(
+    () => slidePages.filter((page) => page.timeMs !== null),
+    [slidePages],
+  );
+  const activeSlidePage = useMemo(() => {
+    if (timedSlidePages.length === 0) return null;
+    let active = timedSlidePages[0];
+    for (const page of timedSlidePages) {
+      if ((page.timeMs ?? Number.POSITIVE_INFINITY) > playbackTime * 1000)
+        break;
+      active = page;
+    }
+    return active;
+  }, [playbackTime, timedSlidePages]);
   const derivedJobs = useMemo(() => {
     const combined: UnifiedJobItem[] = [
       ...[...jobsByVideo.values()].map((job, order) => ({
@@ -1045,7 +1351,12 @@ export function VideosView({
           jobsHistoryByVideo.get(job.source_id),
         ).status,
         rawStatus: job.status,
-        progress: job.progress,
+        progress:
+          job.review_status === "running" && (job.review_total ?? 0) > 0
+            ? Math.round(
+                ((job.review_completed ?? 0) / (job.review_total ?? 1)) * 100,
+              )
+            : job.progress,
         category: jobCategory(job.status, job.progress),
         timestamp: jobTimestamp(job as TranscriptJob & TimestampedJob),
         order,
@@ -1104,6 +1415,11 @@ export function VideosView({
   }, [videos, selected]);
   useLayoutEffect(() => {
     operationGenerationRef.current += 1;
+    preparedVideosRef.current.clear();
+    lastPlaybackUpdateRef.current = undefined;
+    lastSubtitleJobRevisionRef.current = "";
+    setPreparationBusy(false);
+    setPreparationError(undefined);
     playbackWaitRef.current?.abort();
     subtitleWaitRef.current?.abort();
     subtitleReadRequest.current += 1;
@@ -1130,6 +1446,16 @@ export function VideosView({
     setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
+    setSubtitleVtt(null);
+    setSubtitleStatus(undefined);
+    setPlaybackTime(0);
+    setSplitPaneOpen(false);
+    setSlideStatus("idle");
+    setSlidePages([]);
+    setSlideImageUrl(null);
+    slideImageCacheRef.current.clear();
+    slideMetadataRequestRef.current += 1;
+    slideImageRequestRef.current += 1;
     setPreservedAcrossSource(false);
     setBusy(null);
     playBusyRef.current = null;
@@ -1236,8 +1562,10 @@ export function VideosView({
       : jobsByVideo.get(pendingSummarySourceId);
     if (!requestedJob) return;
     if (transcriptHasLearningMaterials(requestedJob)) {
-      setDetailInitialTab("summary");
-      setDetailJob(requestedJob);
+      if (selected?.id === pendingSummarySourceId) {
+        setDetailInitialTab("summary");
+        setDetailJob(requestedJob);
+      }
       setPendingSummarySourceId(null);
       summaryRequestedJobId.current = null;
       return;
@@ -1246,7 +1574,7 @@ export function VideosView({
       setPendingSummarySourceId(null);
       summaryRequestedJobId.current = null;
     }
-  }, [jobsByVideo, pendingSummarySourceId, transcriptJobs]);
+  }, [jobsByVideo, pendingSummarySourceId, selected?.id, transcriptJobs]);
   useEffect(() => {
     if (!speedMenuOpen && !shortcutsOpen) return;
     const close = (event: MouseEvent) => {
@@ -1266,6 +1594,144 @@ export function VideosView({
       );
     }
   }, [playbackRate, speedMenuOpen]);
+  useEffect(() => {
+    if (window.pywebview?.api) return;
+    const updateFullscreen = () =>
+      setPlayerFullscreen(Boolean(document.fullscreenElement));
+    const media = videoRef.current as WebkitFullscreenVideo | null;
+    const onWebkitFullscreen = () => {
+      const active = Boolean(media?.webkitDisplayingFullscreen);
+      setPlayerFullscreen(active);
+      if (!active) setPortalFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    media?.addEventListener("webkitbeginfullscreen", onWebkitFullscreen);
+    media?.addEventListener("webkitendfullscreen", onWebkitFullscreen);
+    return () => {
+      document.removeEventListener("fullscreenchange", updateFullscreen);
+      media?.removeEventListener("webkitbeginfullscreen", onWebkitFullscreen);
+      media?.removeEventListener("webkitendfullscreen", onWebkitFullscreen);
+    };
+  }, [playbackUrl]);
+  useEffect(() => {
+    if (!splitPaneOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.fullscreenElement) {
+        setSplitPaneOpen(false);
+      }
+    };
+    const keepPaneInViewport = () =>
+      setSlidePaneRect((current) => clampSlidePaneRect(current));
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", keepPaneInViewport);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", keepPaneInViewport);
+    };
+  }, [splitPaneOpen]);
+  useEffect(() => {
+    const pointer = slidePanePointerRef.current;
+    if (!pointer) return;
+    const onPointerMove = (event: PointerEvent) => {
+      const dx = event.clientX - pointer.x;
+      const dy = event.clientY - pointer.y;
+      const next =
+        pointer.mode === "drag"
+          ? {
+              ...pointer.rect,
+              left: pointer.rect.left + dx,
+              top: pointer.rect.top + dy,
+            }
+          : {
+              ...pointer.rect,
+              width: pointer.rect.width + dx,
+              height: pointer.rect.height + dy,
+            };
+      setSlidePaneRect(clampSlidePaneRect(next));
+    };
+    const stopPointer = () => {
+      slidePanePointerRef.current = null;
+      setPanePointerActive(false);
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopPointer, { once: true });
+    window.addEventListener("pointercancel", stopPointer, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopPointer);
+      window.removeEventListener("pointercancel", stopPointer);
+    };
+  }, [panePointerActive]);
+  useEffect(() => {
+    if (
+      !splitPaneOpen ||
+      slideStatus !== "ready" ||
+      !selected ||
+      !activeSlidePage ||
+      !onLoadSlideImage
+    ) {
+      setSlideImageUrl(null);
+      setSlideImageLoading(false);
+      return;
+    }
+    let active = true;
+    const request = ++slideImageRequestRef.current;
+    setSlideImageLoading(true);
+    setSlideImageError("");
+    const loadCachedPage = (page: VideoSlidePage) => {
+      const key = `${selected.id}:${page.index}`;
+      let pending = slideImageCacheRef.current.get(key);
+      if (!pending) {
+        pending = readVideo(
+          `slide:${courseId ?? "unscoped"}:${key}`,
+          () => onLoadSlideImage(selected, page.index),
+          new AbortController().signal,
+          "课件页面读取超时，请重新打开 PPT 分屏。",
+        ).catch((reason) => {
+          slideImageCacheRef.current.delete(key);
+          throw reason;
+        });
+        slideImageCacheRef.current.set(key, pending);
+        if (slideImageCacheRef.current.size > 12) {
+          const oldest = slideImageCacheRef.current.keys().next().value;
+          if (oldest) slideImageCacheRef.current.delete(oldest);
+        }
+      }
+      return pending;
+    };
+    void loadCachedPage(activeSlidePage)
+      .then((url) => {
+        if (active && slideImageRequestRef.current === request)
+          setSlideImageUrl(url);
+      })
+      .catch((reason: unknown) => {
+        if (active && slideImageRequestRef.current === request) {
+          setSlideImageUrl(null);
+          setSlideImageError(
+            reason instanceof Error ? reason.message : "课件页面读取失败。",
+          );
+        }
+      })
+      .finally(() => {
+        if (active && slideImageRequestRef.current === request)
+          setSlideImageLoading(false);
+      });
+    const nextPage =
+      timedSlidePages[timedSlidePages.indexOf(activeSlidePage) + 1];
+    if (nextPage) void loadCachedPage(nextPage).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [
+    activeSlidePage,
+    courseId,
+    onLoadSlideImage,
+    readVideo,
+    selected,
+    slideStatus,
+    splitPaneOpen,
+    timedSlidePages,
+  ]);
 
   const showPlayerFeedback = useCallback((text: string, persistent = false) => {
     if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
@@ -1294,6 +1760,136 @@ export function VideosView({
     },
     [showPlayerFeedback],
   );
+  const beginSlidePanePointer = useCallback(
+    (mode: "drag" | "resize", event: ReactPointerEvent<HTMLElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      slidePanePointerRef.current = {
+        mode,
+        x: event.clientX,
+        y: event.clientY,
+        rect: slidePaneRect,
+      };
+      setPanePointerActive(true);
+    },
+    [slidePaneRect],
+  );
+  const togglePlayerFullscreen = useCallback(async () => {
+    const shell = playerShellRef.current as
+      | (HTMLDivElement & {
+          webkitRequestFullscreen?: () => Promise<void> | void;
+        })
+      | null;
+    const media = videoRef.current as WebkitFullscreenVideo | null;
+    const savePlaybackState = () => {
+      playbackRestoreRef.current = media
+        ? {
+            currentTime: media.currentTime,
+            paused: media.paused,
+            playbackRate: media.playbackRate,
+          }
+        : null;
+      autoPlaySourceId.current = null;
+    };
+    const enterPortalFullscreen = () => {
+      savePlaybackState();
+      setPortalFullscreen(true);
+      setPlayerFullscreen(true);
+    };
+    if (window.pywebview?.api) {
+      if (portalFullscreen) {
+        savePlaybackState();
+        setPortalFullscreen(false);
+        setPlayerFullscreen(false);
+      } else {
+        enterPortalFullscreen();
+      }
+      return;
+    }
+    if (
+      playerFullscreen &&
+      !document.fullscreenElement &&
+      !media?.webkitDisplayingFullscreen
+    ) {
+      savePlaybackState();
+      setPortalFullscreen(false);
+      setPlayerFullscreen(false);
+      return;
+    }
+    try {
+      if (media?.webkitDisplayingFullscreen && media.webkitExitFullscreen) {
+        media.webkitExitFullscreen();
+      } else if (document.fullscreenElement === shell) {
+        await document.exitFullscreen();
+      } else if (shell?.requestFullscreen) {
+        await shell.requestFullscreen();
+        if (document.fullscreenElement !== shell) enterPortalFullscreen();
+      } else if (shell?.webkitRequestFullscreen) {
+        await shell.webkitRequestFullscreen();
+        if (document.fullscreenElement !== shell) enterPortalFullscreen();
+      } else if (media?.webkitEnterFullscreen) {
+        media.webkitEnterFullscreen();
+      } else {
+        enterPortalFullscreen();
+      }
+    } catch {
+      if (media?.webkitEnterFullscreen) {
+        try {
+          media.webkitEnterFullscreen();
+          return;
+        } catch {
+          enterPortalFullscreen();
+          return;
+        }
+      }
+      enterPortalFullscreen();
+    }
+  }, [playerFullscreen, portalFullscreen, showPlayerFeedback]);
+  const openSlidePane = useCallback(async () => {
+    if (!selected || !onLoadSlides) return;
+    const request = ++slideMetadataRequestRef.current;
+    setSplitPaneOpen(true);
+    setSlideStatus("loading");
+    setSlideMessage("正在读取课件时间信息…");
+    setSlidePages([]);
+    setSlideImageUrl(null);
+    setSlideImageError("");
+    try {
+      const result = await readVideo(
+        `slides:${courseId ?? "unscoped"}:${selected.id}`,
+        () => onLoadSlides(selected),
+        new AbortController().signal,
+        "课件时间信息读取超时，请重新打开 PPT 分屏。",
+      );
+      if (slideMetadataRequestRef.current !== request) return;
+      setSlidePages(result.pages);
+      setSlideStatus(
+        result.status === "ready"
+          ? "ready"
+          : result.status === "processing"
+            ? "processing"
+            : "empty",
+      );
+      setSlideMessage(
+        result.status === "ready"
+          ? result.pages.some((page) => page.timeMs !== null)
+            ? "课件将跟随视频时间自动切换。"
+            : "课件已就绪，但服务未提供页码时间，无法自动同步。"
+          : result.message || "该录像暂无课件。",
+      );
+    } catch (reason) {
+      if (slideMetadataRequestRef.current !== request) return;
+      setSlideStatus("error");
+      setSlideMessage(
+        reason instanceof Error ? reason.message : "课件时间信息读取失败。",
+      );
+    }
+  }, [courseId, onLoadSlides, readVideo, selected]);
+  useEffect(() => {
+    if (!splitPaneOpen || slideStatus !== "processing") return;
+    const timer = window.setTimeout(() => void openSlidePane(), 5000);
+    return () => window.clearTimeout(timer);
+  }, [openSlidePane, slideStatus, splitPaneOpen]);
   const stepPlaybackRate = useCallback(
     (direction: -1 | 1) => {
       const currentIndex = playbackRates.indexOf(playbackRate);
@@ -1577,6 +2173,15 @@ export function VideosView({
     setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
     setSubtitleMessage(null);
+    setSubtitleVtt(null);
+    setSubtitleStatus(undefined);
+    setPlaybackTime(0);
+    setSplitPaneOpen(false);
+    setSlideStatus("idle");
+    setSlidePages([]);
+    setSlideImageUrl(null);
+    slideMetadataRequestRef.current += 1;
+    slideImageRequestRef.current += 1;
     setPreservedAcrossSource(false);
     setLearningTab("summary");
   };
@@ -1650,6 +2255,15 @@ export function VideosView({
       setExternalPlaybackSourceId(null);
       setSubtitleUrl(null);
       setSubtitleMessage(null);
+      setSubtitleVtt(null);
+      setSubtitleStatus(undefined);
+      setPlaybackTime(0);
+      setSplitPaneOpen(false);
+      setSlideStatus("idle");
+      setSlidePages([]);
+      setSlideImageUrl(null);
+      slideMetadataRequestRef.current += 1;
+      slideImageRequestRef.current += 1;
       setPreservedAcrossSource(false);
     }
     setSelected(video);
@@ -1664,6 +2278,10 @@ export function VideosView({
       subtitleBlobUrl.current = objectUrl;
       setSubtitleUrl(objectUrl);
     } else setSubtitleUrl(result.subtitleUrl ?? null);
+    setSubtitleVtt(result.subtitleVtt ?? null);
+    setSubtitleStatus(
+      result.subtitleStatus ?? (result.subtitleVtt ? "ready" : undefined),
+    );
     setSubtitleMessage(result.subtitleMessage ?? null);
   };
 
@@ -1674,12 +2292,90 @@ export function VideosView({
     const id = ++subtitleReadRequest.current;
     const promise = readVideo(
       `subtitle:${courseId ?? "unscoped"}:${video.id}`,
-      () => Promise.resolve(onLoadSubtitles ? onLoadSubtitles(video) : {}),
+      () =>
+        Promise.resolve(
+          subtitleLoaderRef.current ? subtitleLoaderRef.current(video) : {},
+        ),
       controller.signal,
       "字幕读取超时，可从录像更多操作重新载入字幕。",
     );
     return { id, promise };
   };
+  useEffect(() => {
+    if (
+      !selected ||
+      !playbackUrl ||
+      !onLoadSubtitles ||
+      !transcriptHasLearningMaterials(selectedJob)
+    )
+      return;
+    const revision = `${selected.id}:${selectedJob?.id}:${selectedJob?.phase1_status ?? selectedJob?.pipeline_status ?? ""}`;
+    if (lastSubtitleJobRevisionRef.current === revision) return;
+    lastSubtitleJobRevisionRef.current = revision;
+    const request = playRequest.current;
+    const reading = beginSubtitleRead(selected);
+    void reading.promise
+      .then((result) => {
+        if (
+          playRequest.current === request &&
+          subtitleReadRequest.current === reading.id
+        )
+          useSubtitleResult(result);
+      })
+      .catch(() => {
+        if (lastSubtitleJobRevisionRef.current === revision)
+          lastSubtitleJobRevisionRef.current = "";
+      });
+  }, [
+    selected?.id,
+    selectedJob?.id,
+    selectedJob?.status,
+    selectedJob?.phase1_status,
+    selectedJob?.pipeline_status,
+    selectedJob?.progress,
+    playbackUrl,
+  ]);
+
+  useEffect(() => {
+    if (subtitleStatus !== "processing" || !selected || !hasSubtitleLoader)
+      return;
+    let active = true;
+    let attempts = 0;
+    let timer: number;
+    const request = playRequest.current;
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        if (!active || playRequest.current !== request) return;
+        const reading = beginSubtitleRead(selected);
+        try {
+          const result = await reading.promise;
+          if (
+            !active ||
+            playRequest.current !== request ||
+            subtitleReadRequest.current !== reading.id
+          )
+            return;
+          useSubtitleResult(result);
+          if (result.subtitleStatus !== "processing") return;
+        } catch (reason) {
+          if (!active || playRequest.current !== request) return;
+          setSubtitleMessage(
+            reason instanceof Error
+              ? reason.message
+              : "字幕暂时读取失败，正在重试。",
+          );
+        }
+        attempts += 1;
+        if (attempts < 24) schedule();
+        else setSubtitleMessage("字幕仍在生成，可稍后从更多操作重新载入。");
+      }, 5000);
+    };
+    schedule();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [selected?.id, subtitleStatus, hasSubtitleLoader]);
 
   const loadSubtitles = (video: CourseVideoItem) => {
     selectLearningVideo(video);
@@ -1724,7 +2420,16 @@ export function VideosView({
     setPlaybackError(null);
     setExternalPlaybackSourceId(null);
     setSubtitleUrl(null);
+    setSubtitleVtt(null);
+    setSubtitleStatus(undefined);
     setSubtitleMessage(video.supportsSubtitle ? "正在加载字幕…" : null);
+    setPlaybackTime(0);
+    setSplitPaneOpen(false);
+    setSlideStatus("idle");
+    setSlidePages([]);
+    setSlideImageUrl(null);
+    slideMetadataRequestRef.current += 1;
+    slideImageRequestRef.current += 1;
     playBusyRef.current = video.id;
     setBusy(`play:${video.id}`);
     try {
@@ -1965,6 +2670,51 @@ export function VideosView({
         <p className="video-tool-empty">选择右侧录像后，这里会显示学习材料。</p>
       );
     if (
+      tab === "summary" &&
+      onLoadLearningSegments &&
+      !videoOrganizationReason(selected)
+    )
+      return (
+        <>
+          {organizationReason(selected) && (
+            <p role="status">{organizationReason(selected)}</p>
+          )}
+          {preparationError?.sourceId === selected.id && (
+            <div role="alert">
+              <p>{preparationError.message}</p>
+              {onPrepareVideo && !organizationReason(selected) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    preparedVideosRef.current.delete(
+                      `${courseId ?? "unscoped"}:${selected.id}`,
+                    );
+                    setPreparationAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  重试自动整理
+                </Button>
+              )}
+            </div>
+          )}
+          <VideoSynchronizedLearning
+            video={selected}
+            courseId={courseId}
+            playbackTime={playbackTime}
+            refreshing={preparationBusy || selectedSummaryProcessing}
+            revision={`${selectedJob?.id ?? ""}:${selectedJob?.status ?? ""}:${selectedJob?.phase1_status ?? selectedJob?.pipeline_status ?? ""}:${preparationBusy}`}
+            onLoad={onLoadLearningSegments}
+            onSeek={seekToTime}
+            onRetry={
+              selectedJob && onRetryTranscript
+                ? () => onRetryTranscript(selectedJob)
+                : undefined
+            }
+          />
+        </>
+      );
+    if (
       tab !== "pdf" &&
       tab !== "notes" &&
       !selectedJob &&
@@ -2202,6 +2952,184 @@ export function VideosView({
     );
   };
 
+  const playerShell = (
+    <div
+      ref={playerShellRef}
+      className={`video-player-shell${portalFullscreen ? " video-player-shell--pseudo-fullscreen" : ""}`}
+      data-testid="video-player-shell"
+    >
+      {playbackUrl ? (
+        <video
+          key={playbackUrl}
+          ref={videoRef}
+          controls
+          preload="metadata"
+          aria-label={selected ? `播放 ${selected.title}` : "课程视频"}
+          onPlay={(event) => {
+            if (selected)
+              notifyPlayback(
+                selected,
+                {
+                  positionSeconds: event.currentTarget.currentTime,
+                  playbackRate: event.currentTarget.playbackRate,
+                },
+                true,
+              );
+            setPreservedAcrossSource(
+              Boolean(
+                selected && source !== "all" && selected.source !== source,
+              ),
+            );
+          }}
+          onPause={() => setPreservedAcrossSource(false)}
+          onEnded={() => setPreservedAcrossSource(false)}
+          onTimeUpdate={(event) => {
+            setPlaybackTime(event.currentTarget.currentTime);
+            if (selected)
+              notifyPlayback(selected, {
+                positionSeconds: event.currentTarget.currentTime,
+                playbackRate: event.currentTarget.playbackRate,
+              });
+          }}
+          onSeeked={(event) => {
+            setPlaybackTime(event.currentTarget.currentTime);
+            if (selected)
+              notifyPlayback(
+                selected,
+                {
+                  positionSeconds: event.currentTarget.currentTime,
+                  playbackRate: event.currentTarget.playbackRate,
+                },
+                true,
+              );
+          }}
+          onRateChange={(event) => {
+            if (selected)
+              notifyPlayback(
+                selected,
+                {
+                  positionSeconds: event.currentTarget.currentTime,
+                  playbackRate: event.currentTarget.playbackRate,
+                },
+                true,
+              );
+          }}
+          onLoadedMetadata={(event) => {
+            playerLoadedRef.current = true;
+            const playbackRestore = playbackRestoreRef.current;
+            if (playbackRestore) {
+              event.currentTarget.currentTime = playbackRestore.currentTime;
+              event.currentTarget.playbackRate = playbackRestore.playbackRate;
+              playbackRateRef.current =
+                playbackRestore.playbackRate as PlaybackRate;
+              playbackRestoreRef.current = null;
+              autoPlaySourceId.current = null;
+              setPlaybackTime(event.currentTarget.currentTime);
+              if (!playbackRestore.paused) {
+                Promise.resolve(event.currentTarget.play()).catch(
+                  () => undefined,
+                );
+              }
+              return;
+            }
+            event.currentTarget.playbackRate = playbackRateRef.current;
+            setPlaybackTime(event.currentTarget.currentTime);
+            if (selected && autoPlaySourceId.current === selected.id) {
+              autoPlaySourceId.current = null;
+              try {
+                Promise.resolve(event.currentTarget.play()).catch(
+                  () => undefined,
+                );
+              } catch {
+                // Native controls remain available when autoplay is blocked.
+              }
+            }
+          }}
+        >
+          <source src={playbackUrl} />
+          {subtitleUrl && (
+            <track
+              kind="subtitles"
+              src={subtitleUrl}
+              srcLang="zh"
+              label="中文字幕"
+              default
+            />
+          )}
+        </video>
+      ) : loading ? (
+        <div className="video-player-empty video-player-loading" role="status">
+          <LoaderCircle aria-hidden="true" />
+          <strong>正在准备视频工作台</strong>
+          <span>课程与录像会在这里原位载入</span>
+        </div>
+      ) : permissionDenied ? (
+        <div className="video-player-empty" role="status">
+          <CircleAlert aria-hidden="true" />
+          <strong>需要视频访问权限</strong>
+          <span>完成视频平台登录或联系课程教师开通权限</span>
+        </div>
+      ) : error ? (
+        <div className="video-player-empty" role="status">
+          <CircleAlert aria-hidden="true" />
+          <strong>课程视频暂时无法载入</strong>
+          <span>{error}</span>
+        </div>
+      ) : playbackError && selected ? (
+        <div className="video-player-empty" role="alert">
+          <CircleAlert aria-hidden="true" />
+          <strong>{selected.title} 无法载入</strong>
+          <span>{playbackError}</span>
+        </div>
+      ) : selected ? (
+        <div className="video-player-empty" role="status">
+          <Play aria-hidden="true" />
+          <strong>
+            {busy === `play:${selected.id}`
+              ? "正在准备播放"
+              : externalPlaybackSourceId === selected.id
+                ? "已在本地播放器或外部应用打开"
+                : "已选择当前录像"}
+          </strong>
+          <span>
+            {busy === `play:${selected.id}`
+              ? "正在获取视频地址…"
+              : externalPlaybackSourceId === selected.id
+                ? "可在外部应用观看录像，或继续使用下方学习工具。"
+                : "可继续使用下方学习工具，或再次选择播放"}
+          </span>
+        </div>
+      ) : (
+        <div className="video-player-empty">
+          <Play aria-hidden="true" />
+          <strong>尚未选择播放内容</strong>
+          <span>从右侧录像列表选择一节开始学习</span>
+        </div>
+      )}
+      {playerFeedback && (
+        <div
+          key={playerFeedback.id}
+          className="video-player-feedback"
+          role="status"
+          aria-live="polite"
+        >
+          {playerFeedback.text}
+        </div>
+      )}
+      {portalFullscreen && (
+        <button
+          type="button"
+          className="video-player-fullscreen-exit"
+          aria-label="退出全屏"
+          onClick={() => void togglePlayerFullscreen()}
+        >
+          <Minimize2 aria-hidden="true" />
+          退出全屏
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <ContentReveal
       as="main"
@@ -2294,132 +3222,11 @@ export function VideosView({
         </Tabs>
       </section>
 
-      {aiReadiness && (
-        <div className="video-ai-readiness" role="status">
-          <span>
-            {aiReadiness.message}{" "}
-            {aiReadiness.configured && aiReadiness.connectionVerified !== true
-              ? "配置已保存，连接尚未验证。"
-              : ""}{" "}
-            学习材料生成需要视频空间的可用字幕；已有材料可直接阅读。
-          </span>
-          {onOpenAISettings && (
-            <Button variant="link" size="sm" onClick={onOpenAISettings}>
-              {aiReadiness.configured ? "查看 AI 设置" : "配置 AI"}
-            </Button>
-          )}
-        </div>
-      )}
       <section className="video-learning-grid" aria-label="课程视频学习工作台">
         <div className="video-player-column">
-          <div className="video-player-shell" data-testid="video-player-shell">
-            {playbackUrl ? (
-              <video
-                key={playbackUrl}
-                ref={videoRef}
-                controls
-                preload="metadata"
-                aria-label={selected ? `播放 ${selected.title}` : "课程视频"}
-                onPlay={() =>
-                  setPreservedAcrossSource(
-                    Boolean(
-                      selected &&
-                        source !== "all" &&
-                        selected.source !== source,
-                    ),
-                  )
-                }
-                onPause={() => setPreservedAcrossSource(false)}
-                onEnded={() => setPreservedAcrossSource(false)}
-                onLoadedMetadata={(event) => {
-                  playerLoadedRef.current = true;
-                  event.currentTarget.playbackRate = playbackRateRef.current;
-                  if (selected && autoPlaySourceId.current === selected.id) {
-                    autoPlaySourceId.current = null;
-                    try {
-                      Promise.resolve(event.currentTarget.play()).catch(
-                        () => undefined,
-                      );
-                    } catch {
-                      // Native controls remain available when autoplay is blocked.
-                    }
-                  }
-                }}
-              >
-                <source src={playbackUrl} />
-                {subtitleUrl && (
-                  <track
-                    kind="subtitles"
-                    src={subtitleUrl}
-                    srcLang="zh"
-                    label="中文字幕"
-                    default
-                  />
-                )}
-              </video>
-            ) : loading ? (
-              <div
-                className="video-player-empty video-player-loading"
-                role="status"
-              >
-                <LoaderCircle aria-hidden="true" />
-                <strong>正在准备视频工作台</strong>
-                <span>课程与录像会在这里原位载入</span>
-              </div>
-            ) : permissionDenied ? (
-              <div className="video-player-empty" role="status">
-                <CircleAlert aria-hidden="true" />
-                <strong>需要视频访问权限</strong>
-                <span>完成视频平台登录或联系课程教师开通权限</span>
-              </div>
-            ) : error ? (
-              <div className="video-player-empty" role="status">
-                <CircleAlert aria-hidden="true" />
-                <strong>课程视频暂时无法载入</strong>
-                <span>{error}</span>
-              </div>
-            ) : playbackError && selected ? (
-              <div className="video-player-empty" role="alert">
-                <CircleAlert aria-hidden="true" />
-                <strong>{selected.title} 无法载入</strong>
-                <span>{playbackError}</span>
-              </div>
-            ) : selected ? (
-              <div className="video-player-empty" role="status">
-                <Play aria-hidden="true" />
-                <strong>
-                  {busy === `play:${selected.id}`
-                    ? "正在准备播放"
-                    : externalPlaybackSourceId === selected.id
-                      ? "已在本地播放器或外部应用打开"
-                      : "已选择当前录像"}
-                </strong>
-                <span>
-                  {busy === `play:${selected.id}`
-                    ? "正在获取视频地址…"
-                    : externalPlaybackSourceId === selected.id
-                      ? "可在外部应用观看录像，或继续使用下方学习工具。"
-                      : "可继续使用下方学习工具，或再次选择播放"}
-                </span>
-              </div>
-            ) : (
-              <div className="video-player-empty">
-                <Play aria-hidden="true" />
-                <strong>尚未选择播放内容</strong>
-                <span>从右侧录像列表选择一节开始学习</span>
-              </div>
-            )}
-            {playerFeedback && (
-              <div
-                key={playerFeedback.id}
-                className="video-player-feedback"
-                role="status"
-                aria-live="polite"
-              >
-                {playerFeedback.text}
-              </div>
-            )}
-          </div>
+          {portalFullscreen
+            ? createPortal(playerShell, document.body)
+            : playerShell}
           <Button
             variant="outline"
             size="sm"
@@ -2457,6 +3264,50 @@ export function VideosView({
                 </span>
               </div>
               <div className="video-player-tools" ref={playerToolsRef}>
+                {playbackUrl && (
+                  <button
+                    type="button"
+                    className="video-player-tool-trigger video-player-tool-button"
+                    aria-label={
+                      portalFullscreen || playerFullscreen
+                        ? "退出全屏"
+                        : "全屏播放"
+                    }
+                    aria-pressed={portalFullscreen || playerFullscreen}
+                    onClick={() => void togglePlayerFullscreen()}
+                  >
+                    {portalFullscreen || playerFullscreen ? (
+                      <Minimize2 aria-hidden="true" />
+                    ) : (
+                      <Maximize2 aria-hidden="true" />
+                    )}
+                    <span>
+                      {portalFullscreen || playerFullscreen
+                        ? "退出全屏"
+                        : "全屏"}
+                    </span>
+                  </button>
+                )}
+                {selected.source === "video_space" &&
+                  selected.supportsSlidesPdf &&
+                  onLoadSlides &&
+                  onLoadSlideImage && (
+                    <button
+                      type="button"
+                      className="video-player-tool-trigger video-player-tool-button"
+                      aria-label={
+                        splitPaneOpen ? "关闭 PPT 分屏" : "打开 PPT 分屏"
+                      }
+                      aria-pressed={splitPaneOpen}
+                      onClick={() => {
+                        if (splitPaneOpen) setSplitPaneOpen(false);
+                        else void openSlidePane();
+                      }}
+                    >
+                      <FileText aria-hidden="true" />
+                      <span>PPT 分屏</span>
+                    </button>
+                  )}
                 <div className="video-player-tool">
                   <button
                     ref={speedTriggerRef}
@@ -3379,8 +4230,140 @@ export function VideosView({
             })
           }
           onReveal={onRevealTranscript}
+          onSeek={
+            selected?.id === detailJob.source_id && playbackUrl
+              ? seekToTime
+              : undefined
+          }
         />
       )}
+      {splitPaneOpen &&
+        createPortal(
+          <aside
+            className="video-slide-pane"
+            role="dialog"
+            aria-label="PPT 同步分屏"
+            style={{
+              left: slidePaneRect.left,
+              top: slidePaneRect.top,
+              width: slidePaneRect.width,
+              height: slidePaneRect.height,
+            }}
+          >
+            <header className="video-slide-pane-header">
+              <button
+                type="button"
+                className="video-slide-pane-drag"
+                aria-label="拖动 PPT 分屏"
+                title="拖动分屏"
+                onPointerDown={(event) => beginSlidePanePointer("drag", event)}
+                onKeyDown={(event) => {
+                  if (!event.altKey || !event.key.startsWith("Arrow")) return;
+                  event.preventDefault();
+                  const delta = event.shiftKey ? 48 : 16;
+                  setSlidePaneRect((current) =>
+                    clampSlidePaneRect({
+                      ...current,
+                      left:
+                        current.left +
+                        (event.key === "ArrowLeft"
+                          ? -delta
+                          : event.key === "ArrowRight"
+                            ? delta
+                            : 0),
+                      top:
+                        current.top +
+                        (event.key === "ArrowUp"
+                          ? -delta
+                          : event.key === "ArrowDown"
+                            ? delta
+                            : 0),
+                    }),
+                  );
+                }}
+              >
+                <Move aria-hidden="true" />
+              </button>
+              <div className="video-slide-pane-title">
+                <strong>PPT 同步分屏</strong>
+                <span>{selected?.title ?? "当前录像"}</span>
+              </div>
+              <button
+                type="button"
+                className="video-slide-pane-close"
+                aria-label="关闭 PPT 分屏"
+                onClick={() => setSplitPaneOpen(false)}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </header>
+            <div className="video-slide-pane-content" aria-live="polite">
+              {slideStatus === "loading" || slideStatus === "processing" ? (
+                <p className="video-slide-pane-message">{slideMessage}</p>
+              ) : slideStatus === "error" || slideStatus === "empty" ? (
+                <p className="video-slide-pane-message">{slideMessage}</p>
+              ) : slideStatus === "ready" && timedSlidePages.length === 0 ? (
+                <p className="video-slide-pane-message">{slideMessage}</p>
+              ) : slideImageLoading ? (
+                <p className="video-slide-pane-message">正在载入当前课件页…</p>
+              ) : slideImageError ? (
+                <p className="video-slide-pane-message">{slideImageError}</p>
+              ) : slideImageUrl && activeSlidePage ? (
+                <img
+                  src={slideImageUrl}
+                  alt={`${selected?.title ?? "课程视频"}，课件第 ${activeSlidePage.index + 1} 页`}
+                />
+              ) : (
+                <p className="video-slide-pane-message">等待视频时间信息…</p>
+              )}
+            </div>
+            <footer className="video-slide-pane-footer">
+              <div>
+                <span>视频时间</span>
+                <time>{formatVideoClock(playbackTime)}</time>
+                {activeSlidePage && (
+                  <span>第 {activeSlidePage.index + 1} 页</span>
+                )}
+              </div>
+              <p>{currentSubtitle || "当前时间暂无字幕"}</p>
+            </footer>
+            <div
+              className="video-slide-pane-resize"
+              role="separator"
+              aria-label="调整 PPT 分屏大小"
+              aria-orientation="horizontal"
+              tabIndex={0}
+              onPointerDown={(event) => beginSlidePanePointer("resize", event)}
+              onKeyDown={(event) => {
+                if (!event.key.startsWith("Arrow")) return;
+                event.preventDefault();
+                const delta = event.shiftKey ? 48 : 16;
+                setSlidePaneRect((current) =>
+                  clampSlidePaneRect({
+                    ...current,
+                    width:
+                      current.width +
+                      (event.key === "ArrowLeft"
+                        ? -delta
+                        : event.key === "ArrowRight"
+                          ? delta
+                          : 0),
+                    height:
+                      current.height +
+                      (event.key === "ArrowUp"
+                        ? -delta
+                        : event.key === "ArrowDown"
+                          ? delta
+                          : 0),
+                  }),
+                );
+              }}
+            />
+          </aside>,
+          playerFullscreen && playerShellRef.current
+            ? playerShellRef.current
+            : document.body,
+        )}
     </ContentReveal>
   );
 }

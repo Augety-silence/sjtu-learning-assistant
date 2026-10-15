@@ -143,8 +143,7 @@ class AgentLoop:
             try:
                 stream_method = getattr(self.client, "chat_completion_stream", None)
                 if (
-                    not definitions
-                    and callable(stream_method)
+                    callable(stream_method)
                     and bool(getattr(self.client, "supports_streaming", True))
                 ):
                     completion = stream_method(
@@ -160,6 +159,8 @@ class AgentLoop:
                             if event_callback is not None
                             else None
                         ),
+                        tools=definitions or None,
+                        tool_choice="auto" if definitions else None,
                     )
                 else:
                     completion = self.client.chat_completion(
@@ -175,6 +176,8 @@ class AgentLoop:
                     conversation,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    tools=definitions or None,
+                    tool_choice="auto" if definitions else None,
                     system_prompt=False,
                 )
             except TypeError as exc:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from sjtu_learning_assistant.course_learning_schemas import (
     QualityReport,
     SubtitleChunk,
 )
+from sjtu_learning_assistant.transcript_pipeline import MAP_FALLBACK_WARNING, normalize_cues, parse_vtt
 from sjtu_learning_assistant.transcript_service import (
     AIContext,
     TranscriptService,
@@ -28,11 +30,11 @@ VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n本节课强调成本分析\n"
 
 class CompleteV1Pipeline:
     def run(self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
-        del raw_vtt, ai_client, cached_chunks, kwargs
+        cues = kwargs.get("source_cues") or normalize_cues(parse_vtt(raw_vtt))
+        rows = [cue.as_dict() for cue in cues]
+        del ai_client, cached_chunks
         chunk = {
-            "cleaned_transcript": [
-                {"cue_id": "cue-000001", "start_ms": 0, "end_ms": 2000, "text": "本节课强调成本分析"}
-            ],
+            "cleaned_transcript": rows,
             "topics": ["成本分析"],
             "emphasized_points": [],
             "concepts": [],
@@ -43,7 +45,7 @@ class CompleteV1Pipeline:
         cleaned = "# 规整字幕\n\n**00:00**  本节课强调成本分析\n"
         on_cleaned(cleaned)
         return SimpleNamespace(
-            cues=[{"cue_id": "cue-000001", "start_ms": 0, "end_ms": 2000, "text": "本节课强调成本分析"}],
+            cues=rows,
             chunks=[chunk],
             cleaned_markdown=cleaned,
             summary={"lesson_topic": "成本分析"},
@@ -54,20 +56,58 @@ class CompleteV1Pipeline:
         )
 
 
+class FallbackOnceV1Pipeline(CompleteV1Pipeline):
+    def __init__(self):
+        self.calls = []
+
+    def run(self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
+        cached_chunks = cached_chunks or {}
+        self.calls.append(set(cached_chunks))
+        cues = kwargs.get("source_cues") or normalize_cues(parse_vtt(raw_vtt))
+        rows = [cue.as_dict() for cue in cues]
+        chunk = {
+            "cleaned_transcript": rows,
+            "topics": ["成本分析"],
+            "emphasized_points": [],
+            "concepts": [],
+            "cases_formulas_conclusions": [],
+            "review_questions": [],
+        }
+        first_run = len(self.calls) == 1
+        if first_run:
+            chunk["partial_warning"] = MAP_FALLBACK_WARNING
+        on_chunk(0, chunk)
+        cleaned = "# 规整字幕\n\n**00:00**  本节课强调成本分析\n"
+        on_cleaned(cleaned)
+        return SimpleNamespace(
+            cues=rows,
+            chunks=[chunk],
+            cleaned_markdown=cleaned,
+            summary={"lesson_topic": "成本分析"},
+            summary_markdown="# 成本分析\n",
+            partial_warnings=(MAP_FALLBACK_WARNING,) if first_run else (),
+            reduce_diagnostics=None,
+            summary_empty=False,
+        )
+
+
 class FakeOrchestrator:
     pipeline_version = "phase1-test-v1"
     prompt_version = "phase1-prompt-v1"
     model = "fake-model-v1"
 
-    def __init__(self, *, fail: bool = False, strong: bool = True):
+    def __init__(self, *, fail: bool = False, strong: bool = True, uncertain: bool = False):
         self.fail = fail
         self.strong = strong
+        self.uncertain = uncertain
         self.calls = []
         self.persist_raw = True
 
     def orchestrate(self, *, course_id, video_id, raw_vtt, memory_repo, **kwargs):
-        del kwargs
         self.calls.append((course_id, video_id, memory_repo.course_dir))
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback:
+            progress_callback(0, 1, "reviewing")
         if self.fail:
             raise TimeoutError("simulated phase1 timeout")
         source = "本节课强调成本分析"
@@ -109,16 +149,18 @@ class FakeOrchestrator:
         critic = CriticResult(CriticDecision.PASS, critic_confidence, (), ())
         quality = QualityReport(
             score=confidence,
-            passed=self.strong,
+            passed=self.strong and not self.uncertain,
             metrics={"schema_pass": 1.0},
             warnings=(),
             schema_pass=True,
-            critic_pass_rate=1.0,
-            uncertain_rate=0.0,
+            critic_pass_rate=0.5 if self.uncertain else 1.0,
+            uncertain_rate=0.5 if self.uncertain else 0.0,
             numeric_change_count=0,
             unsupported_change_count=0,
-            status="completed",
+            status="completed_with_warnings" if self.uncertain else "completed",
         )
+        if progress_callback:
+            progress_callback(1, 1, "reviewing")
         event = {
             "stage": "test",
             "agent": "program",
@@ -140,7 +182,7 @@ class FakeOrchestrator:
             uncertain=(),
             memory_version=None,
             events=(event,),
-            status="completed",
+            status="completed_with_warnings" if self.uncertain else "completed",
             raw_hash=hashlib.sha256(raw_vtt.encode("utf-8")).hexdigest(),
             cache_key="0" * 64,
         )
@@ -160,12 +202,12 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.fetches += 1
         return {"status": "ready", "vtt": VTT}
 
-    def service(self, orchestrator, *, phase1=True):
+    def service(self, orchestrator, *, phase1=True, pipeline=None):
         return TranscriptService(
             self.root,
             subtitle_fetcher=self.fetch,
             ai_context_provider=lambda: AIContext(object(), "v1-model", "endpoint", True),
-            pipeline=CompleteV1Pipeline(),
+            pipeline=pipeline or CompleteV1Pipeline(),
             orchestrator=orchestrator,
             memory_root=self.memory_root,
             enable_phase1=phase1,
@@ -192,6 +234,9 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
 
         self.assertEqual("completed", job["status"])
         self.assertEqual("completed", job["phase1_status"])
+        self.assertEqual("completed", job["review_status"])
+        self.assertEqual(1, job["review_completed"])
+        self.assertEqual(1, job["review_total"])
         self.assertEqual(hashlib.sha256(raw_before).hexdigest(), manifest["raw_sha256"])
         self.assertFalse((video_dir / "v2" / "raw.vtt").exists())
         self.assertEqual(set(V2_ARTIFACT_FILES), set(manifest["artifacts"]))
@@ -235,6 +280,54 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.assertTrue((video_dir / "summary.json").is_file())
         self.assertTrue((video_dir / "cleaned.md").is_file())
         self.assertEqual("partial", service.list_v2_artifacts(job["id"])["status"])
+
+    def test_retry_forces_phase1_after_partial_cache(self):
+        orchestrator = FakeOrchestrator(fail=True)
+        service = self.service(orchestrator)
+        first = self.run_job(service)
+        self.assertEqual("partial", first["phase1_status"])
+        self.assertEqual(1, len(orchestrator.calls))
+
+        orchestrator.fail = False
+        retried_batch = service.retry(first["id"])
+        service.run_pending()
+        retried = service.get_batch(retried_batch["id"])["jobs"][0]
+        self.assertEqual("completed", retried["phase1_status"])
+        self.assertFalse(retried["phase1_reused"])
+        self.assertEqual(2, len(orchestrator.calls))
+
+    def test_retry_reprocesses_v1_fallback_and_reuses_only_successful_chunks(self):
+        orchestrator = FakeOrchestrator(fail=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = TranscriptService(
+            self.root,
+            subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(object(), "v1-model", "endpoint", True),
+            pipeline=pipeline,
+            orchestrator=orchestrator,
+            memory_root=self.memory_root,
+            enable_phase1=True,
+            sleeper=lambda _delay: None,
+            autostart_worker=False,
+        )
+        first = self.run_job(service)
+        self.assertEqual("completed_with_warnings", first["status"])
+        self.assertEqual(1, len(pipeline.calls))
+
+        orchestrator.fail = False
+        retried_batch = service.retry(first["id"])
+        service.run_pending()
+        retried = service.get_batch(retried_batch["id"])["jobs"][0]
+
+        self.assertEqual("completed", retried["phase1_status"])
+        self.assertEqual(3, len(pipeline.calls))
+        self.assertEqual(set(), pipeline.calls[1])
+        self.assertEqual(1, self.fetches)
+        self.assertEqual(2, len(orchestrator.calls))
+        video_dir = service._video_dir(first["source_id"])
+        manifest = json.loads((video_dir / "manifest.json").read_text("utf-8"))
+        self.assertEqual("completed", manifest["status"])
+        self.assertEqual([], manifest.get("partial_warnings", []))
 
     def test_symlinked_v2_directory_is_rejected_before_agent_call(self):
         orchestrator = FakeOrchestrator()
@@ -286,6 +379,147 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         training = next(item for item in listed["items"] if item["kind"] == "training_examples")
         self.assertFalse(training["available"])
         self.assertIsNone(training["id"])
+
+    def test_passed_correction_updates_timed_subtitles_cues_and_learning_products(self):
+        service = self.service(FakeOrchestrator())
+        job = self.run_job(service)
+        video_dir = service._video_dir(job["source_id"])
+        manifest = json.loads((video_dir / "manifest.json").read_text())
+        cues = json.loads((video_dir / "cues.json").read_text())
+        self.assertEqual("corrected", job["learning_sync"])
+        self.assertEqual("corrected", manifest["learning_source"])
+        self.assertEqual(manifest["learning_source_sha256"], manifest["artifact_learning_source_sha256"])
+        self.assertEqual("本节课强调成本法分析", cues[0]["text"])
+        self.assertEqual("cue-000001", cues[0]["cue_id"])
+        self.assertEqual(0, cues[0]["start_ms"])
+        self.assertEqual(VTT, (video_dir / "raw.vtt").read_text())
+        subtitles = service.corrected_subtitles(job["source_id"])
+        self.assertIn("成本法分析", subtitles["vtt"])
+        segments = service.learning_segments(job["source_id"])
+        self.assertEqual("corrected", segments["source_version"])
+        self.assertTrue(segments["segments"])
+        self.assertFalse(segments["segments"][0]["provisional"])
+
+    def test_failed_quality_or_corrupt_correction_cannot_become_subtitle_track(self):
+        weak = self.service(FakeOrchestrator(strong=False))
+        weak_job = self.run_job(weak)
+        self.assertIsNone(weak.corrected_subtitles(weak_job["source_id"]))
+        strong = self.service(FakeOrchestrator())
+        strong_job = self.run_job(strong, video="100")
+        quality = strong._video_dir(strong_job["source_id"]) / "v2" / "quality.json"
+        quality.write_text("{}", encoding="utf-8")
+        self.assertIsNone(strong.corrected_subtitles(strong_job["source_id"]))
+
+    def test_valid_uncertain_review_needs_human_check_and_does_not_auto_retry(self):
+        orchestrator = FakeOrchestrator(uncertain=True)
+        service = self.service(orchestrator)
+        job = self.run_job(service)
+        result = service.learning_segments(job["source_id"])
+
+        self.assertEqual("content_uncertain", result["error_code"])
+        self.assertEqual("needs_review", result["stage"])
+        self.assertTrue(result["processing_done"])
+        self.assertFalse(result["auto_retryable"])
+        self.assertTrue(result["retryable"])  # explicit user retry remains available
+        self.assertIn("人工核对", result["error_message"])
+        self.assertFalse(service._phase1_needs_upgrade(service._video_dir(job["source_id"]), service._read_json(service._manifest_path(job["source_id"]))))
+
+        stored_batch, stored_job = service._find_job(job["id"])
+        self.assertIsNone(stored_job.get("next_retry_at"))
+        stored_batch["origin"] = "playback"
+        stored_job["auto_retryable"] = False
+        stored_job["next_retry_at"] = (service.now_provider() - timedelta(seconds=1)).isoformat()
+        service._save_batch(stored_batch)
+        service._schedule_due_playback_retries()
+        self.assertEqual(1, len(service._all_batches()))
+        self.assertEqual(1, len(orchestrator.calls))
+
+    def test_v1_stage_failure_remains_auto_recoverable_when_phase1_is_uncertain(self):
+        orchestrator = FakeOrchestrator(uncertain=True)
+        service = self.service(orchestrator, pipeline=FallbackOnceV1Pipeline())
+        job = self.run_job(service)
+        video_dir = service._video_dir(job["source_id"])
+        manifest = service._read_json(service._manifest_path(job["source_id"]))
+        result = service.learning_segments(job["source_id"])
+
+        self.assertEqual("completed_with_warnings", manifest["status"])
+        self.assertEqual("v1_map_fallback", result["error_code"])
+        self.assertEqual("map", result["stage"])
+        self.assertFalse(result["processing_done"])
+        self.assertTrue(result["phase1_processing_done"])
+        self.assertTrue(result["retryable"])
+        self.assertTrue(result["auto_retryable"])
+        self.assertTrue(service._phase1_needs_upgrade(video_dir, manifest))
+        batch, stored_job = service._find_job(job["id"])
+        self.assertTrue(stored_job["auto_retryable"])
+        self.assertIsNotNone(stored_job.get("next_retry_at"))
+
+    def test_v1_guide_and_audit_schema_failures_are_preserved_with_uncertain_phase1(self):
+        class GuideAndAuditFailurePipeline(CompleteV1Pipeline):
+            def run(self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
+                result = super().run(raw_vtt, ai_client, cached_chunks=cached_chunks, on_chunk=on_chunk, on_cleaned=on_cleaned, **kwargs)
+                result.partial_warnings = ("guide schema failure", "audit schema failure")
+                result.summary.setdefault("study_guide", {})["incomplete"] = True
+                result.summary["review"] = {
+                    "status": "completed_with_warnings",
+                    "issues": [],
+                    "coverage_ledger": [{
+                        "chunk_index": 0,
+                        "status": "not_audited",
+                        "diagnostics": {"violation_code": "schema", "validator_path": "audit.chunk_index"},
+                    }],
+                    "guide_generation_diagnostics": {"violation_code": "schema", "validator_path": "course_map"},
+                }
+                return result
+
+        service = self.service(FakeOrchestrator(uncertain=True), pipeline=GuideAndAuditFailurePipeline())
+        job = self.run_job(service)
+        video_dir = service._video_dir(job["source_id"])
+        manifest = service._read_json(service._manifest_path(job["source_id"]))
+        v1_summary = service._read_json(video_dir / "summary.json")
+        self.assertEqual("schema", v1_summary["review"]["guide_generation_diagnostics"]["violation_code"])
+        self.assertTrue(service._hashed_file_valid(video_dir / "summary.json", manifest["artifacts"]["summary_json"]["sha256"]))
+        self.assertEqual("v1_guide_schema", service._v1_recovery_diagnostic(video_dir, manifest)["code"])
+        result = service.learning_segments(job["source_id"])
+        stage_codes = {(item["stage"], item["code"]) for item in result["failed_stages"]}
+
+        self.assertEqual("v1_guide_schema", result["error_code"])
+        self.assertEqual("guide_generation", result["stage"])
+        self.assertEqual({("guide_generation", "v1_guide_schema"), ("audit", "v1_audit_schema")}, stage_codes)
+        self.assertFalse(result["processing_done"])
+        self.assertTrue(result["phase1_processing_done"])
+        self.assertTrue(result["auto_retryable"])
+
+    def test_v1_pipeline_receives_provider_json_mode_without_ai_calls(self):
+        class JsonModeCapturePipeline(CompleteV1Pipeline):
+            def run(self, raw_vtt, ai_client, *, cached_chunks=None, on_chunk=None, on_cleaned=None, **kwargs):
+                self.json_mode = kwargs.get("json_mode")
+                return super().run(raw_vtt, ai_client, cached_chunks=cached_chunks, on_chunk=on_chunk, on_cleaned=on_cleaned, **kwargs)
+
+        pipeline = JsonModeCapturePipeline()
+        service = self.service(FakeOrchestrator(), phase1=False, pipeline=pipeline)
+        service.ai_context_provider = lambda: AIContext(object(), "fake-model", "endpoint", True, True)
+
+        self.run_job(service)
+
+        self.assertIs(pipeline.json_mode, True)
+
+    def test_processing_does_not_make_verified_corrected_content_provisional(self):
+        service = self.service(FakeOrchestrator())
+        completed = self.run_job(service)
+        batch, job = service._find_job(completed["id"])
+        job.update(status="organizing", stage="reviewing")
+        service._save_batch(batch)
+        path = service._video_dir(job["source_id"]) / "manifest.json"
+        manifest = service._read_json(path)
+        manifest["status"] = "organizing"
+        service._write_json(path, manifest)
+        result = service.learning_segments(job["source_id"])
+        self.assertTrue(result["is_processing"])
+        self.assertEqual("ready", result["status"])
+        self.assertEqual("corrected", result["source_version"])
+        self.assertTrue(result["segments"])
+        self.assertTrue(all(not segment["provisional"] for segment in result["segments"]))
 
 
 if __name__ == "__main__":

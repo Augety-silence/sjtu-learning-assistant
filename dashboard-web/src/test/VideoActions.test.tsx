@@ -60,6 +60,310 @@ afterEach(() => {
 });
 
 describe("video action capabilities and isolation", () => {
+  it("does not start automatic AI if obtaining the playback address fails", async () => {
+    const prepare = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPrepareVideo={prepare}
+        onPlay={async () => {
+          throw new Error("录像地址暂不可用");
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    expect(await screen.findByText("甲课 无法载入")).toBeTruthy();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("loads existing learning materials without starting AI or playback", async () => {
+    const prepare = vi.fn(async () => undefined);
+    const play = vi.fn(async () => ({ url: "https://example.test/a.mp4" }));
+    const load = vi.fn(async () => ({
+      status: "ready" as const,
+      segments: [],
+    }));
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPrepareVideo={prepare}
+        onPlay={play}
+        onLoadLearningSegments={load}
+        transcriptJobs={[
+          { ...completed, source_id: lesson.id, phase1_status: "completed" },
+        ]}
+      />,
+    );
+    menu(lesson.title, "查看学习材料");
+    await waitFor(() =>
+      expect(load).toHaveBeenCalledWith(lesson, expect.any(AbortSignal)),
+    );
+    expect(prepare).not.toHaveBeenCalled();
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("offers recovery when automatic preparation fails", async () => {
+    const prepare = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("服务暂不可用"))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPrepareVideo={prepare}
+        onPlay={async () => ({ url: "https://example.test/a.mp4" })}
+        onLoadLearningSegments={async () => ({ status: "empty", segments: [] })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    expect(await screen.findByText("服务暂不可用")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试自动整理" }));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+  });
+
+  it("prepares a selected video automatically and follows playback with inline learning and seekable evidence", async () => {
+    const prepare = vi.fn(async () => undefined);
+    const update = vi.fn(async () => undefined);
+    const segments = vi.fn(async () => ({
+      status: "ready" as const,
+      segments: [
+        {
+          id: "first",
+          startMs: 0,
+          endMs: 20000,
+          title: "第一知识点",
+          content: "当前知识解释。字幕证据：cue-1 · 00:05–00:10",
+        },
+        {
+          id: "second",
+          startMs: 20000,
+          endMs: 40000,
+          title: "第二知识点",
+          content: "后续知识解释。",
+        },
+      ],
+    }));
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPrepareVideo={prepare}
+        onUpdatePlayback={update}
+        onLoadLearningSegments={segments}
+        onPlay={async () => ({ url: "https://example.test/a.mp4" })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await waitFor(() =>
+      expect(prepare).toHaveBeenCalledWith(lesson, {
+        positionSeconds: 0,
+        playbackRate: 1,
+      }),
+    );
+    expect(await screen.findByText(/当前知识解释/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "生成 AI 总结" })).toBeNull();
+    const player = document.querySelector("video") as HTMLVideoElement;
+    player.currentTime = 22;
+    fireEvent.timeUpdate(player);
+    expect(
+      document.querySelector(
+        ".video-synchronized-learning [aria-current='true']",
+      )?.textContent,
+    ).toContain("第二知识点");
+    player.currentTime = 23;
+    fireEvent.timeUpdate(player);
+    expect(update).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "跳转到 00:05–00:10" }));
+    expect(player.currentTime).toBe(5);
+    expect(update).toHaveBeenLastCalledWith(lesson, {
+      positionSeconds: 5,
+      playbackRate: 1,
+    });
+    expect(prepare).toHaveBeenCalledOnce();
+    player.playbackRate = 2;
+    fireEvent.rateChange(player);
+    expect(update).toHaveBeenLastCalledWith(lesson, {
+      positionSeconds: 5,
+      playbackRate: 2,
+    });
+  });
+
+  it("does not open a completed summary over another video in the same course", async () => {
+    const start = vi.fn(async () => undefined);
+    const props = {
+      videos: [lesson, other],
+      courseId: 12,
+      onStartTranscript: start,
+    };
+    const { rerender } = render(<VideosView {...props} />);
+    menu(lesson.title, "生成 AI 总结");
+    await waitFor(() => expect(start).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "播放 乙课" }));
+    rerender(
+      <VideosView
+        {...props}
+        transcriptJobs={[
+          {
+            ...completed,
+            id: "new-a-summary",
+            source_id: lesson.id,
+            title: lesson.title,
+            phase1_status: "completed",
+          },
+        ]}
+      />,
+    );
+    await act(async () => undefined);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      document.querySelector(".video-now-playing strong")?.textContent,
+    ).toBe("乙课");
+  });
+
+  it("allows retry after the remote subtitle wait has ended", async () => {
+    const retry = vi.fn(async () => undefined);
+    render(
+      <VideosView
+        videos={[lesson]}
+        onRetryTranscript={retry}
+        transcriptJobs={[
+          {
+            ...completed,
+            source_id: lesson.id,
+            title: lesson.title,
+            status: "waiting_remote",
+            stage: "waiting_remote",
+            progress: 100,
+          },
+        ]}
+      />,
+    );
+    menu(lesson.title, "重试整理学习材料");
+    await waitFor(() => expect(retry).toHaveBeenCalledOnce());
+  });
+
+  it("refreshes processing subtitles in the background without another click", async () => {
+    vi.useFakeTimers();
+    const subtitles = vi
+      .fn()
+      .mockResolvedValueOnce({
+        subtitleStatus: "processing",
+        subtitleMessage: "字幕尚在生成",
+      })
+      .mockResolvedValueOnce({
+        subtitleStatus: "ready",
+        subtitleMessage: "后台字幕已就绪",
+      });
+    const view = render(
+      <VideosView
+        videos={[lesson]}
+        onPlay={async () => ({ url: "https://example.test/a.mp4" })}
+        onLoadSubtitles={(video) => subtitles(video)}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await act(async () => undefined);
+    expect(subtitles).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    view.rerender(
+      <VideosView
+        videos={[lesson]}
+        onPlay={async () => ({ url: "https://example.test/a.mp4" })}
+        onLoadSubtitles={(video) => subtitles(video)}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(subtitles).toHaveBeenCalledTimes(2);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "字幕" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.getByText("后台字幕已就绪")).toBeTruthy();
+  });
+
+  it("reloads the player subtitle after AI review completes", async () => {
+    const subtitles = vi
+      .fn()
+      .mockResolvedValueOnce({
+        subtitleStatus: "ready",
+        subtitleMessage: "原始字幕",
+      })
+      .mockResolvedValueOnce({
+        subtitleStatus: "ready",
+        subtitleMessage: "AI校对字幕已载入",
+      });
+    const props = {
+      videos: [lesson],
+      onPlay: async () => ({ url: "https://example.test/a.mp4" }),
+      onLoadSubtitles: subtitles,
+    };
+    const view = render(<VideosView {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await waitFor(() => expect(subtitles).toHaveBeenCalledOnce());
+    view.rerender(
+      <VideosView
+        {...props}
+        transcriptJobs={[
+          { ...completed, source_id: lesson.id, phase1_status: "completed" },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(subtitles).toHaveBeenCalledTimes(2));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "字幕" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.getByText("AI校对字幕已载入")).toBeTruthy();
+  });
+
+  it("rechecks processing slides and preloads the next page once", async () => {
+    vi.useFakeTimers();
+    const metadata = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "processing",
+        message: "课件正在生成",
+        pages: [],
+      })
+      .mockResolvedValueOnce({
+        status: "ready",
+        message: "",
+        pages: [
+          { index: 0, timeMs: 0 },
+          { index: 1, timeMs: 30000 },
+        ],
+      });
+    const images = vi.fn(
+      async (_video, index) => `data:image/png;base64,page${index}`,
+    );
+    render(
+      <VideosView
+        videos={[lesson]}
+        onPlay={async () => ({ url: "https://example.test/a.mp4" })}
+        onLoadSlides={metadata}
+        onLoadSlideImage={images}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 甲课" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+    await act(async () => undefined);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(metadata).toHaveBeenCalledTimes(2);
+    expect(images.mock.calls.map((call) => call[1])).toEqual([0, 1]);
+    const player = document.querySelector("video") as HTMLVideoElement;
+    player.currentTime = 30;
+    fireEvent.seeked(player);
+    await act(async () => undefined);
+    expect(images).toHaveBeenCalledTimes(2);
+    expect(screen.getByAltText("甲课，课件第 2 页")).toBeTruthy();
+  });
+
   it("keeps a partial job partial and opens existing results without starting a new request", async () => {
     const retry = vi.fn();
     render(
@@ -264,7 +568,7 @@ describe("video action capabilities and isolation", () => {
     await waitFor(() => expect(start).toHaveBeenCalledWith([lesson]));
   });
 
-  it("blocks new AI tasks without configuration but preserves reading and a settings action", async () => {
+  it("blocks new AI tasks with an actionable reason and preserves reading without a status banner", async () => {
     const start = vi.fn();
     const settings = vi.fn();
     render(
@@ -278,8 +582,14 @@ describe("video action capabilities and isolation", () => {
     );
     menu("甲课", "整理学习材料");
     expect(start).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "配置 AI" }));
-    expect(settings).toHaveBeenCalledOnce();
+    expect(
+      screen
+        .getByRole("menuitem", { name: "整理学习材料" })
+        .getAttribute("title"),
+    ).toBe("尚未配置模型");
+    expect(screen.queryByRole("button", { name: "配置 AI" })).toBeNull();
+    expect(document.querySelector(".video-ai-readiness")).toBeNull();
+    expect(settings).not.toHaveBeenCalled();
     menu("乙课", "查看 AI 总结");
     expect(await screen.findByText("可阅读的原有讲义")).toBeTruthy();
   });

@@ -122,6 +122,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
   const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
@@ -510,6 +511,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       current.filter((id) => id !== request.optimisticId),
     );
     setBusy(true);
+    setCanRetry(false);
     try {
       const result =
         attachmentIds.length > 0
@@ -579,6 +581,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         }
         return restored;
       });
+      setCanRetry(
+        !(reason instanceof Error) ||
+          (reason as Error & { retryable?: boolean }).retryable !== false,
+      );
       setError(
         reason instanceof Error
           ? reason.message
@@ -628,6 +634,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setDraft("");
     setAttachments([]);
     setError(null);
+    setCanRetry(false);
 
     if (busy) {
       pendingQueueRef.current.push(request);
@@ -940,6 +947,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               )
             }
             onSubmit={(value) => void submit(value)}
+            onRetry={
+              canRetry && draft.trim() && !busy && !attachmentBusy
+                ? () => submit(draft)
+                : undefined
+            }
           />
         </section>
 

@@ -235,6 +235,7 @@ export function AIChatComposer({
   onPickAttachment,
   onRemoveAttachment,
   onSubmit,
+  onRetry,
 }: {
   draft: string;
   error: string | null;
@@ -257,6 +258,7 @@ export function AIChatComposer({
   onPickAttachment: () => void;
   onRemoveAttachment: (id: number) => void;
   onSubmit: (value: string) => void;
+  onRetry?: () => void;
 }) {
   const [openMenu, setOpenMenu] = useState<"agent" | "model" | "depth" | null>(
     null,
@@ -305,9 +307,14 @@ export function AIChatComposer({
   return (
     <form className="ai-composer" onSubmit={submit}>
       {error && (
-        <p className="ai-chat-error" role="alert">
-          {error}
-        </p>
+        <div className="ai-chat-error" role="alert">
+          <span>{error}</span>
+          {onRetry && (
+            <button type="button" onClick={onRetry}>
+              重试本次
+            </button>
+          )}
+        </div>
       )}
       <div className="ai-composer-box">
         <textarea

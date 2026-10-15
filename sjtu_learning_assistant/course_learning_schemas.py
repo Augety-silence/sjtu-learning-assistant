@@ -147,6 +147,44 @@ def stable_json_dumps(value: object) -> str:
     return json.dumps(plain, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def unique_text_span(source: str, cue_text: str, original: str) -> tuple[int, int]:
+    """Resolve a literal correction only when both its cue and text match uniquely.
+
+    This helper deliberately refuses repeated cue text or repeated source phrases;
+    callers must preserve uncertainty instead of asking a model to guess offsets.
+    Offsets are Python Unicode code-point indices, matching ``CorrectionChange``.
+    """
+
+    if type(source) is not str or type(cue_text) is not str or type(original) is not str:
+        raise SchemaValidationError("$.original: expected strings")
+    if not cue_text or not original:
+        raise SchemaValidationError("$.original: must not be empty")
+    cue_positions: list[int] = []
+    cursor = 0
+    while True:
+        found = source.find(cue_text, cursor)
+        if found < 0:
+            break
+        cue_positions.append(found)
+        cursor = found + 1
+    if len(cue_positions) != 1:
+        raise SchemaValidationError("$.cue_id: cue text must match exactly once")
+    cue_start = cue_positions[0]
+    cue_end = cue_start + len(cue_text)
+    local_positions: list[int] = []
+    cursor = cue_start
+    while True:
+        found = source.find(original, cursor, cue_end)
+        if found < 0:
+            break
+        local_positions.append(found)
+        cursor = found + 1
+    if len(local_positions) != 1:
+        raise SchemaValidationError("$.original: source text must match exactly once in cue")
+    start = local_positions[0]
+    return start, start + len(original)
+
+
 class StrictSchema:
     """Small common API shared by all strict dataclass schemas."""
 

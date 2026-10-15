@@ -262,7 +262,54 @@ function parseLearningSummary(content: string): LearningSummary {
   };
 }
 
-function LearningItems({ items }: { items: string[] }) {
+export function TranscriptTimedContent({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
+  const linked = onSeek
+    ? content.replace(
+        /\b(\d{2,}):([0-5]\d)–(\d{2,}):([0-5]\d)\b/g,
+        (range, minutes, seconds) =>
+          `[${range}](#video-time=${Number(minutes) * 60 + Number(seconds)})`,
+      )
+    : content;
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize]}
+      components={{
+        a: ({ href, children }) => {
+          const time = href?.match(/^#video-time=(\d+(?:\.\d+)?)$/);
+          return time && onSeek ? (
+            <button
+              type="button"
+              className="aura-button-link"
+              aria-label={`跳转到 ${children}`}
+              onClick={() => onSeek(Number(time[1]))}
+            >
+              {children}
+            </button>
+          ) : (
+            <a href={href}>{children}</a>
+          );
+        },
+      }}
+    >
+      {linked}
+    </ReactMarkdown>
+  );
+}
+
+function LearningItems({
+  items,
+  onSeek,
+}: {
+  items: string[];
+  onSeek?: (seconds: number) => void;
+}) {
   return (
     <div className="learning-flow-items">
       {items.map((item, index) => (
@@ -270,19 +317,20 @@ function LearningItems({ items }: { items: string[] }) {
           className="ai-markdown transcript-markdown"
           key={`${index}:${item.slice(0, 24)}`}
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSanitize]}
-          >
-            {item}
-          </ReactMarkdown>
+          <TranscriptTimedContent content={item} onSeek={onSeek} />
         </div>
       ))}
     </div>
   );
 }
 
-export function TranscriptPractice({ content }: { content: string }) {
+export function TranscriptPractice({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
   const summary = parseLearningSummary(content);
   const items = summary.practiceItems;
   if (!items.length) return <p className="phase1-empty">本节暂无自编练习。</p>;
@@ -304,9 +352,12 @@ export function TranscriptPractice({ content }: { content: string }) {
               </ReactMarkdown>
             </div>
             {Boolean(item.evidence?.length) && (
-              <p className="transcript-muted">
-                字幕证据：{item.evidence?.join("；")}
-              </p>
+              <div className="transcript-muted">
+                <TranscriptTimedContent
+                  content={`字幕证据：${item.evidence?.join("；")}`}
+                  onSeek={onSeek}
+                />
+              </div>
             )}
             {item.answer ? (
               <details>
@@ -330,14 +381,20 @@ export function TranscriptPractice({ content }: { content: string }) {
   );
 }
 
-export function TranscriptLearningFlow({ content }: { content: string }) {
+export function TranscriptLearningFlow({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
   const summary = parseLearningSummary(content);
   return (
     <div className="learning-flow" aria-label="本节学习流">
       <section aria-labelledby="learning-knowledge-title">
         <h4 id="learning-knowledge-title">知识点</h4>
         {summary.knowledgePoints.length ? (
-          <LearningItems items={summary.knowledgePoints} />
+          <LearningItems items={summary.knowledgePoints} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             本节暂未整理出知识点，可先查看规整字幕。
@@ -347,7 +404,7 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
       {summary.emphasizedPoints.length > 0 && (
         <section aria-labelledby="learning-emphasis-title">
           <h4 id="learning-emphasis-title">课堂强调</h4>
-          <LearningItems items={summary.emphasizedPoints} />
+          <LearningItems items={summary.emphasizedPoints} onSeek={onSeek} />
         </section>
       )}
       <section aria-labelledby="learning-examples-title">
@@ -357,9 +414,9 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
             : "课堂例子"}
         </h4>
         {summary.classroomExamples.length ? (
-          <LearningItems items={summary.classroomExamples} />
+          <LearningItems items={summary.classroomExamples} onSeek={onSeek} />
         ) : summary.legacyCases.length ? (
-          <LearningItems items={summary.legacyCases} />
+          <LearningItems items={summary.legacyCases} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             旧版小结未单独标注课堂例子，可结合规整字幕回看讲解。
@@ -370,13 +427,13 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
         summary.legacyCases.length > 0 && (
           <section aria-labelledby="learning-legacy-cases-title">
             <h4 id="learning-legacy-cases-title">案例、公式与结论</h4>
-            <LearningItems items={summary.legacyCases} />
+            <LearningItems items={summary.legacyCases} onSeek={onSeek} />
           </section>
         )}
       <section aria-labelledby="learning-training-title">
         <h4 id="learning-training-title">辅助训练</h4>
         {summary.auxiliaryTraining.length ? (
-          <LearningItems items={summary.auxiliaryTraining} />
+          <LearningItems items={summary.auxiliaryTraining} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             暂无配套训练，建议根据知识点完成一次复述或自测。

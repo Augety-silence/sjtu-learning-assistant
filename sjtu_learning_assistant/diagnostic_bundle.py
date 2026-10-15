@@ -23,13 +23,10 @@ from sjtu_learning_assistant import __version__
 try:
     from sync_runner import DEFAULT_JSONL_PATH
 except ImportError:  # pragma: no cover - packaged import fallback
+    from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+
     DEFAULT_JSONL_PATH = (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "sjtu-learning-assistant"
-        / "logs"
-        / "sync.jsonl"
+        APP_SUPPORT_DIR / "logs" / "sync.jsonl"
     )
 
 ZIP_ENTRY_ALLOWLIST = frozenset(

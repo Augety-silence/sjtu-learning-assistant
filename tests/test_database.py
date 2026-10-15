@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from sjtu_learning_assistant.database import (
+    APP_SUPPORT_DIR_ENV,
     DATABASE_URL_ENV,
     DEFAULT_SQLITE_PATH,
     DatabaseConfigError,
@@ -77,6 +81,91 @@ class DatabaseConfigTests(unittest.TestCase):
     def test_environment_variable_name_is_stable(self) -> None:
         with patch.dict(os.environ, {DATABASE_URL_ENV: "value"}):
             self.assertEqual("value", os.environ[DATABASE_URL_ENV])
+
+    def test_app_support_override_routes_all_persistent_roots_to_temp_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            expected = str((Path(temporary) / "isolated-support").resolve())
+            environment = os.environ.copy()
+            environment.pop(DATABASE_URL_ENV, None)
+            environment[APP_SUPPORT_DIR_ENV] = expected
+            script = """
+import json
+from sjtu_learning_assistant.database import (
+    APP_SUPPORT_DIR,
+    DEFAULT_DATABASE_URL,
+    DEFAULT_SQLITE_PATH,
+)
+from sjtu_learning_assistant.local_settings import SETTINGS_PATH
+from sjtu_learning_assistant.transcript_service import (
+    DEFAULT_COURSE_MEMORY_ROOT,
+    DEFAULT_TRANSCRIPT_ROOT,
+)
+from sync_runner import APP_SUPPORT_DIR as SYNC_APP_SUPPORT_DIR, DEFAULT_LOG_DIR
+print(json.dumps({
+    "support": str(APP_SUPPORT_DIR),
+    "database": str(DEFAULT_SQLITE_PATH),
+    "database_url": DEFAULT_DATABASE_URL,
+    "settings": str(SETTINGS_PATH),
+    "transcripts": str(DEFAULT_TRANSCRIPT_ROOT),
+    "memory": str(DEFAULT_COURSE_MEMORY_ROOT),
+    "sync_support": str(SYNC_APP_SUPPORT_DIR),
+    "logs": str(DEFAULT_LOG_DIR),
+}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        paths = json.loads(result.stdout)
+        root = Path(expected)
+        self.assertEqual(str(root), paths["support"])
+        self.assertEqual(str(root / "data" / "app.db"), paths["database"])
+        self.assertIn(str(root / "data" / "app.db"), paths["database_url"])
+        self.assertEqual(str(root / "settings.json"), paths["settings"])
+        self.assertEqual(str(root / "transcripts" / "v1"), paths["transcripts"])
+        self.assertEqual(
+            str(root / "transcripts" / "v2" / "course_memory"), paths["memory"]
+        )
+        self.assertEqual(str(root), paths["sync_support"])
+        self.assertEqual(str(root / "logs"), paths["logs"])
+
+    def test_app_support_override_rejects_nonempty_relative_path(self) -> None:
+        environment = os.environ.copy()
+        environment[APP_SUPPORT_DIR_ENV] = "relative/sandbox"
+        environment.pop(DATABASE_URL_ENV, None)
+        result = subprocess.run(
+            [sys.executable, "-c", "import sjtu_learning_assistant.database"],
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(APP_SUPPORT_DIR_ENV, result.stderr)
+
+    def test_app_support_override_empty_value_keeps_platform_default(self) -> None:
+        environment = os.environ.copy()
+        environment[APP_SUPPORT_DIR_ENV] = "  "
+        environment.pop(DATABASE_URL_ENV, None)
+        script = "from sjtu_learning_assistant.database import APP_SUPPORT_DIR; print(APP_SUPPORT_DIR)"
+        empty_result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        environment.pop(APP_SUPPORT_DIR_ENV)
+        unset_result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(unset_result.stdout.strip(), empty_result.stdout.strip())
 
 
 if __name__ == "__main__":

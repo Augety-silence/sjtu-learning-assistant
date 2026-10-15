@@ -101,6 +101,25 @@ export async function invoke<T>(
   return response.data as T;
 }
 
+function invokeWithSignal<T>(
+  action: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+) {
+  if (!signal) return invoke<T>(action, payload);
+  if (signal.aborted)
+    return Promise.reject(new DOMException("读取已取消", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException("读取已取消", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    void invoke<T>(action, payload)
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", abort);
+      });
+  });
+}
+
 export function getMessages(kind: MessageFilter) {
   return invoke<{ items: MessageItem[] }>("messages", { kind });
 }
@@ -321,7 +340,13 @@ export async function sendAiChatMessage(
       return result;
     }
     if (snapshot.task.status === "failed") {
-      throw new Error(snapshot.task.error || "AI 任务执行失败。");
+      const failure = snapshot.task.result?.failure;
+      const error = new Error(
+        failure?.message || snapshot.task.error || "AI 任务执行失败。",
+      ) as Error & { category?: string; retryable?: boolean };
+      error.category = failure?.category;
+      error.retryable = failure?.retryable ?? true;
+      throw error;
     }
     if (snapshot.task.status === "cancelled") {
       throw new Error("AI 任务已取消。");
@@ -801,6 +826,21 @@ export function getVideoSubtitles(sourceId: string) {
   }>("video_subtitles", { source_id: sourceId });
 }
 
+export function getVideoSlides(sourceId: string) {
+  return invoke<{
+    status: "ready" | "empty" | "processing";
+    message: string;
+    pages: Array<{ index: number; time_ms: number | null }>;
+  }>("video_slides_metadata", { source_id: sourceId });
+}
+
+export function getVideoSlideImage(sourceId: string, pageIndex: number) {
+  return invoke<{ data_url: string }>("video_slide_image", {
+    source_id: sourceId,
+    page_index: pageIndex,
+  });
+}
+
 export function createVideoSlidesPdf(sourceId: string) {
   return invoke<{
     status: string;
@@ -853,6 +893,91 @@ export function startTranscriptBatch(courseId: number, sourceIds: string[]) {
       course_id: courseId,
       source_ids: sourceIds,
     },
+  );
+}
+
+export function prepareTranscriptPlayback(
+  courseId: number,
+  sourceId: string,
+  positionSeconds = 0,
+  playbackRate = 1,
+) {
+  return invoke<import("@/lib/types").TranscriptBatch>(
+    "transcript_playback_prepare",
+    {
+      course_id: courseId,
+      source_id: sourceId,
+      position_seconds: positionSeconds,
+      playback_rate: playbackRate,
+    },
+  );
+}
+
+export function updateTranscriptPlayback(
+  courseId: number,
+  sourceId: string,
+  positionSeconds: number,
+  playbackRate = 1,
+  seq = 0,
+) {
+  return invoke<{ source_id: string; seq?: number; stale?: boolean }>(
+    "transcript_playback_update",
+    {
+      course_id: courseId,
+      source_id: sourceId,
+      position_seconds: positionSeconds,
+      playback_rate: playbackRate,
+      seq,
+    },
+  );
+}
+
+export function nextTranscriptPlaybackSequence(previous = 0, now = Date.now()) {
+  return Math.max(now, previous + 1);
+}
+
+export interface TranscriptLearningSegmentsDto {
+  status: "ready" | "processing" | "empty";
+  message?: string;
+  source_version?: string;
+  is_processing?: boolean;
+  processing_done?: boolean;
+  auto_retryable?: boolean;
+  stage?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  retryable?: boolean;
+  retry_after?: string | null;
+  updated_at?: string | null;
+  source_raw_sha256?: string | null;
+  learning_revision?: string;
+  completed_segments?: number;
+  failed_segments?: number;
+  available_ranges?: [number, number][];
+  segments: {
+    id: string;
+    start_ms: number;
+    end_ms: number;
+    title: string;
+    content: string;
+    kind?: string;
+    source?: string;
+    provisional?: boolean;
+  }[];
+}
+
+export function getTranscriptLearningSegments(
+  courseId: number,
+  sourceId: string,
+  signal?: AbortSignal,
+) {
+  return invokeWithSignal<TranscriptLearningSegmentsDto>(
+    "transcript_learning_segments",
+    {
+      course_id: courseId,
+      source_id: sourceId,
+    },
+    signal,
   );
 }
 

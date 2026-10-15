@@ -64,6 +64,7 @@ export function TranscriptDetailDrawer({
   onRetry,
   onCancel,
   onReveal,
+  onSeek,
 }: {
   job: TranscriptJob;
   initialTab?: V1DetailTab;
@@ -71,6 +72,7 @@ export function TranscriptDetailDrawer({
   onRetry?: (job: TranscriptJob) => void | Promise<void>;
   onCancel?: (job: TranscriptJob) => void | Promise<void>;
   onReveal?: (artifact: TranscriptArtifact) => void | Promise<void>;
+  onSeek?: (seconds: number) => void;
 }) {
   const [tab, setTab] = useState<DetailTab>(initialTab);
   const [phase1Tab, setPhase1Tab] = useState<Phase1DetailTab>("corrected");
@@ -318,7 +320,7 @@ export function TranscriptDetailDrawer({
   };
 
   const active =
-    job.progress < 100 &&
+    (job.progress < 100 || job.review_status === "running") &&
     [
       "queued",
       "fetching",
@@ -331,6 +333,7 @@ export function TranscriptDetailDrawer({
   const missingReview =
     !phase1ListLoading && !phase1ListError && !phase1Available;
   const retryable =
+    (job.status === "waiting_remote" && job.progress >= 100) ||
     ["partial", "failed", "interrupted", "completed_with_warnings"].includes(
       job.status,
     ) ||
@@ -354,7 +357,13 @@ export function TranscriptDetailDrawer({
         (warning): warning is string => typeof warning === "string",
       )
     : [];
-  const progress = Math.max(0, Math.min(100, job.progress));
+  const reviewProgress =
+    job.review_status === "running" && (job.review_total ?? 0) > 0
+      ? Math.round(
+          ((job.review_completed ?? 0) / (job.review_total ?? 1)) * 100,
+        )
+      : null;
+  const progress = Math.max(0, Math.min(100, reviewProgress ?? job.progress));
   const hasAvailableResult = artifacts.length > 0 || phase1Available;
   const showPhase1Warning =
     phase1Warning && (job.status !== "failed" || hasAvailableResult);
@@ -425,9 +434,25 @@ export function TranscriptDetailDrawer({
 
         <div className="transcript-progress-block" aria-live="polite">
           <div>
-            <span>{job.message || "等待处理"}</span>
+            <span>
+              {job.status === "completed_with_warnings" ||
+              job.status === "partial"
+                ? "任务已结束，存在未通过或未完成阶段"
+                : job.message || "等待处理"}
+            </span>
             <strong>{progress}%</strong>
           </div>
+          <p>当前阶段：{job.stage || "状态未知"}</p>
+          {(job.error_code || job.error_message || job.error) && (
+            <p role="alert">
+              {[job.error_code, job.error_message || job.error]
+                .filter(Boolean)
+                .join("：")}
+            </p>
+          )}
+          {job.updated_at && (
+            <small>最近更新：{new Date(job.updated_at).toLocaleString()}</small>
+          )}
           <div
             className="transcript-progress-track"
             role="progressbar"
@@ -646,10 +671,12 @@ export function TranscriptDetailDrawer({
             ) : tab === "summary" ? (
               <TranscriptLearningFlow
                 content={v1Content[currentV1Artifact.id] ?? ""}
+                onSeek={onSeek}
               />
             ) : tab === "practice" ? (
               <TranscriptPractice
                 content={v1Content[currentV1Artifact.id] ?? ""}
+                onSeek={onSeek}
               />
             ) : (
               <div className="ai-markdown transcript-markdown">

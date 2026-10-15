@@ -18,13 +18,18 @@ import {
   getTimetableSchedule,
   getTimetableStatus,
   getTranscriptBatch,
+  getTranscriptLearningSegments,
   getTranscriptV2Artifacts,
+  getVideoSlideImage,
+  getVideoSlides,
   getVideoSubtitles,
   ingestAiAttachment,
   invoke,
+  nextTranscriptPlaybackSequence,
   openExternal,
   openMailAttachment,
   planRestore,
+  prepareTranscriptPlayback,
   previewTimetableFile,
   previewTimetableSample,
   readTranscriptArtifact,
@@ -37,6 +42,7 @@ import {
   startCloudBackup,
   startTranscriptBatch,
   updateSettings,
+  updateTranscriptPlayback,
 } from "@/lib/api";
 
 beforeEach(() => {
@@ -48,6 +54,40 @@ afterEach(() => {
 });
 
 describe("pywebview bridge client", () => {
+  it("allocates safe playback sequence values across adapter remounts", () => {
+    const firstMount = nextTranscriptPlaybackSequence(0, 1_797_000_000_000);
+    const secondMount = nextTranscriptPlaybackSequence(0, 1_797_000_000_100);
+    expect(Number.isSafeInteger(firstMount)).toBe(true);
+    expect(Number.isSafeInteger(secondMount)).toBe(true);
+    expect(secondMount).toBeGreaterThan(firstMount);
+  });
+
+  it("bridges automatic preparation, playhead updates and timed learning reads", async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValue({ ok: true, data: { segments: [] } });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await prepareTranscriptPlayback(12, "sjtu-video:12:99", 45, 2);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_playback_prepare", {
+      course_id: 12,
+      source_id: "sjtu-video:12:99",
+      position_seconds: 45,
+      playback_rate: 2,
+    });
+    await updateTranscriptPlayback(12, "sjtu-video:12:99", 90, 1, 7);
+    expect(bridge).toHaveBeenLastCalledWith("transcript_playback_update", {
+      course_id: 12,
+      source_id: "sjtu-video:12:99",
+      position_seconds: 90,
+      playback_rate: 1,
+      seq: 7,
+    });
+    await getTranscriptLearningSegments(12, "sjtu-video:12:99");
+    expect(bridge).toHaveBeenLastCalledWith("transcript_learning_segments", {
+      course_id: 12,
+      source_id: "sjtu-video:12:99",
+    });
+  });
   it("invokes the allowlisted bridge without fetch", async () => {
     const bridge = vi
       .fn()
@@ -87,6 +127,20 @@ describe("pywebview bridge client", () => {
     await createVideoSlidesPdf("sjtu-video:12:99");
     expect(bridge).toHaveBeenLastCalledWith("video_slides_pdf", {
       source_id: "sjtu-video:12:99",
+    });
+  });
+
+  it("requests synchronized slide metadata and images without renderer-controlled URLs", async () => {
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data: {} });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await getVideoSlides("sjtu-video:12:99");
+    expect(bridge).toHaveBeenLastCalledWith("video_slides_metadata", {
+      source_id: "sjtu-video:12:99",
+    });
+    await getVideoSlideImage("sjtu-video:12:99", 7);
+    expect(bridge).toHaveBeenLastCalledWith("video_slide_image", {
+      source_id: "sjtu-video:12:99",
+      page_index: 7,
     });
   });
 

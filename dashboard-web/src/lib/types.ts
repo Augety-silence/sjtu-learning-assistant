@@ -143,7 +143,14 @@ export interface AITaskSnapshot {
     status: "queued" | "running" | "completed" | "failed" | "cancelled";
     model?: string | null;
     context: AIPageContext;
-    result?: { chat_result?: AIChatSendResult } | null;
+    result?: {
+      chat_result?: AIChatSendResult;
+      failure?: {
+        message: string;
+        category: string;
+        retryable: boolean;
+      };
+    } | null;
     error?: string | null;
     budget: {
       input_tokens: number;
@@ -1010,6 +1017,11 @@ export interface TranscriptJob {
   attempts: number;
   message?: string | null;
   error?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  retryable?: boolean;
+  retry_after?: string | null;
+  updated_at?: string | null;
   reused?: boolean;
   phase1_status?: Phase1PipelineStatus | null;
   pipeline_status?: Phase1PipelineStatus | null;
@@ -1017,6 +1029,9 @@ export interface TranscriptJob {
   phase1_reused?: boolean;
   phase1_warning?: string | null;
   partial_warning?: boolean;
+  review_status?: "running" | "completed" | "needs_review" | "failed" | null;
+  review_completed?: number;
+  review_total?: number;
 }
 
 export interface TranscriptBatch {

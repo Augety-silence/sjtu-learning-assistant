@@ -668,6 +668,28 @@ describe("AIChatView", () => {
     expect(await screen.findByText("已按补充要求处理")).toBeTruthy();
   });
 
+  it("restores the failed request and offers a real retry", async () => {
+    const failure = new Error("AI 服务暂时不可用") as Error & {
+      retryable?: boolean;
+    };
+    failure.retryable = true;
+    vi.mocked(sendAiChatMessage).mockRejectedValueOnce(failure);
+
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "重新检查本周任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText("AI 服务暂时不可用")).toBeTruthy();
+    expect((input as HTMLTextAreaElement).value).toBe("重新检查本周任务");
+    const retry = screen.getByRole("button", { name: "重试本次" });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(sendAiChatMessage).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("优先事项")).toBeTruthy();
+    expect((input as HTMLTextAreaElement).value).toBe("");
+  });
+
   it("closes personalization with Escape and restores trigger focus", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     const trigger = await screen.findByRole("button", { name: "个性化设置" });

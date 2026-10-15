@@ -16,6 +16,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
+from math import isfinite
 from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -179,6 +180,17 @@ CHAT_DEPTH_OPTIONS = {
 
 class DashboardError(RuntimeError):
     """可安全展示给用户的 Dashboard 错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "application",
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.retryable = retryable
 
 
 class NotFoundError(DashboardError):
@@ -773,6 +785,11 @@ class DashboardService:
         """Fetch remote captions as WebVTT without exposing the short-lived JWT."""
         try:
             parse_remote_source_id(source_id)
+            corrected_reader = getattr(self._transcript_service_instance, "corrected_subtitles", None)
+            if callable(corrected_reader):
+                corrected = corrected_reader(source_id)
+                if corrected is not None:
+                    return corrected
             return self._video_service().subtitles(source_id)
         except SJTUVideoError as exc:
             raise DashboardError(str(exc)) from None
@@ -848,6 +865,57 @@ class DashboardService:
         except TranscriptError as exc:
             raise DashboardError(str(exc)) from None
         except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def _transcript_playback_scope(self, course_id, source_id):
+        course_key, course_name = self._transcript_course(course_id)
+        try:
+            remote_course, _ = parse_remote_source_id(source_id)
+        except (SJTUVideoError, TypeError, ValueError):
+            raise DashboardError("远程视频标识不正确。") from None
+        if str(remote_course) != course_key:
+            raise DashboardError("所选录像不属于当前课程。")
+        return course_key, course_name
+
+    @staticmethod
+    def _transcript_playback_position(position_seconds, playback_rate):
+        for value, minimum, maximum in ((position_seconds, 0, 86400), (playback_rate, 0.25, 4)):
+            if type(value) not in (int, float) or not isfinite(value) or not minimum <= value <= maximum:
+                raise DashboardError("视频播放位置或速度不正确。")
+
+    def transcript_playback_prepare(self, course_id, source_id, position_seconds=0, playback_rate=1):
+        course_key, course_name = self._transcript_playback_scope(course_id, source_id)
+        self._transcript_playback_position(position_seconds, playback_rate)
+        try:
+            items = self._video_service().list_course_videos(course_key, course_name=course_name, limit=1000)
+            item = next((row for row in items if row.get("source_id") == source_id), None)
+            if item is None:
+                raise DashboardError("未找到所选课程录像。")
+            return self._transcript_service().prepare_for_playback(
+                course_id=course_key, course_name=course_name,
+                video={"source_id": source_id, "title": str(item.get("name") or "课程录像"),
+                       "classroom": item.get("classroom"), "teaching_class": item.get("teaching_class"),
+                       "recorded_at": item.get("recorded_at")},
+                position_seconds=position_seconds, playback_rate=playback_rate,
+            )
+        except (SJTUVideoError, TranscriptError) as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_playback_update(self, course_id, source_id, position_seconds=0, playback_rate=1, seq=None):
+        self._transcript_playback_scope(course_id, source_id)
+        self._transcript_playback_position(position_seconds, playback_rate)
+        if seq is not None and (type(seq) is not int or not 0 <= seq <= 9_007_199_254_740_991):
+            raise DashboardError("播放更新序号不正确。")
+        try:
+            return self._transcript_service().update_playback(source_id, position_seconds, playback_rate, seq=seq)
+        except TranscriptError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def transcript_learning_segments(self, course_id, source_id):
+        self._transcript_playback_scope(course_id, source_id)
+        try:
+            return self._transcript_service().learning_segments(source_id)
+        except TranscriptError as exc:
             raise DashboardError(str(exc)) from None
 
     def transcript_batch_get(self, batch_id: str) -> dict[str, Any]:
@@ -947,6 +1015,43 @@ class DashboardService:
             "page_count": int(result.get("page_count") or 0),
             "size": len(pdf),
         }
+
+    def video_slides_metadata(self, source_id: str) -> dict[str, Any]:
+        try:
+            result = self._video_service().slides_metadata(source_id)
+        except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+        except Exception:
+            raise DashboardError("课件时间信息读取失败，请稍后重试。") from None
+        pages = result.get("pages")
+        if not isinstance(pages, list):
+            raise DashboardError("课件时间信息无效。")
+        return {
+            "status": result.get("status"),
+            "message": result.get("message"),
+            "pages": [
+                {
+                    "index": page["index"],
+                    "time_ms": page.get("order_time"),
+                }
+                for page in pages
+                if isinstance(page, dict)
+                and type(page.get("index")) is int
+            ],
+        }
+
+    def video_slide_image(self, source_id: str, page_index: int) -> dict[str, Any]:
+        try:
+            image = self._video_service().slide_image(source_id, page_index)
+        except SJTUVideoError as exc:
+            raise DashboardError(str(exc)) from None
+        except Exception:
+            raise DashboardError("课件页面读取失败，请稍后重试。") from None
+        if not isinstance(image, bytes) or not image:
+            raise DashboardError("课件页面内容无效。")
+        mime_type = "image/png" if image.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg"
+        encoded = base64.b64encode(image).decode("ascii")
+        return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
     def update_check(self) -> dict[str, Any]:
         """Check metadata and return a plan; this method never installs an update."""
@@ -2514,9 +2619,15 @@ class DashboardService:
                 attachment_ids=selected_attachment_ids,
                 event_callback=event_callback,
             )
-        except (AIClassificationError, AgentToolError) as exc:
+        except AIClassificationError as exc:
             self._persist_failed_agent_trace(session_id, preset.id)
-            raise DashboardError(str(exc)) from None
+            retryable = exc.category not in {"authentication", "validation", "unsupported_tools"}
+            raise DashboardError(
+                str(exc), category=exc.category, retryable=retryable
+            ) from None
+        except AgentToolError as exc:
+            self._persist_failed_agent_trace(session_id, preset.id)
+            raise DashboardError(str(exc), category="tool", retryable=True) from None
         finally:
             if owns_client:
                 self._close_client(raw_client)
@@ -2672,9 +2783,11 @@ class DashboardService:
                 delta = payload.get("delta")
                 if type(delta) is str and delta:
                     buffers[kind].append(delta)
-                    if sum(len(part) for part in buffers[kind]) >= 48:
+                    if sum(len(part) for part in buffers[kind]) >= 12:
                         flush(kind)
                 return
+            flush("reasoning_delta")
+            flush("content_delta")
             self.ai_tasks.append_event(task_id, kind, payload)
 
         try:
@@ -2695,10 +2808,24 @@ class DashboardService:
             self.ai_tasks.complete(task_id, {"chat_result": result})
         except AITaskCancelled:
             self.ai_tasks.finish_cancelled(task_id)
-        except (AITaskError, DashboardError, AIClassificationError, AgentToolError) as exc:
-            self.ai_tasks.fail(task_id, str(exc))
+        except AIClassificationError as exc:
+            self.ai_tasks.fail(
+                task_id,
+                str(exc),
+                category=exc.category,
+                retryable=exc.category not in {"authentication", "validation", "unsupported_tools"},
+            )
+        except (AITaskError, DashboardError, AgentToolError) as exc:
+            self.ai_tasks.fail(
+                task_id,
+                str(exc),
+                category=str(getattr(exc, "category", "application")),
+                retryable=bool(getattr(exc, "retryable", True)),
+            )
         except Exception:
-            self.ai_tasks.fail(task_id, "AI 任务执行失败，请稍后重试。")
+            self.ai_tasks.fail(
+                task_id, "AI 任务执行失败，请稍后重试。", category="internal", retryable=True
+            )
         finally:
             with self._ai_task_lock:
                 self._ai_task_threads.pop(task_id, None)

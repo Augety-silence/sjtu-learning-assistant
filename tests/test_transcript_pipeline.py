@@ -6,19 +6,25 @@ import unittest
 from pathlib import Path
 
 from sjtu_learning_assistant.transcript_pipeline import (
+    AUDIT_WIRE_VERSION,
     MAP_FALLBACK_WARNING,
     MAX_MESSAGE_CHARS,
     PROMPT_VERSION,
     REDUCE_FALLBACK_WARNING,
     SUMMARY_EMPTY_WARNING,
     Cue,
+    SchemaValidationError,
     TranscriptChunk,
     TranscriptAIFormatError,
     TranscriptPipeline,
+    TranscriptPipelineCancelled,
     _validated_json,
     _validated_map_response,
     _normalize_study_guide,
+    _normalize_audit_evidence,
     _fallback_study_guide,
+    _guide_prompt,
+    _json_content,
     _audit_guide,
     chunk_cues,
     deterministic_summary,
@@ -104,8 +110,9 @@ def summary_payload() -> dict[str, object]:
 
 
 def study_guide_payload() -> dict[str, object]:
-    evidence = [dict(cue_id="cue-000003", start_ms=3000, end_ms=5000, quote="不要改动")]
+    evidence = [dict(cue_id="cue-000003", quote="不要改动")]
     theme = dict(
+        topic_id="topic-evidence-use",
         title="证据使用", conclusion="保留术语和数字", principle_and_context="在核对课程内容时使用。",
         why_and_consequences="改动会造成含义失真。", steps=["定位原句", "核对边界", "修改并复核"],
         classroom_example=None, boundaries="只处理字幕可验证内容。", connections="先理解目标，再检查表述。",
@@ -153,6 +160,299 @@ class FakeAI:
 
 
 class TranscriptPipelineTests(unittest.TestCase):
+    def test_audit_evidence_requires_current_cue_id_and_exact_quote_binding(self):
+        long_cue = Cue(1000, 3000, "当前课程这一段提供了可逐字核对的学习证据。其范围仅限本cue。", "cue-current")
+        other_cue = Cue(3000, 5000, "另一连续时间段有不同的引文内容，不能跨块借用作为证据。", "cue-other")
+        short_cue = Cue(5000, 5500, "先看此例。", "cue-short")
+        long_cue_125 = Cue(5500, 6000, "甲" * 125, "cue-125")
+        over_limit_cue = Cue(6000, 7000, "乙" * 241, "cue-over-limit")
+        thousand_char_cue = Cue(6500, 7000, "丁" * 1000, "cue-1000")
+        safety_limit_cue = Cue(7000, 8000, "丙" * (MAX_MESSAGE_CHARS + 1), "cue-over-safety-limit")
+        current_chunk = TranscriptChunk(4, (long_cue, short_cue, long_cue_125, over_limit_cue, thousand_char_cue, safety_limit_cue))
+
+        valid_local_quote = long_cue.text[3:29]
+        normalized = _normalize_audit_evidence(
+            [dict(cue_id=long_cue.cue_id, quote=valid_local_quote)],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(long_cue.cue_id, normalized[0]["cue_id"])
+        self.assertEqual((long_cue.start_ms, long_cue.end_ms), (normalized[0]["start_ms"], normalized[0]["end_ms"]))
+        self.assertEqual(valid_local_quote, normalized[0]["quote"])
+
+        source_ref = _normalize_audit_evidence(
+            [dict(cue_id=long_cue.cue_id, quote_mode="source_cue")],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(long_cue.text, source_ref[0]["quote"])
+        self.assertEqual((long_cue.start_ms, long_cue.end_ms), (source_ref[0]["start_ms"], source_ref[0]["end_ms"]))
+        long_source_ref = _normalize_audit_evidence(
+            [dict(cue_id=over_limit_cue.cue_id, quote_mode="source_cue")],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(over_limit_cue.text, long_source_ref[0]["quote"])
+        self.assertEqual((over_limit_cue.start_ms, over_limit_cue.end_ms), (long_source_ref[0]["start_ms"], long_source_ref[0]["end_ms"]))
+        self.assertEqual("丁" * 1000, _normalize_audit_evidence(
+            [dict(cue_id=thousand_char_cue.cue_id, quote_mode="source_cue")],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )[0]["quote"])
+        safe_legacy_pair = _normalize_audit_evidence(
+            [dict(cue_id=long_cue.cue_id, quote=long_cue.text[:20]), dict(cue_id=long_cue.cue_id, quote=long_cue.text[20:40])],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(2, len(safe_legacy_pair))
+
+        # Short exact source fragments are structurally valid; semantic sufficiency
+        # remains the auditor's responsibility, not a character-count side effect.
+        seventeen_char_quote = long_cue.text[:17]
+        short_normalized = _normalize_audit_evidence(
+            [dict(cue_id=long_cue.cue_id, quote=seventeen_char_quote)],
+            current_chunk,
+            "audit.issues[0].evidence",
+        )
+        self.assertEqual(seventeen_char_quote, short_normalized[0]["quote"])
+
+        short_full = _normalize_audit_evidence(
+            [dict(cue_id=short_cue.cue_id, quote=short_cue.text)],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(short_cue.text, short_full[0]["quote"])
+
+        exact_125 = _normalize_audit_evidence(
+            [dict(cue_id=long_cue_125.cue_id, quote=long_cue_125.text)],
+            current_chunk,
+            "audit.coverage_confirmation.evidence",
+        )
+        self.assertEqual(125, len(exact_125[0]["quote"]))
+
+        invalid_rows = [
+            # A valid quote cannot repair a mismatched cue ID.
+            [dict(cue_id=other_cue.cue_id, quote=valid_local_quote)],
+            # A wrong ID paired with a cross-chunk quote is also rejected.
+            [dict(cue_id=other_cue.cue_id, quote=other_cue.text)],
+            # A current ID cannot authorize a quote from another chunk.
+            [dict(cue_id=long_cue.cue_id, quote=other_cue.text)],
+            # Old timestamp/source metadata is not part of the audit evidence contract.
+            [dict(cue_id=long_cue.cue_id, quote=valid_local_quote, start_ms=long_cue.start_ms)],
+            # Empty, whitespace-padded, or concatenated fragments are never evidence.
+            [dict(cue_id=long_cue.cue_id, quote="   ")],
+            [dict(cue_id=long_cue.cue_id, quote=" " + valid_local_quote)],
+            [dict(cue_id=long_cue.cue_id, quote=long_cue.text[:8] + long_cue.text[-8:])],
+            [dict(cue_id=long_cue.cue_id, quote=valid_local_quote), dict(cue_id=long_cue.cue_id, quote=valid_local_quote)],
+            [dict(cue_id=over_limit_cue.cue_id, quote=over_limit_cue.text)],
+            [dict(cue_id=safety_limit_cue.cue_id, quote_mode="source_cue")],
+            [dict(cue_id=other_cue.cue_id, quote_mode="source_cue")],
+            [dict(cue_id=long_cue.cue_id, quote_mode="literal")],
+            [dict(cue_id=long_cue.cue_id)],
+            [dict(cue_id=long_cue.cue_id, quote_mode="source_cue", quote=valid_local_quote)],
+            [dict(cue_id=long_cue.cue_id, quote_mode="source_cue"), dict(cue_id=long_cue.cue_id, quote_mode="source_cue")],
+            [dict(cue_id=long_cue.cue_id, quote_mode="source_cue"), dict(cue_id=long_cue.cue_id, quote=valid_local_quote)],
+            [dict(cue_id=long_cue.cue_id, quote=valid_local_quote), dict(cue_id=long_cue.cue_id, quote_mode="source_cue")],
+            [dict(cue_id=over_limit_cue.cue_id, quote="乙" * 241)],
+            # Additional source metadata is not accepted as part of an audit pair.
+            [dict(cue_id=long_cue.cue_id, quote=valid_local_quote, start_ms=long_cue.start_ms)],
+        ]
+        for rows in invalid_rows:
+            with self.subTest(row=rows[0]):
+                with self.assertRaises(ValueError):
+                    _normalize_audit_evidence(rows, current_chunk, "audit.coverage_confirmation.evidence")
+
+    def test_audit_prompt_uses_local_topic_aliases_and_source_cue_refs(self):
+        cues = [Cue(0, 1000, "第一主题的当前证据片段。", "cue-a"), Cue(1000, 2000, "第二主题的当前证据片段。", "cue-b")]
+        guide = study_guide_payload()
+        guide["themes"] = [
+            dict(guide["themes"][0], topic_id="topic-cue-a", title="第一主题", conclusion="第一结论", evidence=[dict(cue_id="cue-a", quote=cues[0].text)]),
+            dict(guide["themes"][0], topic_id="topic-cue-b", title="第二主题", conclusion="第二结论", evidence=[dict(cue_id="cue-b", quote=cues[1].text)]),
+        ]
+
+        class CaptureAuditAI:
+            def __init__(inner_self):
+                inner_self.prompts = []
+
+            def chat_completion(inner_self, messages, **kwargs):
+                inner_self.prompts.append(messages[-1]["content"])
+                cue = cues[len(inner_self.prompts) - 1]
+                return {"content": json.dumps(dict(
+                    reviewed_cue_ids=[cue.cue_id],
+                    coverage_confirmation=dict(confirmed=True, evidence=[dict(cue_id=cue.cue_id, quote=cue.text)]),
+                    issues=[], theme_patches=[],
+                ), ensure_ascii=False)}
+
+        ai = CaptureAuditAI()
+        _audit_guide(ai, guide, [TranscriptChunk(0, (cues[0],)), TranscriptChunk(1, (cues[1],))], cues)
+        self.assertEqual(2, len(ai.prompts))
+        self.assertIn('"topic_ref":"T1"', ai.prompts[0])
+        self.assertNotIn("topic-cue-a", ai.prompts[0])
+        self.assertIn("合法topic_ref", ai.prompts[0])
+        self.assertIn('"quote_mode":"source_cue"', ai.prompts[0])
+        self.assertIn("程序将从该cue自动填入完整原文和时间", ai.prompts[0])
+        self.assertIn("程序会引用该cue完整原文，长度受现有消息安全上限约束", ai.prompts[0])
+
+    def test_audit_schema_repair_receives_safe_mismatch_and_current_cues_but_still_rejects_fabricated_quote(self):
+        cue = Cue(0, 1000, "当前审校范围中的真实原文证据。", "cue-current")
+        theme = dict(
+            topic_id="topic-current", title="当前主题", conclusion="当前结论",
+            evidence=[dict(cue_id=cue.cue_id, quote=cue.text)],
+        )
+        guide = dict(themes=[theme])
+
+        class QuoteRepairAI:
+            def __init__(inner_self, repair_with_source):
+                inner_self.prompts = []
+                inner_self.repair_with_source = repair_with_source
+
+            def chat_completion(inner_self, messages, **kwargs):
+                prompt = messages[-1]["content"]
+                inner_self.prompts.append(prompt)
+                is_repair = "本次校验失败位置与要求" in prompt
+                quote = cue.text if is_repair and inner_self.repair_with_source else "模型编造的错引文"
+                payload = dict(
+                    reviewed_cue_ids=[cue.cue_id],
+                    coverage_confirmation=dict(confirmed=True, evidence=[dict(cue_id=cue.cue_id, quote=cue.text)]),
+                    issues=[dict(
+                        type="证据问题", target_topic_id="T1", problem="仅保留原问题含义",
+                        evidence=[dict(cue_id=cue.cue_id, quote=quote)], fix="使用同一cue的准确引文",
+                    )],
+                    theme_patches=[],
+                )
+                return {"content": json.dumps(payload, ensure_ascii=False)}
+
+        valid_ai = QuoteRepairAI(repair_with_source=True)
+        _valid_guide, valid_review = _audit_guide(
+            valid_ai, guide, [TranscriptChunk(0, (cue,))], [cue]
+        )
+        self.assertEqual("audited", valid_review["coverage_ledger"][0]["status"])
+        self.assertEqual(2, len(valid_ai.prompts))
+        repair_prompt = valid_ai.prompts[1]
+        self.assertIn('"path":"audit.issues[0].evidence[0].quote"', repair_prompt)
+        self.assertIn('"expected":"non-empty trimmed literal substring from the paired current cue, at most 240 characters"', repair_prompt)
+        self.assertIn(cue.text, repair_prompt)
+        self.assertIn('"topic_ref":"T1"', repair_prompt)
+        self.assertIn("不得删除issue", repair_prompt)
+        self.assertNotIn("actual_type", repair_prompt)
+
+        invalid_ai = QuoteRepairAI(repair_with_source=False)
+        _unchanged, invalid_review = _audit_guide(
+            invalid_ai, guide, [TranscriptChunk(0, (cue,))], [cue]
+        )
+        self.assertEqual("not_audited", invalid_review["coverage_ledger"][0]["status"])
+        self.assertEqual("audit.issues[0].evidence[0].quote", invalid_review["coverage_ledger"][0]["diagnostics"]["validator_path"])
+
+    def test_audit_wrong_cue_id_cannot_be_rebound_by_a_unique_quote(self):
+        cue_a = Cue(0, 1000, "当前块中的引文长度超过二十字且逐字可核对。", "cue-a")
+        cue_b = Cue(1000, 2000, "下一块有另一段不同的引文长度同样超过二十字。", "cue-b")
+        chunk = TranscriptChunk(0, (cue_a, cue_b))
+
+        class WrongIdAuditAI:
+            def chat_completion(self, messages, **kwargs):
+                payload = dict(
+                    reviewed_cue_ids=[cue_a.cue_id, cue_b.cue_id],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id=cue_a.cue_id, quote=cue_b.text)],
+                    ),
+                    issues=[],
+                    theme_patches=[],
+                )
+                return {"content": json.dumps(payload, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
+
+        _guide, review = _audit_guide(WrongIdAuditAI(), {"themes": []}, [chunk], [cue_a, cue_b])
+        row = review["coverage_ledger"][0]
+        self.assertEqual("not_audited", row["status"])
+        self.assertEqual("audit.coverage_confirmation.evidence[0].quote", row["diagnostics"]["validator_path"])
+
+    def test_audit_chunk_index_and_time_are_program_bound_not_model_identity(self):
+        cue = Cue(2000, 3000, "本片段覆盖已经由当前字幕原句明确给出。", "cue-current")
+        chunk = TranscriptChunk(5, (cue,))
+
+        class WrongEchoAuditAI:
+            def chat_completion(self, messages, **kwargs):
+                payload = dict(
+                    chunk_index=0,
+                    time_range={"start_ms": 0, "end_ms": 1},
+                    reviewed_cue_ids=[cue.cue_id],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id=cue.cue_id, quote=cue.text)],
+                    ),
+                    issues=[],
+                    theme_patches=[],
+                )
+                return {"content": json.dumps(payload, ensure_ascii=False)}
+
+        _guide, review = _audit_guide(WrongEchoAuditAI(), {"themes": []}, [chunk], [cue])
+        row = review["coverage_ledger"][0]
+        self.assertEqual("audited", row["status"])
+        self.assertEqual(5, row["chunk_index"])
+        self.assertEqual((cue.start_ms, cue.end_ms), (row["start_ms"], row["end_ms"]))
+
+    def test_provider_json_mode_reaches_map_guide_and_audit_and_old_fake_signatures_survive(self):
+        class JsonFormatAI(FakeAI):
+            def __init__(self):
+                super().__init__()
+                self.formats = []
+
+            def chat_completion(self, messages, **kwargs):
+                self.formats.append(kwargs.get("response_format"))
+                return super().chat_completion(messages, **kwargs)
+
+        ai = JsonFormatAI()
+        TranscriptPipeline().run(VTT, ai, json_mode=True)
+        self.assertEqual(len(ai.calls), len(ai.formats))
+        self.assertTrue(ai.formats)
+        self.assertTrue(all(item == {"type": "json_object"} for item in ai.formats))
+
+        class StrictLegacyFake:
+            def __init__(self):
+                self.delegate = FakeAI()
+                self.calls = []
+
+            def chat_completion(self, messages, max_tokens=4096, temperature=0, system_prompt=False):
+                self.calls.append(messages)
+                return self.delegate.chat_completion(messages, max_tokens=max_tokens, temperature=temperature, system_prompt=system_prompt)
+
+        legacy = StrictLegacyFake()
+        result = TranscriptPipeline().run(VTT, legacy, json_mode=True)
+        self.assertTrue(legacy.calls)
+        self.assertTrue(result.summary["review"]["coverage_ledger"])
+
+    def test_audit_schema_diagnostics_keep_stage_chunk_path_type_and_call_index(self):
+        cue_ids = [cue.cue_id for cue in normalize_cues(parse_vtt(VTT))]
+        first_quote = normalize_cues(parse_vtt(VTT))[0].text[:20]
+
+        class MalformedAuditAI(FakeAI):
+            def chat_completion(self, messages, **kwargs):
+                is_audit = "阶段2" in messages[-1]["content"]
+                is_audit_repair = "只修复 JSON" in messages[0]["content"]
+                if not (is_audit or is_audit_repair):
+                    return super().chat_completion(messages, **kwargs)
+                self.calls.append(messages)
+                payload = dict(
+                    reviewed_cue_ids=cue_ids,
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id=cue_ids[0], quote=first_quote)],
+                    ),
+                    issues=[None],
+                    theme_patches=[],
+                )
+                return {"content": json.dumps(payload, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
+
+        result = TranscriptPipeline().run(VTT, MalformedAuditAI())
+        diagnostic = result.summary["review"]["coverage_ledger"][0]["diagnostics"]
+        self.assertEqual("study_guide_audit", diagnostic["stage"])
+        self.assertEqual(0, diagnostic["chunk_index"])
+        self.assertEqual("audit.issues[0]", diagnostic["validator_path"])
+        self.assertEqual("issue object with type/target_topic_id/problem/evidence/fix", diagnostic["validator_expected"])
+        self.assertEqual("NoneType", diagnostic["validator_actual_type"])
+        self.assertEqual("stop", diagnostic["finish_reason"])
+        self.assertEqual(4, diagnostic["call_index"])
+
     def test_parse_normalize_and_deduplicate_rolling_asr(self):
         cues = normalize_cues(parse_vtt(VTT))
         self.assertEqual(2, len(cues))
@@ -503,6 +803,295 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertIn("CLASSROOM_EXAMPLES", prompt)
         self.assertIn("PRACTICE_ITEMS", prompt)
         self.assertIn("ASR 纠错", prompt)
+
+    def test_json_map_prompt_has_complete_typed_contract_without_empty_template_signal(self):
+        ai = FakeAI()
+        TranscriptPipeline().run(VTT, ai, json_mode=True)
+        prompt = ai.calls[0][-1].get("content")
+        for field in (
+            '"topics"', '"emphasized_points"', '"concepts"',
+            '"cases_formulas_conclusions"', '"review_questions"',
+            '"knowledge_points"', '"classroom_examples"', '"practice_items"',
+        ):
+            self.assertIn(field, prompt)
+        self.assertIn("definition/principle/method/fact/formula/conclusion", prompt)
+        self.assertIn("recall/application", prompt)
+        source_cue = normalize_cues(parse_vtt(VTT))[0]
+        self.assertIn('"cue_id":"' + source_cue.cue_id + '"', prompt)
+        self.assertIn('"quote":"' + source_cue.text[:120] + '"', prompt)
+        self.assertIn("不是已经提取完成的证据", prompt)
+        self.assertIn("不能据此推断全片内容不足", prompt)
+
+    def test_guide_prompt_uses_current_course_without_injecting_questionnaire_case(self):
+        for topic in ("微积分的导数", "问卷长度"):
+            with self.subTest(topic=topic):
+                prompt = _guide_prompt(
+                    dict(lesson_topic=topic, knowledge_points=[], classroom_examples=[], emphasized_points=[]),
+                    dict(themes=[]),
+                )
+                self.assertIn(topic, prompt)
+                for unrelated in ("现有量表", "编码一致", "漏斗排序", "发布前试填", "23:34", "某快餐", "多久吃一次"):
+                    self.assertNotIn(unrelated, prompt)
+                self.assertIn("当前字幕证据", prompt)
+                self.assertIn('"type":"recall"', prompt)
+                self.assertIn('"prompt":"问题（须由当前字幕主题支持）"', prompt)
+                self.assertIn('"answer":"基于字幕的简答"', prompt)
+                self.assertIn('"source":"根据课堂内容归纳"', prompt)
+                self.assertIn("questions 是5-8个对象", prompt)
+                self.assertIn("不同的学习路线要点", prompt)
+                self.assertIn("不得拆成重复改写", prompt)
+                self.assertIn("不要凑数", prompt)
+                self.assertIn("classroom_example可为null", prompt)
+                self.assertIn("original_question必须逐字出现在", prompt)
+                self.assertIn("问题prompt与答案answer的来源分别判断", prompt)
+                self.assertIn("仅题面逐字出现在当前cue才可标为课堂明确讲述", prompt)
+                self.assertIn("默认标为根据课堂内容归纳", prompt)
+                self.assertIn("改变场景或问法的题目标为自编练习或例子", prompt)
+                self.assertIn("evidence为一个或多个{cue_id,quote}对象", prompt)
+                self.assertIn("steps为1-8条非空字符串", prompt)
+
+    def test_guide_prompt_embeds_a_real_evidence_bound_theme_example(self):
+        cue = Cue(0, 2000, "方差衡量数据的离散程度。", "cue-real")
+        fallback = _fallback_study_guide(
+            {"knowledge_points": [dict(
+                concept="方差", statement="方差衡量数据的离散程度。", source="课堂明确讲述",
+                evidence=[dict(cue_id="cue-real", quote="方差衡量数据的离散程度。")],
+            )]},
+            [cue],
+        )
+        prompt = _guide_prompt(
+            dict(lesson_topic="统计", knowledge_points=[], classroom_examples=[], emphasized_points=[]),
+            fallback,
+        )
+        self.assertIn('"cue_id":"cue-real","quote":"方差衡量数据的离散程度。"', prompt)
+        self.assertIn('"classroom_example":null', prompt)
+        self.assertIn('"topic_id":"topic-', prompt)
+
+    def test_dynamic_priority_publishes_ahead_first_and_merges_in_source_order(self):
+        raw = "WEBVTT\n\n" + "\n\n".join(
+            f"00:00:{index * 2:02d}.000 --> 00:00:{index * 2 + 1:02d}.000\n段{index}" + ("字" * 2800)
+            for index in range(4)
+        )
+        expected = TranscriptPipeline().run(raw, None, deterministic_only=True)
+        target = [len(expected.chunks) - 1]
+        completed = []
+
+        def publish(index, value):
+            completed.append(index)
+            target[0] = 1
+
+        result = TranscriptPipeline().run(
+            raw, None, deterministic_only=True,
+            chunk_priority=lambda chunk: abs(chunk.index - target[0]), on_chunk=publish,
+        )
+        self.assertEqual(len(expected.chunks) - 1, completed[0])
+        self.assertEqual(1, completed[1])
+        self.assertEqual(len(expected.chunks), len(set(completed)))
+        self.assertEqual(expected.chunks, result.chunks)
+        self.assertEqual(expected.cleaned_markdown, result.cleaned_markdown)
+        self.assertEqual(expected.summary, result.summary)
+        self.assertEqual(expected.partial_warnings, result.partial_warnings)
+
+    def test_cancel_after_chunk_keeps_published_chunk_and_does_not_finish(self):
+        cancelled = [False]
+        published = []
+        cleaned = []
+
+        def publish(index, value):
+            published.append(index)
+            cancelled[0] = True
+
+        with self.assertRaises(TranscriptPipelineCancelled):
+            TranscriptPipeline().run(
+                VTT, None, deterministic_only=True, on_chunk=publish,
+                should_cancel=lambda: cancelled[0], on_cleaned=cleaned.append,
+            )
+        self.assertEqual([0], published)
+        self.assertEqual([], cleaned)
+
+    def test_cancellation_after_ai_response_is_not_reported_as_fallback(self):
+        cancelled = [False]
+
+        class CancellingAI(FakeAI):
+            def chat_completion(inner_self, messages, **kwargs):
+                response = super(CancellingAI, inner_self).chat_completion(messages, **kwargs)
+                cancelled[0] = True
+                return response
+
+        ai = CancellingAI()
+        published = []
+        with self.assertRaises(TranscriptPipelineCancelled):
+            TranscriptPipeline().run(
+                VTT, ai, should_cancel=lambda: cancelled[0], on_chunk=lambda *args: published.append(args),
+            )
+        self.assertEqual(1, len(ai.calls))
+        self.assertEqual([], published)
+
+    def test_audit_cancellation_propagates_instead_of_completed_with_warnings(self):
+        cancelled = [False]
+
+        class CancellingAuditAI(FakeAI):
+            def chat_completion(inner_self, messages, **kwargs):
+                response = super(CancellingAuditAI, inner_self).chat_completion(messages, **kwargs)
+                if "阶段2" in messages[-1]["content"]:
+                    cancelled[0] = True
+                return response
+
+        ai = CancellingAuditAI()
+        with self.assertRaises(TranscriptPipelineCancelled):
+            TranscriptPipeline().run(VTT, ai, should_cancel=lambda: cancelled[0])
+        self.assertEqual(3, len(ai.calls))
+
+    def test_corrected_cues_replace_evidence_and_do_not_reuse_old_chunk(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        corrected = [Cue(cue.start_ms, cue.end_ms, cue.text.replace("不要改动", "必须保留"), cue.cue_id) for cue in cues]
+        cached = {0: validate_map(map_payload(), cues)}
+        payload = map_payload()
+        for name in ("emphasized_points", "knowledge_points", "practice_items"):
+            for item in payload[name]:
+                for evidence in item["evidence"]:
+                    evidence["quote"] = "必须保留"
+        class CorrectedSourceAI(FakeAI):
+            def chat_completion(inner_self, messages, **kwargs):
+                response = super(CorrectedSourceAI, inner_self).chat_completion(messages, **kwargs)
+                return dict(response, content=response["content"].replace("不要改动", "必须保留"))
+
+        ai = CorrectedSourceAI([dict(content=json.dumps(payload, ensure_ascii=False))])
+        result = TranscriptPipeline().run(VTT, ai, cached_chunks=cached, source_cues=corrected)
+        self.assertNotIn("不要改动", result.cleaned_markdown)
+        point = result.summary["knowledge_points"][0]
+        self.assertEqual("必须保留", point["evidence"][0]["quote"])
+        self.assertEqual(3, len(ai.calls))
+        self.assertEqual([cue.cue_id for cue in cues], [cue["cue_id"] for cue in result.cues])
+
+    def test_corrected_cues_cannot_add_remove_or_retime_source_cues(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        invalid_sources = [
+            cues[:-1],
+            cues + [Cue(6000, 7000, "虚构字幕", "fake-cue")],
+            [Cue(cues[0].start_ms + 1, cues[0].end_ms, cues[0].text, cues[0].cue_id)] + cues[1:],
+        ]
+        for candidate in invalid_sources:
+            with self.subTest(source=candidate), self.assertRaises(ValueError):
+                TranscriptPipeline().run(VTT, None, source_cues=candidate, deterministic_only=True)
+
+    def test_unchanged_corrected_cues_keep_valid_cache_and_publish_without_ai(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        cached = {0: validate_map(map_payload(), cues)}
+        published = []
+        ai = FakeAI()
+        result = TranscriptPipeline().run(
+            VTT, ai, cached_chunks=cached, source_cues=list(reversed(cues)), offline_only=True,
+            on_chunk=lambda index, value: published.append(index),
+        )
+        self.assertEqual([], ai.calls)
+        self.assertEqual([0], published)
+        self.assertEqual(cached[0], result.chunks[0])
+
+    def test_cancelled_before_start_never_requests_ai_or_publishes(self):
+        ai = FakeAI()
+        published = []
+        with self.assertRaises(TranscriptPipelineCancelled):
+            TranscriptPipeline().run(
+                VTT, ai, should_cancel=lambda: True, on_chunk=lambda *args: published.append(args),
+            )
+        self.assertEqual([], ai.calls)
+        self.assertEqual([], published)
+
+    def test_json_repair_without_context_includes_only_safe_mismatch_metadata(self):
+        class RepairAI:
+            def __init__(inner_self):
+                inner_self.prompts = []
+
+            def chat_completion(inner_self, messages, **kwargs):
+                inner_self.prompts.append(messages[-1]["content"])
+                content = '{"missing":true}' if len(inner_self.prompts) == 1 else '{"ok":true}'
+                return {"content": content}
+
+        def validator(value):
+            if value.get("ok") is not True:
+                raise SchemaValidationError("result.ok", "boolean true", value.get("ok"))
+            return {"ok": True}
+
+        ai = RepairAI()
+        self.assertEqual({"ok": True}, _json_content(ai, "legacy request", validator, schema_hint="ok is required"))
+        self.assertEqual(2, len(ai.prompts))
+        self.assertIn("只修复下列 JSON 片段的语法和字段结构", ai.prompts[1])
+        self.assertIn('"path":"result.ok","expected":"boolean true"', ai.prompts[1])
+        self.assertIn("本次校验失败位置与要求", ai.prompts[1])
+        self.assertNotIn('"actual"', ai.prompts[1])
+        self.assertNotIn("当前来源范围", ai.prompts[1])
+
+    def test_guide_source_repair_changes_only_metadata_and_preserves_bad_prompt_rejection(self):
+        guide = study_guide_payload()
+        question = guide["questions"][0]
+        question.update(prompt="一个原字幕没有出现的问题？", answer="保留这条答案原文。", source="课堂明确讲述")
+        cues = normalize_cues(parse_vtt(VTT))
+        original = json.dumps(guide, ensure_ascii=False)
+        repair_context = {
+            "allowed_question_sources": ["根据课堂内容归纳", "自编练习或例子", "课堂明确讲述"],
+            "repair_limits": ["只可调整source元数据", "不得改写prompt或answer", "不匹配source cue时不得标为课堂明确讲述"],
+        }
+
+        class GuideRepairAI:
+            def __init__(inner_self, repaired_source):
+                inner_self.prompts = []
+                inner_self.repaired_source = repaired_source
+
+            def chat_completion(inner_self, messages, **kwargs):
+                inner_self.prompts.append(messages[-1]["content"])
+                if len(inner_self.prompts) == 1:
+                    return {"content": original}
+                repaired = json.loads(original)
+                repaired["questions"][0]["source"] = inner_self.repaired_source
+                return {"content": json.dumps(repaired, ensure_ascii=False)}
+
+        validator = lambda value: _normalize_study_guide(value, cues)
+        rejected = GuideRepairAI("课堂明确讲述")
+        with self.assertRaises(TranscriptAIFormatError):
+            _json_content(
+                rejected, "guide request", validator,
+                schema_hint="question source rule; source-only repair",
+                repair_context=repair_context,
+            )
+        repair_prompt = rejected.prompts[1]
+        self.assertIn('"path":"questions[0].source"', repair_prompt)
+        self.assertIn("课堂明确讲述", repair_prompt)
+        self.assertIn("只可调整source元数据", repair_prompt)
+        self.assertIn("不得改写prompt或answer", repair_prompt)
+        self.assertIn("不匹配source cue时不得标为课堂明确讲述", repair_prompt)
+
+        accepted = GuideRepairAI("根据课堂内容归纳")
+        result = _json_content(
+            accepted, "guide request", validator,
+            schema_hint="question source rule; source-only repair",
+            repair_context=repair_context,
+        )
+        self.assertEqual(question["prompt"], result["questions"][0]["prompt"])
+        self.assertEqual(question["answer"], result["questions"][0]["answer"])
+        self.assertEqual("根据课堂内容归纳", result["questions"][0]["source"])
+
+    def test_cancel_during_schema_validation_stops_followup_repair_request(self):
+        cancelled = [False]
+        ai = FakeAI([dict(content='{"unrecognized":true}')])
+
+        def invalid(value):
+            cancelled[0] = True
+            raise ValueError("invalid schema")
+
+        with self.assertRaises(TranscriptPipelineCancelled):
+            _json_content(ai, "测试请求", invalid, schema_hint="required field", should_cancel=lambda: cancelled[0])
+        self.assertEqual(1, len(ai.calls))
+
+    def test_classroom_question_claim_is_grounded_in_any_course_not_fixed_fast_food_case(self):
+        guide = study_guide_payload()
+        guide["questions"][0].update(prompt="每天多久吃一次饭？", source="课堂明确讲述")
+        cues = normalize_cues(parse_vtt(VTT)) + [Cue(5000, 6000, "每天多久吃一次饭？", "cue-question")]
+        normalized = _normalize_study_guide(guide, cues)
+        self.assertEqual("课堂明确讲述", normalized["questions"][0]["source"])
+        guide["questions"][0]["prompt"] = "导数的定义是什么？"
+        with self.assertRaises(ValueError):
+            _normalize_study_guide(guide, cues)
     def test_two_stage_audit_sees_draft_and_subtitle_and_records_every_chunk(self):
         long_vtt = "WEBVTT\n\n" + "\n\n".join(
             f"00:00:{index * 2:02d}.000 --> 00:00:{index * 2 + 1:02d}.000\n段{index}" + ("字" * 2800) + ("不要改动" if index == 2 else "")
@@ -514,7 +1103,12 @@ class TranscriptPipelineTests(unittest.TestCase):
         result = TranscriptPipeline().run(long_vtt, ai)
         audit_prompts = [call[-1]["content"] for call in ai.calls if "阶段2" in call[-1]["content"]]
         self.assertEqual(len(expected_chunks), len(audit_prompts))
-        self.assertTrue(all("当前讲义" in prompt and "本段字幕" in prompt for prompt in audit_prompts))
+        self.assertTrue(all("当前相关主题" in prompt and "本段字幕" in prompt for prompt in audit_prompts))
+        self.assertTrue(all("available_evidence_cues" in prompt for prompt in audit_prompts))
+        self.assertTrue(all('"cue_id"' in prompt and '"text"' in prompt for prompt in audit_prompts))
+        self.assertTrue(all('"quote_mode":"source_cue"' in prompt and "不要复制、改写或输出quote/start_ms/end_ms" in prompt for prompt in audit_prompts))
+        self.assertTrue(all("程序将从该cue自动填入完整原文和时间" in prompt for prompt in audit_prompts))
+        self.assertTrue(all("程序会引用该cue完整原文，长度受现有消息安全上限约束" in prompt for prompt in audit_prompts))
         ledger = result.summary["review"]["coverage_ledger"]
         self.assertEqual(list(range(len(ledger))), [row["chunk_index"] for row in ledger])
         self.assertTrue(all(row["status"] == "audited" and row["coverage_evidence"] for row in ledger))
@@ -531,9 +1125,21 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertTrue(result.summary["study_guide"]["themes"])
         self.assertEqual("completed_with_warnings", result.summary["review"]["status"])
         self.assertTrue(all(row["status"] == "not_audited" for row in result.summary["review"]["coverage_ledger"]))
+        diagnostic = result.summary["review"]["coverage_ledger"][0]["diagnostics"]
+        self.assertEqual("study_guide_audit", diagnostic["validator"])
+        self.assertEqual("timeout", diagnostic["category"])
+        self.assertGreater(diagnostic["request_chars"], 0)
+        self.assertIsNotNone(diagnostic["latency_ms"])
 
     def test_source_evidence_examples_placeholders_and_fast_food_case(self):
         cues = [Cue(1_414_000, 1_416_000, "为什么现在不吃某快餐", "cue-fast-food")]
+        nullable_guide = study_guide_payload()
+        nullable_guide["themes"][0]["source"] = "课堂明确讲述"
+        nullable_guide["themes"][0]["evidence"] = [dict(cue_id="cue-fast-food", quote="为什么现在不吃某快餐")]
+        nullable_guide["themes"][0]["classroom_example"] = None
+        nullable_result = _normalize_study_guide(nullable_guide, cues)
+        self.assertIsNone(nullable_result["themes"][0]["classroom_example"])
+
         guide = study_guide_payload()
         theme = guide["themes"][0]
         theme["evidence"] = [dict(cue_id="cue-fast-food", quote="为什么现在不吃某快餐")]
@@ -567,7 +1173,7 @@ class TranscriptPipelineTests(unittest.TestCase):
                 why_and_consequences="遗漏会失去前序课程信息。", steps=["定位", "核对", "保留"],
                 classroom_example=None, boundaries="仅限引文。", connections="关系待核实。",
                 source="课堂明确讲述",
-                evidence=[dict(cue_id=cue.cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=cue.text)],
+                evidence=[dict(cue_id=cue.cue_id, quote=cue.text)],
             )
 
         guide = dict(
@@ -665,6 +1271,112 @@ class TranscriptPipelineTests(unittest.TestCase):
             ["第一主题（修订）", "第二主题"],
             [item["title"] for item in renamed["themes"]],
         )
+
+        class LocalPatchAI:
+            def chat_completion(inner_self, messages, **kwargs):
+                payload = dict(
+                    chunk_index=0,
+                    time_range=dict(start_ms=0, end_ms=1000),
+                    reviewed_cue_ids=["cue-a"],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id="cue-a", quote_mode="source_cue")],
+                    ),
+                    issues=[dict(
+                        type="标题修正", target_topic_id="topic-cue-a",
+                        problem="第一主题标题需要修正",
+                        evidence=[dict(cue_id="cue-a", quote_mode="source_cue")],
+                        fix="改为第一主题（补丁）",
+                    )],
+                    theme_patches=[dict(
+                        target_topic_id="topic-cue-a",
+                        changes=dict(title="第一主题（补丁）"),
+                    )],
+                )
+                return dict(content=json.dumps(payload, ensure_ascii=False))
+
+        patched, patch_review = _audit_guide(LocalPatchAI(), guide, [TranscriptChunk(0, (cues[0],))], cues)
+        self.assertEqual("第一主题（补丁）", patched["themes"][0]["title"])
+        self.assertEqual("第二主题", patched["themes"][1]["title"])
+        self.assertEqual("audited", patch_review["coverage_ledger"][0]["status"])
+        self.assertEqual(cues[0].text, patch_review["coverage_ledger"][0]["coverage_evidence"][0]["quote"])
+        self.assertEqual(cues[0].start_ms, patch_review["coverage_ledger"][0]["coverage_evidence"][0]["start_ms"])
+        self.assertEqual(AUDIT_WIRE_VERSION, patch_review["coverage_ledger"][0]["diagnostics"]["audit_wire_version"])
+
+        class AliasPatchAI:
+            def __init__(inner_self, target, reviewed=None, evidence_cue=None):
+                inner_self.target = target
+                inner_self.reviewed = reviewed or cues
+                inner_self.evidence_cue = evidence_cue or cues[1]
+
+            def chat_completion(inner_self, messages, **kwargs):
+                evidence = dict(cue_id=inner_self.evidence_cue.cue_id, quote=inner_self.evidence_cue.text)
+                payload = dict(
+                    reviewed_cue_ids=[cue.cue_id for cue in inner_self.reviewed],
+                    coverage_confirmation=dict(confirmed=True, evidence=[evidence]),
+                    issues=[dict(type="标题修正", target_topic_id=inner_self.target, problem="第二主题需精确修正", evidence=[evidence], fix="采用新标题")],
+                    theme_patches=[dict(target_topic_id=inner_self.target, changes=dict(title="第二主题（别名修正）"))],
+                )
+                return {"content": json.dumps(payload, ensure_ascii=False)}
+
+        alias_patched, alias_review = _audit_guide(
+            AliasPatchAI("T2"), guide, [TranscriptChunk(0, tuple(cues))], cues
+        )
+        self.assertEqual("audited", alias_review["coverage_ledger"][0]["status"])
+        self.assertEqual("第二主题（别名修正）", alias_patched["themes"][1]["title"])
+
+        # A stale alias from another chunk and a current-but-nonlocal canonical ID
+        # are not rebound by topic title or by full-guide membership.
+        for foreign_target, target_chunk in (("T2", TranscriptChunk(0, (cues[0],))), ("topic-cue-b", TranscriptChunk(0, (cues[0],)))):
+            with self.subTest(foreign_target=foreign_target):
+                _unchanged, foreign_review = _audit_guide(
+                    AliasPatchAI(foreign_target, reviewed=[cues[0]], evidence_cue=cues[0]),
+                    guide, [target_chunk], cues,
+                )
+                self.assertEqual("not_audited", foreign_review["coverage_ledger"][0]["status"])
+                self.assertEqual("audit.issues[0].target_topic_id", foreign_review["coverage_ledger"][0]["diagnostics"]["validator_path"])
+        for invalid_target in ("T9", ""):
+            with self.subTest(invalid_target=invalid_target):
+                _unchanged, invalid_target_review = _audit_guide(
+                    AliasPatchAI(invalid_target, reviewed=[cues[0]], evidence_cue=cues[0]),
+                    guide, [TranscriptChunk(0, (cues[0],))], cues,
+                )
+                self.assertEqual("not_audited", invalid_target_review["coverage_ledger"][0]["status"])
+                self.assertEqual("audit.issues[0].target_topic_id", invalid_target_review["coverage_ledger"][0]["diagnostics"]["validator_path"])
+
+        class MalformedIssueAI:
+            def __init__(inner_self, issues):
+                inner_self.issues = issues
+
+            def chat_completion(inner_self, messages, **kwargs):
+                return dict(content=json.dumps(dict(
+                    chunk_index=0,
+                    time_range=dict(start_ms=0, end_ms=1000),
+                    reviewed_cue_ids=["cue-a"],
+                    coverage_confirmation=dict(
+                        confirmed=True,
+                        evidence=[dict(cue_id="cue-a", quote="第一主题证据")],
+                    ),
+                    issues=inner_self.issues,
+                    theme_patches=[],
+                ), ensure_ascii=False))
+
+        malformed_issues = [
+            {"issues": {"type": "问题", "problem": "内容不完整", "evidence": [], "fix": "补充"}},
+            {"issues": [dict(type="问题", problem="内容不完整", evidence=[], fix="补充")]},
+            {"issues": [None]},
+        ]
+        for invalid in malformed_issues:
+            with self.subTest(invalid=invalid):
+                _unchanged_guide, invalid_review = _audit_guide(
+                    MalformedIssueAI(invalid["issues"]), guide,
+                    [TranscriptChunk(0, (cues[0],))], cues,
+                )
+                ledger_row = invalid_review["coverage_ledger"][0]
+                self.assertEqual("completed_with_warnings", invalid_review["status"])
+                self.assertEqual("not_audited", ledger_row["status"])
+                self.assertEqual("study_guide_audit", ledger_row["diagnostics"]["validator"])
+                self.assertTrue(ledger_row["diagnostics"].get("validator_path", "").startswith("audit.issues"))
 
     def test_fallback_is_structured_questions_are_answered_and_markdown_ordered(self):
         cues = normalize_cues(parse_vtt(VTT))

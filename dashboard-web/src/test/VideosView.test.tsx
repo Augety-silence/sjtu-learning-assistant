@@ -2030,3 +2030,313 @@ describe("VideosView 课程隔离", () => {
     expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
   });
 });
+
+describe("VideosView 全屏与 PPT 同步分屏", () => {
+  const remoteVideo: CourseVideoItem = {
+    ...videos[0],
+    id: "sjtu-video:12:99",
+    source: "video_space",
+  };
+  const slideMetadata = {
+    status: "ready",
+    message: "课件已就绪。",
+    pages: [
+      { index: 2, timeMs: 0 },
+      { index: 0, timeMs: 1500 },
+      { index: 1, timeMs: 2700 },
+    ],
+  };
+
+  it("去除已配置 AI 常驻提示且保留视频操作", () => {
+    const { container } = render(
+      <VideosView
+        videos={[remoteVideo]}
+        aiReadiness={{
+          configured: true,
+          status: "ready",
+          message: "配置已保存，连接尚未验证。",
+          model: "model",
+          connectionVerified: false,
+        }}
+        onOpenAISettings={vi.fn()}
+      />,
+    );
+    expect(container.querySelector(".video-ai-readiness")).toBeNull();
+    expect(screen.queryByText(/配置已保存，连接尚未验证/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "查看 AI 设置" })).toBeNull();
+    expect(screen.getByRole("button", { name: "播放 第一讲" })).toBeTruthy();
+  });
+
+  it("按非整数播放时间同步课件与标准 WEBVTT 字幕，回退时间时也切回", async () => {
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: vi.fn(() => "blob:synchronized-subtitles"),
+      revokeObjectURL: vi.fn(),
+    });
+    const loadImage = vi.fn(
+      async (_video, index: number) => `data:image/png;base64,page${index}`,
+    );
+    const loadSlides = vi.fn(async () => slideMetadata);
+    render(
+      <VideosView
+        videos={[remoteVideo]}
+        onLoadSlides={loadSlides}
+        onLoadSlideImage={loadImage}
+        onLoadSubtitles={async () => ({
+          subtitleVtt:
+            "WEBVTT\n\n00:00:01.200 --> 00:00:02.800\n当前讲解内容\n",
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const player = await findPlayer("第一讲");
+    fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+    expect(await screen.findByAltText("第一讲，课件第 3 页")).toBeTruthy();
+    expect(loadSlides).toHaveBeenCalledWith(remoteVideo);
+    expect(loadImage).toHaveBeenCalledWith(remoteVideo, 2);
+    expect(loadImage).toHaveBeenCalledWith(remoteVideo, 0);
+
+    player.currentTime = 1.49;
+    fireEvent.timeUpdate(player);
+    expect(loadImage).toHaveBeenCalledTimes(2);
+    player.currentTime = 1.5;
+    fireEvent.timeUpdate(player);
+    expect(await screen.findByAltText("第一讲，课件第 1 页")).toBeTruthy();
+    expect(
+      screen.getByRole("dialog", { name: "PPT 同步分屏" }).textContent,
+    ).toContain("当前讲解内容");
+
+    player.currentTime = 2.7;
+    fireEvent.seeked(player);
+    expect(await screen.findByAltText("第一讲，课件第 2 页")).toBeTruthy();
+    player.currentTime = 1.3;
+    fireEvent.seeked(player);
+    expect(await screen.findByAltText("第一讲，课件第 3 页")).toBeTruthy();
+    player.currentTime = 2.9;
+    fireEvent.timeUpdate(player);
+    expect(await screen.findByAltText("第一讲，课件第 2 页")).toBeTruthy();
+    expect(
+      screen.getByRole("dialog", { name: "PPT 同步分屏" }).textContent,
+    ).toContain("当前时间暂无字幕");
+    expect(loadImage).toHaveBeenCalledTimes(3);
+  });
+
+  it("拖动与缩放浮窗，并在放开指针后停止调整", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    render(
+      <VideosView
+        videos={[remoteVideo]}
+        onLoadSlides={async () => slideMetadata}
+        onLoadSlideImage={async () => "data:image/png;base64,page"}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    await findPlayer("第一讲");
+    fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+    const pane = await screen.findByRole("dialog", { name: "PPT 同步分屏" });
+    const left = Number.parseFloat(pane.style.left);
+    const top = Number.parseFloat(pane.style.top);
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "拖动 PPT 分屏" }),
+      {
+        button: 0,
+        clientX: 100,
+        clientY: 100,
+      },
+    );
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 70 });
+    expect(Number.parseFloat(pane.style.left)).toBe(left - 40);
+    expect(Number.parseFloat(pane.style.top)).toBe(top - 30);
+    fireEvent.pointerUp(window);
+    fireEvent.pointerMove(window, { clientX: 0, clientY: 0 });
+    expect(Number.parseFloat(pane.style.left)).toBe(left - 40);
+
+    const width = Number.parseFloat(pane.style.width);
+    const height = Number.parseFloat(pane.style.height);
+    fireEvent.pointerDown(
+      screen.getByRole("separator", { name: "调整 PPT 分屏大小" }),
+      {
+        button: 0,
+        clientX: 100,
+        clientY: 100,
+      },
+    );
+    fireEvent.pointerMove(window, { clientX: 150, clientY: 140 });
+    expect(Number.parseFloat(pane.style.width)).toBe(width + 50);
+    expect(Number.parseFloat(pane.style.height)).toBe(height + 40);
+    fireEvent.pointerUp(window);
+    fireEvent.keyDown(
+      screen.getByRole("separator", { name: "调整 PPT 分屏大小" }),
+      {
+        key: "ArrowLeft",
+      },
+    );
+    expect(Number.parseFloat(pane.style.width)).toBe(width + 34);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "关闭 PPT 分屏" })[0],
+    );
+    expect(screen.queryByRole("dialog", { name: "PPT 同步分屏" })).toBeNull();
+  });
+
+  it("全屏容器同时包含视频和 PPT 浮窗，并提供退出入口", async () => {
+    render(
+      <VideosView
+        videos={[remoteVideo]}
+        onLoadSlides={async () => slideMetadata}
+        onLoadSlideImage={async () => "data:image/png;base64,page"}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const player = await findPlayer("第一讲");
+    const shell = player.closest(".video-player-shell") as HTMLDivElement;
+    const originalFullscreen = Object.getOwnPropertyDescriptor(
+      document,
+      "fullscreenElement",
+    );
+    const originalExit = Object.getOwnPropertyDescriptor(
+      document,
+      "exitFullscreen",
+    );
+    const request = vi.fn(async () => {
+      Object.defineProperty(document, "fullscreenElement", {
+        value: shell,
+        configurable: true,
+      });
+      fireEvent(document, new Event("fullscreenchange"));
+    });
+    const exit = vi.fn(async () => {
+      Object.defineProperty(document, "fullscreenElement", {
+        value: null,
+        configurable: true,
+      });
+      fireEvent(document, new Event("fullscreenchange"));
+    });
+    Object.defineProperty(shell, "requestFullscreen", { value: request });
+    Object.defineProperty(document, "exitFullscreen", {
+      value: exit,
+      configurable: true,
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+      await screen.findByAltText("第一讲，课件第 3 页");
+      fireEvent.click(screen.getByRole("button", { name: "全屏播放" }));
+      await waitFor(() => expect(request).toHaveBeenCalledOnce());
+      expect(
+        shell.contains(screen.getByRole("dialog", { name: "PPT 同步分屏" })),
+      ).toBe(true);
+      fireEvent.click(screen.getAllByRole("button", { name: "退出全屏" })[0]);
+      await waitFor(() => expect(exit).toHaveBeenCalledOnce());
+      expect(screen.getByRole("button", { name: "全屏播放" })).toBeTruthy();
+    } finally {
+      if (originalFullscreen)
+        Object.defineProperty(
+          document,
+          "fullscreenElement",
+          originalFullscreen,
+        );
+      else Reflect.deleteProperty(document, "fullscreenElement");
+      if (originalExit)
+        Object.defineProperty(document, "exitFullscreen", originalExit);
+      else Reflect.deleteProperty(document, "exitFullscreen");
+    }
+  });
+
+  it("桌面 Portal 全屏不受旧 video WebKit 事件影响，并可退出恢复", async () => {
+    vi.stubGlobal("pywebview", { api: { invoke: vi.fn() } });
+    const { container } = render(<VideosView videos={[remoteVideo]} />);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    const oldVideo = await findPlayer("第一讲");
+    const shell = oldVideo.closest(".video-player-shell") as HTMLDivElement;
+
+    fireEvent.click(screen.getByRole("button", { name: "全屏播放" }));
+    await waitFor(() => {
+      const fullscreenShell = document.body.querySelector(
+        ".video-player-shell",
+      );
+      expect(fullscreenShell?.parentElement).toBe(document.body);
+      expect(
+        fullscreenShell?.classList.contains(
+          "video-player-shell--pseudo-fullscreen",
+        ),
+      ).toBe(true);
+    });
+    const fullscreenShell = document.body.querySelector(
+      ".video-player-shell",
+    ) as HTMLDivElement;
+
+    fireEvent(oldVideo, new Event("webkitendfullscreen"));
+    expect(fullscreenShell?.parentElement).toBe(document.body);
+    expect(
+      fullscreenShell?.classList.contains(
+        "video-player-shell--pseudo-fullscreen",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "退出全屏" })[0]);
+    await waitFor(() => {
+      const restoredShell = container.querySelector(".video-player-shell");
+      expect(restoredShell?.parentElement).not.toBe(document.body);
+      expect(
+        restoredShell?.classList.contains(
+          "video-player-shell--pseudo-fullscreen",
+        ),
+      ).toBe(false);
+      expect(screen.getByRole("button", { name: "全屏播放" })).toBeTruthy();
+    });
+    const restoredShell = container.querySelector(
+      ".video-player-shell",
+    ) as HTMLDivElement;
+    expect(
+      container.querySelector(".video-player-column")?.contains(restoredShell),
+    ).toBe(true);
+  });
+
+  it("无页码时间时明确说明不能同步，并避免随意读取课件页", async () => {
+    const image = vi.fn(async () => "data:image/png;base64,page");
+    render(
+      <VideosView
+        videos={[remoteVideo]}
+        onLoadSlides={async () => ({
+          ...slideMetadata,
+          pages: [{ index: 0, timeMs: null }],
+        })}
+        onLoadSlideImage={image}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    await findPlayer("第一讲");
+    fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+    expect(
+      await screen.findByText(
+        "课件已就绪，但服务未提供页码时间，无法自动同步。",
+      ),
+    ).toBeTruthy();
+    expect(image).not.toHaveBeenCalled();
+  });
+
+  it("切换课程时关闭分屏并忽略旧课件请求的迟到结果", async () => {
+    let finish: ((result: typeof slideMetadata) => void) | undefined;
+    const image = vi.fn(async () => "data:image/png;base64,stale");
+    const callbacks = {
+      onLoadSlides: () =>
+        new Promise<typeof slideMetadata>((resolve) => {
+          finish = resolve;
+        }),
+      onLoadSlideImage: image,
+    };
+    const view = render(
+      <VideosView videos={[remoteVideo]} courseId={12} {...callbacks} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一讲" }));
+    await findPlayer("第一讲");
+    fireEvent.click(screen.getByRole("button", { name: "打开 PPT 分屏" }));
+    expect(screen.getByRole("dialog", { name: "PPT 同步分屏" })).toBeTruthy();
+    view.rerender(<VideosView videos={[]} courseId={13} {...callbacks} />);
+    expect(screen.queryByRole("dialog", { name: "PPT 同步分屏" })).toBeNull();
+    await act(async () => {
+      finish?.(slideMetadata);
+    });
+    expect(screen.queryByRole("dialog", { name: "PPT 同步分屏" })).toBeNull();
+    expect(image).not.toHaveBeenCalled();
+  });
+});

@@ -378,9 +378,14 @@ class DesktopBridge:
             "video": self._video,
             "video_playback": self._video,
             "video_subtitles": self._video_subtitles,
+            "video_slides_metadata": self._video_slides_metadata,
+            "video_slide_image": self._video_slide_image,
             "video_slides_pdf": self._video_slides_pdf,
             "video_screenshot_pdf": self._video_screenshot_pdf,
             "transcript_batch_start": self._transcript_batch_start,
+            "transcript_playback_prepare": self._transcript_playback_prepare,
+            "transcript_playback_update": self._transcript_playback_update,
+            "transcript_learning_segments": self._transcript_learning_segments,
             "transcript_batch_get": self._transcript_batch_get,
             "transcript_jobs": self._transcript_jobs,
             "transcript_retry": self._transcript_retry,
@@ -1273,6 +1278,39 @@ class DesktopBridge:
             _transcript_id(payload.get("batch_id"), "字幕批次标识")
         )
 
+    def _playback_payload(self, payload, *, timed=True, with_seq=False):
+        keys = {"course_id", "source_id"}
+        if timed:
+            keys |= {"position_seconds", "playback_rate"}
+        if with_seq:
+            keys.add("seq")
+        _only_keys(payload, keys)
+        course_id = _positive_id(payload.get("course_id"), "课程标识")
+        source_id = _bounded_id(payload.get("source_id"), limit=255, label="远程视频标识")
+        if re.fullmatch(r"sjtu-video:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}", source_id) is None:
+            raise DashboardError("远程视频标识不正确。")
+        if not timed:
+            return course_id, source_id
+        position, rate = payload.get("position_seconds", 0), payload.get("playback_rate", 1)
+        for value, minimum, maximum in ((position, 0, 86400), (rate, 0.25, 4)):
+            if type(value) not in (int, float) or not isfinite(value) or not minimum <= value <= maximum:
+                raise DashboardError("视频播放位置或速度不正确。")
+        if with_seq:
+            seq = payload.get("seq")
+            if type(seq) is not int or not 0 <= seq <= 9_007_199_254_740_991:
+                raise DashboardError("播放更新序号不正确。")
+            return course_id, source_id, position, rate, seq
+        return course_id, source_id, position, rate
+
+    def _transcript_playback_prepare(self, payload):
+        return self._service.transcript_playback_prepare(*self._playback_payload(payload))
+
+    def _transcript_playback_update(self, payload):
+        return self._service.transcript_playback_update(*self._playback_payload(payload, with_seq=True))
+
+    def _transcript_learning_segments(self, payload):
+        return self._service.transcript_learning_segments(*self._playback_payload(payload, timed=False))
+
     def _transcript_jobs(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"course_id"})
         course_id = payload.get("course_id")
@@ -1331,6 +1369,27 @@ class DesktopBridge:
         if re.fullmatch(r"sjtu-video:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}", source_id) is None:
             raise DashboardError("远程视频标识不正确。")
         return self._service.video_slides_pdf(source_id)
+
+    def _video_slides_metadata(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"source_id"})
+        source_id = _bounded_id(
+            payload.get("source_id"), limit=255, label="远程视频标识"
+        )
+        if re.fullmatch(r"sjtu-video:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}", source_id) is None:
+            raise DashboardError("远程视频标识不正确。")
+        return self._service.video_slides_metadata(source_id)
+
+    def _video_slide_image(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"source_id", "page_index"})
+        source_id = _bounded_id(
+            payload.get("source_id"), limit=255, label="远程视频标识"
+        )
+        page_index = payload.get("page_index")
+        if re.fullmatch(r"sjtu-video:[1-9][0-9]{0,18}:[1-9][0-9]{0,18}", source_id) is None:
+            raise DashboardError("远程视频标识不正确。")
+        if type(page_index) is not int or not 0 <= page_index < 200:
+            raise DashboardError("课件页码不正确。")
+        return self._service.video_slide_image(source_id, page_index)
 
     def _video_screenshot_pdf(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"source_id", "interval_seconds"})

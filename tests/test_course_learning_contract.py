@@ -32,19 +32,20 @@ class CourseLearningContractTests(unittest.TestCase):
             schema_start = prompt.index("JSON Schema：") + len("JSON Schema：")
             schema_end = prompt.index("\n合法保守模板：", schema_start)
             contract = json.loads(prompt[schema_start:schema_end])
-            self.assertEqual(set(contract["properties"]), set(contract["required"]))
+            self.assertTrue(set(contract["required"]).issubset(contract["properties"]))
             self.assertFalse(contract["additionalProperties"])
             start = prompt.index("\n<UNTRUSTED_DATA-")
             data = json.loads(prompt[prompt.index("\n", start + 1) + 1:prompt.rindex("\n</UNTRUSTED_DATA-")])
             if "terms" in contract["properties"]:
                 output = {"terms": []}
-            elif "corrected_text" in contract["properties"]:
-                output = dict(chunk_id=data["chunk_id"], corrected_text=data["current_text"], changes=[], uncertain=[], confidence=0.9)
+            elif "changes" in contract["properties"]:
+                output = dict(chunk_id=data["chunk_id"], changes=[], uncertain=[], confidence=0.9)
             elif "decision" in contract["properties"]:
                 output = dict(decision="PASS", confidence=0.9, issues=[], revision_instructions=[])
             else:
                 output = dict(add_terms=[], update_terms=[], new_error_patterns=[], new_concepts=[], new_relationships=[])
-            self.assertEqual(set(contract["required"]), set(output))
+            self.assertTrue(set(contract["required"]).issubset(output))
+            self.assertTrue(set(output).issubset(contract["properties"]))
             return httpx.Response(200, json=dict(choices=[dict(message=dict(content=json.dumps(output, ensure_ascii=False)), finish_reason="stop")], usage=dict(prompt_tokens=3, completion_tokens=2, total_tokens=5)), request=request)
 
         client = self.client(handler)

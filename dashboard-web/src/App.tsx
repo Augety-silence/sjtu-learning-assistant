@@ -56,14 +56,20 @@ import {
   getRoster,
   getSettings,
   getTranscriptJobs,
+  getTranscriptLearningSegments,
   getVideoPlayback,
+  getVideoSlideImage,
+  getVideoSlides,
   getVideoSubtitles,
   invoke,
+  nextTranscriptPlaybackSequence,
+  prepareTranscriptPlayback,
   retryTranscriptJob,
   revealAcademicExport,
   revealTranscriptArtifact,
   startTranscriptBatch,
   updateGrading,
+  updateTranscriptPlayback,
 } from "@/lib/api";
 import {
   type BoundedReadRequest,
@@ -720,7 +726,6 @@ function VideosAdapter({
   onResolveCourseRetry,
   refreshVersion,
   readRequest,
-  onOpenAISettings,
 }: {
   courseId: number | null;
   courseName: string;
@@ -732,8 +737,8 @@ function VideosAdapter({
   onResolveCourseRetry: () => void;
   refreshVersion: number;
   readRequest: ReadRequest;
-  onOpenAISettings: () => void;
 }) {
+  const playbackSeq = useRef(new Map<string, number>());
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
   const [loadedCourseId, setLoadedCourseId] = useState<number | null>(null);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
@@ -938,6 +943,22 @@ function VideosAdapter({
     };
   }, [courseId, readRequest, taskRetry]);
   const visibleVideos = loadedCourseId === courseId ? videos : [];
+  const loadSlides = useCallback(async (video: CourseVideoItem) => {
+    const result = await getVideoSlides(video.id);
+    return {
+      status: result.status,
+      message: result.message,
+      pages: result.pages.map(({ index, time_ms }) => ({
+        index,
+        timeMs: time_ms,
+      })),
+    };
+  }, []);
+  const loadSlideImage = useCallback(
+    async (video: CourseVideoItem, pageIndex: number) =>
+      (await getVideoSlideImage(video.id, pageIndex)).data_url,
+    [],
+  );
   return (
     <>
       {(toolError || transcriptError) && (
@@ -958,7 +979,8 @@ function VideosAdapter({
       <VideosView
         videos={visibleVideos}
         aiReadiness={aiReadiness}
-        onOpenAISettings={onOpenAISettings}
+        onLoadSlides={loadSlides}
+        onLoadSlideImage={loadSlideImage}
         courseId={courseId}
         courseName={courseName}
         courseOptions={courseOptions}
@@ -979,6 +1001,85 @@ function VideosAdapter({
           courseResolved && !courseResolutionFailed && !courseId
         }
         onRetry={courseResolutionFailed ? onResolveCourseRetry : load}
+        onPrepareVideo={async (video, position) => {
+          if (
+            !courseId ||
+            activeCourseId.current !== courseId ||
+            !visibleVideos.some((item) => item.id === video.id)
+          )
+            return;
+          const batch = await prepareTranscriptPlayback(
+            courseId,
+            video.id,
+            position.positionSeconds,
+            position.playbackRate,
+          );
+          if (activeCourseId.current !== courseId) return;
+          setTranscriptCourseId(courseId);
+          setTranscriptJobs((current) => [
+            ...batch.jobs,
+            ...current.filter(
+              (item) => !batch.jobs.some((job) => job.id === item.id),
+            ),
+          ]);
+        }}
+        onUpdatePlayback={async (video, position) => {
+          if (
+            !courseId ||
+            activeCourseId.current !== courseId ||
+            !visibleVideos.some((item) => item.id === video.id)
+          )
+            return;
+          const seq = nextTranscriptPlaybackSequence(
+            playbackSeq.current.get(video.id) ?? 0,
+          );
+          playbackSeq.current.set(video.id, seq);
+          await updateTranscriptPlayback(
+            courseId,
+            video.id,
+            position.positionSeconds,
+            position.playbackRate,
+            seq,
+          );
+        }}
+        onLoadLearningSegments={async (video, signal) => {
+          if (!courseId || !visibleVideos.some((item) => item.id === video.id))
+            return { status: "empty", segments: [] };
+          const result = await getTranscriptLearningSegments(
+            courseId,
+            video.id,
+            signal,
+          );
+          return {
+            status: result.status,
+            message: result.message,
+            isProcessing: result.is_processing,
+            processingDone: result.processing_done,
+            autoRetryable: result.auto_retryable,
+            stage: result.stage,
+            errorCode: result.error_code,
+            errorMessage: result.error_message,
+            retryable: result.retryable,
+            retryAfter: result.retry_after,
+            updatedAt: result.updated_at,
+            sourceRawSha256: result.source_raw_sha256,
+            learningRevision: result.learning_revision,
+            completedSegments: result.completed_segments,
+            failedSegments: result.failed_segments,
+            sourceVersion: result.source_version,
+            availableRanges: result.available_ranges,
+            segments: result.segments.map((segment) => ({
+              id: segment.id,
+              startMs: segment.start_ms,
+              endMs: segment.end_ms,
+              title: segment.title,
+              content: segment.content,
+              kind: segment.kind,
+              source: segment.source,
+              provisional: segment.provisional,
+            })),
+          };
+        }}
         onStartTranscript={async (selectedVideos) => {
           if (!courseId) throw new Error("请先选择课程。");
           if (
@@ -1448,7 +1549,6 @@ export default function App() {
                 })}
                 onCourseChange={setSelectedLearnerCourseId}
                 readRequest={readRequest}
-                onOpenAISettings={() => setView("settings")}
                 courseResolved={capabilitiesInitialized}
                 courseResolutionFailed={capabilitiesFailed}
                 courseResolutionMessage={capabilitiesError}

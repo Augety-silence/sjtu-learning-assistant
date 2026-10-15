@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import html
+import inspect
 import json
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-PROMPT_VERSION = "transcript-v8-full-coverage-topic-id"
-PIPELINE_VERSION = "transcript-pipeline-v9"
+PROMPT_VERSION = "transcript-v10-evidence-contract"
+AUDIT_WIRE_VERSION = "audit-wire-v4-local-topic-alias-source-cue-refs"
+PIPELINE_VERSION = "transcript-pipeline-v10-playback-priority"
 TARGET_CHUNK_CHARS = 5200
 MAX_CHUNK_CHARS = 6000
 MAX_CHUNK_CUES = 120
@@ -81,6 +84,98 @@ class TranscriptAIFormatError(ValueError):
         super().__init__(message)
         self.category = category
         self.diagnostics = dict(diagnostics or {})
+
+
+class TranscriptPipelineCancelled(BaseException):
+    """Cooperative cancellation, intentionally not caught as an AI failure."""
+
+
+def _check_cancel(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise TranscriptPipelineCancelled("字幕整理已取消。")
+
+
+class _PipelineCallTracker:
+    """Track safe per-run call indexes while transparently forwarding a client."""
+
+    def __init__(self, client: Any, *, json_mode: bool) -> None:
+        self.client = client
+        self.json_mode = json_mode
+        self.call_count = 0
+        self.last_call_index: int | None = None
+        self.last_response: Any = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
+
+    def chat_completion(self, *args: Any, **kwargs: Any) -> Any:
+        self.call_count += 1
+        self.last_call_index = self.call_count
+        self.last_response = self.client.chat_completion(*args, **kwargs)
+        return self.last_response
+
+
+def _supports_response_format(client: Any) -> bool:
+    """Check wrapped client signatures so older strict FakeAI methods still work."""
+    current = client
+    seen: set[int] = set()
+    for _ in range(6):
+        if current is None or id(current) in seen:
+            return False
+        seen.add(id(current))
+        method = getattr(current, "chat_completion", None)
+        try:
+            parameters = inspect.signature(method).parameters if callable(method) else {}
+        except (TypeError, ValueError):
+            parameters = {}
+        if "response_format" in parameters:
+            return True
+        inner = getattr(current, "client", None)
+        if inner is not None and inner is not current:
+            current = inner
+            continue
+        return any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+    return False
+
+
+def _response_format_option(client: Any, json_mode: bool) -> dict[str, Any]:
+    if json_mode and _supports_response_format(client):
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
+def _safe_response_details(client: Any) -> dict[str, Any]:
+    response = getattr(client, "last_response", None)
+    content = response.get("content") if isinstance(response, Mapping) else None
+    finish_reason = _response_metadata(response).get("finish_reason")
+    details: dict[str, Any] = {}
+    call_index = getattr(client, "last_call_index", None)
+    if type(call_index) is int and call_index > 0:
+        details["call_index"] = call_index
+    if type(content) is str:
+        details["response_chars"] = len(content)
+    if finish_reason in {"stop", "length", "tool_calls", "content_filter"}:
+        details["finish_reason"] = finish_reason
+    return details
+
+
+def _schema_diagnostic_fields(exc: Exception, client: Any = None) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    details = _reduce_failure_diagnostics(exc)
+    mismatch = details.get("schema_mismatch")
+    if isinstance(mismatch, Mapping):
+        for source, target in (("path", "validator_path"), ("expected", "validator_expected"),
+                               ("actual_type", "validator_actual_type"), ("length", "validator_actual_length")):
+            value = mismatch.get(source)
+            if value is not None and type(value) in (str, int):
+                result[target] = value
+    for source, target in (("category", "category"), ("finish_reason", "finish_reason"),
+                           ("parse_error_type", "parse_error_type"), ("content_length", "output_chars")):
+        value = details.get(source)
+        if value is not None and type(value) in (str, int):
+            result[target] = value
+    result.update(_safe_response_details(client))
+    return result
 
 
 class SchemaValidationError(ValueError):
@@ -438,47 +533,91 @@ def _json_content(
     validator: Callable[[object], dict[str, Any]],
     *,
     schema_hint: str,
+    should_cancel: Callable[[], bool] | None = None,
+    json_mode: bool = False,
+    repair_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     system = "只依据字幕证据处理内容，不补写外部事实。只返回一个严格 JSON 对象。"
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
         raise ValueError("AI 请求超过单次消息安全限制。")
+    _check_cancel(should_cancel)
     response = ai_client.chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         max_tokens=4096,
         temperature=0,
         system_prompt=False,
+        **_response_format_option(ai_client, json_mode),
     )
+    _check_cancel(should_cancel)
     content = response.get("content") if isinstance(response, Mapping) else None
     try:
         return _validated_json(content, validator, response)
     except TranscriptAIFormatError as first_error:
+        if getattr(ai_client, "last_call_index", None) is not None:
+            first_error.diagnostics["call_index"] = ai_client.last_call_index
         if first_error.category in {"empty", "truncated"}:
             raise
         fragment = _repair_fragment(content)
         if not fragment:
             raise
-        repair_prompt = (
-            "只修复下列 JSON 片段的语法和字段结构，不添加、删除或改写事实。限制："
-            + schema_hint
-            + "\n片段：\n"
-            + fragment
+        mismatch = first_error.diagnostics.get("schema_mismatch")
+        safe_mismatch = (
+            {key: mismatch[key] for key in ("path", "expected") if type(mismatch.get(key)) is str}
+            if isinstance(mismatch, Mapping) else {}
         )
-        if len(repair_prompt) >= MAX_MESSAGE_CHARS:
+        mismatch_details = (
+            "\n本次校验失败位置与要求（仅供定位，不含实际模型字段值）："
+            + json.dumps(safe_mismatch, ensure_ascii=False, separators=(",", ":"))
+        )
+        if repair_context is None:
+            repair_prompt = (
+                "只修复下列 JSON 片段的语法和字段结构，不添加、删除或改写事实。限制："
+                + schema_hint
+                + mismatch_details
+                + "\n片段：\n"
+                + fragment
+            )
+        else:
+            repair_details = (
+                mismatch_details
+                + "\n仅限本次修复使用的受限规则与来源范围："
+                + json.dumps(repair_context, ensure_ascii=False, separators=(",", ":"))
+            )
+            repair_prompt = (
+                "只修复下列 JSON 中校验失败的字段，不得删除issue、改变issue的问题含义、扩大/缩小其适用主题或移动到其他cue。"
+                "若修复字段是审校evidence，可使用精确 {cue_id,quote_mode:'source_cue'} 协议，让程序绑定该当前cue的完整原文；"
+                "若保留legacy {cue_id,quote}，quote仍必须从提供的同一cue原文逐字复制连续片段。不得改写、拼接、跨cue引用或猜测ID。"
+                "若来源不支持原issue，保留该失败，不要删改issue来通过校验。不得添加、删除或改写其他事实。限制："
+                + schema_hint
+                + repair_details
+                + "\n片段：\n"
+                + fragment
+            )
+        repair_system = "只修复 JSON，不创造事实。只返回一个严格 JSON 对象。"
+        if len(repair_system) + len(repair_prompt) >= MAX_MESSAGE_CHARS:
             raise first_error
+        _check_cancel(should_cancel)
         repair = ai_client.chat_completion(
             [
                 {
                     "role": "system",
-                    "content": "只修复 JSON，不创造事实。只返回一个严格 JSON 对象。",
+                    "content": repair_system,
                 },
                 {"role": "user", "content": repair_prompt},
             ],
             max_tokens=4096,
             temperature=0,
             system_prompt=False,
+            **_response_format_option(ai_client, json_mode),
         )
+        _check_cancel(should_cancel)
         repair_content = repair.get("content") if isinstance(repair, Mapping) else None
-        return _validated_json(repair_content, validator, repair)
+        try:
+            return _validated_json(repair_content, validator, repair)
+        except TranscriptAIFormatError as repair_error:
+            if getattr(ai_client, "last_call_index", None) is not None:
+                repair_error.diagnostics["call_index"] = ai_client.last_call_index
+            raise
 
 
 def _cue_lookup(cues):
@@ -854,6 +993,35 @@ PLAIN_MAP_FORMAT = (
     "[CLASSROOM_EXAMPLES]\n- 明确标记的课堂例子/演示/类比 || 关联知识点概念 || cue-000001 || 逐字短引文\n"
     "[PRACTICE_ITEMS]\n- recall/application || 题目 || 关联知识点概念 || 答案要点或评估标准 || cue-000001 || 逐字短引文"
 )
+JSON_MAP_FORMAT = (
+    "只返回一个JSON对象，且仅含topics、emphasized_points、concepts、cases_formulas_conclusions、review_questions、"
+    "knowledge_points、classroom_examples、practice_items八个字段；它们全部是数组，cleaned_transcript由程序按当前chunk原样补入，不要输出。"
+    "topics与review_questions的元素是字符串；emphasized_points、concepts、cases_formulas_conclusions的元素严格为{text,evidence}；"
+    "evidence是[{cue_id,quote}]，cue_id只能使用本块给定值，quote必须是该cue中的连续逐字原文，时间由程序计算。"
+    "knowledge_points元素严格为{kind,concept,statement,evidence}，kind只能definition/principle/method/fact/formula/conclusion；"
+    "classroom_examples元素严格为{example,related_knowledge_points,evidence}；practice_items元素严格为"
+    "{type,prompt,related_knowledge_points,answer_key,rubric,evidence}，type只能recall/application，answer_key与rubric是字符串数组。"
+    "没有字幕依据的单项分类可留空；不要为了填满数组或响应格式而造主题、引文、课堂例子或练习。若本段确实没有任何可由原文支持的学习内容，"
+    "所有学习内容数组留空表示本段无法提取有据内容；这不是已经提取完成的证据，也不能据此推断全片内容不足。"
+    "结构示例（只示范字段与类型；evidence使用下方本块中的真实cue与短原文，其他示例文字不可照抄）："
+    '{"topics":["从当前原文提炼的主题"],"emphasized_points":[{"text":"从当前原文提炼的要点","evidence":[{"cue_id":"{example_cue_id}","quote":"{example_quote}"}]}],'
+    '"concepts":[],"cases_formulas_conclusions":[],"review_questions":[],"knowledge_points":[{"kind":"fact","concept":"从该原文提炼的概念",'
+    '"statement":"{example_quote}","evidence":[{"cue_id":"{example_cue_id}","quote":"{example_quote}"}]}],'
+    '"classroom_examples":[],"practice_items":[]}。'
+)
+
+
+def _json_map_format(cues: Sequence[Cue]) -> str:
+    """Bind the format example to a real cue in this chunk, without inventing evidence."""
+    example_cue = next((cue for cue in cues if cue.text.strip()), None)
+    if example_cue is None:
+        return JSON_MAP_FORMAT.replace('{"cue_id":"{example_cue_id}","quote":"{example_quote}"}', "null")
+    quote = example_cue.text.strip()[:120]
+    return (
+        JSON_MAP_FORMAT
+        .replace("{example_cue_id}", json.dumps(example_cue.cue_id, ensure_ascii=False)[1:-1])
+        .replace("{example_quote}", json.dumps(quote, ensure_ascii=False)[1:-1])
+    )
 
 
 
@@ -991,22 +1159,31 @@ def _validated_map_response(content, response, cues):
             ) from None
 
 
-def _map_content(ai_client, prompt, cues):
+def _map_content(ai_client, prompt, cues, should_cancel=None, *, json_mode: bool = False):
     system = (
         "只依据字幕证据提取内容，不补写外部事实。知识点仅限定义、原则、方法、事实、公式和结论；"
         "教师演示、案例和类比必须单列为课堂例子并关联知识点。无法判定时宁缺毋滥并保留逐字证据。"
-        "练习面向学生回忆或应用，不得把 ASR 纠错样本伪装成学习训练。严格使用用户指定的固定标签纯文本格式。"
+        "练习面向学生回忆或应用，不得把 ASR 纠错样本伪装成学习训练。"
+        + ("严格返回JSON对象，不输出固定标签文本。" if json_mode else "严格使用用户指定的固定标签纯文本格式。")
     )
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
         raise ValueError("AI 请求超过单次消息安全限制。")
+    _check_cancel(should_cancel)
     response = ai_client.chat_completion(
         list((dict(role="system", content=system), dict(role="user", content=prompt))),
         max_tokens=3072,
         temperature=0,
         system_prompt=False,
+        **_response_format_option(ai_client, json_mode),
     )
+    _check_cancel(should_cancel)
     content = response.get("content") if isinstance(response, Mapping) else None
-    return _validated_map_response(content, response, cues)
+    try:
+        return _validated_map_response(content, response, cues)
+    except TranscriptAIFormatError as exc:
+        if getattr(ai_client, "last_call_index", None) is not None:
+            exc.diagnostics["call_index"] = ai_client.last_call_index
+        raise
 
 
 def _fallback_map(chunk: TranscriptChunk) -> dict[str, Any]:
@@ -1339,6 +1516,12 @@ def _stable_topic_id(
 def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]:
     if type(value) is not dict:
         _schema_fail("study_guide", "object", value)
+    root_fields = {"course_map", "themes", "checklist", "questions", "extensions"}
+    if set(value) != root_fields:
+        _schema_fail("study_guide", "exact course_map/themes/checklist/questions/extensions fields", value)
+    for name in root_fields:
+        if type(value[name]) is not list:
+            _schema_fail(name, "array", value[name])
     course_map = [_clean_learning_text(item) for item in _coerce_items(value.get("course_map"), "course_map", 6)]
     course_map = [item for item in course_map if item]
     if not 4 <= len(course_map) <= 6:
@@ -1349,15 +1532,32 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
         path = f"themes[{index}]"
         if type(raw) is not dict:
             _schema_fail(path, "object", raw)
+        theme_fields = {
+            "topic_id", "title", "conclusion", "principle_and_context", "why_and_consequences",
+            "steps", "classroom_example", "boundaries", "connections", "source", "evidence",
+        }
+        if set(raw) != theme_fields:
+            _schema_fail(path, "exact theme fields including nullable classroom_example", raw)
         title = _clean_learning_text(raw.get("title"))
         conclusion = _clean_learning_text(raw.get("conclusion"))
         if not title or not conclusion:
-            continue
+            _schema_fail(path, "non-empty title and conclusion", raw)
+        topic_id = raw.get("topic_id")
+        if type(topic_id) is not str or not re.fullmatch(r"topic-[a-zA-Z0-9_-]{1,64}", topic_id.strip()):
+            _schema_fail(path + ".topic_id", "stable topic-id string", topic_id)
         source = _clean_learning_text(raw.get("source"))
         if source not in SOURCE_TYPES:
             _schema_fail(path + ".source", "closed source enum", source)
-        evidence = _normalize_guide_evidence(raw.get("evidence"), cues, path + ".evidence")
-        topic_id = _stable_topic_id(raw.get("topic_id"), evidence, conclusion)
+        raw_evidence = raw.get("evidence")
+        if type(raw_evidence) is not list or not raw_evidence or any(
+            type(row) is not dict or set(row) != {"cue_id", "quote"} for row in raw_evidence
+        ):
+            _schema_fail(path + ".evidence", "non-empty array of exact {cue_id,quote} objects", raw_evidence)
+        evidence = _normalize_guide_evidence(raw_evidence, cues, path + ".evidence")
+        if len(evidence) != len(raw_evidence):
+            _schema_fail(path + ".evidence", "every quote must match a current cue exactly", raw_evidence)
+        if not evidence:
+            _schema_fail(path + ".evidence", "at least one exact current-cue citation for every theme", evidence)
         if topic_id in seen:
             continue
         if source == "课堂明确讲述" and not evidence:
@@ -1366,6 +1566,12 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
         steps = [item for item in steps if item]
         if not steps:
             _schema_fail(path + ".steps", "actionable steps", steps)
+        principle_and_context = _clean_learning_text(raw.get("principle_and_context"))
+        why_and_consequences = _clean_learning_text(raw.get("why_and_consequences"))
+        boundaries = _clean_learning_text(raw.get("boundaries"))
+        connections = _clean_learning_text(raw.get("connections"))
+        if not all((principle_and_context, why_and_consequences, boundaries, connections)):
+            _schema_fail(path, "non-empty context, why, boundaries, and connections", raw)
         example = raw.get("classroom_example")
         normalized_example = None
         if example is not None:
@@ -1375,6 +1581,8 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
                 name: _clean_learning_text(example.get(name))
                 for name in ("original_question", "problem", "improvement")
             }
+            if set(example) != {"original_question", "problem", "improvement"}:
+                _schema_fail(path + ".classroom_example", "exact original_question/problem/improvement fields", example)
             if not all(normalized_example.values()) or not any(
                 normalized_example["original_question"] in cue.text for cue in cues
             ):
@@ -1383,12 +1591,12 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
             "topic_id": topic_id,
             "title": title,
             "conclusion": conclusion,
-            "principle_and_context": _clean_learning_text(raw.get("principle_and_context"), "结合字幕证据判断适用条件。"),
-            "why_and_consequences": _clean_learning_text(raw.get("why_and_consequences"), "忽略该判断会降低回答的可解释性和可用性。"),
+            "principle_and_context": principle_and_context,
+            "why_and_consequences": why_and_consequences,
             "steps": steps,
             "classroom_example": normalized_example,
-            "boundaries": _clean_learning_text(raw.get("boundaries"), "超出字幕证据的内容不作课堂结论。"),
-            "connections": _clean_learning_text(raw.get("connections"), "先明确目标，再检查表述并回到研究问题。"),
+            "boundaries": boundaries,
+            "connections": connections,
             "source": source,
             "evidence": evidence,
         }
@@ -1402,15 +1610,22 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
     for index, raw in enumerate(_coerce_items(value.get("questions"), "questions", 8)):
         if type(raw) is not dict:
             _schema_fail(f"questions[{index}]", "object", raw)
+        if set(raw) != {"type", "prompt", "answer", "source"}:
+            _schema_fail(f"questions[{index}]", "exact type/prompt/answer/source fields", raw)
         source = _clean_learning_text(raw.get("source"))
         if source not in SOURCE_TYPES:
             _schema_fail(f"questions[{index}].source", "closed source enum", source)
+        item_type = _clean_learning_text(raw.get("type"), "application")
+        if item_type not in {"recall", "application"}:
+            _schema_fail(f"questions[{index}].type", "recall or application", item_type)
         prompt = _clean_learning_text(raw.get("prompt"))
         answer = _clean_learning_text(raw.get("answer"))
-        if "多久吃一次" in prompt and source != "自编练习或例子":
-            _schema_fail(f"questions[{index}].source", "fast-food frequency prompt must be self-authored", source)
+        if source == "课堂明确讲述" and prompt and not any(
+            _canonical_learning_key(prompt) in _canonical_learning_key(cue.text) for cue in cues
+        ):
+            _schema_fail(f"questions[{index}].source", "classroom question must occur in source cues", source)
         if prompt and answer:
-            questions.append(dict(type=_clean_learning_text(raw.get("type"), "application"), prompt=prompt, answer=answer, source=source))
+            questions.append(dict(type=item_type, prompt=prompt, answer=answer, source=source))
     if not 5 <= len(questions) <= 8:
         _schema_fail("questions", "5-8 answered recall/application questions", questions)
     extensions = [_clean_learning_text(item) for item in _coerce_items(value.get("extensions"), "extensions", 3)]
@@ -1507,14 +1722,61 @@ def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> st
         "classroom_examples": summary.get("classroom_examples", ()),
         "emphasized_points": summary.get("emphasized_points", ()),
     }
+    fallback_themes = fallback.get("themes", ())
+    theme_example = None
+    if type(fallback_themes) in (list, tuple) and fallback_themes and type(fallback_themes[0]) is dict:
+        source_theme = fallback_themes[0]
+        theme_example = {
+            name: source_theme.get(name)
+            for name in (
+                "topic_id", "title", "conclusion", "principle_and_context", "why_and_consequences",
+                "steps", "classroom_example", "boundaries", "connections", "source",
+            )
+        }
+        theme_example["evidence"] = [
+            {"cue_id": row.get("cue_id"), "quote": row.get("quote")}
+            for row in source_theme.get("evidence", ())
+            if type(row) is dict and type(row.get("cue_id")) is str and type(row.get("quote")) is str
+        ]
+    fallback_questions = fallback.get("questions", ())
+    question_example = (
+        {name: fallback_questions[0].get(name) for name in ("type", "prompt", "answer", "source")}
+        if type(fallback_questions) in (list, tuple) and fallback_questions and type(fallback_questions[0]) is dict
+        else {"type": "recall", "prompt": "问题（须由当前字幕主题支持）", "answer": "基于字幕的简答", "source": "根据课堂内容归纳"}
+    )
+    guide_example = {
+        "course_map": list(fallback.get("course_map", ()))[:1],
+        "themes": [theme_example] if theme_example is not None else [],
+        "checklist": list(fallback.get("checklist", ()))[:1],
+        "questions": [question_example],
+        "extensions": list(fallback.get("extensions", ()))[:1],
+    }
     return (
-        "阶段1：把分块提取结果重组为可学习讲义，不能逐条拼接。只返回 study_guide JSON 对象。"
-        "course_map 4-6行；themes 每项含稳定 topic_id（后续改标题仍保持不变）、title/conclusion/principle_and_context/why_and_consequences/steps/"
-        "classroom_example/boundaries/connections/source/evidence；checklist；questions 5-8题且答案内置但展示时后置；extensions 2-3题。"
-        "来源只能是：课堂明确讲述、根据课堂内容归纳、自编练习或例子、字幕存疑。课堂案例必须有逐字证据；"
-        "自编题不得放入 classroom_example。教师建议、案例判断和一般原则要区分。合并同义内容并补足 why/how。"
-        "重点检查问卷长度、现有量表、编码一致、解释目的、通俗语言、漏斗排序、发布前试填；选项重叠必须写边界检查、后果、改写步骤。"
-        "若课堂证据含23:34‘为什么现在不吃某快餐’，保留原问法；‘多久吃一次’只能标自编练习，不得冒充课堂案例。"
+        "阶段1：把分块提取结果重组为可学习讲义，不能逐条拼接。只返回一个 JSON 对象，且仅含 course_map、themes、checklist、questions、extensions。"
+        "完整字段契约：course_map 是4-6条非空字符串，表示不同的学习路线要点，不要求每个theme恰好对应一行；"
+        "可把有证据支持的定义、方法步骤、适用条件或概念对比组织成不同路线要点，但不得拆成重复改写、增加源外知识或为了达到数量编造。"
+        "若源材料确实无法支持4条实质不同的要点，保留证据并报告schema不足，不要凑数。themes 是1-12个对象；checklist 是0-16条字符串；"
+        "questions 是5-8个对象；extensions 是2-3条非空字符串。数量不足不能用重复项凑数，保留事实边界。"
+        "每个 theme 对象含 topic_id/title/conclusion/principle_and_context/why_and_consequences/steps/classroom_example/"
+        "boundaries/connections/source/evidence：topic_id与文本字段为非空字符串；steps为1-8条非空字符串；"
+        "source只能是：课堂明确讲述、根据课堂内容归纳、自编练习或例子、字幕存疑；evidence为一个或多个"
+        "{cue_id,quote}对象，cue_id须来自当前字幕，quote须为当前cue逐字连续引文（通常20-120字，绝不超过240字），"
+        "不要输出时间，程序按cue_id确定时间。每个theme均须有证据，不得把无证据推断包装成教学结论。"
+        "classroom_example可为null；没有字幕中明确讲述的课堂例子，或找不到逐字出现的原提问时必须为null。"
+        "只有source为课堂明确讲述且evidence有效时才可给对象；对象严格包含非空字符串original_question/problem/improvement，"
+        "original_question必须逐字出现在某个当前cue中，problem/improvement不得添加字幕无法支持的课堂事实。"
+        "自编题、通用例子或根据课堂归纳的问题不得放入classroom_example。"
+        "每个question对象严格含非空字符串type/prompt/answer/source；type只能recall或application；source使用上述枚举。"
+        "问题prompt与答案answer的来源分别判断：prompt与answer均须有当前主题依据，但答案依据课堂内容不代表题面曾在课堂提出。"
+        "复习题默认标为根据课堂内容归纳；改变场景或问法的题目标为自编练习或例子。仅题面逐字出现在当前cue才可标为课堂明确讲述；"
+        "该类别下prompt必须是字幕中逐字出现的提问，不得将答案有依据误当成原题有出处。不得省略答案或换用question/text键。"
+        "checklist元素须为可核对的字符串；extensions元素须为待探索问题，不得把缺失事实写成结论。"
+        "字段示例（确定性草稿中的真实单主题/单题，只示范结构，不代表完整数量；课堂案例无可靠原句时显示null）："
+        + json.dumps(guide_example, ensure_ascii=False, separators=(",", ":"))
+        + "。合并同义内容并补足why/how，但证据不足时明确保留待核实。教师建议、案例判断和一般原则要区分。"
+        "课程地图、检查清单和题目只能围绕当前字幕证据中的主题，不引入其他课程的知识、案例或固定检查清单。"
+        "依据证据说明适用条件、后果与操作步骤；证据不足的 why/how 保留待核实，不补写事实。"
+        "课堂例子的原句与提问方式必须忠实保留，改变场景或问法的题目须标明自编练习或例子。"
         "删除空洞占位词。输入提取：" + json.dumps(source, ensure_ascii=False, separators=(",", ":"))
         + "\n确定性草稿：" + json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
     )
@@ -1523,6 +1785,55 @@ def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> st
 def _evidence_in_chunk(rows: Sequence[Mapping[str, Any]], chunk: TranscriptChunk) -> bool:
     cue_ids = {cue.cue_id for cue in chunk.cues}
     return bool(rows) and all(row.get("cue_id") in cue_ids for row in rows)
+
+
+def _normalize_audit_evidence(value: object, chunk: TranscriptChunk, path: str) -> list[dict[str, Any]]:
+    """Bind audit references to current cues, deriving source-cue quotes only by explicit marker."""
+    if type(value) is not list or not value or len(value) > 12:
+        _schema_fail(path, "non-empty array of at most 12 {cue_id,quote} objects", value)
+    cues_by_id = {cue.cue_id: cue for cue in chunk.cues}
+    result: list[dict[str, Any]] = []
+    seen_source_cues: set[str] = set()
+    seen_legacy_cues: set[str] = set()
+    seen_legacy_pairs: set[tuple[str, str]] = set()
+    for index, row in enumerate(value):
+        row_path = f"{path}[{index}]"
+        if type(row) is not dict:
+            _schema_fail(row_path, "exact legacy {cue_id,quote} or source {cue_id,quote_mode} object", row)
+        fields = set(row)
+        if fields == {"cue_id", "quote_mode"}:
+            if row.get("quote_mode") != "source_cue":
+                _schema_fail(row_path + ".quote_mode", "exact source_cue marker", row.get("quote_mode"))
+            cue_id = row.get("cue_id")
+            source_cue_ref = True
+        elif fields == {"cue_id", "quote"}:
+            cue_id, quote = row.get("cue_id"), row.get("quote")
+            source_cue_ref = False
+        else:
+            _schema_fail(row_path, "exact legacy {cue_id,quote} or source {cue_id,quote_mode} object", row)
+        if type(cue_id) is not str or cue_id not in cues_by_id:
+            _schema_fail(row_path + ".cue_id", "cue ID from the current chunk", cue_id)
+        cue = cues_by_id[cue_id]
+        if source_cue_ref:
+            quote = cue.text
+            if not quote or len(quote) > MAX_MESSAGE_CHARS:
+                _schema_fail(row_path + ".quote_mode", "non-empty complete source cue within the message safety limit", row.get("quote_mode"))
+            if cue_id in seen_source_cues or cue_id in seen_legacy_cues:
+                _schema_fail(row_path, "unique current cue reference", row)
+            seen_source_cues.add(cue_id)
+        else:
+            if type(quote) is not str or quote != quote.strip():
+                _schema_fail(row_path + ".quote", "trimmed literal quote from the paired cue", quote)
+            if not quote or len(quote) > 240 or quote not in cue.text:
+                expected = "non-empty trimmed literal substring from the paired current cue, at most 240 characters"
+                _schema_fail(row_path + ".quote", expected, quote)
+            pair = (cue_id, quote)
+            if cue_id in seen_source_cues or pair in seen_legacy_pairs:
+                _schema_fail(row_path, "unique legacy cue and quote pair; no duplicate source-cue ref", row)
+            seen_legacy_cues.add(cue_id)
+            seen_legacy_pairs.add(pair)
+        result.append(dict(cue_id=cue_id, start_ms=cue.start_ms, end_ms=cue.end_ms, quote=quote))
+    return result
 
 
 def _topic_merge_id(item: Mapping[str, Any]) -> str:
@@ -1608,32 +1919,97 @@ def _protected_audit_merge(
     return merged
 
 
-def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[TranscriptChunk], cues: Sequence[Cue]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _apply_topic_patches(
+    current: Mapping[str, Any], patches: Sequence[Mapping[str, Any]],
+    issues: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Apply evidence-backed local edits while retaining the complete guide."""
+    merged = dict(current)
+    themes = [dict(item) for item in current.get("themes", ())]
+    by_id = {_topic_merge_id(item): index for index, item in enumerate(themes)}
+    for patch in patches:
+        topic_id = patch["target_topic_id"]
+        index = by_id.get(topic_id)
+        if index is None or not _audit_issue_supports(str(themes[index].get("title", "")), issues, topic_id):
+            continue
+        candidate = dict(themes[index])
+        candidate.update(patch["changes"])
+        themes[index] = candidate
+    merged["themes"] = themes
+    return merged
+
+
+def _audit_guide(
+    ai_client: Any, guide: dict[str, Any], chunks: Sequence[TranscriptChunk], cues: Sequence[Cue],
+    *, should_cancel: Callable[[], bool] | None = None, json_mode: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     issues: list[dict[str, str]] = []
     ledger: list[dict[str, Any]] = []
     current = guide
     failed = False
     for chunk in chunks:
+        _check_cancel(should_cancel)
+        started = time.monotonic()
+        local_topic_bindings: dict[str, str] = {}
+        local_topics = []
+        for item in current.get("themes", ()):
+            current_cue_ids = {cue.cue_id for cue in chunk.cues}
+            local_evidence = [row for row in item.get("evidence", ()) if row.get("cue_id") in current_cue_ids]
+            if not local_evidence:
+                continue
+            alias = f"T{len(local_topics) + 1}"
+            canonical_id = _topic_merge_id(item)
+            local_topic_bindings[alias] = canonical_id
+            local_topics.append(
+            {"topic_ref": alias, "title": item.get("title"),
+             "conclusion": item.get("conclusion"), "evidence": [row for row in item.get("evidence", ())
+                                                                  if row.get("cue_id") in current_cue_ids]}
+            )
+        available_evidence_cues = [
+            {"cue_id": cue.cue_id, "text": cue.text}
+            for cue in chunk.cues
+        ]
+        local_topic_ids = list(local_topic_bindings)
+        local_canonical_ids = set(local_topic_bindings.values())
+        example_cue = next((cue for cue in chunk.cues if len(cue.text) >= 20), chunk.cues[0])
+        evidence_example = {"cue_id": example_cue.cue_id, "quote_mode": "source_cue"}
         prompt = (
-            "阶段2：对照这一连续时间段字幕审校完整讲义。按遗漏、错配、来源混淆、学习效果、冗余检查。"
-            "返回 JSON：chunk_index；time_range（start_ms/end_ms，必须等于本段）；reviewed_cue_ids"
-            "（必须逐项覆盖本段全部 cue）；coverage_confirmation（confirmed=true，evidence 至少一条且只能引用本段 cue）；"
-            "issues（每项 type/problem/evidence/fix，可用 target_topic_id 指向标题修订主题，"
-            "涉及删除或改写时 evidence 必须引用本段 cue）；revised_study_guide（修订后的完整讲义）。"
-            "即使无需修改也必须用本段证据确认覆盖。不得把自编练习写成课堂案例。当前讲义："
-            + json.dumps(current, ensure_ascii=False, separators=(",", ":"))
+            "阶段2：仅审校本连续时间段相关主题，并给出局部修订patch。按遗漏、错配、来源混淆、学习效果、冗余检查。"
+            "返回 JSON：reviewed_cue_ids（必须逐项覆盖本段全部 cue）；coverage_confirmation 必须是 {confirmed:true,evidence:[{cue_id,quote_mode:'source_cue'}]}，"
+            "evidence 至少一条；每条证据只能包含 cue_id 和 quote_mode 两个字段，quote_mode 必须为 source_cue。"
+            "cue_id 只能取下方 available_evidence_cues 中的值。程序将从该cue自动填入完整原文和时间；不要复制、改写或输出quote/start_ms/end_ms。"
+            "只能选择实际支持该覆盖判断的cue；程序会引用该cue完整原文，长度受现有消息安全上限约束，不截断或改写。"
+            "合法来源引用对象示例（只示范结构，cue_id 必须来自本段）："
+            + json.dumps(evidence_example, ensure_ascii=False, separators=(",", ":"))
+            + "。issues 必须是数组，每项含非空 type/problem/fix 和非空 evidence 数组；每条 evidence 都必须是"
+            "同样的 {cue_id,quote_mode:'source_cue'} 对象，且所选cue的真实原文须直接支持该问题及修订。"
+            "有效引用标记不代表问题本身成立；若当前cue原文不能支持问题或修订，不得报告该issue，返回issues=[]。"
+            "每个issue必须含target_topic_id：若针对当前主题，只能填写下方本块当前相关主题对应的topic_ref短别名；若仅是通用覆盖观察且不对应现有主题，填null。"
+            "涉及删除或改写时必须引用本段 cue。theme_patches 必须是数组，每项包含target_topic_id和changes，"
+            "target_topic_id也只能填写同一个topic_ref短别名；每个patch必须与同一target_topic_id且带有当前cue evidence的issue一一对应。"
+            "changes只可修改title/conclusion/principle_and_context/why_and_consequences/steps/boundaries/connections；"
+            "不得修改或删除evidence、source或其他主题。无修改时 issues 与 theme_patches 均返回空数组，但仍须提供 coverage_confirmation。"
+            "本段索引与时间范围由程序根据当前chunk确定；不要输出chunk_index或time_range。"
+            "即使无需修改也必须用本段证据确认覆盖。不得把自编练习写成课堂案例。仅列出当前块确有引文的主题；不要推测或重造ID。当前相关主题："
+            + json.dumps(local_topics, ensure_ascii=False, separators=(",", ":"))
+            + "\n本段相关主题合法topic_ref：" + json.dumps(local_topic_ids, ensure_ascii=False, separators=(",", ":"))
+            + "\navailable_evidence_cues（本段唯一可引用的cue及原文）："
+            + json.dumps(available_evidence_cues, ensure_ascii=False, separators=(",", ":"))
             + "\n本段字幕：\n" + chunk.as_prompt_text()
         )
         coverage_observation: dict[str, list[str]] = dict(reviewed=[], missing=[])
         def validate(value: object) -> dict[str, Any]:
             if type(value) is not dict:
                 _schema_fail("audit", "object", value)
-            if value.get("chunk_index") != chunk.index:
-                _schema_fail("audit.chunk_index", "current chunk index", value.get("chunk_index"))
-            time_range = value.get("time_range")
-            expected_range = dict(start_ms=chunk.cues[0].start_ms, end_ms=chunk.cues[-1].end_ms)
-            if type(time_range) is not dict or time_range != expected_range:
-                _schema_fail("audit.time_range", "exact current chunk range", time_range)
+            allowed_fields = {
+                "chunk_index", "time_range", "reviewed_cue_ids", "coverage_confirmation",
+                "issues", "theme_patches", "revised_study_guide",
+            }
+            if set(value) - allowed_fields:
+                _schema_fail("audit", "known audit fields only", value)
+            required_fields = {"reviewed_cue_ids", "coverage_confirmation", "issues"}
+            if not required_fields.issubset(value) or not ({"theme_patches", "revised_study_guide"} & set(value)):
+                _schema_fail("audit", "coverage, issues, and patch or legacy guide fields", value)
             expected_cue_ids = [cue.cue_id for cue in chunk.cues]
             raw_reviewed = value.get("reviewed_cue_ids")
             reviewed_cue_ids = (
@@ -1652,26 +2028,89 @@ def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[Transcr
             confirmation = value.get("coverage_confirmation")
             if type(confirmation) is not dict or confirmation.get("confirmed") is not True:
                 _schema_fail("audit.coverage_confirmation", "explicit true confirmation", confirmation)
-            confirmation_evidence = _normalize_evidence(
-                confirmation.get("evidence"), chunk.cues, "audit.coverage_confirmation.evidence"
+            confirmation_evidence = _normalize_audit_evidence(
+                confirmation.get("evidence"), chunk, "audit.coverage_confirmation.evidence"
             )
             if not _evidence_in_chunk(confirmation_evidence, chunk):
                 _schema_fail("audit.coverage_confirmation.evidence", "evidence from current chunk", confirmation_evidence)
-            revised = _normalize_study_guide(value.get("revised_study_guide"), cues)
+            raw_issues = value.get("issues")
+            if type(raw_issues) is not list or len(raw_issues) > 20:
+                _schema_fail("audit.issues", "array of at most 20 issue objects", raw_issues)
             rows = []
-            for raw in _coerce_items(value.get("issues"), "issues", 20):
-                if type(raw) is not dict:
-                    continue
-                issue_evidence = _normalize_evidence(raw.get("evidence"), chunk.cues, "audit.issues.evidence")
-                if not _evidence_in_chunk(issue_evidence, chunk):
-                    continue
+            for issue_index, raw in enumerate(raw_issues):
+                issue_path = f"audit.issues[{issue_index}]"
+                if type(raw) is not dict or not {"type", "target_topic_id", "problem", "evidence", "fix"}.issubset(raw):
+                    _schema_fail(issue_path, "issue object with type/target_topic_id/problem/evidence/fix", raw)
+                raw_target = raw.get("target_topic_id")
+                if raw_target is not None and type(raw_target) is not str:
+                    _schema_fail(issue_path + ".target_topic_id", "current topic_ref alias, exact current local ID, or null", raw_target)
+                target_ref = _clean_learning_text(raw_target)
+                if target_ref in local_topic_bindings:
+                    target_topic_id = local_topic_bindings[target_ref]
+                elif target_ref in local_canonical_ids:
+                    target_topic_id = target_ref
+                elif raw_target is not None:
+                    _schema_fail(issue_path + ".target_topic_id", "current related topic_ref or exact current local canonical ID", raw_target)
+                else:
+                    target_topic_id = ""
+                issue_evidence_raw = raw.get("evidence")
+                if type(issue_evidence_raw) is not list or not issue_evidence_raw:
+                    _schema_fail(issue_path + ".evidence", "non-empty evidence array", issue_evidence_raw)
+                issue_evidence = _normalize_audit_evidence(issue_evidence_raw, chunk, issue_path + ".evidence")
+                if len(issue_evidence) != len(issue_evidence_raw) or not _evidence_in_chunk(issue_evidence, chunk):
+                    _schema_fail(issue_path + ".evidence", "all evidence must uniquely match current cues", issue_evidence_raw)
                 rows.append({
-                    "type": _clean_learning_text(raw.get("type")),
-                    "target_topic_id": _clean_learning_text(raw.get("target_topic_id")),
-                    "problem": _clean_learning_text(raw.get("problem")),
+                    "type": _coerce_text(raw.get("type"), issue_path + ".type", 128),
+                    "target_topic_id": target_topic_id,
+                    "problem": _coerce_text(raw.get("problem"), issue_path + ".problem", 600),
                     "evidence": issue_evidence,
-                    "fix": _clean_learning_text(raw.get("fix")),
+                    "fix": _coerce_text(raw.get("fix"), issue_path + ".fix", 600),
                 })
+            if "theme_patches" in value:
+                raw_patches = value.get("theme_patches")
+                if type(raw_patches) is not list or len(raw_patches) > 12:
+                    _schema_fail("audit.theme_patches", "array of at most 12 local patches", raw_patches)
+                known_topics = {_topic_merge_id(item) for item in guide.get("themes", ())}
+                allowed_changes = {
+                    "title", "conclusion", "principle_and_context", "why_and_consequences",
+                    "steps", "boundaries", "connections",
+                }
+                patches = []
+                for patch_index, patch in enumerate(raw_patches):
+                    if type(patch) is not dict or set(patch) != {"target_topic_id", "changes"}:
+                        _schema_fail(f"audit.theme_patches[{patch_index}]", "target_topic_id and changes", patch)
+                    target = _clean_learning_text(patch.get("target_topic_id"))
+                    changes = patch.get("changes")
+                    if target in local_topic_bindings:
+                        target = local_topic_bindings[target]
+                    elif target not in local_canonical_ids:
+                        _schema_fail(f"audit.theme_patches[{patch_index}].target_topic_id", "current related topic_ref or exact current local canonical ID", patch.get("target_topic_id"))
+                    if target not in known_topics or type(changes) is not dict or not changes or set(changes) - allowed_changes:
+                        _schema_fail(f"audit.theme_patches[{patch_index}].changes", "non-empty allowed local patch", changes)
+                    matching_issue = next((item for item in rows if item.get("target_topic_id") == target), None)
+                    if matching_issue is None or not matching_issue.get("evidence"):
+                        _schema_fail(f"audit.theme_patches[{patch_index}].target_topic_id", "patch backed by a current-cue issue", target)
+                    normalized_changes: dict[str, Any] = {}
+                    for field, patch_value in changes.items():
+                        if field == "steps":
+                            if type(patch_value) is not list or not 3 <= len(patch_value) <= 8:
+                                _schema_fail(f"audit.theme_patches[{patch_index}].changes.steps", "array of 3 to 8 steps", patch_value)
+                            normalized_steps = [_clean_learning_text(item) for item in patch_value]
+                            if any(not item for item in normalized_steps):
+                                _schema_fail(f"audit.theme_patches[{patch_index}].changes.steps", "non-empty step text", patch_value)
+                            normalized_changes[field] = normalized_steps
+                        else:
+                            normalized_text = _clean_learning_text(patch_value)
+                            if not normalized_text:
+                                _schema_fail(f"audit.theme_patches[{patch_index}].changes.{field}", "non-empty text", patch_value)
+                            normalized_changes[field] = normalized_text
+                    patches.append({"target_topic_id": target, "changes": normalized_changes})
+                return dict(
+                    issues=rows, theme_patches=patches,
+                    coverage_evidence=confirmation_evidence,
+                    reviewed_cue_ids=reviewed_cue_ids,
+                )
+            revised = _normalize_study_guide(value.get("revised_study_guide"), cues)
             return dict(
                 issues=rows,
                 revised_study_guide=revised,
@@ -1681,17 +2120,61 @@ def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[Transcr
         try:
             if len(prompt) >= MAX_MESSAGE_CHARS:
                 raise ValueError("讲义审校请求超过单次消息安全限制。")
-            result = _json_content(ai_client, prompt, validate, schema_hint="chunk_index、time_range、reviewed_cue_ids、coverage_confirmation、issues 与 revised_study_guide")
-            current = _protected_audit_merge(
-                current, result["revised_study_guide"], result["issues"], chunk
+            result = _json_content(
+                ai_client, prompt, validate,
+                schema_hint="reviewed_cue_ids、coverage_confirmation、issues(target_topic_id) 与 theme_patches",
+                should_cancel=should_cancel, json_mode=json_mode,
+                repair_context={
+                    "current_topics": [
+                        {"topic_ref": alias, "title": next((item.get("title") for item in local_topics if item.get("topic_ref") == alias), "")}
+                        for alias in local_topic_ids
+                    ],
+                    "available_evidence_cues": available_evidence_cues,
+                    "audit_evidence_wire": "source_cue refs are exact {cue_id,quote_mode:'source_cue'} objects; program derives quote and times from the current chunk cue; never invent or copy quote text",
+                },
             )
+            if "theme_patches" in result:
+                current = _apply_topic_patches(current, result["theme_patches"], result["issues"])
+            else:
+                current = _protected_audit_merge(
+                    current, result["revised_study_guide"], result["issues"], chunk
+                )
             issues.extend(result["issues"])
             status = "audited"
             coverage_evidence = result["coverage_evidence"]
             reviewed_cue_ids = result["reviewed_cue_ids"]
             missing_cue_ids: list[str] = []
-        except Exception:
+            diagnostics = {
+                "stage": "study_guide_audit",
+                "audit_wire_version": AUDIT_WIRE_VERSION,
+                "chunk_index": chunk.index,
+                "validator": "study_guide_audit",
+                "request_chars": len(prompt),
+                "output_chars": len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))),
+                "latency_ms": round((time.monotonic() - started) * 1000, 2),
+                "category": "ok",
+            }
+            diagnostics.update(_safe_response_details(ai_client))
+        except Exception as exc:
             failed = True
+            diagnostics = _reduce_failure_diagnostics(exc)
+            mismatch = diagnostics.get("schema_mismatch")
+            safe_failure = {
+                "stage": "study_guide_audit",
+                "audit_wire_version": AUDIT_WIRE_VERSION,
+                "chunk_index": chunk.index,
+                "validator": "study_guide_audit",
+                "validator_path": mismatch.get("path") if isinstance(mismatch, Mapping) else diagnostics.get("schema_path"),
+                "violation_code": diagnostics.get("category", "validation"),
+                "category": diagnostics.get("category", "error"),
+                "request_chars": len(prompt),
+                "output_chars": diagnostics.get("content_length"),
+                "latency_ms": round((time.monotonic() - started) * 1000, 2),
+            }
+            safe_failure.update(_schema_diagnostic_fields(exc, ai_client))
+            if isinstance(mismatch, Mapping):
+                safe_failure["validator_expected"] = mismatch.get("expected")
+            diagnostics = safe_failure
             reviewed_cue_ids = coverage_observation["reviewed"]
             missing_cue_ids = (
                 coverage_observation["missing"]
@@ -1707,11 +2190,37 @@ def _audit_guide(ai_client: Any, guide: dict[str, Any], chunks: Sequence[Transcr
             reviewed_cue_ids=reviewed_cue_ids,
             missing_cue_ids=missing_cue_ids,
             coverage_evidence=coverage_evidence,
+            diagnostics=diagnostics,
         ))
     status = "completed_with_warnings" if failed else "completed"
     if failed:
         issues.append(dict(type="审校失败", problem="至少一个连续时间段未完成模型审校。", evidence="覆盖账本保留了失败时间段。", fix="保留上一版完整讲义并继续审校后续时间段。"))
     return current, dict(status=status, issues=issues, coverage_ledger=ledger)
+
+
+def _validated_source_cues(corrected: Sequence[Cue], original: Sequence[Cue]) -> list[Cue]:
+    """Accept corrected text only, never a fabricated cue, deleted cue or new timing."""
+    expected = {cue.cue_id: cue for cue in original}
+    by_id: dict[str, Cue] = {}
+    for cue in corrected:
+        if not isinstance(cue, Cue) or type(cue.text) is not str or type(cue.cue_id) is not str:
+            raise ValueError("校正字幕 cue 结构无效。")
+        source = expected.get(cue.cue_id)
+        if (
+            source is None or cue.cue_id in by_id
+            or type(cue.start_ms) is not int or type(cue.end_ms) is not int
+            or cue.start_ms != source.start_ms or cue.end_ms != source.end_ms
+        ):
+            raise ValueError("校正字幕必须保留源 cue 标识与时间范围。")
+        text = unicodedata.normalize("NFC", " ".join(cue.text.split()))
+        if not text:
+            raise ValueError("校正字幕不得清空源 cue。")
+        by_id[cue.cue_id] = Cue(cue.start_ms, cue.end_ms, text, cue.cue_id)
+    if set(by_id) != set(expected):
+        raise ValueError("校正字幕必须完整覆盖源 cue。")
+    if sum(len(cue.text.encode("utf-8")) for cue in by_id.values()) > 32 * 1024 * 1024:
+        raise ValueError("校正字幕内容超过安全限制。")
+    return [by_id[cue.cue_id] for cue in original]
 
 
 class TranscriptPipeline:
@@ -1725,46 +2234,82 @@ class TranscriptPipeline:
         on_cleaned: Callable[[str], None] | None = None,
         offline_only: bool = False,
         deterministic_only: bool = False,
+        chunk_priority: Callable[[TranscriptChunk], float] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+        source_cues: Sequence[Cue] | None = None,
+        json_mode: bool = False,
     ) -> PipelineResult:
-        cues = normalize_cues(parse_vtt(raw_vtt))
+        """Publish chunks as ready; merge by source order despite changing playback priority.
+
+        A corrected source must preserve every normalized source cue's identity and
+        timing. Changed text invalidates supplied map caches before re-extraction.
+        """
+        if type(json_mode) is not bool:
+            raise ValueError("json_mode must be boolean")
+        ai_client = _PipelineCallTracker(ai_client, json_mode=json_mode) if ai_client is not None else None
+        _check_cancel(should_cancel)
+        original_cues = normalize_cues(parse_vtt(raw_vtt))
+        cues = original_cues if source_cues is None else _validated_source_cues(source_cues, original_cues)
         chunks = chunk_cues(cues)
-        mapped: list[dict[str, Any]] = list()
+        by_index: dict[int, dict[str, Any]] = {}
         warnings: list[str] = list()
-        cached = cached_chunks or dict()
-        for chunk in chunks:
+        pipeline_diagnostics: list[dict[str, Any]] = []
+        chunk_warnings: dict[int, list[str]] = {}
+        cached = (cached_chunks or {}) if cues == original_cues else {}
+        pending = list(chunks)
+        while pending:
+            _check_cancel(should_cancel)
+            chunk = min(pending, key=lambda item: (chunk_priority(item), item.index)) if chunk_priority else pending[0]
+            pending.remove(chunk)
+            chunk_warnings[chunk.index] = []
             if chunk.index in cached:
                 result = validate_map(cached.get(chunk.index), chunk.cues)
             elif offline_only:
                 raise ValueError("离线恢复要求全部字幕分块均已存在且验证通过。")
             elif deterministic_only:
                 result = _fallback_map(chunk)
-                if on_chunk:
-                    on_chunk(chunk.index, result)
             else:
                 prompt = (
                     "从以下带 cue_id 与时间的字幕块提取可学习内容。明确区分真正知识点与教师演示、案例、类比；"
                     "不要把课堂例子提升为原则，也不要把 ASR 纠错样本写成练习。无法判定时留空。"
                     "不得改动术语、数字、公式，不得补写字幕外事实；证据 quote 必须逐字来自所引用 cue。"
-                    + PLAIN_MAP_FORMAT
+                + (_json_map_format(chunk.cues) if json_mode else PLAIN_MAP_FORMAT)
                     + "\n字幕块：\n"
                     + chunk.as_prompt_text()
                 )
                 if len(prompt) >= MAX_MESSAGE_CHARS:
                     raise ValueError("字幕分块超过 AI 单消息限制。")
+                map_started = time.monotonic()
                 try:
-                    result = _map_content(ai_client, prompt, chunk.cues)
+                    result = _map_content(
+                        ai_client, prompt, chunk.cues, should_cancel=should_cancel, json_mode=json_mode
+                    )
                 except TranscriptAIFormatError as exc:
                     result = _fallback_map(chunk)
-                    warnings.append("第 %d 块：%s" % (chunk.index + 1, exc.category))
-                if on_chunk:
-                    on_chunk(chunk.index, result)
+                    chunk_warnings[chunk.index].append("第 %d 块：%s" % (chunk.index + 1, exc.category))
+                    diagnostic = {
+                        "stage": "map", "chunk_index": chunk.index,
+                        "validator": "map_response", "request_chars": len(prompt),
+                        "latency_ms": round((time.monotonic() - map_started) * 1000, 2),
+                    }
+                    diagnostic.update(_schema_diagnostic_fields(exc, ai_client))
+                    pipeline_diagnostics.append(diagnostic)
+            _check_cancel(should_cancel)
+            if on_chunk:
+                on_chunk(chunk.index, result)
             if result.get("partial_warning"):
-                warnings.append("第 %d 块：已使用回退" % (chunk.index + 1))
-            mapped.append(result)
+                chunk_warnings[chunk.index].append("第 %d 块：已使用回退" % (chunk.index + 1))
+            by_index[chunk.index] = result
+        _check_cancel(should_cancel)
+        mapped = [by_index[chunk.index] for chunk in chunks]
+        warnings.extend(warning for chunk in chunks for warning in chunk_warnings[chunk.index])
         cleaned_markdown = render_cleaned(mapped)
         if on_cleaned:
             on_cleaned(cleaned_markdown)
+        _check_cancel(should_cancel)
         summary = deterministic_summary(mapped)
+        if pipeline_diagnostics:
+            summary["pipeline_diagnostics"] = pipeline_diagnostics
         fallback_guide = _fallback_study_guide(summary, cues)
         study_guide = fallback_guide
         review: dict[str, Any] = dict(
@@ -1783,18 +2328,58 @@ class TranscriptPipeline:
                 for chunk in chunks
             ],
         )
+        guide_generation_diagnostics: dict[str, Any] | None = None
         if not offline_only and not deterministic_only:
+            guide_prompt = _guide_prompt(summary, fallback_guide)
+            guide_started = time.monotonic()
             try:
                 study_guide = _json_content(
                     ai_client,
-                    _guide_prompt(summary, fallback_guide),
+                    guide_prompt,
                     lambda value: _normalize_study_guide(value.get("study_guide") if type(value) is dict and "study_guide" in value else value, cues),
-                    schema_hint="study_guide 课程地图、主题、检查清单、5-8题、延伸问题",
+                    schema_hint=(
+                        "study_guide 课程地图、主题、检查清单、5-8题、延伸问题。question的prompt与answer来源分别判断："
+                        "答案有课堂依据不代表prompt曾在课堂提出。复习题默认source为根据课堂内容归纳；改变场景或问法的题目标为自编练习或例子；"
+                        "只有prompt逐字出现在当前字幕cue中才可标为课堂明确讲述。若校验指出prompt未在source cue出现，只能修正source元数据为真实类别，"
+                        "不得更改、删除prompt或answer事实来通过校验。"
+                    ),
+                    should_cancel=should_cancel,
+                    json_mode=json_mode,
+                    repair_context={
+                        "stage": "study_guide_generation",
+                        "question_source_rule": "judge prompt and answer separately; answer evidence does not prove the prompt was asked in class",
+                        "allowed_question_sources": ["课堂明确讲述", "根据课堂内容归纳", "自编练习或例子", "字幕存疑"],
+                        "classification": "default review questions to 根据课堂内容归纳; changed scenario or wording to 自编练习或例子; 课堂明确讲述 only when the exact prompt occurs in a current source cue",
+                        "repair_limits": [
+                            "if validator says the prompt is absent from source cues, never retain 课堂明确讲述",
+                            "repair source metadata only; do not edit or remove question prompt or answer facts",
+                            "do not alter question wording to force a source classification",
+                        ],
+                    },
                 )
-            except Exception:
+            except Exception as exc:
                 warnings.append("阶段1讲义生成未通过验证，已使用确定性结构化讲义。")
+                reduced = _reduce_failure_diagnostics(exc)
+                mismatch = reduced.get("schema_mismatch")
+                guide_generation_diagnostics = {
+                    "stage": "study_guide_generation",
+                    "validator": "study_guide_generation",
+                    "chunk_index": None,
+                    "validator_path": mismatch.get("path") if isinstance(mismatch, Mapping) else reduced.get("schema_path"),
+                    "violation_code": reduced.get("category", "validation"),
+                    "category": reduced.get("category", "error"),
+                    "request_chars": len(guide_prompt),
+                    "output_chars": reduced.get("content_length"),
+                    "latency_ms": round((time.monotonic() - guide_started) * 1000, 2),
+                }
+                guide_generation_diagnostics.update(_schema_diagnostic_fields(exc, ai_client))
+                if isinstance(mismatch, Mapping):
+                    guide_generation_diagnostics["validator_expected"] = mismatch.get("expected")
             try:
-                study_guide, review = _audit_guide(ai_client, study_guide, chunks, cues)
+                study_guide, review = _audit_guide(
+                    ai_client, study_guide, chunks, cues,
+                    should_cancel=should_cancel, json_mode=json_mode,
+                )
                 if review.get("status") == "completed_with_warnings":
                     warnings.append(AUDIT_FALLBACK_WARNING)
             except Exception as exc:
@@ -1816,6 +2401,9 @@ class TranscriptPipeline:
                     ],
                     diagnostics=_reduce_failure_diagnostics(exc),
                 )
+            if guide_generation_diagnostics is not None:
+                review["guide_generation_diagnostics"] = guide_generation_diagnostics
+        _check_cancel(should_cancel)
         summary["study_guide"] = study_guide
         summary["review"] = review
         if study_guide.get("incomplete"):

@@ -17,9 +17,12 @@ import {
   getTimetableSchedule,
   getTimetableStatus,
   getTranscriptJobs,
+  getTranscriptLearningSegments,
   getVideoPlayback,
   invoke,
+  prepareTranscriptPlayback,
   startTranscriptBatch,
+  updateTranscriptPlayback,
 } from "@/lib/api";
 import { applyThemeMode } from "@/lib/theme";
 import type {
@@ -56,9 +59,12 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
     getTranscriptJobs: vi.fn(),
+    getTranscriptLearningSegments: vi.fn(),
     getVideoPlayback: vi.fn(),
     invoke: vi.fn(),
+    prepareTranscriptPlayback: vi.fn(),
     startTranscriptBatch: vi.fn(),
+    updateTranscriptPlayback: vi.fn(),
   };
 });
 
@@ -280,6 +286,14 @@ beforeEach(() => {
     url: `https://example.test/${sourceId}.mp4`,
   }));
   vi.mocked(startTranscriptBatch).mockResolvedValue({ jobs: [] } as never);
+  vi.mocked(prepareTranscriptPlayback).mockResolvedValue({ jobs: [] } as never);
+  vi.mocked(updateTranscriptPlayback).mockResolvedValue({
+    source_id: "video-12",
+  });
+  vi.mocked(getTranscriptLearningSegments).mockResolvedValue({
+    status: "processing",
+    segments: [],
+  });
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
   vi.mocked(getBackupStatus).mockResolvedValue({
@@ -436,6 +450,52 @@ describe("课程视频首帧导航", () => {
       expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
     );
     expect(startTranscriptBatch).not.toHaveBeenCalledWith(13, ["video-12"]);
+  });
+});
+
+describe("视频自动同步整理集成", () => {
+  it("播放即提交自动准备并在讲义页读取对应时间的学习内容", async () => {
+    window.location.hash = "#/videos";
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getTranscriptLearningSegments).mockResolvedValue({
+      status: "ready",
+      source_version: "source-1",
+      available_ranges: [[0, 20000]],
+      segments: [
+        {
+          id: "segment-1",
+          start_ms: 0,
+          end_ms: 20000,
+          title: "自动知识点",
+          content: "对应当前录像的知识内容",
+          provisional: true,
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText("A 专属录像");
+    fireEvent.click(screen.getByRole("button", { name: "播放 A 专属录像" }));
+    await waitFor(() =>
+      expect(prepareTranscriptPlayback).toHaveBeenCalledWith(
+        12,
+        "video-12",
+        0,
+        1,
+      ),
+    );
+    await waitFor(() =>
+      expect(getTranscriptLearningSegments).toHaveBeenCalledWith(
+        12,
+        "video-12",
+        expect.any(AbortSignal),
+      ),
+    );
+    await screen.findByText("对应当前录像的知识内容");
+    expect(startTranscriptBatch).not.toHaveBeenCalled();
   });
 });
 
@@ -1016,8 +1076,8 @@ describe("bounded course and video reads", () => {
   });
 });
 
-describe("视频AI配置与材料状态反馈", () => {
-  it("配置失败明确显示原因并保留录像，同时能打开设置", async () => {
+describe("视频材料状态反馈", () => {
+  it("AI 配置读取失败时不显示常驻横幅，录像列表仍可用", async () => {
     vi.mocked(getAICapabilities).mockRejectedValue(new Error("AI配置读取失败"));
     window.location.hash = "#/videos";
     const original = vi.mocked(invoke).getMockImplementation()!;
@@ -1027,10 +1087,9 @@ describe("视频AI配置与材料状态反馈", () => {
         : original(action, payload),
     );
     const { container } = render(<App />);
-    expect(await screen.findByText(/AI配置读取失败/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "配置 AI" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "配置 AI" }));
-    await waitFor(() => expect(window.location.hash).toBe("#/settings"));
+    expect(await screen.findByText("A 专属录像")).toBeTruthy();
+    expect(screen.queryByText(/AI配置读取失败/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "配置 AI" })).toBeNull();
     expect(container.querySelector(".workspace-scene")).toBeTruthy();
   });
 
