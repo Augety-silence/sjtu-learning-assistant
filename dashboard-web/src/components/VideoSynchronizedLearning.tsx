@@ -156,7 +156,6 @@ export function VideoSynchronizedLearning({
     let timer: number | undefined;
     let failures = 0;
     const generation = ++generationRef.current;
-    let fingerprint = "";
     if (loadedSourceRef.current !== video.id) setResult(undefined);
     loadedSourceRef.current = video.id;
     setSourceId(video.id);
@@ -166,9 +165,6 @@ export function VideoSynchronizedLearning({
         const loaded = await loadRef.current(video, controller.signal);
         if (controller.signal.aborted || generation !== generationRef.current)
           return;
-        const nextFingerprint = `${loaded.sourceRawSha256 ?? ""}:${loaded.learningRevision ?? ""}`;
-        if (fingerprint && fingerprint !== nextFingerprint) return;
-        fingerprint = nextFingerprint;
         const segments = loaded.segments
           .filter(
             (segment) =>

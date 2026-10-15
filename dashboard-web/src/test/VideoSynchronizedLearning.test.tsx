@@ -94,6 +94,61 @@ describe("video synchronized learning", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("accepts new learning revisions and keeps polling while processing", async () => {
+    vi.useFakeTimers();
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "processing",
+        isProcessing: true,
+        sourceRawSha256: "raw-hash",
+        learningRevision: "revision-1",
+        segments: [{ ...segment("draft-1", "首版内容"), provisional: true }],
+      })
+      .mockResolvedValueOnce({
+        status: "processing",
+        isProcessing: true,
+        sourceRawSha256: "raw-hash",
+        learningRevision: "revision-2",
+        segments: [
+          { ...segment("draft-2", "更新后的内容"), provisional: true },
+        ],
+      })
+      .mockResolvedValueOnce({
+        status: "ready",
+        isProcessing: false,
+        sourceRawSha256: "raw-hash",
+        learningRevision: "revision-3",
+        segments: [segment("final", "最终校订内容")],
+      });
+
+    render(
+      <VideoSynchronizedLearning
+        video={first}
+        playbackTime={0}
+        refreshing={false}
+        onLoad={load}
+        onSeek={vi.fn()}
+      />,
+    );
+
+    await act(async () => undefined);
+    expect(screen.getByText("首版内容")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText("更新后的内容")).toBeTruthy();
+    expect(screen.queryByText("首版内容")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText("最终校订内容")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
   it("uses the continuous range around playback and preserves later material across a gap", async () => {
     const load = vi.fn(async () => ({
       status: "ready" as const,
