@@ -101,10 +101,12 @@ class FakeOrchestrator:
         self.strong = strong
         self.uncertain = uncertain
         self.calls = []
+        self.endpoint_fingerprints = []
         self.persist_raw = True
 
     def orchestrate(self, *, course_id, video_id, raw_vtt, memory_repo, **kwargs):
         self.calls.append((course_id, video_id, memory_repo.course_dir))
+        self.endpoint_fingerprints.append(kwargs.get("endpoint_fingerprint"))
         progress_callback = kwargs.get("progress_callback")
         if progress_callback:
             progress_callback(0, 1, "reviewing")
@@ -509,6 +511,22 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
     def latest_job(self, service):
         return service._all_batches()[0]["jobs"][0]
 
+    def due_playback_parent(self, service, now):
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        batch = next(item for item in service._all_batches() if item.get("origin") == "playback")
+        job = batch["jobs"][0]
+        job.update(
+            status="partial",
+            retryable=True,
+            auto_retryable=True,
+            auto_retry_scheduled=False,
+            automatic_retry_count=0,
+            next_retry_at=(now[0] - timedelta(seconds=1)).isoformat(),
+        )
+        service._write_json(service._batch_path(batch["id"]), batch)
+        return batch, job
+
     def assert_clean_v1_needs_review(self, service, source_id):
         result = service.learning_segments(source_id)
         self.assertTrue(result["processing_done"])
@@ -554,6 +572,214 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.assertEqual(2, len(service._all_batches()))
         self.assertEqual(1, len(orchestrator.calls))
         self.assertEqual(2, len(pipeline.calls))
+        service.close()
+
+    def test_phase1_cache_reused_for_same_endpoint_but_not_changed_endpoint(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(uncertain=True)
+        service = self.playback_service(orchestrator, FallbackOnceV1Pipeline(), now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        first = self.latest_job(service)
+        video_dir = service._video_dir(first["source_id"])
+        manifest = service._read_json(video_dir / "v2" / "manifest.json")
+        self.assertEqual("endpoint", manifest["endpoint_fingerprint"])
+
+        now[0] += timedelta(seconds=3)
+        service.run_pending()
+        self.assertEqual(1, len(orchestrator.calls))
+        self.assertTrue(self.latest_job(service)["phase1_reused"])
+
+        service.ai_context_provider = lambda: AIContext(object(), "v1-model", "different-endpoint", True)
+        service.start_batch(course_id="12", course_name="课程12", videos=[self.video()])
+        service.run_pending()
+        self.assertEqual(2, len(orchestrator.calls))
+        self.assertEqual(["endpoint", "different-endpoint"], orchestrator.endpoint_fingerprints)
+        self.assertFalse(self.latest_job(service)["phase1_reused"])
+        self.assertEqual("different-endpoint", service._read_json(video_dir / "v2" / "manifest.json")["endpoint_fingerprint"])
+        service.close()
+
+    def test_scheduler_rechecks_cancel_after_snapshot_before_creating_retry(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        batch = service._all_batches()[0]
+        job = batch["jobs"][0]
+        batch["origin"] = "playback"
+        job.update(
+            status="partial",
+            retryable=True,
+            auto_retryable=True,
+            auto_retry_scheduled=False,
+            automatic_retry_count=0,
+            next_retry_at=(now[0] - timedelta(seconds=1)).isoformat(),
+        )
+        service._write_json(service._batch_path(batch["id"]), batch)
+
+        original_all_batches = service._all_batches
+        cancelled = [False]
+
+        def snapshot_then_cancel():
+            snapshot = original_all_batches()
+            if not cancelled[0]:
+                cancelled[0] = True
+                service.cancel(job_id=job["id"])
+            return snapshot
+
+        service._all_batches = snapshot_then_cancel
+        service._schedule_due_playback_retries()
+
+        self.assertTrue(service._find_job(job["id"])[1]["cancel_requested"])
+        self.assertEqual(1, len(original_all_batches()))
+        self.assertEqual("cancelled", service.learning_segments(job["source_id"])["processing_state"])
+        service.close()
+
+    def test_scheduler_reconciles_child_written_before_parent_marker_after_interruption(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        parent, parent_job = self.due_playback_parent(service, now)
+        parent_path = service._batch_path(parent["id"])
+        write_json = service._write_json
+        interrupted = [False]
+
+        def fail_before_parent_marker(path, value):
+            if Path(path) == parent_path and not interrupted[0]:
+                children = [
+                    item for item in service._all_batches()
+                    if item.get("retry_parent_batch_id") == parent["id"]
+                ]
+                if children:
+                    interrupted[0] = True
+                    raise OSError("simulated process interruption before parent marker")
+            return write_json(path, value)
+
+        service._write_json = fail_before_parent_marker
+        with self.assertRaisesRegex(OSError, "simulated process interruption"):
+            service._schedule_due_playback_retries()
+        service._write_json = write_json
+
+        children = [
+            item for item in service._all_batches()
+            if item.get("retry_parent_batch_id") == parent["id"]
+        ]
+        self.assertEqual(1, len(children))
+        child = children[0]
+        self.assertEqual("playback", child["origin"])
+        self.assertEqual(parent["id"], child["retry_parent_batch_id"])
+        self.assertEqual(parent_job["id"], child["retry_parent_job_id"])
+        self.assertEqual(1, child["retry_count"])
+        self.assertEqual(parent["prepare_key"], child["prepare_key"])
+        self.assertFalse(service._find_job(parent_job["id"])[1].get("auto_retry_scheduled", False))
+
+        service._schedule_due_playback_retries()
+        self.assertEqual(2, len(service._all_batches()))
+        _, reconciled_job = service._find_job(parent_job["id"])
+        self.assertTrue(reconciled_job["auto_retry_scheduled"])
+        self.assertEqual(child["id"], next(
+            item["id"] for item in service._all_batches()
+            if item.get("retry_parent_job_id") == parent_job["id"]
+        ))
+        service.close()
+
+    def test_cancelling_playback_parent_cancels_queued_retry_descendant_without_fetch(self):
+        for cancel_by in ("job", "batch"):
+            with self.subTest(cancel_by=cancel_by):
+                self.root = Path(self.temporary.name) / f"transcripts-{cancel_by}"
+                self.memory_root = Path(self.temporary.name) / f"memory-{cancel_by}"
+                self.fetches = 0
+                now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+                service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+                parent, parent_job = self.due_playback_parent(service, now)
+                service._schedule_due_playback_retries()
+                children = [
+                    item for item in service._all_batches()
+                    if item.get("retry_parent_job_id") == parent_job["id"]
+                ]
+                self.assertEqual(1, len(children))
+                child_id = children[0]["id"]
+                self.assertEqual("queued", children[0]["status"])
+                fetches_before_cancel = self.fetches
+
+                if cancel_by == "job":
+                    service.cancel(job_id=parent_job["id"])
+                else:
+                    service.cancel(batch_id=parent["id"])
+
+                child = service._read_json(service._batch_path(child_id))
+                self.assertTrue(child["cancel_requested"])
+                self.assertEqual("cancelled", child["status"])
+                self.assertEqual("cancelled", child["jobs"][0]["status"])
+                manual = service.start_batch(
+                    course_id="12", course_name="课程12", videos=[self.video(video="100")]
+                )
+                # Cancellation propagation is scoped to automatic retry lineage.
+                self.assertFalse(service._read_json(service._batch_path(manual["id"]))["cancel_requested"])
+                service.cancel(batch_id=manual["id"])
+
+                service.run_pending()
+                self.assertEqual(fetches_before_cancel, self.fetches)
+                self.assertEqual("cancelled", service.get_batch(child_id)["jobs"][0]["status"])
+                service.close()
+
+    def test_prepare_retry_child_is_idempotent_after_interruption(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        parent, parent_job = self.due_playback_parent(service, now)
+        parent_path = service._batch_path(parent["id"])
+        write_json = service._write_json
+        interrupted = [False]
+
+        def fail_before_parent_marker(path, value):
+            if Path(path) == parent_path and not interrupted[0]:
+                children = [
+                    item for item in service._all_batches()
+                    if item.get("retry_parent_job_id") == parent_job["id"]
+                ]
+                if children:
+                    interrupted[0] = True
+                    raise OSError("simulated prepare interruption")
+            return write_json(path, value)
+
+        service._write_json = fail_before_parent_marker
+        with self.assertRaisesRegex(OSError, "simulated prepare interruption"):
+            service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service._write_json = write_json
+
+        children = [
+            item for item in service._all_batches()
+            if item.get("retry_parent_job_id") == parent_job["id"]
+        ]
+        self.assertEqual(1, len(children))
+        child = children[0]
+        self.assertEqual(parent["id"], child["retry_parent_batch_id"])
+        self.assertEqual(1, child["retry_count"])
+        self.assertTrue(child["prepare_key"])
+        self.assertFalse(service._find_job(parent_job["id"])[1].get("auto_retry_scheduled", False))
+
+        retried = service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        self.assertEqual(child["id"], retried["id"])
+        self.assertEqual(2, len(service._all_batches()))
+        self.assertTrue(service._find_job(parent_job["id"])[1]["auto_retry_scheduled"])
+        service.close()
+
+    def test_cancelling_prepare_scheduled_retry_cancels_child_without_fetch(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        parent, parent_job = self.due_playback_parent(service, now)
+        fetches_before_retry = self.fetches
+        retried = service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        child = service._read_json(service._batch_path(retried["id"]))
+        self.assertEqual(parent["id"], child["retry_parent_batch_id"])
+        self.assertEqual(parent_job["id"], child["retry_parent_job_id"])
+        self.assertEqual(1, child["retry_count"])
+
+        service.cancel(job_id=parent_job["id"])
+        child = service._read_json(service._batch_path(retried["id"]))
+        self.assertTrue(child["cancel_requested"])
+        self.assertEqual("cancelled", child["jobs"][0]["status"])
+        service.run_pending()
+        self.assertEqual(fetches_before_retry, self.fetches)
         service.close()
 
     def test_playback_prepare_v1_recovery_with_uncertain_phase1_does_not_force_phase1(self):

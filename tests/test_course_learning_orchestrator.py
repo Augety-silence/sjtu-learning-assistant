@@ -699,6 +699,37 @@ class CourseLearningOrchestratorTests(unittest.TestCase):
         self.assertEqual(["memory"], retry_roles)
         self.assertIn("chunk_checkpoint", [event["stage"] for event in second.events])
 
+    def test_endpoint_identity_scopes_result_cache_and_pass_checkpoints(self):
+        store = self.store()
+        agent = FakeAgent()
+        orchestrator = CourseLearningOrchestrator(agent)
+        kwargs = dict(
+            course_id="course-a", video_id="endpoint-cache-video", cues=CUES,
+            memory_repo=store, policy={"commit_memory": False},
+            endpoint_fingerprint="endpoint-a",
+        )
+
+        first = orchestrator.orchestrate(**kwargs)
+        self.assertTrue(first.quality.passed)
+        first_call_count = len(agent.calls)
+        same_endpoint = orchestrator.orchestrate(**kwargs)
+        self.assertEqual(first.cache_key, same_endpoint.cache_key)
+        self.assertEqual(first_call_count, len(agent.calls))
+
+        same_endpoint_refresh = orchestrator.orchestrate(**kwargs, force_refresh=True)
+        same_endpoint_roles = [role for role, _messages in agent.calls[first_call_count:]]
+        self.assertEqual(["memory"], same_endpoint_roles)
+        self.assertIn("chunk_checkpoint", [event["stage"] for event in same_endpoint_refresh.events])
+
+        before_changed_endpoint = len(agent.calls)
+        changed_endpoint = orchestrator.orchestrate(
+            **{**kwargs, "endpoint_fingerprint": "endpoint-b"}, force_refresh=True
+        )
+        changed_endpoint_roles = [role for role, _messages in agent.calls[before_changed_endpoint:]]
+        self.assertEqual(["terminology", "correction", "critic", "memory"], changed_endpoint_roles)
+        self.assertNotIn("chunk_checkpoint", [event["stage"] for event in changed_endpoint.events])
+        self.assertNotEqual(first.cache_key, changed_endpoint.cache_key)
+
     def test_partial_rerun_reuses_successful_chunk_and_reexecutes_failed_chunk(self):
         class FailSecondCorrectionOnce(FakeAgent):
             def __init__(inner_self):

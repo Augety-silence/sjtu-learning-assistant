@@ -563,6 +563,8 @@ class TranscriptService:
         force_phase1: bool = False,
         automatic_retry_count: int = 0,
         retry_failed_v1: bool = False,
+        _batch_lock_held: bool = False,
+        _batch_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = str(course_id).strip()
         if not key.isdigit() or not 1 <= len(videos) <= 100:
@@ -596,9 +598,19 @@ class TranscriptService:
             for video in clean_videos
         ]
         batch = {"schema_version": 1, "id": batch_id, "course_id": key, "course_name": course_name.strip(), "status": "queued", "progress": 0, "created_at": _now(), "updated_at": _now(), "cancel_requested": False, "jobs": jobs}
+        if _batch_metadata:
+            # Playback retry identity must be present in the first durable
+            # write so a restart can distinguish a child from a new retry.
+            batch.update(dict(_batch_metadata))
         self._refresh_owner(batch)
-        with self._lock, self._batch_lock():
-            self._write_json(self._batch_path(batch_id), batch)
+        if _batch_lock_held:
+            # Internal caller already holds both locks while atomically
+            # reserving a playback retry against concurrent cancellation.
+            with self._lock:
+                self._write_json(self._batch_path(batch_id), batch)
+        else:
+            with self._lock, self._batch_lock():
+                self._write_json(self._batch_path(batch_id), batch)
         self._wake.set()
         return self._public_batch(batch)
 
@@ -670,8 +682,50 @@ class TranscriptService:
                         job["cancel_requested"] = True
             batch["updated_at"] = _now()
             self._write_json(self._batch_path(target_id), batch)
+            root_job_ids = {str(job["id"]) for job in batch.get("jobs", []) if isinstance(job.get("id"), str)} if job_id is None else {str(job_id)}
+            self._cancel_playback_retry_descendants(
+                root_batch_ids={target_id} if job_id is None else set(),
+                root_job_ids=root_job_ids,
+            )
         self._wake.set()
         return self._public_batch(batch)
+
+    def _cancel_playback_retry_descendants(self, *, root_batch_ids: set[str], root_job_ids: set[str]) -> None:
+        """Cancel only persisted automatic playback retries of the target lineage."""
+        known_batch_ids = set(root_batch_ids)
+        known_job_ids = set(root_job_ids)
+        batches = self._all_batches()
+        changed = True
+        while changed:
+            changed = False
+            for descendant in batches:
+                descendant_id = descendant.get("id")
+                if not isinstance(descendant_id, str) or descendant_id in known_batch_ids:
+                    continue
+                if descendant.get("origin") != "playback":
+                    continue
+                parent_batch_id = descendant.get("retry_parent_batch_id")
+                parent_job_id = descendant.get("retry_parent_job_id")
+                if parent_batch_id not in known_batch_ids and parent_job_id not in known_job_ids:
+                    continue
+                descendant["cancel_requested"] = True
+                for child_job in descendant.get("jobs", []):
+                    child_job["cancel_requested"] = True
+                    if child_job.get("status") in {"queued", "waiting_remote"}:
+                        child_job.update(
+                            status="cancelled",
+                            stage="cancelled",
+                            progress=100,
+                            message="任务已取消。",
+                        )
+                jobs = descendant.get("jobs", [])
+                if jobs and all(job.get("status") == "cancelled" for job in jobs):
+                    descendant["status"] = "cancelled"
+                descendant["updated_at"] = _now()
+                self._write_json(self._batch_path(descendant_id), descendant)
+                known_batch_ids.add(descendant_id)
+                known_job_ids.update(str(job["id"]) for job in jobs if isinstance(job.get("id"), str))
+                changed = True
 
     def _merge_cancel(self, batch: dict[str, Any], persisted: Mapping[str, Any]) -> None:
         batch["cancel_requested"] = bool(batch.get("cancel_requested") or persisted.get("cancel_requested"))
@@ -751,6 +805,14 @@ class TranscriptService:
                 if not batch.get("cancel_requested") and not job.get("cancel_requested") and (
                     job.get("status") in ACTIVE_STATES or job.get("status") == "waiting_remote"
                 ):
+                    if batch.get("retry_parent_job_id") and batch.get("retry_parent_batch_id"):
+                        with self._batch_lock():
+                            self._create_playback_retry_locked(
+                                str(batch["retry_parent_batch_id"]),
+                                str(batch["retry_parent_job_id"]),
+                                expected_prepare_key=prepare_key,
+                                require_retryable=False,
+                            )
                     return self._public_batch(batch)
             latest_match = matching[0] if matching else None
             for batch, job in matching:
@@ -794,25 +856,25 @@ class TranscriptService:
                             if retry_at is None or retry_at > self.now_provider():
                                 return self._public_batch(batch)
                             break
+            if retry_source is not None and type(retry_batch_id) is str:
+                with self._batch_lock():
+                    retried = self._create_playback_retry_locked(
+                        retry_batch_id,
+                        str(retry_source.get("id")),
+                        expected_prepare_key=prepare_key,
+                        require_retryable=False,
+                    )
+                    if retried is not None:
+                        return self._public_batch(retried)
+                    return self._public_batch(self._read_json(self._batch_path(retry_batch_id)))
             started = self.start_batch(
                 course_id=course_id, course_name=course_name, videos=[clean],
-                force_phase1=bool(retry_source and self._automatic_retry_forces_phase1(retry_source)),
+                force_phase1=False,
                 automatic_retry_count=auto_retry_count,
-                retry_failed_v1=retry_source is not None,
+                retry_failed_v1=False,
+                _batch_metadata={"origin": "playback", "prepare_key": prepare_key},
             )
-            with self._batch_lock():
-                batch = self._read_json(self._batch_path(started["id"]))
-                batch.update(origin="playback", prepare_key=prepare_key)
-                self._write_json(self._batch_path(batch["id"]), batch)
-                if retry_source is not None and type(retry_batch_id) is str:
-                    # Consume the due retry so the scheduler cannot start a duplicate recovery.
-                    source_batch = self._read_json(self._batch_path(retry_batch_id))
-                    for source_job in source_batch.get("jobs", []):
-                        if source_job.get("id") == retry_source.get("id"):
-                            source_job["auto_retry_scheduled"] = True
-                    source_batch["updated_at"] = _now()
-                    self._write_json(self._batch_path(retry_batch_id), source_batch)
-            return self._public_batch(batch)
+            return started
 
     def _phase1_needs_upgrade(self, video_dir: Path, manifest: Mapping[str, Any]) -> bool:
         if not self.enable_phase1:
@@ -1405,8 +1467,86 @@ class TranscriptService:
                         job.update(status="partial", stage="worker_failed", error=_safe_error(exc), message="任务暂时未完成，可重试并复用已保存内容。")
                 self._save_batch(batch)
 
+    def _create_playback_retry_locked(
+        self,
+        parent_batch_id: str,
+        parent_job_id: str,
+        *,
+        expected_prepare_key: str | None,
+        require_retryable: bool = True,
+    ) -> dict[str, Any] | None:
+        """Create or reconcile one retry while both service and batch locks are held."""
+        parent = self._read_json(self._batch_path(parent_batch_id))
+        parent_job = next(
+            (job for job in parent.get("jobs", []) if job.get("id") == parent_job_id),
+            None,
+        )
+        now = self.now_provider()
+        due = _parse_time(parent_job.get("next_retry_at")) if parent_job else None
+        retry_count = int(parent_job.get("automatic_retry_count") or 0) if parent_job else 0
+        if (
+            parent.get("origin") != "playback"
+            or parent.get("prepare_key") != expected_prepare_key
+            or parent.get("cancel_requested")
+            or parent_job is None
+            or parent_job.get("cancel_requested")
+            or parent_job.get("status") not in FINAL_STATES - {"cancelled"}
+            or parent_job.get("auto_retryable") is not True
+            or (
+                not parent_job.get("retryable")
+                if require_retryable
+                else (
+                    parent_job.get("status") in {"partial", "failed", "waiting_for_ai"}
+                    and not parent_job.get("retryable", True)
+                )
+            )
+            or parent_job.get("auto_retry_scheduled") is True
+            or retry_count >= self.playback_auto_retry_limit
+            or due is None
+            or due > now
+        ):
+            return None
+        next_retry_count = retry_count + 1
+        child = next(
+            (
+                batch for batch in self._all_batches()
+                if batch.get("origin") == "playback"
+                and batch.get("retry_parent_batch_id") == parent_batch_id
+                and batch.get("retry_parent_job_id") == parent_job_id
+                and batch.get("retry_count") == next_retry_count
+            ),
+            None,
+        )
+        if child is not None:
+            parent_job["auto_retry_scheduled"] = True
+            parent["updated_at"] = _now()
+            self._write_json(self._batch_path(parent_batch_id), parent)
+            return child
+
+        video = dict(parent_job.get("meta") or {})
+        video.update(source_id=parent_job["source_id"], title=parent_job.get("title") or "课程录像")
+        started = self.start_batch(
+            course_id=str(parent["course_id"]),
+            course_name=str(parent["course_name"]),
+            videos=[video],
+            force_phase1=self._automatic_retry_forces_phase1(parent_job),
+            automatic_retry_count=next_retry_count,
+            retry_failed_v1=True,
+            _batch_lock_held=True,
+            _batch_metadata={
+                "origin": "playback",
+                "prepare_key": parent.get("prepare_key"),
+                "retry_parent_job_id": parent_job_id,
+                "retry_parent_batch_id": parent_batch_id,
+                "retry_count": next_retry_count,
+            },
+        )
+        parent_job["auto_retry_scheduled"] = True
+        parent["updated_at"] = _now()
+        self._write_json(self._batch_path(parent_batch_id), parent)
+        return self._read_json(self._batch_path(started["id"]))
+
     def _schedule_due_playback_retries(self) -> None:
-        candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
         now = self.now_provider()
         for candidate in self._all_batches():
             if candidate.get("origin") != "playback" or type(candidate.get("id")) is not str:
@@ -1426,35 +1566,15 @@ class TranscriptService:
                     continue
                 try:
                     with self._lock, self._batch_lock():
-                        persisted = self._read_json(self._batch_path(candidate["id"]))
-                        persisted_job = next((job for job in persisted.get("jobs", []) if job.get("id") == item.get("id")), None)
-                        persisted_due = _parse_time(persisted_job.get("next_retry_at")) if persisted_job else None
-                        if persisted_job is None or persisted_job.get("auto_retry_scheduled") is True or persisted_due is None or persisted_due > self.now_provider():
-                            continue
-                        persisted_job["auto_retry_scheduled"] = True
-                        persisted["updated_at"] = _now()
-                        self._write_json(self._batch_path(candidate["id"]), persisted)
-                        candidates.append((persisted, dict(persisted_job)))
+                        self._create_playback_retry_locked(
+                            candidate["id"],
+                            str(item.get("id")),
+                            expected_prepare_key=candidate.get("prepare_key"),
+                        )
                 except TranscriptError:
                     continue
-        for batch, job in candidates:
-            video = dict(job.get("meta") or {})
-            video.update(source_id=job["source_id"], title=job.get("title") or "课程录像")
-            try:
-                started = self.start_batch(
-                    course_id=str(batch["course_id"]),
-                    course_name=str(batch["course_name"]),
-                    videos=[video],
-                    force_phase1=self._automatic_retry_forces_phase1(job),
-                    automatic_retry_count=int(job.get("automatic_retry_count") or 0) + 1,
-                    retry_failed_v1=True,
-                )
-                with self._lock, self._batch_lock():
-                    created = self._read_json(self._batch_path(started["id"]))
-                    created.update(origin="playback", prepare_key=batch.get("prepare_key"))
-                    self._write_json(self._batch_path(started["id"]), created)
-            except (TranscriptError, KeyError, TypeError, ValueError):
-                continue
+                except (KeyError, TypeError, ValueError):
+                    continue
 
     def _save_batch(self, batch: dict[str, Any]) -> None:
         with self._lock, self._batch_lock():
@@ -1784,6 +1904,7 @@ class TranscriptService:
         pipeline_version: str,
         prompt_version: str,
         model_version: str,
+        endpoint_fingerprint: str,
     ) -> str:
         value = {
             "raw_hash": raw_hash,
@@ -1791,6 +1912,7 @@ class TranscriptService:
             "pipeline_version": pipeline_version,
             "prompt_version": prompt_version,
             "model_version": model_version,
+            "endpoint_fingerprint": endpoint_fingerprint,
         }
         payload = json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -1990,6 +2112,7 @@ class TranscriptService:
             pipeline_version,
             prompt_version,
             model_version,
+            context.endpoint_fingerprint,
         )
         cached_manifest = self._v2_manifest(video_dir)
         if (
@@ -1999,6 +2122,7 @@ class TranscriptService:
             and cached_manifest.get("course_id") == course_id
             and cached_manifest.get("video_id") == video_id
             and cached_manifest.get("course_memory_version") == current_memory_version
+            and cached_manifest.get("endpoint_fingerprint") == context.endpoint_fingerprint
             and self._v2_artifacts_valid(video_dir, cached_manifest, expected_cache_key=expected_key)
         ):
             job.update(
@@ -2053,6 +2177,7 @@ class TranscriptService:
             memory_repo=memory_repo,
             progress_callback=report_progress,
             force_refresh=bool(job.get("force_phase1")),
+            endpoint_fingerprint=context.endpoint_fingerprint,
         )
         signature = inspect.signature(orchestrator.orchestrate).parameters
         if not any(value.kind == inspect.Parameter.VAR_KEYWORD for value in signature.values()):
@@ -2070,6 +2195,7 @@ class TranscriptService:
             pipeline_version,
             prompt_version,
             model_version,
+            context.endpoint_fingerprint,
         )
         payloads = self._phase1_payloads(result)
         v2_dir = self._v2_dir(video_dir)
@@ -2106,6 +2232,7 @@ class TranscriptService:
             "pipeline_version": pipeline_version,
             "prompt_version": prompt_version,
             "model_version": model_version,
+            "endpoint_fingerprint": context.endpoint_fingerprint,
             "cache_key": result_cache_key,
             "status": status,
             "quality": quality,

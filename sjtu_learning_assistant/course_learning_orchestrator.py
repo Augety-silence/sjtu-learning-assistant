@@ -938,13 +938,19 @@ class CourseLearningOrchestrator:
             if descriptor >= 0:
                 os.close(descriptor)
 
-    def _cache_key(self, raw_hash: str, memory_version: str | None) -> str:
-        return _sha256(_safe_json({
+    def _cache_key(
+        self, raw_hash: str, memory_version: str | None,
+        endpoint_fingerprint: str | None = None,
+    ) -> str:
+        identity = {
             "raw_hash": raw_hash, "course_memory_version": memory_version,
             "pipeline_version": self.pipeline_version, "prompt_version": self.prompt_version,
             "model_version": self.model,
             "seed_glossary_revision": self._seed_glossary_status.get("revision", "unavailable"),
-        }).encode("utf-8"))
+        }
+        if endpoint_fingerprint is not None:
+            identity["endpoint_fingerprint"] = endpoint_fingerprint
+        return _sha256(_safe_json(identity).encode("utf-8"))
 
     def _cache_path(
         self, repo: object, key: str, *, video_id: str, chapter_id: str | None
@@ -964,6 +970,7 @@ class CourseLearningOrchestrator:
         self, repo: object, *, key: str, raw_hash: str, chunk: SubtitleChunk,
         video_id: str, chapter_id: str | None, index: int, memory_version: str | None,
         memory: Mapping[str, object], policy: OrchestratorPolicy,
+        endpoint_fingerprint: str | None = None,
     ) -> tuple[CorrectionResult, CriticResult, int] | None:
         path = self._checkpoint_path(
             repo, key, video_id=video_id, chapter_id=chapter_id, index=index
@@ -980,6 +987,8 @@ class CourseLearningOrchestrator:
                 "model": self.model, "prompt_version": self.prompt_version,
                 "memory_version": memory_version,
             }
+            if endpoint_fingerprint is not None:
+                expected["endpoint_fingerprint"] = endpoint_fingerprint
             if any(row.get(name) != value for name, value in expected.items()):
                 return None
             correction = CorrectionResult.from_dict(row["correction"])
@@ -1000,6 +1009,7 @@ class CourseLearningOrchestrator:
         self, repo: object, *, key: str, raw_hash: str, chunk: SubtitleChunk,
         video_id: str, chapter_id: str | None, index: int, memory_version: str | None,
         correction: CorrectionResult, critic: CriticResult, numeric_count: int,
+        endpoint_fingerprint: str | None = None,
     ) -> None:
         if critic.decision is not CriticDecision.PASS or correction.uncertain:
             return
@@ -1017,6 +1027,8 @@ class CourseLearningOrchestrator:
             "memory_version": memory_version, "correction": correction.to_dict(),
             "critic": critic.to_dict(), "numeric_count": numeric_count,
         }
+        if endpoint_fingerprint is not None:
+            row["endpoint_fingerprint"] = endpoint_fingerprint
         temporary = path.with_name(path.name + ".tmp")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -1147,9 +1159,14 @@ class CourseLearningOrchestrator:
         memory_repo: CourseMemoryStore,
         progress_callback: Callable[[int, int, str], None] | None = None,
         force_refresh: bool = False,
+        endpoint_fingerprint: str | None = None,
     ) -> OrchestratorResult:
         if type(force_refresh) is not bool:
             raise ValueError("force_refresh must be boolean")
+        if endpoint_fingerprint is not None and (
+            type(endpoint_fingerprint) is not str or len(endpoint_fingerprint) > 256
+        ):
+            raise ValueError("endpoint_fingerprint must be a string of at most 256 characters")
         checked_policy = OrchestratorPolicy.from_value(policy)
         self._run_started = time.monotonic()
         self._run_call_count = 0
@@ -1171,7 +1188,7 @@ class CourseLearningOrchestrator:
         raw = _input_bytes(raw_vtt, cues)
         raw_hash = _sha256(raw)
         self._save_raw(memory_repo, course_id, video_id, chapter_id, raw, raw_hash)
-        initial_key = self._cache_key(raw_hash, memory_version)
+        initial_key = self._cache_key(raw_hash, memory_version, endpoint_fingerprint)
         cached = self._load_cache(
             memory_repo, initial_key, course_id=course_id, video_id=video_id,
             chapter_id=chapter_id,
@@ -1216,6 +1233,7 @@ class CourseLearningOrchestrator:
                 memory_repo, key=initial_key, raw_hash=raw_hash, chunk=chunk,
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,
                 memory_version=memory_version, memory=base_context, policy=checked_policy,
+                endpoint_fingerprint=endpoint_fingerprint,
             )
             if checkpoint is not None:
                 correction, critic, numeric = checkpoint
@@ -1388,6 +1406,7 @@ class CourseLearningOrchestrator:
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,
                 memory_version=memory_version, correction=final_correction,
                 critic=final_critic, numeric_count=numeric,
+                endpoint_fingerprint=endpoint_fingerprint,
             )
             corrections.append(final_correction)
             critics.append(final_critic)
@@ -1511,7 +1530,7 @@ class CourseLearningOrchestrator:
             ))
 
         corrected_transcript = "\n".join(item.corrected_text for item in corrections)
-        final_key = self._cache_key(raw_hash, committed_version)
+        final_key = self._cache_key(raw_hash, committed_version, endpoint_fingerprint)
         result = OrchestratorResult(
             course_id=course_id,
             video_id=video_id,
@@ -1544,13 +1563,14 @@ def orchestrate(
     policy: OrchestratorPolicy | Mapping[str, object] | None = None,
     memory_repo: CourseMemoryStore,
     force_refresh: bool = False,
+    endpoint_fingerprint: str | None = None,
 ) -> OrchestratorResult:
     """Functional entry point for callers that do not retain an orchestrator."""
 
     return CourseLearningOrchestrator(agent_client).orchestrate(
         course_id=course_id, video_id=video_id, chapter_id=chapter_id,
         raw_vtt=raw_vtt, cues=cues, policy=policy, memory_repo=memory_repo,
-        force_refresh=force_refresh,
+        force_refresh=force_refresh, endpoint_fingerprint=endpoint_fingerprint,
     )
 
 
