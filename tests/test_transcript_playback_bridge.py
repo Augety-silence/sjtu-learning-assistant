@@ -81,8 +81,13 @@ class PlaybackBridgeTests(unittest.TestCase):
         self.service._transcript_service_instance = transcripts
         payload = {"course_id": 12, "source_id": "sjtu-video:12:99"}
         try:
+            initial = self.bridge.invoke("transcript_learning_segments", payload)
+            self.assertEqual("not_started", initial["data"]["processing_state"])
             prepared = self.bridge.invoke("transcript_playback_prepare", payload)
             self.assertTrue(prepared["ok"], prepared)
+            queued = self.bridge.invoke("transcript_learning_segments", payload)["data"]
+            self.assertEqual("processing", queued["processing_state"])
+            self.assertFalse(queued["processing_done"])
             updated = self.bridge.invoke("transcript_playback_update", {**payload, "position_seconds": 1, "playback_rate": 2, "seq": 4})
             self.assertTrue(updated["ok"], updated)
             transcripts.run_pending()
@@ -92,10 +97,38 @@ class PlaybackBridgeTests(unittest.TestCase):
             self.assertTrue(result["data"]["available_ranges"])
             self.assertEqual(result["data"]["source_raw_sha256"], hashlib.sha256((transcripts._video_dir(payload["source_id"]) / "raw.vtt").read_bytes()).hexdigest())
             self.assertTrue(result["data"]["learning_revision"])
+            # Phase1 disabled: deterministic material is readable but never claims AI review success.
+            self.assertEqual("ai_unconfigured", result["data"]["processing_state"])
+            self.assertFalse(result["data"]["processing_done"])
+            self.assertFalse(result["data"]["auto_retryable"])
+            self.assertIsNone(result["data"]["retry_after"])
             before = len(list((transcripts.root / "batches").glob("*.json")))
             again = self.bridge.invoke("transcript_playback_prepare", payload)
             self.assertTrue(again["ok"], again)
             self.assertEqual(len(list((transcripts.root / "batches").glob("*.json"))), before)
+        finally:
+            transcripts.close()
+
+    def test_bridge_cancel_reports_cancelled_state_without_auto_recovery(self):
+        transcripts = TranscriptService(
+            root=Path(self.temp.name) / "cancel-transcripts", memory_root=Path(self.temp.name) / "cancel-memory",
+            autostart_worker=False, enable_phase1=False,
+            subtitle_fetcher=lambda _source: {"status": "ready", "vtt":
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n合成字幕。\n"},
+        )
+        self.service._transcript_service_instance = transcripts
+        payload = {"course_id": 12, "source_id": "sjtu-video:12:99"}
+        try:
+            prepared = self.bridge.invoke("transcript_playback_prepare", payload)
+            self.assertTrue(prepared["ok"], prepared)
+            cancelled = self.bridge.invoke("transcript_cancel", {"batch_id": prepared["data"]["id"]})
+            self.assertTrue(cancelled["ok"], cancelled)
+            transcripts.run_pending()
+            state = self.bridge.invoke("transcript_learning_segments", payload)["data"]
+            self.assertEqual("cancelled", state["processing_state"])
+            self.assertFalse(state["processing_done"])
+            self.assertFalse(state["auto_retryable"])
+            self.assertIsNone(state["retry_after"])
         finally:
             transcripts.close()
 
