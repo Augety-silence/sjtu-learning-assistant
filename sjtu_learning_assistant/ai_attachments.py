@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
@@ -695,6 +696,10 @@ class AIManagedFileService:
         else:
             row_dto = attachment_dto(row)
         path = self.resolve_controlled_copy(attachment_id)
+        if sys.platform == "win32":
+            # explorer.exe returns exit code 1 even on success, so its return code is not checked.
+            command_runner(["explorer.exe", f"/select,{path}"], check=False)
+            return {"id": row_dto["id"], "status": "revealed", "attachment": row_dto}
         completed = command_runner(["/usr/bin/open", "-R", str(path)], check=False)
         if getattr(completed, "returncode", 0) != 0:
             raise AIFileError("无法在 Finder 中显示附件。")

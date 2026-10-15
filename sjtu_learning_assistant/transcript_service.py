@@ -3085,6 +3085,10 @@ class TranscriptService:
 
     @staticmethod
     def _default_reveal(path: Path) -> None:
+        if sys.platform == "win32":
+            # explorer.exe returns exit code 1 even on success; ignore it.
+            subprocess.run(["explorer.exe", f"/select,{path}"], check=False)
+            return
         subprocess.run(("/usr/bin/open", "-R", "--", str(path)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def close(self) -> None:

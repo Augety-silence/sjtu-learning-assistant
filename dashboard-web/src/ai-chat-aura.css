@@ -1096,7 +1096,7 @@
   }
 
   .ai-workspace::before {
-    background-position: center, center, center, 44% 54%;
+    background-position: center, center, center, center, 44% 54%;
   }
 
   .ai-sidebar,
@@ -1117,7 +1117,7 @@
 
 @media (min-aspect-ratio: 16 / 10) {
   .ai-workspace::before {
-    background-position: center, center, center, center 58%;
+    background-position: center, center, center, center, center 58%;
   }
 }
 
