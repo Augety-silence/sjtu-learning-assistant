@@ -1071,6 +1071,280 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual(question["answer"], result["questions"][0]["answer"])
         self.assertEqual("根据课堂内容归纳", result["questions"][0]["source"])
 
+    GENUINE_PROMPT = "这是课程要点"
+    FAKE_PROMPT = "合成题面甲：原字幕没有出现的问题？"
+    FAKE_ANSWER = "合成答案甲：保留这条答案原文。"
+
+    def _source_repair_guide(self, fake_indices=(0,)):
+        guide = study_guide_payload()
+        guide["questions"].append(dict(type="application", prompt="问题6", answer="答案6", source="根据课堂内容归纳"))
+        for index in fake_indices:
+            guide["questions"][index].update(
+                prompt=f"{self.FAKE_PROMPT}{index}", answer=f"{self.FAKE_ANSWER}{index}", source="课堂明确讲述",
+            )
+        guide["questions"][1].update(prompt=self.GENUINE_PROMPT, source="课堂明确讲述")
+        return guide
+
+    @staticmethod
+    def _source_repair_cues():
+        return normalize_cues(parse_vtt(VTT))
+
+    @staticmethod
+    def _scripted_ai(first_content, repair_content, finish_reason="stop"):
+        class ScriptedAI:
+            def __init__(inner_self):
+                inner_self.prompts = []
+
+            def chat_completion(inner_self, messages, **kwargs):
+                inner_self.prompts.append(messages[-1]["content"])
+                if len(inner_self.prompts) == 1:
+                    return {"content": first_content, "response_metadata": {"finish_reason": finish_reason}}
+                return {"content": repair_content, "response_metadata": {"finish_reason": "stop"}}
+
+        return ScriptedAI()
+
+    def _run_source_repair(self, first, repaired, *, cues=None, guide_source_cues="default", first_content=None):
+        cues = self._source_repair_cues() if cues is None else cues
+        ai = self._scripted_ai(
+            first_content if first_content is not None else json.dumps(first, ensure_ascii=False),
+            json.dumps(repaired, ensure_ascii=False),
+        )
+        result = _json_content(
+            ai, "guide request",
+            lambda value: _normalize_study_guide(value.get("study_guide") if "study_guide" in value else value, cues),
+            schema_hint="question source rule; source-only repair",
+            repair_context={"stage": "study_guide_generation"},
+            guide_source_cues=cues if guide_source_cues == "default" else guide_source_cues,
+        )
+        return result, ai
+
+    def test_guide_source_only_repair_accepts_allowed_source_downgrade_with_everything_else_identical(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide()
+        with self.assertRaises(SchemaValidationError) as raised:
+            _normalize_study_guide(first, cues)
+        self.assertEqual("questions[0].source", raised.exception.detail["path"])
+        repaired = json.loads(json.dumps(first, ensure_ascii=False))
+        repaired["questions"][0]["source"] = "根据课堂内容归纳"
+        result, ai = self._run_source_repair(first, repaired)
+        self.assertEqual(2, len(ai.prompts))
+        self.assertEqual(_normalize_study_guide(repaired, cues), result)
+        self.assertEqual(first["questions"][0]["prompt"], result["questions"][0]["prompt"])
+        self.assertEqual(first["questions"][0]["answer"], result["questions"][0]["answer"])
+        self.assertEqual(first["questions"][0]["type"], result["questions"][0]["type"])
+        self.assertEqual("根据课堂内容归纳", result["questions"][0]["source"])
+        self.assertEqual("课堂明确讲述", result["questions"][1]["source"])
+        for key in ("course_map", "checklist", "extensions"):
+            self.assertEqual(first[key], result[key])
+        self.assertEqual(first["themes"][0]["title"], result["themes"][0]["title"])
+
+        wrapped, _ai = self._run_source_repair({"study_guide": first}, {"study_guide": repaired})
+        self.assertEqual(result, wrapped)
+
+    def test_guide_source_only_repair_rejects_any_non_source_edit_that_would_pass_schema(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide()
+
+        def downgraded():
+            value = json.loads(json.dumps(first, ensure_ascii=False))
+            value["questions"][0]["source"] = "根据课堂内容归纳"
+            return value
+
+        def rewrite_prompt_to_cue(value):
+            value["questions"][0].update(prompt="不要改动术语、数字或公式", source="课堂明确讲述")
+
+        def reorder(value):
+            value["questions"][2], value["questions"][3] = value["questions"][3], value["questions"][2]
+
+        mutations = {
+            "rewrite_prompt_to_match_cue": (rewrite_prompt_to_cue, "questions[0].prompt"),
+            "rewrite_prompt_keep_downgrade": (lambda value: value["questions"][0].update(prompt="改写后的题面？"), "questions[0].prompt"),
+            "delete_prompt": (lambda value: value["questions"][0].update(prompt=""), "questions[0].prompt"),
+            "change_answer": (lambda value: value["questions"][0].update(answer="改写后的答案。"), "questions[0].answer"),
+            "change_type": (lambda value: value["questions"][0].update(type="application"), "questions[0].type"),
+            "change_topic_title": (lambda value: value["themes"][0].update(title="改写主题"), "themes[0]"),
+            "change_topic_conclusion": (lambda value: value["themes"][0].update(conclusion="改写结论"), "themes[0]"),
+            "change_evidence": (lambda value: value["themes"][0].update(evidence=[dict(cue_id="cue-000003", quote="术语、数字")]), "themes[0]"),
+            "change_course_map": (lambda value: value["course_map"].__setitem__(0, "改写地图"), "course_map[0]"),
+            "change_checklist": (lambda value: value["checklist"].pop(), "checklist"),
+            "change_extension": (lambda value: value["extensions"].__setitem__(1, "改写延伸？"), "extensions[1]"),
+            "add_question": (lambda value: value["questions"].append(dict(type="recall", prompt="新增题？", answer="新增答。", source="自编练习或例子")), "questions"),
+            "remove_failing_question": (lambda value: value["questions"].pop(0), "questions"),
+            "remove_other_question": (lambda value: value["questions"].pop(), "questions"),
+            "reorder_questions": (reorder, "questions[2].prompt"),
+        }
+        for name, (mutate, expected_path) in mutations.items():
+            with self.subTest(name=name):
+                repaired = downgraded()
+                mutate(repaired)
+                _normalize_study_guide(repaired, cues)
+                with self.assertRaises(TranscriptAIFormatError) as raised:
+                    self._run_source_repair(first, repaired)
+                self.assertEqual("schema", raised.exception.category)
+                mismatch = raised.exception.diagnostics["schema_mismatch"]
+                self.assertEqual(expected_path, mismatch["path"])
+                self.assertNotIn("actual", mismatch)
+
+    def test_guide_source_only_repair_rejects_unrelated_source_changes_and_forged_classroom_claims(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide()
+        first["questions"][4].update(prompt="不要改动术语、数字或公式", source="自编练习或例子")
+
+        def repaired_with(**sources):
+            value = json.loads(json.dumps(first, ensure_ascii=False))
+            value["questions"][0]["source"] = "根据课堂内容归纳"
+            for key, source in sources.items():
+                value["questions"][int(key[1:])]["source"] = source
+            return value
+
+        cases = {
+            "non_failing_question_source": (repaired_with(q3="根据课堂内容归纳"), "questions[3].source", True),
+            "forged_classroom_claim_on_cue_prompt": (repaired_with(q4="课堂明确讲述"), "questions[4].source", True),
+            "downgrade_genuine_classroom": (repaired_with(q1="根据课堂内容归纳"), "questions[1].source", True),
+            "retain_unsupported_classroom": (repaired_with(q0="课堂明确讲述"), "questions[0].source", False),
+            "unknown_source_value": (repaired_with(q0="猜测来源"), "questions[0].source", False),
+        }
+        for name, (repaired, expected_path, passes_validator) in cases.items():
+            with self.subTest(name=name):
+                if passes_validator:
+                    _normalize_study_guide(repaired, cues)
+                with self.assertRaises(TranscriptAIFormatError) as raised:
+                    self._run_source_repair(first, repaired)
+                self.assertEqual(expected_path, raised.exception.diagnostics["schema_mismatch"]["path"])
+
+    def test_guide_source_only_repair_fixes_bounded_multi_error_set_without_downgrading_genuine_classroom(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide(fake_indices=(0, 2))
+        repaired = json.loads(json.dumps(first, ensure_ascii=False))
+        repaired["questions"][0]["source"] = "根据课堂内容归纳"
+        repaired["questions"][2]["source"] = "自编练习或例子"
+        result, _ai = self._run_source_repair(first, repaired)
+        self.assertEqual(
+            ["根据课堂内容归纳", "课堂明确讲述", "自编练习或例子"],
+            [item["source"] for item in result["questions"][:3]],
+        )
+        self.assertEqual([item["prompt"] for item in first["questions"]], [item["prompt"] for item in result["questions"]])
+        self.assertEqual([item["answer"] for item in first["questions"]], [item["answer"] for item in result["questions"]])
+
+        over_repaired = json.loads(json.dumps(repaired, ensure_ascii=False))
+        over_repaired["questions"][1]["source"] = "根据课堂内容归纳"
+        _normalize_study_guide(over_repaired, cues)
+        with self.assertRaises(TranscriptAIFormatError) as raised:
+            self._run_source_repair(first, over_repaired)
+        self.assertEqual("questions[1].source", raised.exception.diagnostics["schema_mismatch"]["path"])
+
+        partially_repaired = json.loads(json.dumps(first, ensure_ascii=False))
+        partially_repaired["questions"][0]["source"] = "根据课堂内容归纳"
+        with self.assertRaises(TranscriptAIFormatError) as raised:
+            self._run_source_repair(first, partially_repaired)
+        self.assertEqual("questions[2].source", raised.exception.diagnostics["schema_mismatch"]["path"])
+
+    def test_guide_source_only_guard_not_enabled_for_unprovable_first_responses(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide()
+        rewritten = json.loads(json.dumps(first, ensure_ascii=False))
+        rewritten["questions"][0].update(prompt="改写后的题面？", source="根据课堂内容归纳")
+
+        truncated = self._scripted_ai(json.dumps(first, ensure_ascii=False)[:-40], json.dumps(rewritten, ensure_ascii=False))
+        with self.assertRaises(TranscriptAIFormatError) as raised:
+            _json_content(
+                truncated, "guide request", lambda value: _normalize_study_guide(value, cues),
+                schema_hint="source-only repair", repair_context={"stage": "study_guide_generation"},
+                guide_source_cues=cues,
+            )
+        self.assertEqual("truncated", raised.exception.category)
+        self.assertEqual(1, len(truncated.prompts))
+
+        length_cut = self._scripted_ai(json.dumps(first, ensure_ascii=False), json.dumps(rewritten, ensure_ascii=False), finish_reason="length")
+        with self.assertRaises(TranscriptAIFormatError) as raised:
+            _json_content(
+                length_cut, "guide request", lambda value: _normalize_study_guide(value, cues),
+                schema_hint="source-only repair", repair_context={"stage": "study_guide_generation"},
+                guide_source_cues=cues,
+            )
+        self.assertEqual("truncated", raised.exception.category)
+        self.assertEqual(1, len(length_cut.prompts))
+
+        over_limit = json.loads(json.dumps(first, ensure_ascii=False))
+        over_limit["checklist"].append("长" * 7000)
+        too_long = self._scripted_ai(json.dumps(over_limit, ensure_ascii=False), json.dumps(rewritten, ensure_ascii=False))
+        with self.assertRaises(TranscriptAIFormatError):
+            _json_content(
+                too_long, "guide request", lambda value: _normalize_study_guide(value, cues),
+                schema_hint="source-only repair", repair_context={"stage": "study_guide_generation"},
+                guide_source_cues=cues,
+            )
+        self.assertEqual(1, len(too_long.prompts))
+
+        invalid_json = '{"course_map": [1, 2,], "questions": "无效"}'
+        result, ai = self._run_source_repair(first, rewritten, first_content=invalid_json)
+        self.assertEqual(2, len(ai.prompts))
+        self.assertEqual("改写后的题面？", result["questions"][0]["prompt"])
+
+        other_error = json.loads(json.dumps(first, ensure_ascii=False))
+        other_error["questions"][0]["source"] = "根据课堂内容归纳"
+        other_error["extensions"] = ["只有一条？"]
+        fixed_other = json.loads(json.dumps(other_error, ensure_ascii=False))
+        fixed_other["extensions"] = ["延伸一？", "延伸二？"]
+        result, _ai = self._run_source_repair(other_error, fixed_other)
+        self.assertEqual(["延伸一？", "延伸二？"], result["extensions"])
+
+        for context in (None, ()):
+            with self.subTest(guide_source_cues=context):
+                with self.assertRaises(TranscriptAIFormatError):
+                    self._run_source_repair(first, first, guide_source_cues=context)
+                result, _ai = self._run_source_repair(first, rewritten, guide_source_cues=context)
+                self.assertEqual("改写后的题面？", result["questions"][0]["prompt"])
+
+    def test_pipeline_rejected_source_repair_falls_back_with_path_only_diagnostics(self):
+        first = self._source_repair_guide()
+        first["questions"][0]["source"] = "课堂明确讲述"
+        secret_prompt = first["questions"][0]["prompt"]
+        secret_answer = first["questions"][0]["answer"]
+        rewritten = json.loads(json.dumps(first, ensure_ascii=False))
+        rewritten["questions"][0].update(prompt="不要改动术语、数字或公式", answer="改写答案以通过校验。")
+
+        class GuideRepairPipelineAI(FakeAI):
+            def __init__(inner_self, repaired):
+                super().__init__()
+                inner_self.repaired = repaired
+                inner_self.guide_prompts = []
+
+            def chat_completion(inner_self, messages, **kwargs):
+                prompt = messages[-1]["content"]
+                if "study_guide_generation" in prompt:
+                    inner_self.calls.append(messages)
+                    inner_self.guide_prompts.append(prompt)
+                    return {"content": json.dumps({"study_guide": inner_self.repaired}, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
+                if "阶段1" in prompt:
+                    inner_self.calls.append(messages)
+                    inner_self.guide_prompts.append(prompt)
+                    return {"content": json.dumps({"study_guide": first}, ensure_ascii=False), "response_metadata": {"finish_reason": "stop"}}
+                return super(GuideRepairPipelineAI, inner_self).chat_completion(messages, **kwargs)
+
+        ai = GuideRepairPipelineAI(rewritten)
+        result = TranscriptPipeline().run(VTT, ai)
+        self.assertEqual(2, len(ai.guide_prompts))
+        repair_prompt = ai.guide_prompts[1]
+        self.assertIn('"path":"questions[0].source","expected":"classroom question must occur in source cues"', repair_prompt)
+        self.assertNotIn('"actual"', repair_prompt)
+        self.assertIn("阶段1讲义生成未通过验证，已使用确定性结构化讲义。", result.partial_warnings)
+        diagnostics = result.summary["review"]["guide_generation_diagnostics"]
+        self.assertEqual("questions[0].prompt", diagnostics["validator_path"])
+        self.assertEqual("schema", diagnostics["category"])
+        self.assertEqual("source-only repair must preserve every non-source field", diagnostics["validator_expected"])
+        encoded = json.dumps(diagnostics, ensure_ascii=False)
+        for text in (secret_prompt, secret_answer, "不要改动术语、数字或公式", "改写答案以通过校验。"):
+            self.assertNotIn(text, encoded)
+        prompts = [item["prompt"] for item in result.summary["study_guide"]["questions"]]
+        self.assertNotIn("不要改动术语、数字或公式", prompts)
+
+        accepted_repair = json.loads(json.dumps(first, ensure_ascii=False))
+        accepted_repair["questions"][0]["source"] = "根据课堂内容归纳"
+        accepted = TranscriptPipeline().run(VTT, GuideRepairPipelineAI(accepted_repair))
+        self.assertNotIn("guide_generation_diagnostics", accepted.summary["review"])
+        self.assertNotIn("阶段1讲义生成未通过验证，已使用确定性结构化讲义。", accepted.partial_warnings)
+
     def test_cancel_during_schema_validation_stops_followup_repair_request(self):
         cancelled = [False]
         ai = FakeAI([dict(content='{"unrecognized":true}')])

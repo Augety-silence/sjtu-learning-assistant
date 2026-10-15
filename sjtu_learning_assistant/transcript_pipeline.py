@@ -527,6 +527,124 @@ def _repair_fragment(content: object) -> str:
     return ""
 
 
+CLASSROOM_SOURCE = "课堂明确讲述"
+CLASSROOM_QUESTION_MISMATCH = "classroom question must occur in source cues"
+_QUESTION_SOURCE_PATH = re.compile(r"questions\[(\d{1,3})\]\.source")
+
+
+def _guide_root(value: object) -> object:
+    """Unwrap an optional {"study_guide": ...} envelope exactly as the guide validator does."""
+    return value.get("study_guide") if type(value) is dict and "study_guide" in value else value
+
+
+def _question_prompt_in_cues(prompt: str, cues: Sequence[Cue]) -> bool:
+    key = _canonical_learning_key(prompt)
+    return any(key in _canonical_learning_key(cue.text) for cue in cues)
+
+
+def _provable_question_source_errors(guide: object, cues: Sequence[Cue]) -> frozenset[int] | None:
+    """Indices whose classroom source claim is provably false under the validator's cue matching."""
+    if not cues or type(guide) is not dict or type(guide.get("questions")) is not list:
+        return None
+    allowed: set[int] = set()
+    for index, raw in enumerate(guide["questions"]):
+        if type(raw) is not dict:
+            continue
+        prompt = _clean_learning_text(raw.get("prompt"))
+        if (
+            _clean_learning_text(raw.get("source")) == CLASSROOM_SOURCE
+            and prompt
+            and not _question_prompt_in_cues(prompt, cues)
+        ):
+            allowed.add(index)
+    return frozenset(allowed)
+
+
+def _json_equal(before: object, after: object) -> bool:
+    """Type-strict deep equality for parsed JSON (1, 1.0 and True differ; key sets must match)."""
+    if type(before) is not type(after):
+        return False
+    if type(before) is dict:
+        return set(before) == set(after) and all(_json_equal(before[key], after[key]) for key in before)
+    if type(before) is list:
+        return len(before) == len(after) and all(_json_equal(left, right) for left, right in zip(before, after))
+    return before == after
+
+
+def _check_source_only_guide_repair(
+    first_guide: Mapping[str, Any],
+    repaired_value: object,
+    allowed: frozenset[int],
+) -> None:
+    """Reject any repair that edits more than questions[i].source for provably wrong classroom claims.
+
+    Failure paths use only schema-known names and indices, never model text or model-chosen keys.
+    """
+    repaired = _guide_root(repaired_value)
+    expected = "source-only repair must preserve every non-source field"
+    if type(repaired) is not dict or set(repaired) != set(first_guide):
+        _schema_fail("study_guide", expected, repaired)
+    for key in sorted(first_guide):
+        if key == "questions":
+            continue
+        before, after = first_guide[key], repaired[key]
+        if _json_equal(before, after):
+            continue
+        if type(before) is list and type(after) is list and len(before) == len(after):
+            index = next(i for i, pair in enumerate(zip(before, after)) if not _json_equal(*pair))
+            _schema_fail(f"{key}[{index}]", expected, after[index])
+        _schema_fail(key, expected, after)
+    before_questions = first_guide["questions"]
+    after_questions = repaired["questions"]
+    if type(after_questions) is not list or len(after_questions) != len(before_questions):
+        _schema_fail("questions", "source-only repair must preserve question count and order", after_questions)
+    for index, (before, after) in enumerate(zip(before_questions, after_questions)):
+        path = f"questions[{index}]"
+        if type(before) is not dict or type(after) is not dict or set(before) != set(after):
+            _schema_fail(path, expected, after)
+        for key in before:
+            if key == "source" and index in allowed:
+                source = after.get("source")
+                if type(source) is not str or source not in SOURCE_TYPES or source == CLASSROOM_SOURCE:
+                    _schema_fail(path + ".source", "non-classroom source enum for unsupported classroom claim", source)
+                continue
+            if not _json_equal(before[key], after[key]):
+                known = key in {"type", "prompt", "answer", "source"}
+                _schema_fail(f"{path}.{key}" if known else path, expected, after[key])
+
+
+def _source_only_repair_guard(
+    fragment: str,
+    safe_mismatch: Mapping[str, Any],
+    validator: Callable[[object], dict[str, Any]],
+    cues: Sequence[Cue] | None,
+) -> Callable[[object], None] | None:
+    """Build a preservation check from the exact fragment sent for repair, or None if unprovable."""
+    match = _QUESTION_SOURCE_PATH.fullmatch(str(safe_mismatch.get("path", "")))
+    if match is None or not cues:
+        return None
+    try:
+        first_value = json.loads(fragment)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if type(first_value) is not dict:
+        return None
+    try:
+        validator(first_value)
+    except SchemaValidationError as exc:
+        if exc.detail.get("path") != safe_mismatch.get("path") or exc.detail.get("expected") != CLASSROOM_QUESTION_MISMATCH:
+            return None
+    except (TypeError, ValueError):
+        return None
+    else:
+        return None
+    first_guide = _guide_root(first_value)
+    allowed = _provable_question_source_errors(first_guide, cues)
+    if not allowed or int(match.group(1)) not in allowed:
+        return None
+    return lambda value: _check_source_only_guide_repair(first_guide, value, allowed)
+
+
 def _json_content(
     ai_client: Any,
     prompt: str,
@@ -536,6 +654,7 @@ def _json_content(
     should_cancel: Callable[[], bool] | None = None,
     json_mode: bool = False,
     repair_context: Mapping[str, Any] | None = None,
+    guide_source_cues: Sequence[Cue] | None = None,
 ) -> dict[str, Any]:
     system = "只依据字幕证据处理内容，不补写外部事实。只返回一个严格 JSON 对象。"
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
@@ -612,8 +731,14 @@ def _json_content(
         )
         _check_cancel(should_cancel)
         repair_content = repair.get("content") if isinstance(repair, Mapping) else None
+        repair_validator = validator
+        preservation_guard = _source_only_repair_guard(fragment, safe_mismatch, validator, guide_source_cues)
+        if preservation_guard is not None:
+            def repair_validator(value: object) -> dict[str, Any]:
+                preservation_guard(value)
+                return validator(value)
         try:
-            return _validated_json(repair_content, validator, repair)
+            return _validated_json(repair_content, repair_validator, repair)
         except TranscriptAIFormatError as repair_error:
             if getattr(ai_client, "last_call_index", None) is not None:
                 repair_error.diagnostics["call_index"] = ai_client.last_call_index
@@ -1620,10 +1745,8 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
             _schema_fail(f"questions[{index}].type", "recall or application", item_type)
         prompt = _clean_learning_text(raw.get("prompt"))
         answer = _clean_learning_text(raw.get("answer"))
-        if source == "课堂明确讲述" and prompt and not any(
-            _canonical_learning_key(prompt) in _canonical_learning_key(cue.text) for cue in cues
-        ):
-            _schema_fail(f"questions[{index}].source", "classroom question must occur in source cues", source)
+        if source == CLASSROOM_SOURCE and prompt and not _question_prompt_in_cues(prompt, cues):
+            _schema_fail(f"questions[{index}].source", CLASSROOM_QUESTION_MISMATCH, source)
         if prompt and answer:
             questions.append(dict(type=item_type, prompt=prompt, answer=answer, source=source))
     if not 5 <= len(questions) <= 8:
@@ -2336,7 +2459,7 @@ class TranscriptPipeline:
                 study_guide = _json_content(
                     ai_client,
                     guide_prompt,
-                    lambda value: _normalize_study_guide(value.get("study_guide") if type(value) is dict and "study_guide" in value else value, cues),
+                    lambda value: _normalize_study_guide(_guide_root(value), cues),
                     schema_hint=(
                         "study_guide 课程地图、主题、检查清单、5-8题、延伸问题。question的prompt与answer来源分别判断："
                         "答案有课堂依据不代表prompt曾在课堂提出。复习题默认source为根据课堂内容归纳；改变场景或问法的题目标为自编练习或例子；"
@@ -2356,6 +2479,7 @@ class TranscriptPipeline:
                             "do not alter question wording to force a source classification",
                         ],
                     },
+                    guide_source_cues=cues,
                 )
             except Exception as exc:
                 warnings.append("阶段1讲义生成未通过验证，已使用确定性结构化讲义。")
