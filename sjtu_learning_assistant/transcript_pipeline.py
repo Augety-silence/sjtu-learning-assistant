@@ -538,8 +538,39 @@ def _guide_root(value: object) -> object:
 
 
 def _question_prompt_in_cues(prompt: str, cues: Sequence[Cue]) -> bool:
-    key = _canonical_learning_key(prompt)
-    return any(key in _canonical_learning_key(cue.text) for cue in cues)
+    # A classroom-source claim requires a complete prompt phrase inside one
+    # cue. Preserve punctuation and require a left boundary so a short suffix
+    # such as "饭？" cannot be mistaken for the full question in a cue.
+    key = _canonical_learning_phrase(prompt)
+    if not key:
+        return False
+    for cue in cues:
+        text = _canonical_learning_phrase(cue.text)
+        start = 0
+        while (index := text.find(key, start)) >= 0:
+            before = text[index - 1] if index else ""
+            after_index = index + len(key)
+            after = text[after_index] if after_index < len(text) else ""
+            left_boundary = (
+                not before
+                or not before.isalnum()
+                or before == "问"
+            )
+            ends_with_question_mark = key.endswith(("?", "!", "？", "！"))
+            right_boundary = (
+                ends_with_question_mark
+                or not after
+                or not after.isalnum()
+            )
+            if left_boundary and right_boundary:
+                return True
+            start = index + 1
+    return False
+
+
+def _canonical_learning_phrase(value: object) -> str:
+    """Normalize spacing/Unicode while retaining punctuation as phrase boundaries."""
+    return " ".join(unicodedata.normalize("NFKC", str(value)).casefold().split())
 
 
 def _provable_question_source_errors(guide: object, cues: Sequence[Cue]) -> frozenset[int] | None:
@@ -676,6 +707,15 @@ def _json_content(
             first_error.diagnostics["call_index"] = ai_client.last_call_index
         if first_error.category in {"empty", "truncated"}:
             raise
+        guide_source_repair = (
+            isinstance(repair_context, Mapping)
+            and repair_context.get("stage") == "study_guide_generation"
+        )
+        # A malformed guide has no trustworthy content baseline. A generic
+        # schema repair could replace the prompt, answers, themes, or evidence
+        # wholesale, so source-only guide workflows fail closed here.
+        if guide_source_repair and first_error.category == "format":
+            raise
         fragment = _repair_fragment(content)
         if not fragment:
             raise
@@ -684,6 +724,17 @@ def _json_content(
             {key: mismatch[key] for key in ("path", "expected") if type(mismatch.get(key)) is str}
             if isinstance(mismatch, Mapping) else {}
         )
+        preservation_guard = _source_only_repair_guard(
+            fragment, safe_mismatch, validator, guide_source_cues
+        )
+        if (
+            guide_source_repair
+            and _QUESTION_SOURCE_PATH.fullmatch(str(safe_mismatch.get("path", "")))
+            and preservation_guard is None
+        ):
+            # A source mismatch can only be repaired when the exact first
+            # guide and the cues prove a finite, safe set of source fields.
+            raise first_error
         mismatch_details = (
             "\n本次校验失败位置与要求（仅供定位，不含实际模型字段值）："
             + json.dumps(safe_mismatch, ensure_ascii=False, separators=(",", ":"))
@@ -732,7 +783,6 @@ def _json_content(
         _check_cancel(should_cancel)
         repair_content = repair.get("content") if isinstance(repair, Mapping) else None
         repair_validator = validator
-        preservation_guard = _source_only_repair_guard(fragment, safe_mismatch, validator, guide_source_cues)
         if preservation_guard is not None:
             def repair_validator(value: object) -> dict[str, Any]:
                 preservation_guard(value)

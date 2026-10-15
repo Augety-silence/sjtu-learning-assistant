@@ -1277,9 +1277,24 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual(1, len(too_long.prompts))
 
         invalid_json = '{"course_map": [1, 2,], "questions": "无效"}'
-        result, ai = self._run_source_repair(first, rewritten, first_content=invalid_json)
-        self.assertEqual(2, len(ai.prompts))
-        self.assertEqual("改写后的题面？", result["questions"][0]["prompt"])
+        replacements = {
+            "prompt": lambda value: value["questions"][0].update(prompt="改写后的题面？"),
+            "answer": lambda value: value["questions"][0].update(answer="替换后的答案。"),
+            "theme": lambda value: value["themes"][0].update(title="替换后的主题"),
+        }
+        for field, replace_content in replacements.items():
+            with self.subTest(field=field):
+                candidate = json.loads(json.dumps(first, ensure_ascii=False))
+                replace_content(candidate)
+                ai = self._scripted_ai(invalid_json, json.dumps(candidate, ensure_ascii=False))
+                with self.assertRaises(TranscriptAIFormatError):
+                    _json_content(
+                        ai, "guide request", lambda value: _normalize_study_guide(value, cues),
+                        schema_hint="source-only repair",
+                        repair_context={"stage": "study_guide_generation"},
+                        guide_source_cues=cues,
+                    )
+                self.assertEqual(1, len(ai.prompts))
 
         other_error = json.loads(json.dumps(first, ensure_ascii=False))
         other_error["questions"][0]["source"] = "根据课堂内容归纳"
@@ -1293,8 +1308,19 @@ class TranscriptPipelineTests(unittest.TestCase):
             with self.subTest(guide_source_cues=context):
                 with self.assertRaises(TranscriptAIFormatError):
                     self._run_source_repair(first, first, guide_source_cues=context)
-                result, _ai = self._run_source_repair(first, rewritten, guide_source_cues=context)
-                self.assertEqual("改写后的题面？", result["questions"][0]["prompt"])
+                ai = self._scripted_ai(
+                    json.dumps(first, ensure_ascii=False),
+                    json.dumps(rewritten, ensure_ascii=False),
+                )
+                with self.assertRaises(TranscriptAIFormatError):
+                    _json_content(
+                        ai, "guide request",
+                        lambda value: _normalize_study_guide(value, cues),
+                        schema_hint="source-only repair",
+                        repair_context={"stage": "study_guide_generation"},
+                        guide_source_cues=context,
+                    )
+                self.assertEqual(1, len(ai.prompts))
 
     def test_pipeline_rejected_source_repair_falls_back_with_path_only_diagnostics(self):
         first = self._source_repair_guide()
@@ -1360,9 +1386,23 @@ class TranscriptPipelineTests(unittest.TestCase):
     def test_classroom_question_claim_is_grounded_in_any_course_not_fixed_fast_food_case(self):
         guide = study_guide_payload()
         guide["questions"][0].update(prompt="每天多久吃一次饭？", source="课堂明确讲述")
-        cues = normalize_cues(parse_vtt(VTT)) + [Cue(5000, 6000, "每天多久吃一次饭？", "cue-question")]
+        cues = normalize_cues(parse_vtt(VTT)) + [
+            Cue(5000, 6000, "老师提问：“每天多久吃一次饭？”请大家讨论。", "cue-question")
+        ]
         normalized = _normalize_study_guide(guide, cues)
         self.assertEqual("课堂明确讲述", normalized["questions"][0]["source"])
+
+        # Keep exact classroom questions valid when quoted inside a longer cue,
+        # while rejecting a short suffix that only happens to end in “？”.
+        guide["questions"][0]["prompt"] = "饭？"
+        with self.assertRaises(ValueError):
+            _normalize_study_guide(guide, cues)
+        guide["questions"][0]["prompt"] = "类？"
+        with self.assertRaises(ValueError):
+            _normalize_study_guide(
+                guide,
+                cues + [Cue(7000, 8000, "接下来讨论分类方法。", "cue-fragment")],
+            )
         guide["questions"][0]["prompt"] = "导数的定义是什么？"
         with self.assertRaises(ValueError):
             _normalize_study_guide(guide, cues)
