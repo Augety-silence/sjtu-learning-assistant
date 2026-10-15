@@ -1,0 +1,196 @@
+/* ReadyRangeBar — prefix slw-range-. Theme variables only. */
+
+.slw-range {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.slw-range-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.slw-range-title {
+  font-weight: 600;
+}
+
+.slw-range-position {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-caption);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.slw-range-position > svg {
+  width: 13px;
+  height: 13px;
+}
+
+.slw-range-track {
+  position: relative;
+  height: 24px;
+  border-radius: 6px;
+  outline: none;
+  touch-action: none;
+}
+
+.slw-range-track[data-interactive] {
+  cursor: pointer;
+}
+
+.slw-range-track:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.slw-range-rail {
+  position: absolute;
+  inset: 8px 0;
+  border-radius: 999px;
+  background: var(--surface-control);
+  box-shadow: inset 0 0 0 1px var(--border-workspace);
+}
+
+.slw-range-segment {
+  position: absolute;
+  top: 8px;
+  height: 8px;
+  min-width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--action-primary) 55%, transparent);
+}
+
+.slw-range-playhead {
+  position: absolute;
+  top: 3px;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--text-primary);
+  pointer-events: none;
+}
+
+.slw-range-playhead::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-primary);
+}
+
+.slw-range-pending {
+  position: absolute;
+  top: 2px;
+  width: 0;
+  height: 20px;
+  border-left: 2px dashed var(--action-primary);
+  margin-left: -1px;
+  pointer-events: none;
+}
+
+.slw-range-unknown {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  font-size: 12px;
+}
+
+.slw-range-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slw-range-caveat {
+  color: var(--text-caption);
+}
+
+.slw-range-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slw-range-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--compact-meta-height);
+  padding: 2px 8px;
+  border: 1px solid var(--border-workspace-strong);
+  border-radius: var(--compact-radius);
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+button.slw-range-chip {
+  cursor: pointer;
+}
+
+button.slw-range-chip:hover {
+  background: var(--surface-hover);
+}
+
+button.slw-range-chip[aria-pressed="true"] {
+  border-color: var(--action-primary);
+  color: var(--action-primary);
+}
+
+button.slw-range-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.slw-range-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-accent-soft);
+  border-radius: 10px;
+  background: var(--surface-accent-soft);
+  font-size: 12px;
+}
+
+.slw-range-confirm > span {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.slw-range-confirm strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.slw-range-confirm svg {
+  width: 14px;
+  height: 14px;
+}
+
+:root[data-theme="dark"] .slw-range-segment {
+  background: color-mix(in srgb, var(--action-primary) 70%, transparent);
+}
