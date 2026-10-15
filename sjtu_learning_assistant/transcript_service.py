@@ -68,6 +68,39 @@ DEFAULT_TRANSCRIPT_ROOT = APP_SUPPORT_DIR / "transcripts" / "v1"
 DEFAULT_COURSE_MEMORY_ROOT = APP_SUPPORT_DIR / "transcripts" / "v2" / "course_memory"
 ACTIVE_STATES = frozenset(("queued", "fetching", "saved", "organizing"))
 FINAL_STATES = frozenset(("completed", "completed_with_warnings", "partial", "failed", "waiting_for_ai", "cancelled", "interrupted"))
+# Overall ``processing_state`` reported by ``learning_segments``, listed in
+# evaluation priority order (the first matching rule wins):
+#
+# | value                 | meaning                                                                   |
+# |-----------------------|---------------------------------------------------------------------------|
+# | not_started           | no job and no stored subtitle for this recording                          |
+# | cancelled             | latest job cancelled (also overrides a stale active/organizing status)    |
+# | processing            | latest job queued/fetching/saved/organizing                               |
+# | waiting_source        | no validated subtitle stored yet: remote still generating, remote checks |
+# |                       | paused, or the fetch ended without a usable subtitle                      |
+# | ai_unconfigured       | waiting_for_ai, or the stored draft was produced without AI               |
+# | completed             | V1 clean and (when Phase1 is enabled) verified Phase1 quality passed      |
+# | finished_needs_review | V1 clean and verified schema-valid Phase1 with only content uncertainty   |
+# | recovering            | technical failure with a real pending automatic retry (cooldown or due)   |
+# | recovery_exhausted    | technical failure of an auto-recoverable kind, no automatic retry left    |
+# | failed                | technical failure that automatic recovery never applies to               |
+#
+# Only ``completed`` and ``finished_needs_review`` set ``processing_done``;
+# only ``recovering`` sets ``auto_retryable`` and promises ``retry_after``
+# (an active remote wait keeps its re-check time in ``retry_after``).
+# Manual ``retryable`` is independent of this state.
+PROCESSING_STATES = (
+    "not_started",
+    "cancelled",
+    "processing",
+    "waiting_source",
+    "ai_unconfigured",
+    "completed",
+    "finished_needs_review",
+    "recovering",
+    "recovery_exhausted",
+    "failed",
+)
 LEASE_SECONDS = 900
 MANIFEST_SCHEMA_VERSION = 2
 V2_MANIFEST_SCHEMA_VERSION = 1
@@ -957,19 +990,26 @@ class TranscriptService:
                 self._learning_error_message({**job, "diagnostic": {"code": error_code}}, manifest)
                 if failed else None
             )
+            state = self._processing_state(
+                latest[0] if latest is not None else {}, job, is_processing, video_dir, manifest, v1_unresolved,
+            )
             return {
+                "processing_state": state,
                 "stage": error_stage,
                 "error_code": error_code,
                 "error_message": error_message,
                 "retryable": bool(failed and (v1_unresolved or job.get("retryable", job.get("status") != "cancelled"))),
-                "auto_retryable": bool(
-                    v1_diagnostic.get("auto_retryable") if v1_diagnostic else
-                    failed and job.get("auto_retryable", job.get("retryable", False)) and not content_uncertain
-                ),
+                # Only a real pending automatic retry counts; a V1 diagnostic
+                # code alone cannot outlive the job's retry limit or cancellation.
+                "auto_retryable": state == "recovering",
                 "failed_stages": v1_diagnostic.get("failed_stages", []) if v1_diagnostic else [],
-                "processing_done": bool(not is_processing and content_uncertain),
+                "processing_done": state in {"completed", "finished_needs_review"},
                 "phase1_processing_done": phase1_done,
-                "retry_after": retry_at if type(retry_at) is str else None,
+                # Only a real pending recovery or an active remote re-check
+                # promises a next time; paused/exhausted states promise none.
+                "retry_after": retry_at if type(retry_at) is str and (
+                    state == "recovering" or (state == "waiting_source" and job.get("status") == "waiting_remote")
+                ) else None,
                 "updated_at": job.get("updated_at") or manifest.get("updated_at"),
                 "source_raw_sha256": source_hash,
                 "learning_revision": _sha256(revision_material.encode("utf-8")),
@@ -1041,6 +1081,118 @@ class TranscriptService:
             return passed, min(total, failed)
         except (OSError, ValueError, TypeError, TranscriptError):
             return 0, 0
+
+    def _automatic_retry_pending(self, batch: Mapping[str, Any], job: Mapping[str, Any]) -> bool:
+        """Whether prepare/scheduler will really start another automatic retry.
+
+        Mirrors the guards of ``prepare_for_playback`` and
+        ``_schedule_due_playback_retries``: a diagnostic code alone is never
+        enough once the retry limit is reached, the retry was consumed, or the
+        job was cancelled.
+        """
+        status = job.get("status")
+        return bool(
+            job.get("auto_retryable") is True
+            and job.get("retryable", True) is not False
+            and int(job.get("automatic_retry_count") or 0) < self.playback_auto_retry_limit
+            and _parse_time(job.get("next_retry_at")) is not None
+            and job.get("auto_retry_scheduled") is not True
+            and not job.get("cancel_requested")
+            and not (batch.get("cancel_requested") and status not in FINAL_STATES)
+            and status in FINAL_STATES - {"cancelled"}
+            # Partial/failed jobs are only re-run automatically for playback
+            # batches; completed-with-warnings upgrades are taken by prepare.
+            and (batch.get("origin") == "playback" or status in {"completed", "completed_with_warnings"})
+        )
+
+    def _automatic_retry_exhausted(self, job: Mapping[str, Any], v1_diagnostic: Mapping[str, Any] | None = None) -> bool:
+        recoverable_kind = bool(
+            job.get("auto_retryable") is True
+            or job.get("auto_retry_exhausted") is True
+            or (v1_diagnostic is not None and v1_diagnostic.get("auto_retryable"))
+        )
+        return recoverable_kind and int(job.get("automatic_retry_count") or 0) >= self.playback_auto_retry_limit
+
+    def _verified_phase1_quality(self, video_dir: Path, manifest: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Phase1 quality bound to the stored raw subtitle with intact artifacts, else None."""
+        raw_hash = manifest.get("raw_sha256")
+        v2 = self._v2_manifest(video_dir)
+        if (
+            type(raw_hash) is not str or not raw_hash or v2 is None
+            or v2.get("raw_sha256") != raw_hash or not self._v2_artifacts_valid(video_dir, v2)
+        ):
+            return None
+        try:
+            quality = self._read_json(self._v2_dir(video_dir) / V2_ARTIFACT_FILES["quality"])
+        except TranscriptError:
+            return None
+        return quality if type(quality) is dict and quality == v2.get("quality") else None
+
+    def _processing_state(
+        self,
+        batch: Mapping[str, Any],
+        job: Mapping[str, Any],
+        is_processing: bool,
+        video_dir: Path | None,
+        manifest: Mapping[str, Any],
+        v1_unresolved: bool,
+    ) -> str:
+        """Single overall state for one recording; see ``PROCESSING_STATES``."""
+        status = job.get("status")
+        if not job and video_dir is None:
+            return "not_started"
+        # A batch-level cancel only targets jobs that were still unfinished.
+        cancel_requested = bool(
+            job.get("cancel_requested") or (batch.get("cancel_requested") and status not in FINAL_STATES)
+        )
+        if status == "cancelled" or (cancel_requested and status in ACTIVE_STATES | {"waiting_remote"}):
+            # A stale worker/organizing status cannot outlive an explicit cancel.
+            return "cancelled"
+        if status == "waiting_remote":
+            return "waiting_source"
+        if is_processing:
+            return "processing"
+        if video_dir is None:
+            # No validated subtitle stored: never "completed"; a remote that is
+            # still generating (or whose checks paused) is a source wait.
+            if status == "waiting_for_ai":
+                return "ai_unconfigured"
+            if self._automatic_retry_pending(batch, job):
+                return "recovering"
+            if job.get("stage") != "remote_retry_exhausted" and self._automatic_retry_exhausted(job):
+                return "recovery_exhausted"
+            return "waiting_source"
+        if status == "waiting_for_ai" or (
+            manifest.get("ai_execution_mode") == "deterministic"
+            and manifest.get("status") in {"completed", "completed_with_warnings"}
+            and status not in {"partial", "failed", "interrupted"}
+        ):
+            # A non-AI draft is never a completed (or exhausted) AI result. A
+            # later AI attempt that failed technically is reported as a failure.
+            return "ai_unconfigured"
+        v1_clean = bool(
+            not v1_unresolved
+            and manifest.get("status") == "completed"
+            and self._completed_artifacts_valid(video_dir, manifest)
+            and status not in {"partial", "failed", "interrupted"}
+        )
+        phase1_technical = bool(job.get("review_status") == "failed" or job.get("phase1_warning"))
+        if v1_clean and not phase1_technical:
+            if not self.enable_phase1:
+                return "completed"
+            else:
+                quality = self._verified_phase1_quality(video_dir, manifest)
+                if quality is not None and quality.get("passed") is True and quality.get("schema_pass") is not False:
+                    return "completed"
+                if quality is not None and self._phase1_content_uncertain(quality):
+                    return "finished_needs_review"
+        if cancel_requested:
+            return "cancelled"
+        if self._automatic_retry_pending(batch, job):
+            return "recovering"
+        if self._automatic_retry_exhausted(job, self._v1_recovery_diagnostic(video_dir, manifest)):
+            return "recovery_exhausted"
+        return "failed"
 
     @staticmethod
     def _phase1_content_uncertain(quality: Mapping[str, Any]) -> bool:
@@ -1269,6 +1421,7 @@ class TranscriptService:
                     or item.get("status") not in FINAL_STATES
                     or count >= self.playback_auto_retry_limit
                     or item.get("status") == "cancelled"
+                    or item.get("cancel_requested")
                 ):
                     continue
                 try:
@@ -1490,11 +1643,27 @@ class TranscriptService:
         job["retryable"] = manual_retryable
         job["auto_retryable"] = auto_retryable
         retry_count = int(job.get("automatic_retry_count") or 0)
-        if not auto_retryable or retry_count >= self.playback_auto_retry_limit:
+        self._enforce_auto_retry_limit(job)
+        if not job["auto_retryable"]:
             job.pop("next_retry_at", None)
             return
         delay = min(3600.0, self.playback_retry_cooldown_seconds * (2 ** retry_count))
         job["next_retry_at"] = (self.now_provider() + timedelta(seconds=delay)).isoformat()
+
+    def _enforce_auto_retry_limit(self, job: dict[str, Any]) -> None:
+        """Cap a recoverable job's ``auto_retryable`` by its real retry budget.
+
+        The stored job (and every public job/batch payload) must not promise a
+        further automatic recovery once ``automatic_retry_count`` reached the
+        limit, whatever the failing stage's error code says. The recoverable
+        kind is kept as ``auto_retry_exhausted`` so the UI can say so.
+        """
+        if job.get("auto_retryable") is True and int(job.get("automatic_retry_count") or 0) >= self.playback_auto_retry_limit:
+            job["auto_retryable"] = False
+            job["auto_retry_exhausted"] = True
+            job.pop("next_retry_at", None)
+        else:
+            job.pop("auto_retry_exhausted", None)
 
     @staticmethod
     def _model_fingerprint(context: AIContext) -> str:
@@ -1982,6 +2151,9 @@ class TranscriptService:
             content_uncertain = (self._phase1_content_uncertain(quality) if type(quality) is dict else False) and not v1_unresolved
             auto_retryable = bool(v1_diagnostic.get("auto_retryable")) if v1_diagnostic else not content_uncertain
             job["auto_retryable"] = auto_retryable
+            # The V1 diagnostic says *whether* the stage is recoverable; the
+            # job's retry budget decides whether another attempt will happen.
+            self._enforce_auto_retry_limit(job)
             job["diagnostic"] = {
                 "stage": v1_diagnostic.get("stage") if v1_diagnostic else ("needs_review" if content_uncertain else "phase1_quality"),
                 "code": v1_diagnostic.get("code") if v1_diagnostic else ("content_uncertain" if content_uncertain else ("schema_incomplete" if type(quality) is dict and quality.get("schema_pass") is False else "quality_incomplete")),
@@ -1989,7 +2161,7 @@ class TranscriptService:
                 "elapsed_ms": 0,
                 "retryable": True,
             }
-            if auto_retryable and int(job.get("automatic_retry_count") or 0) < self.playback_auto_retry_limit:
+            if job["auto_retryable"]:
                 delay = min(3600.0, self.playback_retry_cooldown_seconds * (2 ** int(job.get("automatic_retry_count") or 0)))
                 job["next_retry_at"] = (self.now_provider() + timedelta(seconds=delay)).isoformat()
             else:
@@ -1997,6 +2169,7 @@ class TranscriptService:
         else:
             job["retryable"] = False
             job["auto_retryable"] = False
+            job.pop("auto_retry_exhausted", None)
             job.pop("next_retry_at", None)
 
     def _run_phase1_safely(
@@ -2071,6 +2244,7 @@ class TranscriptService:
                 job.pop("phase1_warning", None)
                 job["retryable"] = False
                 job["auto_retryable"] = False
+                job.pop("auto_retry_exhausted", None)
                 job.pop("next_retry_at", None)
 
     def _validated_cached_chunks(
@@ -2479,6 +2653,7 @@ class TranscriptService:
                 job.pop("partial_warning", None)
                 job["retryable"] = False
                 job["auto_retryable"] = False
+                job.pop("auto_retry_exhausted", None)
                 job.pop("next_retry_at", None)
         except (TranscriptPipelineCancelled, _PlaybackYield):
             manifest.update(status="partial", stage="paused", updated_at=_now())

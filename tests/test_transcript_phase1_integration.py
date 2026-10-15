@@ -663,6 +663,158 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.assertTrue(result["segments"])
         self.assertTrue(all(not segment["provisional"] for segment in result["segments"]))
 
+    # -- C3: single overall processing_state contract -------------------------
+
+    def assert_processing_state(self, result, state, *, done, auto, retry_after=None, content=True):
+        self.assertEqual(state, result["processing_state"])
+        self.assertIs(done, result["processing_done"])
+        self.assertIs(auto, result["auto_retryable"])
+        self.assertEqual(retry_after, result["retry_after"])
+        if content:
+            # Usable content is never dropped because of the overall state.
+            self.assertEqual("ready", result["status"])
+            self.assertTrue(result["segments"])
+            self.assertTrue(result["available_ranges"])
+
+    def set_stored_job(self, service, **changes):
+        batch = service._all_batches()[0]
+        batch["jobs"][0].update(changes)
+        service._write_json(service._batch_path(batch["id"]), batch)
+
+    def run_playback_retry_attempt(self, service, count):
+        batch = service.start_batch(
+            course_id="12", course_name="课程12", videos=[self.video()], automatic_retry_count=count,
+        )
+        stored = service._read_json(service._batch_path(batch["id"]))
+        stored["origin"] = "playback"
+        service._write_json(service._batch_path(batch["id"]), stored)
+        service.run_pending()
+        return self.latest_job(service)
+
+    def test_processing_state_finished_outcomes_table(self):
+        cases = (
+            ("success", FakeOrchestrator(), "completed", "completed"),
+            ("uncertain", FakeOrchestrator(uncertain=True), "finished_needs_review", "content_uncertain"),
+        )
+        for name, orchestrator, state, code in cases:
+            with self.subTest(name):
+                self.root = Path(self.temporary.name) / name / "transcripts"
+                self.memory_root = Path(self.temporary.name) / name / "memory"
+                service = self.service(orchestrator)
+                job = self.run_job(service)
+                result = service.learning_segments(job["source_id"])
+                self.assert_processing_state(result, state, done=True, auto=False)
+                self.assertTrue(result["phase1_processing_done"])
+                self.assertEqual(code == "content_uncertain", result["error_code"] == code)
+                self.assertIsNot(self.latest_job(service).get("auto_retryable"), True)
+                self.assertIsNone(self.latest_job(service).get("next_retry_at"))
+
+    def test_processing_state_recovery_budget_table(self):
+        # count -> (state, auto_retryable): the V1 diagnostic stays retryable
+        # throughout, only the job's real retry budget decides.
+        cases = ((0, "recovering", True), (2, "recovering", True), (3, "recovery_exhausted", False))
+        for count, state, auto in cases:
+            with self.subTest(automatic_retry_count=count):
+                self.root = Path(self.temporary.name) / f"budget-{count}" / "transcripts"
+                self.memory_root = Path(self.temporary.name) / f"budget-{count}" / "memory"
+                now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+                service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+                job = self.run_playback_retry_attempt(service, count)
+                video_dir = service._video_dir(job["source_id"])
+                manifest = service._read_json(service._manifest_path(job["source_id"]))
+                self.assertIs(True, service._v1_recovery_diagnostic(video_dir, manifest)["auto_retryable"])
+                self.assertEqual(count, job["automatic_retry_count"])
+                result = service.learning_segments(job["source_id"])
+                expected_retry = (now[0] + timedelta(seconds=2 * 2 ** count)).isoformat() if auto else None
+                self.assert_processing_state(result, state, done=False, auto=auto, retry_after=expected_retry)
+                self.assertTrue(result["phase1_processing_done"])
+                self.assertTrue(result["retryable"])  # manual retry keeps existing rules
+                self.assertEqual("v1_map_fallback", result["error_code"])
+                self.assertIs(auto, job["auto_retryable"])
+                self.assertEqual(expected_retry, job.get("next_retry_at"))
+                self.assertIs(not auto, job.get("auto_retry_exhausted", False))
+                if not auto:
+                    now[0] += timedelta(hours=2)
+                    service.run_pending()
+                    service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+                    self.assertEqual(1, len(service._all_batches()))
+                    self.assertEqual(
+                        "recovery_exhausted", service.learning_segments(job["source_id"])["processing_state"],
+                    )
+                service.close()
+
+    def test_processing_state_cancel_and_in_progress_table(self):
+        service = self.service(FakeOrchestrator())
+        job = self.run_job(service)
+        baseline = service.learning_segments(job["source_id"])
+        future = (service.now_provider() + timedelta(seconds=1)).isoformat()
+        past = (service.now_provider() - timedelta(seconds=1)).isoformat()
+        cases = (
+            ("stale organizing after job cancel", dict(status="organizing", cancel_requested=True), None, "cancelled"),
+            ("stale organizing after batch cancel", dict(status="organizing"), True, "cancelled"),
+            ("cancelled with due retry", dict(status="cancelled", auto_retryable=True, retryable=True, next_retry_at=past), None, "cancelled"),
+            ("organizing", dict(status="organizing", stage="reviewing"), None, "processing"),
+            ("queued", dict(status="queued", stage="queued"), None, "processing"),
+        )
+        for name, changes, batch_cancel, state in cases:
+            with self.subTest(name):
+                batch = service._all_batches()[0]
+                batch["origin"] = "playback"
+                batch.pop("cancel_requested", None)
+                if batch_cancel:
+                    batch["cancel_requested"] = True
+                stored = batch["jobs"][0]
+                for key in ("cancel_requested", "auto_retryable", "next_retry_at"):
+                    stored.pop(key, None)
+                stored.update(dict(status="completed", stage="completed"), **changes)
+                service._write_json(service._batch_path(batch["id"]), batch)
+                result = service.learning_segments(job["source_id"])
+                self.assert_processing_state(result, state, done=False, auto=False)
+                self.assertEqual(baseline["segments"], result["segments"])
+                self.assertEqual(baseline["available_ranges"], result["available_ranges"])
+                self.assertIs(state == "processing", result["is_processing"])
+                if state == "cancelled":
+                    service._schedule_due_playback_retries()
+                    self.assertEqual(1, len(service._all_batches()))
+        self.set_stored_job(service, status="completed", stage="completed")
+        self.assertEqual("completed", service.learning_segments(job["source_id"])["processing_state"])
+
+    def test_processing_state_waiting_source_and_ai_unconfigured_are_not_done_or_exhausted(self):
+        self.assertEqual(
+            "not_started",
+            self.service(FakeOrchestrator()).learning_segments(self.video()["source_id"])["processing_state"],
+        )
+        remote = TranscriptService(
+            self.root,
+            subtitle_fetcher=lambda _source: {"status": "processing"},
+            ai_context_provider=lambda: AIContext(object(), "v1-model", "endpoint", True),
+            pipeline=CompleteV1Pipeline(),
+            orchestrator=FakeOrchestrator(),
+            memory_root=self.memory_root,
+            sleeper=lambda _delay: None,
+            autostart_worker=False,
+        )
+        job = self.run_job(remote)
+        self.assertEqual("waiting_remote", job["status"])
+        result = remote.learning_segments(job["source_id"])
+        self.assert_processing_state(result, "waiting_source", done=False, auto=False, retry_after=job["next_retry_at"], content=False)
+        self.set_stored_job(remote, status="failed", stage="remote_retry_exhausted", automatic_retry_count=3, auto_retryable=True)
+        result = remote.learning_segments(job["source_id"])
+        self.assert_processing_state(result, "waiting_source", done=False, auto=False, content=False)
+        self.set_stored_job(remote, status="waiting_for_ai", stage="waiting_for_ai")
+        self.assertEqual("ai_unconfigured", remote.learning_segments(job["source_id"])["processing_state"])
+
+        for phase1 in (False, True):
+            with self.subTest(ai_disabled_phase1=phase1):
+                self.root = Path(self.temporary.name) / f"no-ai-{phase1}" / "transcripts"
+                service = self.service(FakeOrchestrator(), phase1=phase1)
+                service.ai_context_provider = lambda: AIContext(None, "", "", False)
+                job = self.run_job(service)
+                self.set_stored_job(service, automatic_retry_count=3)
+                result = service.learning_segments(job["source_id"])
+                self.assert_processing_state(result, "ai_unconfigured", done=False, auto=False)
+                self.assertIsNone(result["retry_after"])
+
 
 if __name__ == "__main__":
     unittest.main()
