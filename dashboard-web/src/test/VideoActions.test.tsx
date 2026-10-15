@@ -410,6 +410,55 @@ describe("video action capabilities and isolation", () => {
     expect(screen.getByRole("button", { name: "查看 AI 总结" })).toBeTruthy();
   });
 
+  it("labels a finished content-only review as finished without auto retry", () => {
+    const retry = vi.fn();
+    render(
+      <VideosView
+        videos={[other]}
+        transcriptJobs={[
+          {
+            ...completed,
+            phase1_status: "completed_with_warnings",
+            processing_state: "finished_needs_review",
+          } as TranscriptJob,
+        ]}
+        onRetryTranscript={retry}
+      />,
+    );
+    menu("乙课", "查看学习材料");
+    expect(
+      screen.getByText(
+        "校对已结束，部分内容需核对；学习材料可阅读，可在详情中查看待确认项。",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看 AI 总结" })).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("labels exhausted automatic recovery as needing a manual retry", () => {
+    const retry = vi.fn();
+    render(
+      <VideosView
+        videos={[other]}
+        transcriptJobs={[
+          {
+            ...completed,
+            status: "completed_with_warnings",
+            auto_retry_exhausted: true,
+          },
+        ]}
+        onRetryTranscript={retry}
+      />,
+    );
+    menu("乙课", "查看学习材料");
+    expect(
+      screen.getByText(
+        "自动恢复已用尽，可手动重试；已生成的学习材料仍可阅读。",
+      ),
+    ).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
   it("does not keep playback busy while subtitles are pending and allows AI organization", async () => {
     let finishSubtitle:
       | ((value: { subtitleMessage: string }) => void)

@@ -1054,6 +1054,7 @@ function VideosAdapter({
             status: result.status,
             message: result.message,
             isProcessing: result.is_processing,
+            processingState: result.processing_state,
             processingDone: result.processing_done,
             autoRetryable: result.auto_retryable,
             stage: result.stage,

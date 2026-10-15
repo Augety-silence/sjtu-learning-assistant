@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TranscriptTimedContent } from "@/components/TranscriptPhase1Panels";
+import {
+  asTranscriptProcessingState,
+  formatFutureRetryTime,
+  TranscriptTimedContent,
+  transcriptStageLabel,
+} from "@/components/TranscriptPhase1Panels";
 import type { CourseVideoItem } from "@/components/VideosView";
+import type { TranscriptProcessingState } from "@/lib/types";
 
 export interface VideoPlaybackPosition {
   positionSeconds: number;
@@ -21,6 +27,8 @@ export interface VideoLearningSegment {
 export interface VideoLearningSegmentsResult {
   status: "ready" | "processing" | "empty";
   message?: string;
+  /** C3 contract; absent on older responses (legacy flags are used then). */
+  processingState?: TranscriptProcessingState | null;
   segments: VideoLearningSegment[];
   availableRanges?: [number, number][];
   sourceVersion?: string;
@@ -39,18 +47,65 @@ export interface VideoLearningSegmentsResult {
   failedSegments?: number;
 }
 
-function formatScheduledRetry(retryAfter?: string | null): string | null {
-  if (!retryAfter) return null;
-  const retryTime = new Date(retryAfter);
+const technicalStates = new Set<TranscriptProcessingState>([
+  "recovering",
+  "recovery_exhausted",
+  "failed",
+]);
+
+/**
+ * Effective state: the explicit `processingState` when valid, otherwise a
+ * conservative mapping of the legacy flags (null keeps the legacy copy).
+ */
+function effectiveState(
+  result: VideoLearningSegmentsResult,
+): TranscriptProcessingState | null {
+  const explicit = asTranscriptProcessingState(result.processingState);
+  if (explicit) return explicit;
+  if (result.isProcessing) return "processing";
   if (
-    !Number.isFinite(retryTime.getTime()) ||
-    retryTime.getTime() <= Date.now()
+    result.processingDone === true &&
+    (result.stage === "needs_review" ||
+      result.errorCode === "content_uncertain")
   )
-    return null;
-  return retryTime.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+    return "finished_needs_review";
+  if (
+    result.autoRetryable === true &&
+    result.errorCode !== "content_uncertain" &&
+    formatFutureRetryTime(result.retryAfter)
+  )
+    return "recovering";
+  return null;
+}
+
+function stateCopy(
+  state: TranscriptProcessingState,
+  result: VideoLearningSegmentsResult,
+): string {
+  const stage = transcriptStageLabel(result.stage);
+  const draft = result.status === "ready" ? "初稿可读，" : "";
+  switch (state) {
+    case "processing":
+      return "初稿可读，校对仍在进行";
+    case "finished_needs_review":
+      return "校对已结束，部分内容需核对";
+    case "completed":
+      return "学习材料与校对均已完成";
+    case "recovering":
+      return `${draft}${stage}未完成，等待自动恢复`;
+    case "recovery_exhausted":
+      return "自动恢复已用尽，可手动重试";
+    case "failed":
+      return `${draft}${stage}未完成；任务已结束，可手动重试`;
+    case "cancelled":
+      return "整理已取消，已生成的内容仍保留";
+    case "waiting_source":
+      return "等待课程字幕就绪";
+    case "ai_unconfigured":
+      return "未配置 AI 服务，当前显示未经 AI 校对的内容";
+    case "not_started":
+      return "尚未开始整理";
+  }
 }
 
 export function VideoSynchronizedLearning({
@@ -151,12 +206,15 @@ export function VideoSynchronizedLearning({
     };
   }, [attempt, courseId, revision, video.id]);
   const visible = sourceId === video.id ? result : undefined;
+  const state = visible ? effectiveState(visible) : null;
+  const explicitState = visible
+    ? asTranscriptProcessingState(visible.processingState)
+    : null;
+  // Only a real pending recovery (future retry_after, budget left) shows a
+  // countdown; finished review, exhaustion and failures never promise one.
   const scheduledRetryTime =
-    visible?.status === "ready" &&
-    !visible.isProcessing &&
-    visible.autoRetryable === true &&
-    visible.errorCode !== "content_uncertain"
-      ? formatScheduledRetry(visible.retryAfter)
+    visible && !visible.isProcessing && state === "recovering"
+      ? formatFutureRetryTime(visible.retryAfter)
       : null;
   const segments = visible?.segments ?? [];
   const active = segments.find(
@@ -217,7 +275,12 @@ export function VideoSynchronizedLearning({
           重新检查
         </button>
       )}
-      {visible?.stage && <p>当前阶段：{visible.stage}</p>}
+      {visible?.stage &&
+        (state && technicalStates.has(state) ? (
+          <p>失败阶段：{transcriptStageLabel(visible.stage)}</p>
+        ) : (
+          <p>当前阶段：{visible.stage}</p>
+        ))}
       {(visible?.errorCode || visible?.errorMessage) && (
         <p role="alert">
           {[visible.errorCode, visible.errorMessage].filter(Boolean).join("：")}
@@ -233,25 +296,28 @@ export function VideoSynchronizedLearning({
           {visible.failedSegments ?? 0} 段
         </p>
       )}
-      {visible?.status === "ready" && (
-        <p>
-          {visible.isProcessing
-            ? "初稿可读，校对仍在进行"
-            : visible.processingDone === true &&
-                (visible.stage === "needs_review" ||
-                  visible.errorCode === "content_uncertain")
-              ? "校对已结束，部分内容需核对"
-              : (visible.failedSegments ?? 0) > 0
-                ? "初稿可读，部分校对未通过；任务已结束"
-                : visible.completedSegments != null ||
-                    visible.failedSegments != null
-                  ? "当前材料处理已结束"
-                  : "初稿可读，最终校对状态尚未确认"}
-        </p>
-      )}
+      {visible &&
+        (visible.status === "ready" ||
+          (explicitState &&
+            explicitState !== "processing" &&
+            explicitState !== "not_started")) && (
+          <p>
+            {visible.isProcessing
+              ? "初稿可读，校对仍在进行"
+              : state && (explicitState || state !== "processing")
+                ? stateCopy(state, visible)
+                : (visible.failedSegments ?? 0) > 0
+                  ? "初稿可读，部分校对未通过；任务已结束"
+                  : visible.completedSegments != null ||
+                      visible.failedSegments != null
+                    ? "当前材料处理已结束"
+                    : "初稿可读，最终校对状态尚未确认"}
+          </p>
+        )}
       {visible?.retryable && onRetry && (
         <button type="button" onClick={() => void onRetry()}>
-          {visible.errorCode === "content_uncertain" ||
+          {state === "finished_needs_review" ||
+          visible.errorCode === "content_uncertain" ||
           visible.stage === "needs_review"
             ? "重新校对"
             : "继续失败阶段"}

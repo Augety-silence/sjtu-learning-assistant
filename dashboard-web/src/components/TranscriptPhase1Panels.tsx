@@ -6,6 +6,8 @@ import type {
   Phase1CorrectionChange,
   Phase1TermCandidate,
   Phase1UncertainSpan,
+  TranscriptJob,
+  TranscriptProcessingState,
 } from "@/lib/types";
 
 const MAX_CORRECTED_CHARACTERS = 100_000;
@@ -522,6 +524,138 @@ function unresolvedRate(quality: UnknownRecord) {
     asNumber(metrics?.unresolved_rate) ??
     asNumber(metrics?.pending_confirmation_rate)
   );
+}
+
+const processingStates: readonly TranscriptProcessingState[] = [
+  "not_started",
+  "cancelled",
+  "processing",
+  "waiting_source",
+  "ai_unconfigured",
+  "completed",
+  "finished_needs_review",
+  "recovering",
+  "recovery_exhausted",
+  "failed",
+];
+
+/** Narrow an untrusted `processing_state` value; unknown values are ignored. */
+export function asTranscriptProcessingState(
+  value: unknown,
+): TranscriptProcessingState | null {
+  return typeof value === "string" &&
+    processingStates.includes(value as TranscriptProcessingState)
+    ? (value as TranscriptProcessingState)
+    : null;
+}
+
+/**
+ * Mirrors the backend rule for a finished, schema-valid review whose content
+ * is only uncertain (never a technical failure, never auto-retried).
+ */
+export function isPhase1ContentUncertain(value: unknown) {
+  const quality = asRecord(value);
+  if (!quality) return false;
+  const uncertain = asNumber(quality.uncertain_rate);
+  const critic = asNumber(quality.critic_pass_rate);
+  return (
+    asBoolean(quality.schema_pass) === true &&
+    asBoolean(quality.passed) !== true &&
+    ((uncertain !== null && uncertain > 0) || (critic !== null && critic < 1))
+  );
+}
+
+const stageLabels: Record<string, string> = {
+  map: "字幕分块整理",
+  guide_generation: "学习讲义生成",
+  audit: "讲义审校",
+  v1: "字幕整理",
+  phase1: "AI 深度校对",
+  phase1_quality: "AI 深度校对",
+  deep_review: "AI 深度校对",
+  reviewing: "AI 深度校对",
+  organizing: "字幕整理",
+  fetching: "字幕获取",
+  subtitle: "字幕获取",
+};
+
+/** Human-readable failed stage; unknown codes are shown as-is. */
+export function transcriptStageLabel(stage?: string | null) {
+  if (!stage) return "未知阶段";
+  return stageLabels[stage] ?? stage;
+}
+
+/** Local clock time of a future retry, or null for missing/past/invalid. */
+export function formatFutureRetryTime(
+  retryAfter?: string | null,
+  now = Date.now(),
+): string | null {
+  if (!retryAfter) return null;
+  const time = new Date(retryAfter).getTime();
+  if (!Number.isFinite(time) || time <= now) return null;
+  return new Date(time).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+type TranscriptJobStateInput = TranscriptJob & {
+  processing_state?: unknown;
+  auto_retryable?: boolean;
+  next_retry_at?: string | null;
+  diagnostic?: unknown;
+};
+
+export type TranscriptJobRecoveryState =
+  | "finished_needs_review"
+  | "recovering"
+  | "recovery_exhausted";
+
+/**
+ * Finished-review / recovery classification for a job record. Prefers an
+ * explicit `processing_state`; older job payloads fall back to the legacy
+ * flags. Anything else returns null so existing status copy is unchanged.
+ */
+export function deriveTranscriptJobRecoveryState(
+  job?: TranscriptJob | null,
+  active = false,
+): TranscriptJobRecoveryState | null {
+  if (!job || active) return null;
+  const value = job as TranscriptJobStateInput;
+  const explicit = asTranscriptProcessingState(value.processing_state);
+  if (explicit)
+    return explicit === "finished_needs_review" ||
+      explicit === "recovering" ||
+      explicit === "recovery_exhausted"
+      ? explicit
+      : null;
+  if (job.status === "cancelled") return null;
+  if (value.auto_retry_exhausted === true) return "recovery_exhausted";
+  const diagnostic = asRecord(value.diagnostic);
+  const code = asString(diagnostic?.code);
+  if (
+    value.auto_retryable === true &&
+    code !== "content_uncertain" &&
+    formatFutureRetryTime(value.next_retry_at ?? job.retry_after)
+  )
+    return "recovering";
+  const technical =
+    job.review_status === "failed" ||
+    Boolean(job.phase1_warning) ||
+    (code !== null && code !== "content_uncertain");
+  if (
+    job.status === "completed" &&
+    !technical &&
+    isPhase1ContentUncertain(job.quality)
+  )
+    return "finished_needs_review";
+  return null;
+}
+
+/** Failed stage recorded for a job (diagnostic first, then current stage). */
+export function transcriptJobFailedStage(job: TranscriptJob) {
+  const diagnostic = asRecord((job as TranscriptJobStateInput).diagnostic);
+  return asString(diagnostic?.stage) ?? job.stage;
 }
 
 export function isTranscriptQualityRisk(value: unknown) {

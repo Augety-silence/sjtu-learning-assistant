@@ -941,6 +941,8 @@ export interface TranscriptLearningSegmentsDto {
   message?: string;
   source_version?: string;
   is_processing?: boolean;
+  /** C3 contract; optional so older responses use the legacy flags. */
+  processing_state?: import("@/lib/types").TranscriptProcessingState | null;
   processing_done?: boolean;
   auto_retryable?: boolean;
   stage?: string | null;

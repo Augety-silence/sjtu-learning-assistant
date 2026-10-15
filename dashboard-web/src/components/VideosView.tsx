@@ -32,7 +32,10 @@ import { createPortal } from "react-dom";
 import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
-import { TranscriptQualityWarning } from "@/components/TranscriptPhase1Panels";
+import {
+  deriveTranscriptJobRecoveryState,
+  TranscriptQualityWarning,
+} from "@/components/TranscriptPhase1Panels";
 import {
   type VideoLearningSegmentsResult,
   type VideoPlaybackPosition,
@@ -1312,6 +1315,10 @@ export function VideosView({
     selectedSummaryPending || transcriptIsProcessing(selectedJob);
   const selectedSummaryReady = transcriptHasLearningMaterials(selectedJob);
   const selectedSummaryFailed = transcriptNeedsRetry(selectedJob);
+  const selectedRecovery = deriveTranscriptJobRecoveryState(
+    selectedJob,
+    selectedSummaryProcessing,
+  );
   const selectedTasks = selected
     ? tasks.filter((task) => task.videoId === selected.id)
     : [];
@@ -2837,11 +2844,15 @@ export function VideosView({
       const summaryMessage = requestError
         ? `${requestError}。可重试生成。`
         : selectedSummaryReady
-          ? deriveVideoLearningState(selectedJob).partial
-            ? "学习材料可阅读，AI 校对尚未通过；可在详情中补充或重试。"
-            : phase1IsReady(selectedJob)
-              ? "学习材料与 AI 校对均已完成，可查看总结。"
-              : "学习材料已生成，可查看总结；可在详情中补充 AI 校对。"
+          ? selectedRecovery === "finished_needs_review"
+            ? "校对已结束，部分内容需核对；学习材料可阅读，可在详情中查看待确认项。"
+            : selectedRecovery === "recovery_exhausted"
+              ? "自动恢复已用尽，可手动重试；已生成的学习材料仍可阅读。"
+              : deriveVideoLearningState(selectedJob).partial
+                ? "学习材料可阅读，AI 校对尚未通过；可在详情中补充或重试。"
+                : phase1IsReady(selectedJob)
+                  ? "学习材料与 AI 校对均已完成，可查看总结。"
+                  : "学习材料已生成，可查看总结；可在详情中补充 AI 校对。"
           : selectedSummaryFailed
             ? selectedJob?.error ||
               selectedJob?.message ||

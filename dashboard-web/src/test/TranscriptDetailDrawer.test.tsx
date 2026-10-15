@@ -143,8 +143,12 @@ describe("TranscriptDetailDrawer Phase1", () => {
 
     renderDrawer({ ...job, status: "partial" });
 
-    await screen.findByText(job.message as string);
-    expect(screen.getAllByText(job.message as string)).toHaveLength(1);
+    // A finished partial job states its terminal outcome once instead of the
+    // stale in-progress job message.
+    const terminal = "任务已结束，存在未通过或未完成阶段";
+    await screen.findByText(terminal);
+    expect(screen.getAllByText(terminal)).toHaveLength(1);
+    expect(screen.queryByText(job.message as string)).toBeNull();
     const more = screen.getByText("更多操作");
     expect(more.closest("details")?.hasAttribute("open")).toBe(false);
   });
@@ -657,5 +661,162 @@ describe("live artifact recovery", () => {
     );
     expect(await screen.findByText("重读后讲义")).toBeTruthy();
     expect(readV1).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("finished review and recovery states", () => {
+  const uncertainQuality = {
+    score: 0.7,
+    passed: false,
+    metrics: {},
+    warnings: [],
+    schema_pass: true,
+    critic_pass_rate: 0.9,
+    uncertain_rate: 0.1,
+    numeric_change_count: 0,
+    unsupported_change_count: 0,
+    status: "completed_with_warnings" as const,
+  };
+  const recoveryJob = (
+    extra: Record<string, unknown>,
+  ): TranscriptJob & Record<string, unknown> => ({
+    ...job,
+    status: "completed",
+    stage: "completed",
+    progress: 100,
+    ...extra,
+  });
+  const renderWith = (currentJob: TranscriptJob) => {
+    const retry = vi.fn();
+    render(
+      <TranscriptDetailDrawer
+        job={currentJob}
+        onClose={vi.fn()}
+        onRetry={retry}
+      />,
+    );
+    return retry;
+  };
+
+  it("shows finished content-only review without processing or countdown", async () => {
+    getV2.mockResolvedValue({ ...v2List(), quality: uncertainQuality });
+    const retry = renderWith(
+      recoveryJob({
+        processing_state: "finished_needs_review",
+        phase1_status: "completed_with_warnings",
+        quality: uncertainQuality,
+        retry_after: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    );
+    expect(await screen.findByText("校对已结束，部分内容需核对")).toBeTruthy();
+    expect(screen.queryByText("正在处理")).toBeNull();
+    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
+    expect(screen.queryByText(/预计/)).toBeNull();
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+    // Usable material stays readable; nothing retries by itself.
+    expect(
+      await screen.findByRole("heading", { name: "本节要点" }),
+    ).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("falls back to legacy quality flags for finished review", async () => {
+    getV2.mockResolvedValue({ ...v2List(), quality: uncertainQuality });
+    const retry = renderWith(
+      recoveryJob({
+        phase1_status: "completed_with_warnings",
+        quality: uncertainQuality,
+        auto_retryable: false,
+        diagnostic: { stage: "needs_review", code: "content_uncertain" },
+      }),
+    );
+    expect(await screen.findByText("校对已结束，部分内容需核对")).toBeTruthy();
+    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("names the failed stage and the real retry time while recovering", async () => {
+    getV2.mockResolvedValue(v2List());
+    const retryAfter = new Date(Date.now() + 3_600_000).toISOString();
+    const expected = new Date(retryAfter).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const retry = renderWith(
+      recoveryJob({
+        status: "completed_with_warnings",
+        processing_state: "recovering",
+        auto_retryable: true,
+        next_retry_at: retryAfter,
+        retryable: true,
+        diagnostic: { stage: "guide_generation", code: "v1_guide_schema" },
+      }),
+    );
+    expect(
+      await screen.findByText(
+        `学习讲义生成未完成，等待自动恢复（预计 ${expected}）`,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("失败阶段：学习讲义生成")).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("does not show a countdown for a past retry time", async () => {
+    getV2.mockResolvedValue(v2List());
+    renderWith(
+      recoveryJob({
+        status: "completed_with_warnings",
+        auto_retryable: true,
+        next_retry_at: new Date(Date.now() - 60_000).toISOString(),
+        diagnostic: { stage: "audit", code: "v1_audit_schema" },
+      }),
+    );
+    expect(
+      await screen.findByText("任务已结束，存在未通过或未完成阶段"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
+  });
+
+  it.each([
+    ["explicit state", { processing_state: "recovery_exhausted" }],
+    ["legacy flag", { auto_retry_exhausted: true, auto_retryable: false }],
+  ])(
+    "states exhausted recovery and offers manual retry (%s)",
+    async (_, extra) => {
+      getV2.mockResolvedValue(v2List());
+      const retry = renderWith(
+        recoveryJob({
+          status: "completed_with_warnings",
+          retryable: true,
+          retry_after: new Date(Date.now() + 3_600_000).toISOString(),
+          diagnostic: { stage: "map", code: "v1_map_fallback" },
+          ...extra,
+        }),
+      );
+      expect(
+        await screen.findByText("自动恢复已用尽，可手动重试"),
+      ).toBeTruthy();
+      expect(screen.getByText("失败阶段：字幕分块整理")).toBeTruthy();
+      expect(screen.queryByText(/等待自动恢复/)).toBeNull();
+      expect(screen.queryByText(/预计/)).toBeNull();
+      fireEvent.click(screen.getByText("更多操作"));
+      expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+      expect(retry).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps active progress authoritative over a stale recovery state", async () => {
+    getV2.mockResolvedValue(v2List());
+    renderWith(
+      recoveryJob({
+        status: "organizing",
+        stage: "organizing",
+        progress: 40,
+        processing_state: "recovery_exhausted",
+      }),
+    );
+    expect(await screen.findByText("正在处理")).toBeTruthy();
+    expect(screen.getByText("40%")).toBeTruthy();
+    expect(screen.queryByText("自动恢复已用尽，可手动重试")).toBeNull();
   });
 });

@@ -397,4 +397,156 @@ describe("video synchronized learning", () => {
     expect(await screen.findByText("重查成功")).toBeTruthy();
     expect(load).toHaveBeenCalledTimes(2);
   });
+
+  describe("processing_state contract", () => {
+    const future = () => new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const renderState = (result: Partial<VideoLearningSegmentsResult>) => {
+      const onRetry = vi.fn();
+      const load = vi.fn().mockResolvedValue({
+        status: "ready" as const,
+        isProcessing: false,
+        segments: [segment("draft", "可读初稿")],
+        ...result,
+      });
+      render(
+        <VideoSynchronizedLearning
+          video={first}
+          playbackTime={0}
+          refreshing={false}
+          onLoad={load}
+          onSeek={vi.fn()}
+          onRetry={onRetry}
+        />,
+      );
+      return { load, onRetry };
+    };
+
+    it("finished review keeps material, shows no countdown and never retries by itself", async () => {
+      vi.useFakeTimers();
+      const { load, onRetry } = renderState({
+        processingState: "finished_needs_review",
+        processingDone: true,
+        autoRetryable: true,
+        retryable: true,
+        stage: "needs_review",
+        errorCode: "content_uncertain",
+        retryAfter: future(),
+      });
+      await act(async () => undefined);
+      expect(screen.getByText("校对已结束，部分内容需核对")).toBeTruthy();
+      expect(screen.getByText("可读初稿")).toBeTruthy();
+      expect(screen.queryByText(/将自动继续失败阶段/)).toBeNull();
+      expect(screen.queryByText("初稿可读，校对仍在进行")).toBeNull();
+      expect(screen.getByRole("button", { name: "重新校对" })).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+      expect(load).toHaveBeenCalledOnce();
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+
+    it("recovering names the failed stage and shows the real retry time", async () => {
+      const retryAfter = future();
+      const expected = new Date(retryAfter).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      renderState({
+        processingState: "recovering",
+        autoRetryable: true,
+        retryable: true,
+        stage: "guide_generation",
+        errorCode: "v1_guide_schema",
+        retryAfter,
+      });
+      expect(
+        await screen.findByText("初稿可读，学习讲义生成未完成，等待自动恢复"),
+      ).toBeTruthy();
+      expect(screen.getByText("失败阶段：学习讲义生成")).toBeTruthy();
+      expect(
+        screen.getByText(`将自动继续失败阶段（预计 ${expected}）`),
+      ).toBeTruthy();
+    });
+
+    it("recovering without a future retry time promises no countdown", async () => {
+      renderState({
+        processingState: "recovering",
+        autoRetryable: true,
+        retryable: true,
+        stage: "audit",
+        retryAfter: new Date(Date.now() - 60_000).toISOString(),
+      });
+      await screen.findByText("失败阶段：讲义审校");
+      expect(screen.queryByText(/将自动继续失败阶段/)).toBeNull();
+    });
+
+    it("exhausted recovery says so and only offers a manual retry", async () => {
+      const { onRetry } = renderState({
+        processingState: "recovery_exhausted",
+        autoRetryable: true,
+        retryable: true,
+        stage: "map",
+        errorCode: "v1_map_fallback",
+        retryAfter: future(),
+      });
+      expect(
+        await screen.findByText("自动恢复已用尽，可手动重试"),
+      ).toBeTruthy();
+      expect(screen.getByText("失败阶段：字幕分块整理")).toBeTruthy();
+      expect(screen.queryByText(/将自动继续失败阶段/)).toBeNull();
+      expect(onRetry).not.toHaveBeenCalled();
+      await act(async () =>
+        screen.getByRole("button", { name: "继续失败阶段" }).click(),
+      );
+      expect(onRetry).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ["completed", "学习材料与校对均已完成"],
+      ["cancelled", "整理已取消，已生成的内容仍保留"],
+      ["waiting_source", "等待课程字幕就绪"],
+      ["ai_unconfigured", "未配置 AI 服务，当前显示未经 AI 校对的内容"],
+      ["failed", "初稿可读，字幕整理未完成；任务已结束，可手动重试"],
+    ] as const)("labels %s accurately", async (state, copy) => {
+      renderState({
+        processingState: state,
+        stage: "v1",
+        retryAfter: future(),
+      });
+      expect(await screen.findByText(copy)).toBeTruthy();
+      expect(screen.queryByText(/将自动继续失败阶段/)).toBeNull();
+      expect(screen.queryByText("校对已结束，部分内容需核对")).toBeNull();
+    });
+
+    it("processing shows real progress instead of a finished state", async () => {
+      renderState({
+        processingState: "processing",
+        isProcessing: true,
+        completedSegments: 2,
+        failedSegments: 0,
+      });
+      expect(await screen.findByText("初稿可读，校对仍在进行")).toBeTruthy();
+      expect(screen.getByText(/已完成 2 段 · 失败 0 段/)).toBeTruthy();
+    });
+
+    it("ignores an unknown state and falls back to legacy flags", async () => {
+      renderState({
+        processingState: "future_state" as never,
+        processingDone: true,
+        stage: "needs_review",
+        errorCode: "content_uncertain",
+      });
+      expect(
+        await screen.findByText("校对已结束，部分内容需核对"),
+      ).toBeTruthy();
+    });
+
+    it("legacy responses without flags never claim success", async () => {
+      renderState({});
+      expect(
+        await screen.findByText("初稿可读，最终校对状态尚未确认"),
+      ).toBeTruthy();
+      expect(screen.queryByText("学习材料与校对均已完成")).toBeNull();
+    });
+  });
 });
