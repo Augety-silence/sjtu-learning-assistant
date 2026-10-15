@@ -90,7 +90,7 @@ export function EvidencePeekDemo() {
             mode={mode}
             variant="inline"
             quote={null}
-            sourceLabel={undefined}
+            sourceLabel={null}
             startMs={Number.NaN}
             endMs={null}
           />

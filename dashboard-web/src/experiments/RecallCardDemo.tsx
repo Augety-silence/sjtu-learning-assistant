@@ -104,7 +104,7 @@ export function RecallCardDemo() {
               mode={mode}
               variant="crossfade"
               question="   "
-              answer={undefined}
+              answer={null}
               sourceLabel={null}
             />
           </>

@@ -189,3 +189,7 @@ import { MaterialUpdateNotice } from "@/components/experiments/MaterialUpdateNot
 | MaterialUpdateNotice | 默认 6 秒自动收起 | 同步讲义面板副标题旁 | `revision` 必须是稳定的修订号，不要传时间戳或每次轮询都变的值 |
 
 四个组件都只依赖 props 和回调，没有请求接口、没有全局状态，可以单独挑选接入。
+
+## 视觉检查
+
+没有启动开发服务器（运行环境不允许监听端口）。截图流程：用仓库外的临时 Vite 配置把 `widget-lab.html` 单独构建到 `/tmp`，再用 Playwright 无头 Chromium 打开，静态文件通过 `page.route` 直接提供，所有外部请求都被拦截。截了三组：浅色、深色、窄屏 340px 叠加系统级减少动态效果。截图过程中没有页面报错，也没有外部请求；在减少动态效果模式下，所有组件的 `data-motion` 都是 `static`。
