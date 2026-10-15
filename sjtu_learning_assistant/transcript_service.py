@@ -529,6 +529,7 @@ class TranscriptService:
         videos: Sequence[Mapping[str, Any]],
         force_phase1: bool = False,
         automatic_retry_count: int = 0,
+        retry_failed_v1: bool = False,
     ) -> dict[str, Any]:
         key = str(course_id).strip()
         if not key.isdigit() or not 1 <= len(videos) <= 100:
@@ -554,6 +555,9 @@ class TranscriptService:
                 "reused": False,
                 "error": None,
                 "force_phase1": bool(force_phase1),
+                # Regenerate V1 map chunks that previously fell back, without
+                # necessarily bypassing a valid Phase1 review cache.
+                "retry_failed_v1": bool(force_phase1 or retry_failed_v1),
                 "automatic_retry_count": max(0, min(self.playback_auto_retry_limit, int(automatic_retry_count))),
             }
             for video in clean_videos
@@ -580,6 +584,7 @@ class TranscriptService:
         result.pop("owner", None)
         result.pop("video_dir", None)
         result.pop("force_phase1", None)
+        result.pop("retry_failed_v1", None)
         return result
 
     def _public_batch(self, batch: Mapping[str, Any]) -> dict[str, Any]:
@@ -703,6 +708,7 @@ class TranscriptService:
         prepare_key = self._idempotency_key(clean["source_id"], "playback", context)
         auto_retry_count = 0
         retry_source = None
+        retry_batch_id = None
         with self._lock:
             matching = [
                 (batch, job) for batch in self._all_batches() for job in batch.get("jobs", [])
@@ -729,6 +735,7 @@ class TranscriptService:
                         return self._public_batch(batch)
                     if job.get("retryable", True):
                         retry_source = job
+                        retry_batch_id = batch.get("id")
                         auto_retry_count = retry_count + 1
                         break
             for batch, job in matching:
@@ -746,6 +753,7 @@ class TranscriptService:
                             if job.get("auto_retryable") is not True:
                                 return self._public_batch(batch)
                             retry_source = job
+                            retry_batch_id = batch.get("id")
                             auto_retry_count = int(job.get("automatic_retry_count") or 0) + 1
                             if auto_retry_count > self.playback_auto_retry_limit:
                                 return self._public_batch(batch)
@@ -755,13 +763,22 @@ class TranscriptService:
                             break
             started = self.start_batch(
                 course_id=course_id, course_name=course_name, videos=[clean],
-                force_phase1=bool(retry_source and retry_source.get("phase1_status") != "completed"),
+                force_phase1=bool(retry_source and self._automatic_retry_forces_phase1(retry_source)),
                 automatic_retry_count=auto_retry_count,
+                retry_failed_v1=retry_source is not None,
             )
             with self._batch_lock():
                 batch = self._read_json(self._batch_path(started["id"]))
                 batch.update(origin="playback", prepare_key=prepare_key)
                 self._write_json(self._batch_path(batch["id"]), batch)
+                if retry_source is not None and type(retry_batch_id) is str:
+                    # Consume the due retry so the scheduler cannot start a duplicate recovery.
+                    source_batch = self._read_json(self._batch_path(retry_batch_id))
+                    for source_job in source_batch.get("jobs", []):
+                        if source_job.get("id") == retry_source.get("id"):
+                            source_job["auto_retry_scheduled"] = True
+                    source_batch["updated_at"] = _now()
+                    self._write_json(self._batch_path(retry_batch_id), source_batch)
             return self._public_batch(batch)
 
     def _phase1_needs_upgrade(self, video_dir: Path, manifest: Mapping[str, Any]) -> bool:
@@ -1036,6 +1053,23 @@ class TranscriptService:
             )
         )
 
+    @classmethod
+    def _automatic_retry_forces_phase1(cls, job: Mapping[str, Any]) -> bool:
+        """Whether an automatic retry must bypass the Phase1 review cache.
+
+        Only a Phase1 technical failure (exception, schema failure or other
+        incomplete review) is replayed. A schema-valid review whose content is
+        merely uncertain is a finished decision: the retry exists to recover a
+        failed V1 stage, so the stored partial quality artifacts are reused.
+        """
+        if job.get("phase1_status") == "completed":
+            return False
+        quality = job.get("quality")
+        technical_failure = job.get("review_status") == "failed" or bool(job.get("phase1_warning"))
+        if not technical_failure and type(quality) is dict and cls._phase1_content_uncertain(quality):
+            return False
+        return True
+
     @staticmethod
     def _learning_error_message(job: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
         code = ((job.get("diagnostic") or {}).get("code") if type(job.get("diagnostic")) is dict else None)
@@ -1258,8 +1292,9 @@ class TranscriptService:
                     course_id=str(batch["course_id"]),
                     course_name=str(batch["course_name"]),
                     videos=[video],
-                    force_phase1=job.get("phase1_status") != "completed",
+                    force_phase1=self._automatic_retry_forces_phase1(job),
                     automatic_retry_count=int(job.get("automatic_retry_count") or 0) + 1,
+                    retry_failed_v1=True,
                 )
                 with self._lock, self._batch_lock():
                     created = self._read_json(self._batch_path(started["id"]))
@@ -1808,6 +1843,12 @@ class TranscriptService:
                     else "needs_review"
                 ),
             )
+            # A reused partial review must project the same retry state as a
+            # fresh one; otherwise a V1-only recovery hides manual retry.
+            self._apply_phase1_outcome(
+                job, video_dir, str(cached_manifest.get("status") or "completed"),
+                cached_manifest.get("quality"), v1_manifest,
+            )
             return
         orchestrator = self._phase1_orchestrator(context)
         job.update(
@@ -1916,6 +1957,17 @@ class TranscriptService:
         if status != "completed":
             job["partial_warning"] = True
             job["message"] = str(job.get("message") or "") + " Phase1 已降级，请查看质量报告。"
+        self._apply_phase1_outcome(job, video_dir, status, quality, v1_manifest)
+
+    def _apply_phase1_outcome(
+        self,
+        job: dict[str, Any],
+        video_dir: Path,
+        status: str,
+        quality: object,
+        v1_manifest: Mapping[str, Any] | None,
+    ) -> None:
+        """Retry/diagnostic bookkeeping shared by fresh and cached Phase1 results."""
         if status != "completed" or type(quality) is not dict or quality.get("passed") is not True:
             job["retryable"] = True
             stored_v1_manifest = v1_manifest
@@ -2083,7 +2135,7 @@ class TranscriptService:
             try:
                 value = self._read_json(path)
                 normalized = validate_map(value, chunk.cues)
-                if bool(job.get("force_phase1")) and normalized.get("partial_warning"):
+                if (bool(job.get("force_phase1")) or bool(job.get("retry_failed_v1"))) and normalized.get("partial_warning"):
                     # Explicit retry should reuse successful map checkpoints but
                     # regenerate chunks that previously fell back to raw cues.
                     continue
@@ -2305,6 +2357,7 @@ class TranscriptService:
             # Corrected-cue synchronization may re-enter _organize and must not
             # recursively trigger the same refresh.
             job["force_phase1"] = False
+            job["retry_failed_v1"] = False
             self._synchronize_corrected_learning(batch, job, video_dir, raw, context)
             current_manifest = self._read_json(manifest_path)
             state = current_manifest.get("status")
@@ -2443,6 +2496,7 @@ class TranscriptService:
             if source_cues is None:
                 self._run_phase1_safely(batch, job, video_dir, raw, context, manifest)
                 job["force_phase1"] = False
+                job["retry_failed_v1"] = False
         self._write_json(manifest_path, manifest)
         if source_cues is None:
             self._synchronize_corrected_learning(batch, job, video_dir, raw, context)

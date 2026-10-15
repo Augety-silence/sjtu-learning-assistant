@@ -4,7 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -489,6 +489,148 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.assertFalse(result["processing_done"])
         self.assertTrue(result["phase1_processing_done"])
         self.assertTrue(result["auto_retryable"])
+
+    def playback_service(self, orchestrator, pipeline, now):
+        return TranscriptService(
+            self.root,
+            subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(object(), "v1-model", "endpoint", True),
+            pipeline=pipeline,
+            orchestrator=orchestrator,
+            memory_root=self.memory_root,
+            enable_phase1=True,
+            sleeper=lambda _delay: None,
+            autostart_worker=False,
+            now_provider=lambda: now[0],
+            playback_retry_cooldown_seconds=2,
+            playback_auto_retry_limit=3,
+        )
+
+    def latest_job(self, service):
+        return service._all_batches()[0]["jobs"][0]
+
+    def assert_clean_v1_needs_review(self, service, source_id):
+        result = service.learning_segments(source_id)
+        self.assertTrue(result["processing_done"])
+        self.assertEqual("needs_review", result["stage"])
+        self.assertEqual("content_uncertain", result["error_code"])
+        self.assertFalse(result["auto_retryable"])
+        self.assertTrue(result["retryable"])
+        latest = self.latest_job(service)
+        self.assertIsNot(latest.get("auto_retryable"), True)
+        self.assertIsNone(latest.get("next_retry_at"))
+
+    def test_scheduled_v1_recovery_with_uncertain_phase1_reuses_phase1_without_review_calls(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(uncertain=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = self.playback_service(orchestrator, pipeline, now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        self.assertEqual(1, len(orchestrator.calls))
+        self.assertTrue(self.latest_job(service)["auto_retryable"])
+
+        now[0] += timedelta(seconds=3)
+        service.run_pending()  # scheduler path: _schedule_due_playback_retries
+
+        self.assertEqual(2, len(service._all_batches()))
+        self.assertEqual(1, len(orchestrator.calls))  # Phase1 cache reused, no Term/Correction/Critic
+        self.assertEqual(2, len(pipeline.calls))
+        self.assertEqual(set(), pipeline.calls[1])  # fallback chunk regenerated, not reused
+        self.assertEqual(1, self.fetches)
+        latest = self.latest_job(service)
+        self.assertTrue(latest["phase1_reused"])
+        self.assertEqual(1, latest["automatic_retry_count"])
+        manifest = service._read_json(service._manifest_path(latest["source_id"]))
+        self.assertEqual("completed", manifest["status"])
+        v2 = service._read_json(service._video_dir(latest["source_id"]) / "v2" / "manifest.json")
+        self.assertIs(v2["quality"]["passed"], False)  # partial quality artifact kept, not forced to PASS
+        self.assert_clean_v1_needs_review(service, latest["source_id"])
+
+        now[0] += timedelta(hours=2)
+        service.run_pending()
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        self.assertEqual(2, len(service._all_batches()))
+        self.assertEqual(1, len(orchestrator.calls))
+        self.assertEqual(2, len(pipeline.calls))
+        service.close()
+
+    def test_playback_prepare_v1_recovery_with_uncertain_phase1_does_not_force_phase1(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(uncertain=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = self.playback_service(orchestrator, pipeline, now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+
+        now[0] += timedelta(seconds=3)
+        retried = service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())  # prepare path
+        self.assertEqual(2, len(service._all_batches()))
+        stored = service._read_json(service._batch_path(retried["id"]))["jobs"][0]
+        self.assertIs(stored["force_phase1"], False)
+        self.assertIs(stored["retry_failed_v1"], True)
+        service.run_pending()
+
+        self.assertEqual(2, len(service._all_batches()))
+        self.assertEqual(1, len(orchestrator.calls))
+        self.assertEqual(set(), pipeline.calls[1])
+        self.assert_clean_v1_needs_review(service, self.video()["source_id"])
+        service.close()
+
+    def test_phase1_technical_failure_still_auto_recovers_with_forced_review(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(fail=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = self.playback_service(orchestrator, pipeline, now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        first = self.latest_job(service)
+        self.assertEqual("partial", first["phase1_status"])
+        self.assertTrue(first["auto_retryable"])
+        self.assertTrue(service._automatic_retry_forces_phase1(first))
+
+        orchestrator.fail = False
+        now[0] += timedelta(seconds=3)
+        service.run_pending()
+
+        self.assertEqual(2, len(orchestrator.calls))
+        latest = self.latest_job(service)
+        self.assertEqual("completed", latest["phase1_status"])
+        self.assertFalse(latest["phase1_reused"])
+        self.assertEqual(set(), pipeline.calls[1])
+        service.close()
+
+    def test_uncertain_phase1_v1_recovery_still_rebinds_cache_to_current_model(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(uncertain=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = self.playback_service(orchestrator, pipeline, now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+        self.assertEqual(1, len(orchestrator.calls))
+
+        orchestrator.model = "fake-model-v2"  # binding changed: old partial review must not be reused
+        now[0] += timedelta(seconds=3)
+        service.run_pending()
+
+        latest = self.latest_job(service)
+        self.assertEqual(2, len(orchestrator.calls))
+        self.assertFalse(latest["phase1_reused"])
+        v2 = service._read_json(service._video_dir(latest["source_id"]) / "v2" / "manifest.json")
+        self.assertIs(v2["quality"]["passed"], False)
+        service.close()
+
+    def test_schema_failed_phase1_quality_still_forces_phase1(self):
+        uncertain = {"schema_pass": True, "passed": False, "critic_pass_rate": 0.5, "uncertain_rate": 0.5}
+        schema_failed = dict(uncertain, schema_pass=False)
+        base = {"phase1_status": "partial", "review_status": "completed"}
+        self.assertFalse(TranscriptService._automatic_retry_forces_phase1(dict(base, quality=uncertain)))
+        self.assertTrue(TranscriptService._automatic_retry_forces_phase1(dict(base, quality=schema_failed)))
+        self.assertTrue(TranscriptService._automatic_retry_forces_phase1(dict(base, quality=None)))
+        self.assertTrue(TranscriptService._automatic_retry_forces_phase1(dict(base, quality=uncertain, review_status="failed")))
+        self.assertTrue(TranscriptService._automatic_retry_forces_phase1(dict(base, quality=uncertain, phase1_warning="timeout")))
+        self.assertFalse(TranscriptService._automatic_retry_forces_phase1({"phase1_status": "completed"}))
 
     def test_v1_pipeline_receives_provider_json_mode_without_ai_calls(self):
         class JsonModeCapturePipeline(CompleteV1Pipeline):
