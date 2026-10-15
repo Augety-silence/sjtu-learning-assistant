@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -781,6 +782,87 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         service.run_pending()
         self.assertEqual(fetches_before_retry, self.fetches)
         service.close()
+
+    def test_restart_interrupted_retry_waits_for_explicit_manual_retry(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        service = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        parent, parent_job = self.due_playback_parent(service, now)
+        parent_path = service._batch_path(parent["id"])
+        write_json = service._write_json
+
+        def fail_before_parent_marker(path, value):
+            if Path(path) == parent_path:
+                children = [
+                    item for item in service._all_batches()
+                    if item.get("retry_parent_job_id") == parent_job["id"]
+                ]
+                if children:
+                    raise OSError("simulated crash after retry child write")
+            return write_json(path, value)
+
+        service._write_json = fail_before_parent_marker
+        with self.assertRaisesRegex(OSError, "simulated crash after retry child write"):
+            service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service._write_json = write_json
+        children = [
+            item for item in service._all_batches()
+            if item.get("retry_parent_job_id") == parent_job["id"]
+        ]
+        self.assertEqual(1, len(children))
+        child_id = children[0]["id"]
+        child_path = service._batch_path(child_id)
+        child = service._read_json(child_path)
+        stale_owner = {
+            "pid": os.getpid(),
+            "process_start": "stale-process-start",
+            "instance_nonce": "stale-instance",
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            "lease_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+        child["owner"] = stale_owner
+        child["jobs"][0]["owner"] = stale_owner
+        service._write_json(child_path, child)
+        fetches_before_restart = self.fetches
+        service.close()
+
+        recovered = self.playback_service(FakeOrchestrator(uncertain=True), FallbackOnceV1Pipeline(), now)
+        interrupted = recovered._read_json(child_path)
+        interrupted_job = interrupted["jobs"][0]
+        self.assertEqual("interrupted", interrupted["status"])
+        self.assertEqual("interrupted", interrupted_job["status"])
+        self.assertIs(interrupted_job["auto_retryable"], False)
+        self.assertIs(interrupted_job["retryable"], True)
+        self.assertIsNone(interrupted_job["next_retry_at"])
+
+        first_prepare = recovered.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        recovered._schedule_due_playback_retries()
+        second_prepare = recovered.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        self.assertEqual(child_id, first_prepare["id"])
+        self.assertEqual(child_id, second_prepare["id"])
+        self.assertEqual(2, len(recovered._all_batches()))
+        self.assertTrue(recovered._find_job(parent_job["id"])[1]["auto_retry_scheduled"])
+        self.assertEqual(fetches_before_restart, self.fetches)
+
+        video_dir = recovered._video_dir(parent_job["source_id"])
+        cache_before_retry = {
+            str(path.relative_to(video_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in video_dir.rglob("*")
+            if path.is_file() and path.name != "manifest.json"
+        }
+        manual_retry = recovered.retry(interrupted_job["id"])
+        manual_job = recovered._read_json(recovered._batch_path(manual_retry["id"]))["jobs"][0]
+        self.assertEqual(0, manual_job["automatic_retry_count"])
+        self.assertNotIn("retry_parent_job_id", recovered._read_json(recovered._batch_path(manual_retry["id"])))
+        self.assertNotIn("origin", recovered._read_json(recovered._batch_path(manual_retry["id"])))
+        self.assertEqual(3, len(recovered._all_batches()))
+        cache_after_retry = {
+            str(path.relative_to(video_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in video_dir.rglob("*")
+            if path.is_file() and path.name != "manifest.json"
+        }
+        self.assertEqual(cache_before_retry, cache_after_retry)
+        self.assertEqual(fetches_before_restart, self.fetches)
+        recovered.close()
 
     def test_playback_prepare_v1_recovery_with_uncertain_phase1_does_not_force_phase1(self):
         now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]

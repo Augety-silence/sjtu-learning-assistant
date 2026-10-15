@@ -523,6 +523,12 @@ class TranscriptService:
                     job["status"] = "interrupted"
                     job["stage"] = "interrupted"
                     job["message"] = "上次运行被中断，可重试并复用已保存工件。"
+                    if batch.get("origin") == "playback":
+                        # A process restart is not an automatic retry. Keep
+                        # the interrupted job visible for an explicit retry.
+                        job["auto_retryable"] = False
+                        job["retryable"] = True
+                        job["next_retry_at"] = None
                     self._mark_manifest_interrupted(job)
                     job.pop("owner", None)
                     changed = True
@@ -815,6 +821,21 @@ class TranscriptService:
                             )
                     return self._public_batch(batch)
             latest_match = matching[0] if matching else None
+            if latest_match is not None:
+                latest_batch, latest_job = latest_match
+                if (
+                    latest_batch.get("origin") == "playback"
+                    and latest_batch.get("prepare_key") == prepare_key
+                    and latest_job.get("status") == "interrupted"
+                ):
+                    with self._batch_lock():
+                        interrupted = self._preserve_interrupted_playback_locked(
+                            str(latest_batch["id"]),
+                            str(latest_job["id"]),
+                            prepare_key=prepare_key,
+                        )
+                    if interrupted is not None:
+                        return self._public_batch(interrupted)
             for batch, job in matching:
                 if latest_match is not None and (batch is not latest_match[0] or job is not latest_match[1]):
                     continue
@@ -875,6 +896,45 @@ class TranscriptService:
                 _batch_metadata={"origin": "playback", "prepare_key": prepare_key},
             )
             return started
+
+    def _preserve_interrupted_playback_locked(
+        self,
+        batch_id: str,
+        job_id: str,
+        *,
+        prepare_key: str,
+    ) -> dict[str, Any] | None:
+        """Keep a restarted playback job interrupted until a user retries it."""
+        batch = self._read_json(self._batch_path(batch_id))
+        job = next((item for item in batch.get("jobs", []) if item.get("id") == job_id), None)
+        if (
+            batch.get("origin") != "playback"
+            or batch.get("prepare_key") != prepare_key
+            or job is None
+            or job.get("status") != "interrupted"
+        ):
+            return None
+        parent_batch_id = batch.get("retry_parent_batch_id")
+        parent_job_id = batch.get("retry_parent_job_id")
+        if isinstance(parent_batch_id, str) and isinstance(parent_job_id, str):
+            # If the process exited between child and parent writes, reconcile
+            # the durable child identity without resuming it automatically.
+            self._create_playback_retry_locked(
+                parent_batch_id,
+                parent_job_id,
+                expected_prepare_key=prepare_key,
+                require_retryable=False,
+            )
+            batch = self._read_json(self._batch_path(batch_id))
+            job = next((item for item in batch.get("jobs", []) if item.get("id") == job_id), None)
+            if job is None or job.get("status") != "interrupted":
+                return None
+        job["auto_retryable"] = False
+        job["retryable"] = True
+        job["next_retry_at"] = None
+        batch["updated_at"] = _now()
+        self._write_json(self._batch_path(batch_id), batch)
+        return batch
 
     def _phase1_needs_upgrade(self, video_dir: Path, manifest: Mapping[str, Any]) -> bool:
         if not self.enable_phase1:
