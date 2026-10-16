@@ -683,12 +683,19 @@ function StatusBadge({ status }: { status: UnifiedStatus }) {
 }
 
 function formatDuration(seconds?: number | null) {
-  if (seconds === null || seconds === undefined) return "时长未知";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
+  if (
+    seconds === null ||
+    seconds === undefined ||
+    !Number.isFinite(seconds) ||
+    seconds < 0
+  )
+    return "时长未知";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   return hours
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
-    : `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
+    : `${minutes}:${String(total % 60).padStart(2, "0")}`;
 }
 
 function formatRecordedAt(value?: string | null) {
@@ -739,7 +746,7 @@ function CoursePicker({
   const [popupPosition, setPopupPosition] =
     useState<CoursePopupPosition | null>(null);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
-  const current = options[selectedIndex];
+  const current = options.find((option) => option.id === value);
 
   useEffect(() => setActiveIndex(selectedIndex), [selectedIndex]);
   useEffect(() => {
@@ -868,6 +875,9 @@ function CoursePicker({
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       select(activeIndex);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      close(true);
     }
   };
 
@@ -911,7 +921,6 @@ function CoursePicker({
             }}
             role="listbox"
             aria-label="课程列表"
-            aria-activedescendant={`${id}-option-${options[activeIndex]?.id}`}
           >
             {options.map((option, index) => (
               <button
@@ -1415,9 +1424,10 @@ export function VideosView({
 
   useEffect(() => {
     const valid = new Set(videos.map((video) => video.id));
-    setSelectedIds(
-      (current) => new Set([...current].filter((id) => valid.has(id))),
-    );
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
     if (selected && !valid.has(selected.id)) setSelected(null);
   }, [videos, selected]);
   useLayoutEffect(() => {
@@ -1475,6 +1485,11 @@ export function VideosView({
     setDetailJob(null);
     setOpenMenuId(null);
     setMenuPosition(null);
+    setSpeedMenuOpen(false);
+    setShortcutsOpen(false);
+    if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
+    feedbackTimer.current = null;
+    setPlayerFeedback(null);
     setPendingSummarySourceId(null);
     setSummaryRequestError(null);
     summaryRequestedJobId.current = null;
