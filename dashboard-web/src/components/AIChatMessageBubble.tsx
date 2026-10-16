@@ -160,8 +160,8 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
                 type="button"
                 title={
                   attachment.status === "cloud_only"
-                    ? "从云端校验恢复后在 Finder 中显示"
-                    : "在 Finder 中显示"
+                    ? "从云端校验恢复后在文件夹中显示"
+                    : "在文件夹中显示"
                 }
                 onClick={() => onRevealAttachment(attachment.id)}
               >

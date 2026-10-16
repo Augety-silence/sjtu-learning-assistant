@@ -41,14 +41,19 @@ interface Choice<T extends string> {
   detail: string;
 }
 
-const shortcutChoices: Choice<AIChatSendShortcut>[] = [
-  { value: "enter", label: "Enter 发送", detail: "Shift + Enter 换行" },
-  {
-    value: "cmd_enter",
-    label: "⌘ + Enter 发送",
-    detail: "Enter 或 Shift + Enter 换行",
-  },
-];
+const isMacPlatform = () =>
+  !/Win|Linux|Android/i.test(navigator.platform || navigator.userAgent);
+
+function buildShortcutChoices(mac: boolean): Choice<AIChatSendShortcut>[] {
+  return [
+    { value: "enter", label: "Enter 发送", detail: "Shift + Enter 换行" },
+    {
+      value: "cmd_enter",
+      label: mac ? "⌘ + Enter 发送" : "Ctrl + Enter 发送",
+      detail: "Enter 或 Shift + Enter 换行",
+    },
+  ];
+}
 
 const languageChoices: Choice<AIReplyLanguage>[] = [
   { value: "auto", label: "自动", detail: "跟随问题语言" },
@@ -114,6 +119,7 @@ export function AIChatSettingsPanel({
   onChange: (change: PreferenceChange) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const shortcutChoices = buildShortcutChoices(isMacPlatform());
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = (restoreFocus = false) => {
