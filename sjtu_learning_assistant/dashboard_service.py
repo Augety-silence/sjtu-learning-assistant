@@ -1439,7 +1439,10 @@ class DashboardService:
             return None
         try:
             path = self._resolve_controlled_mail_file(attachment.local_path)
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
             try:
                 info = os.fstat(descriptor)
                 if not stat.S_ISREG(info.st_mode) or info.st_size > INLINE_IMAGE_LIMIT:
@@ -1591,7 +1594,8 @@ class DashboardService:
         path = self._resolve_controlled_mail_file(attachment.local_path)
         command = _desktop_open_command(path, reveal=reveal)
         completed = self.command_runner(command, check=False)
-        if getattr(completed, "returncode", 0) != 0:
+        # explorer.exe returns exit code 1 even on success; do not treat it as failure.
+        if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
             raise DashboardError("无法通过系统操作邮件附件。")
         return {
             "source_id": source_id,
@@ -2114,7 +2118,7 @@ class DashboardService:
             resolved.relative_to(root)
         except DashboardError:
             raise
-        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             raise NotFoundError("本地文件不存在或不在归档目录内，已拒绝打开。") from exc
 
         if not stat.S_ISREG(resolved.lstat().st_mode):
@@ -2162,7 +2166,10 @@ class DashboardService:
                 raise DashboardError("云端文件读取失败，请检查网络后重试。") from None
         else:
             try:
-                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                descriptor = os.open(
+                    path,
+                    os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
                 try:
                     info = os.fstat(descriptor)
                     if not stat.S_ISREG(info.st_mode):
@@ -2211,9 +2218,12 @@ class DashboardService:
             ):
                 raise NotFoundError("资料的本地文件和云端副本均不可用。") from None
             remote_path = self._cloud_segments(record.cloud_path)
-            destination = Path(self._material_temp.name) / (
-                f"{record.id}-" + Path(record.display_name or record.filename or "文件").name
-            )
+            safe_name = re.sub(
+                r'[<>:"/\\|?*\x00-\x1f]',
+                "_",
+                Path(record.display_name or record.filename or "文件").name,
+            ).rstrip(" .") or "文件"
+            destination = Path(self._material_temp.name) / f"{record.id}-{safe_name}"
             try:
                 with self._cloud_provider() as provider:
                     info = provider.get_info(remote_path)
@@ -2232,15 +2242,19 @@ class DashboardService:
             except Exception:
                 destination.unlink(missing_ok=True)
                 raise DashboardError("云端文件下载失败，请检查网络后重试。") from None
-        completed = self.command_runner(_desktop_open_command(path), check=False)
-        if getattr(completed, "returncode", 0) != 0:
+        command = _desktop_open_command(path)
+        completed = self.command_runner(command, check=False)
+        # explorer.exe returns exit code 1 even on success; do not treat it as failure.
+        if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
             raise DashboardError("无法通过系统打开文件。")
         return {"source_id": source_id, "status": "opened"}
 
     def reveal_material(self, source_id: str) -> dict[str, str]:
         path = self._resolve_local_file(source_id)
-        completed = self.command_runner(_desktop_open_command(path, reveal=True), check=False)
-        if getattr(completed, "returncode", 0) != 0:
+        command = _desktop_open_command(path, reveal=True)
+        completed = self.command_runner(command, check=False)
+        # explorer.exe /select, returns exit code 1 even on success.
+        if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
             raise DashboardError("无法在文件管理器中显示本地文件。")
         return {"source_id": source_id, "status": "revealed"}
 
