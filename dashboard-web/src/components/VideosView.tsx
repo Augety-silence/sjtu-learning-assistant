@@ -3426,6 +3426,10 @@ export function VideosView({
                               event.preventDefault();
                               setSpeedMenuOpen(false);
                               speedTriggerRef.current?.focus();
+                            } else if (event.key === "Tab") {
+                              event.preventDefault();
+                              setSpeedMenuOpen(false);
+                              speedTriggerRef.current?.focus();
                             }
                             if (nextIndex !== null) {
                               event.preventDefault();
@@ -3702,8 +3706,15 @@ export function VideosView({
           ) : filtered.length === 0 ? (
             <div className="video-list-empty">
               <span>当前来源没有视频</span>
-              <Button variant="link" size="sm" onClick={() => setSource("all")}>
-                查看全部来源
+              <Button
+                variant="link"
+                size="sm"
+                onClick={() => {
+                  changeSource("all");
+                  setOrganizationFilter("all");
+                }}
+              >
+                {source === "all" ? "清除状态筛选" : "查看全部来源"}
               </Button>
             </div>
           ) : (
@@ -3851,6 +3862,14 @@ export function VideosView({
                                     event.stopPropagation()
                                   }
                                   onKeyDown={(event) => {
+                                    if (event.key === "Tab") {
+                                      event.preventDefault();
+                                      closeVideoMenu();
+                                      menuTriggerRefs.current
+                                        .get(video.id)
+                                        ?.focus();
+                                      return;
+                                    }
                                     if (
                                       ![
                                         "ArrowDown",
@@ -4204,6 +4223,7 @@ export function VideosView({
                       <Button
                         variant="link"
                         size="sm"
+                        loading={isBusy(`task:${job.id}`)}
                         onClick={() =>
                           void run(`task:${job.id}`, "任务已取消。", () =>
                             onCancelTask(job.task as VideoTaskItem),
