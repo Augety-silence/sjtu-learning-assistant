@@ -176,6 +176,8 @@
   --text-primary: #f0f2f5;
   --text-secondary: #c3c8d0;
   --text-tertiary: #aab1bc;
+  --text-inverse: #0d1626;
+  --text-ai-on-accent: #0d1626;
   --border-subtle: #343941;
   --border-default: #59616d;
   --border-info: #517eb8;
