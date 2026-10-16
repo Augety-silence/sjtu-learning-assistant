@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import tempfile
+import time
 import unicodedata
 import uuid
 from pathlib import Path
@@ -31,6 +32,45 @@ from sjtu_learning_assistant.models import (
 )
 
 POLICIES = ("skip", "save_as", "overwrite", "compare")
+REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.25)
+_MOUNT_POINT_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+_WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+_WINDOWS_RESERVED_STEMS = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"{device}{digit}" for device in ("COM", "LPT") for digit in "123456789¹²³"]
+)
+
+
+def _is_link(state: os.stat_result) -> bool:
+    """符号链接，或 Windows 目录联接（junction 不带 S_IFLNK，需看 reparse tag）。"""
+    return stat.S_ISLNK(state.st_mode) or getattr(state, "st_reparse_tag", 0) == _MOUNT_POINT_TAG
+
+
+def _discard_reservation(job: Any) -> None:
+    """删除本任务先前用 O_EXCL 建立、仍为 0 字节且 inode 未变的占位文件。"""
+    plan = job.plan_data if isinstance(job.plan_data, dict) else {}
+    reservation = plan.get("reservation_inode")
+    if reservation is None or not job.target_abs_path:
+        return
+    target = Path(job.target_abs_path)
+    try:
+        state = target.lstat()
+        if stat.S_ISREG(state.st_mode) and state.st_size == 0 and str(state.st_ino) == reservation:
+            target.unlink()
+    except OSError:
+        pass
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """Windows 上刚写完的临时文件常被杀软/索引短暂占用，有限重试 os.replace。"""
+    for delay in (*REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or delay is None:
+                raise
+            time.sleep(delay)
 
 
 class RestoreError(CloudArchiveError):
@@ -62,14 +102,14 @@ def _reject_symlink_chain(path: Path, require_leaf: bool = False) -> None:
     for part in parts[1:]:
         current = current / part
         try:
-            mode = current.lstat().st_mode
+            state = current.lstat()
         except FileNotFoundError:
             if require_leaf:
                 raise RestoreError("目标目录不存在。")
             return
         except OSError as exc:
             raise RestoreError("无法检查目标路径。") from exc
-        if stat.S_ISLNK(mode):
+        if _is_link(state):
             raise RestoreError("目标路径包含符号链接，已拒绝恢复。")
 
 
@@ -90,12 +130,13 @@ def _contained(root: Path, target: Path) -> bool:
 
 def _existing_details(path: Path) -> dict[str, Any] | None:
     try:
-        mode = path.lstat().st_mode
+        state = path.lstat()
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise RestoreError("无法检查现有目标文件。") from exc
-    if stat.S_ISLNK(mode):
+    mode = state.st_mode
+    if _is_link(state):
         raise RestoreError("目标文件是符号链接，已拒绝恢复。")
     if not stat.S_ISREG(mode):
         return {"kind": "other", "size": None, "mtime_ns": None, "sha256": None}
@@ -120,6 +161,15 @@ def _safe_leaf(name: str) -> str:
     normalized = unicodedata.normalize("NFC", name)
     if not normalized or normalized in (".", "..") or "/" in normalized or "\\" in normalized or "\x00" in normalized:
         raise RestoreError("恢复文件名无效。")
+    if os.name == "nt":
+        normalized = "".join(
+            "_" if ord(character) < 32 or character in _WINDOWS_INVALID_CHARS else character
+            for character in normalized
+        ).rstrip(" .")
+        if not normalized:
+            raise RestoreError("恢复文件名无效。")
+        if normalized.split(".", 1)[0].strip().upper() in _WINDOWS_RESERVED_STEMS:
+            normalized = "_" + normalized
     return normalized
 
 
@@ -164,6 +214,7 @@ class RestoreService:
                 job.status = "interrupted"
                 job.finished_at = utcnow()
                 job.last_error = "应用上次退出时恢复任务尚未完成。"
+                _discard_reservation(job)
                 add_event(session, job, "interrupted", "interrupted", details={"previous_status": previous})
             session.commit()
             return len(jobs)
@@ -336,7 +387,8 @@ class RestoreService:
         while not existing.exists() and existing != root:
             existing = existing.parent
         mode = existing.stat().st_mode
-        if mode & 0o222 == 0 or not os.access(existing, os.W_OK):
+        # Windows 目录的只读属性被系统忽略（Documents/Desktop 等定制文件夹常带此属性），不能据此判不可写。
+        if (os.name != "nt" and mode & 0o222 == 0) or not os.access(existing, os.W_OK):
             raise RestoreError("恢复目标不可写。")
         statvfs = getattr(os, "statvfs", None)
         flags = getattr(statvfs(existing), "f_flag", 0) if statvfs else 0
@@ -349,7 +401,10 @@ class RestoreService:
         missing = _missing_directories(root, parent)
         for value in missing:
             path = Path(value)
-            path.mkdir()
+            try:
+                path.mkdir()
+            except PermissionError as exc:
+                raise RestoreError("恢复目标不可写。") from exc
             _reject_symlink_chain(path, require_leaf=True)
 
     def execute(self, job_id: str, conflict_policy: str, confirm_create_dirs: bool = False) -> dict[str, Any]:
@@ -395,9 +450,12 @@ class RestoreService:
                     descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 except FileExistsError as exc:
                     raise RestoreError("恢复目标刚刚被其他文件占用，请重新制定计划。") from exc
+                except PermissionError as exc:
+                    raise RestoreError("恢复目标不可写。") from exc
                 else:
                     os.close(descriptor)
                     reservation_inode = target.lstat().st_ino
+                    job.plan_data = dict(job.plan_data, reservation_inode=str(reservation_inode))
             job.status = "downloading"
             job.started_at = utcnow()
             job.attempt_count += 1
@@ -447,6 +505,7 @@ class RestoreService:
             ):
                 raise RestoreError("恢复任务持久化计划已变化，不能重试。")
             _missing_directories(root, target.parent)
+            _discard_reservation(job)
             _existing_details(target)
             job.status = "planned"
             job.finished_at = None
@@ -504,7 +563,7 @@ class RestoreService:
             _reject_symlink_chain(target)
             if reservation_inode is not None and target.lstat().st_ino != reservation_inode:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
-            os.replace(temporary, target)
+            _replace_with_retry(temporary, target)
             temporary = None
             if os.name != "nt":
                 directory_fd = os.open(target.parent, os.O_RDONLY)
@@ -536,6 +595,8 @@ class RestoreService:
                     session.commit()
             if isinstance(exc, RestoreError):
                 raise
+            if isinstance(exc, PermissionError):
+                raise RestoreError("目标文件正被其他程序占用或没有写入权限，请关闭相关程序后重试。") from exc
             raise RestoreError("恢复下载失败，可稍后重新制定计划。") from exc
         finally:
             if temporary is not None:
