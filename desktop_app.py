@@ -73,6 +73,7 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
     re.compile(r"(?i)(?:token|password|secret|database_url)\s*[=:]\s*[^\s,;]+"),
     re.compile(r"/Users/[^\s'\"]+"),
+    re.compile(r"(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\s'\"]+"),
 )
 
 
@@ -637,7 +638,7 @@ class DesktopBridge:
             payload.get("target_root"), limit=4096, label="输出目录"
         )
         mode = payload.get("mode")
-        if mode not in {"foundation", "full"}:
+        if type(mode) is not str or mode not in {"foundation", "full"}:
             raise DashboardError("编译范围不受支持。")
         return self._service.knowledge_compiler_start(
             source_root, target_root, mode
@@ -870,7 +871,11 @@ class DesktopBridge:
     def _deadlines(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"window"})
         window = payload.get("window", "7d")
-        hours = {"24h": 24, "7d": 168, "14d": 336}.get(window)
+        hours = (
+            {"24h": 24, "7d": 168, "14d": 336}.get(window)
+            if type(window) is str
+            else None
+        )
         if hours is None:
             raise DashboardError("截止时间筛选条件无效。")
         return {"items": self._service.deadlines(hours)}
