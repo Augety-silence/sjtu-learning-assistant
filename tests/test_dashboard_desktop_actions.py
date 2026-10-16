@@ -41,7 +41,7 @@ class DesktopActionSafetyTests(unittest.TestCase):
 
         self.assertEqual("revealed", self.service.reveal_material("42")["status"])
         self.assertEqual(
-            [["/usr/bin/open", "-R", "--", str(document.resolve())]], self.commands
+            [_desktop_open_command(document.resolve(), reveal=True)], self.commands
         )
 
     def test_macos_open_uses_end_of_options_for_dash_prefixed_target(self) -> None:
@@ -59,7 +59,9 @@ class DesktopActionSafetyTests(unittest.TestCase):
         self.assertEqual(
             "opened", self.service.open_external("https://example.edu/a")["status"]
         )
-        self.assertEqual([["/usr/bin/open", "--", "https://example.edu/a"]], self.commands)
+        self.assertEqual(
+            [_desktop_open_command("https://example.edu/a")], self.commands
+        )
         for unsafe in (
             "http://example.edu",
             "https://user:password@example.edu",

@@ -8,6 +8,7 @@ const LEFT_MAX = 320;
 const RIGHT_MIN = 300;
 const RIGHT_MAX = 340;
 const STEP = 8;
+const RESIZE_KEYS = new Set(["ArrowLeft", "ArrowRight", "Home", "End"]);
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -16,7 +17,7 @@ function clamp(value: number, min: number, max: number) {
 function storedWidth(key: string, fallback: number, min: number, max: number) {
   const value = Number(window.localStorage.getItem(key));
   return Number.isFinite(value) && value > 0
-    ? clamp(value, min, max)
+    ? clamp(Math.round(value), min, max)
     : fallback;
 }
 
@@ -53,7 +54,7 @@ export function useResizablePanes() {
         else setRightWidth(pendingWidth);
       };
       const move = (moveEvent: globalThis.PointerEvent) => {
-        const delta = moveEvent.clientX - startX;
+        const delta = Math.round(moveEvent.clientX - startX);
         pendingWidth =
           pane === "left"
             ? clamp(startWidth + delta, LEFT_MIN, LEFT_MAX)
@@ -68,6 +69,7 @@ export function useResizablePanes() {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
         window.removeEventListener("pointercancel", stop);
+        window.removeEventListener("blur", stop);
         cleanupDrag.current = null;
       };
       const stop = () => {
@@ -84,17 +86,18 @@ export function useResizablePanes() {
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", stop, { once: true });
       window.addEventListener("pointercancel", stop, { once: true });
+      window.addEventListener("blur", stop);
     },
     [],
   );
 
   const resizeWithKeyboard = useCallback(
     (pane: Pane, event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (!RESIZE_KEYS.has(event.key)) return;
       event.preventDefault();
       const amount = event.shiftKey ? STEP * 3 : STEP;
       const direction = event.key === "ArrowRight" ? 1 : -1;
-      const next =
+      let next =
         pane === "left"
           ? clamp(widths.current.left + direction * amount, LEFT_MIN, LEFT_MAX)
           : clamp(
@@ -102,6 +105,8 @@ export function useResizablePanes() {
               RIGHT_MIN,
               RIGHT_MAX,
             );
+      if (event.key === "Home") next = pane === "left" ? LEFT_MIN : RIGHT_MIN;
+      if (event.key === "End") next = pane === "left" ? LEFT_MAX : RIGHT_MAX;
       widths.current[pane] = next;
       if (pane === "left") setLeftWidth(next);
       else setRightWidth(next);

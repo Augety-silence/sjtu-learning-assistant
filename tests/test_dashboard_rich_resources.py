@@ -18,6 +18,7 @@ from sjtu_learning_assistant.dashboard_service import (
     DashboardError,
     DashboardService,
     NotFoundError,
+    _desktop_open_command,
 )
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
@@ -152,8 +153,12 @@ class DashboardRichResourceTests(unittest.TestCase):
         revealed = service.reveal_mail_attachment("mail:one", "cid-one")
         self.assertEqual("opened", opened["status"])
         self.assertEqual("revealed", revealed["status"])
-        self.assertEqual("/usr/bin/open", self.commands[0][0])
-        self.assertEqual(["/usr/bin/open", "-R"], self.commands[1][:2])
+        path = Path(self.commands[0][-1])
+        self.assertEqual(_desktop_open_command(path), self.commands[0])
+        self.assertEqual(
+            _desktop_open_command(path, reveal=True),
+            self.commands[1],
+        )
         self.assertTrue(Path(self.commands[0][-1]).is_relative_to(self.attachment_root.resolve()))
         with self.assertRaises(NotFoundError):
             service.open_mail_attachment("mail:two", "cid-one")

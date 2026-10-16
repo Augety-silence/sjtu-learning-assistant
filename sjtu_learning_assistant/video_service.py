@@ -60,6 +60,7 @@ def _validate_https_url(value: Any, hosts: frozenset[str], label: str) -> str:
         or port not in (None, 443)
         or parsed.username is not None
         or parsed.password is not None
+        or "\\" in value
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise SJTUVideoError(f"{label}不安全，已停止处理。")
@@ -447,7 +448,10 @@ class SJTUVideoService:
                     finish = datetime.strptime(end.strip(), fmt)
             except ValueError:
                 continue
-            seconds = int((finish - start).total_seconds())
+            try:
+                seconds = int((finish - start).total_seconds())
+            except TypeError:
+                return None
             return seconds if 0 <= seconds <= 24 * 60 * 60 else None
         return None
 

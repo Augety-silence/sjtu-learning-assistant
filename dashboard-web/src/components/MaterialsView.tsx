@@ -426,7 +426,25 @@ export function MaterialsView() {
     event: KeyboardEvent<HTMLElement>,
     node: MaterialNode,
   ) => {
-    if (event.target !== event.currentTarget || event.key !== "Enter") return;
+    if (event.target !== event.currentTarget) return;
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      const rows = Array.from(
+        event.currentTarget.parentElement?.querySelectorAll<HTMLElement>(
+          ':scope > [role="listitem"]',
+        ) ?? [],
+      );
+      const index = rows.indexOf(event.currentTarget);
+      const next =
+        event.key === "Home"
+          ? rows[0]
+          : event.key === "End"
+            ? rows[rows.length - 1]
+            : rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+      event.preventDefault();
+      next?.focus();
+      return;
+    }
+    if (event.key !== "Enter") return;
     event.preventDefault();
     runDefaultAction(node);
   };

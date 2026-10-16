@@ -14,6 +14,7 @@ from sjtu_learning_assistant.dashboard_service import (
     DashboardError,
     DashboardService,
     NotFoundError,
+    _desktop_open_command,
 )
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.models import Assignment, Course, SyncState
@@ -193,7 +194,9 @@ class DashboardFileSafetyTests(unittest.TestCase):
         self.set_local_path(document)
         result = self.service.open_material("42")
         self.assertEqual("opened", result["status"])
-        self.assertEqual([["/usr/bin/open", "--", str(document.resolve())]], self.commands)
+        self.assertEqual(
+            [_desktop_open_command(document.resolve())], self.commands
+        )
 
     def test_rejects_outside_missing_directory_and_symlink(self) -> None:
         outside = Path(self.temp.name) / "outside.pdf"

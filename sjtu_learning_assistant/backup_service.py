@@ -65,6 +65,50 @@ class BackupError(RuntimeError):
     """A bounded, user-displayable backup error without local or remote secrets."""
 
 
+_O_BINARY = getattr(os, "O_BINARY", 0)
+_LINK_REPARSE_TAGS = frozenset(
+    {
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+    }
+)
+
+
+def _dir_fd_supported() -> bool:
+    return (
+        os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def _is_link_like(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS
+
+
+def _open_by_verified_path(lexical_root: Path, parts: tuple[str, ...]) -> tuple[int, Path]:
+    """Windows fallback without dir_fd: reject links/junctions per component, then
+    open in binary mode and require the handle to match the final lstat identity."""
+    if _is_link_like(os.lstat(lexical_root)):
+        raise BackupError("本地备份文件缺失或不安全。")
+    current = lexical_root
+    for component in parts[:-1]:
+        current = current / component
+        info = os.lstat(current)
+        if _is_link_like(info) or not stat.S_ISDIR(info.st_mode):
+            raise BackupError("本地备份文件缺失或不安全。")
+    target = current / parts[-1]
+    before = os.lstat(target)
+    if _is_link_like(before) or not stat.S_ISREG(before.st_mode):
+        raise BackupError("本地备份文件缺失或不安全。")
+    file_fd = os.open(target, os.O_RDONLY | _O_BINARY)
+    opened = os.fstat(file_fd)
+    if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        os.close(file_fd)
+        raise BackupError("本地备份文件缺失或不安全。")
+    return file_fd, target
+
+
 @dataclass(frozen=True)
 class BackupCandidate:
     key: str
@@ -256,12 +300,15 @@ def open_controlled_file(root: Path, raw_path: str | None) -> Iterator[tuple[Bin
         root_mode = lexical_root.lstat().st_mode
         if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
             raise BackupError("本地备份文件缺失或不安全。")
-        current_fd = os.open(lexical_root, directory_flags)
-        descriptors.append(current_fd)
-        for component in parts[:-1]:
-            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+        if _dir_fd_supported():
+            current_fd = os.open(lexical_root, directory_flags)
             descriptors.append(current_fd)
-        file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
+            for component in parts[:-1]:
+                current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+                descriptors.append(current_fd)
+            file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
+        else:
+            file_fd, _target = _open_by_verified_path(lexical_root, parts)
         info = os.fstat(file_fd)
         if not stat.S_ISREG(info.st_mode):
             os.close(file_fd)
@@ -307,14 +354,23 @@ def remove_controlled_file(
         root_mode = lexical_root.lstat().st_mode
         if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
             raise BackupError("本地备份文件缺失或不安全。")
-        current_fd = os.open(lexical_root, directory_flags)
-        descriptors.append(current_fd)
-        for component in parts[:-1]:
-            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+        target: Path | None = None
+        if _dir_fd_supported():
+            current_fd = os.open(lexical_root, directory_flags)
             descriptors.append(current_fd)
-        file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
-        opened = os.fstat(file_fd)
-        current = os.stat(parts[-1], dir_fd=current_fd, follow_symlinks=False)
+            for component in parts[:-1]:
+                current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+                descriptors.append(current_fd)
+            file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
+            opened = os.fstat(file_fd)
+            current = os.stat(parts[-1], dir_fd=current_fd, follow_symlinks=False)
+        else:
+            file_fd, target = _open_by_verified_path(lexical_root, parts)
+            opened = os.fstat(file_fd)
+            # Windows cannot unlink a file while this process still holds it open.
+            os.close(file_fd)
+            file_fd = None
+            current = os.lstat(target)
         if (
             not stat.S_ISREG(opened.st_mode)
             or stat.S_ISLNK(current.st_mode)
@@ -327,7 +383,10 @@ def remove_controlled_file(
             )
         ):
             raise BackupError("本地备份文件在删除前发生变化，已保留。")
-        os.unlink(parts[-1], dir_fd=current_fd)
+        if target is None:
+            os.unlink(parts[-1], dir_fd=current_fd)
+        else:
+            os.unlink(target)
     except BackupError:
         raise
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
@@ -848,6 +907,7 @@ class BackupService:
                 limit=MAX_FILENAME_LENGTH,
             )
             report(current_name)
+            removing_local = False
             try:
                 if (
                     candidate.transcript_manifest
@@ -965,6 +1025,7 @@ class BackupService:
                 if uploaded:
                     result["uploaded"] += 1
                 if persisted and remove_local:
+                    removing_local = True
                     remove_controlled_file(
                         candidate.local_root,
                         candidate.local_path,
@@ -994,7 +1055,11 @@ class BackupService:
                             "source": safe_source,
                             "name": current_name,
                             "remote_path": safe_remote_path,
-                            "error": "上传失败，请检查云盘凭据或网络连接。",
+                            "error": (
+                                "已备份到云盘，但本地文件被占用或无法安全删除，已保留。"
+                                if removing_local
+                                else "上传失败，请检查云盘凭据或网络连接。"
+                            ),
                         }
                     )
             finally:
@@ -1063,9 +1128,9 @@ class BackupManager:
         try:
             configured = bool(self._credential_checker())
         except Exception:
-            return False, "无法查询系统 Keychain 中的交大云盘凭据状态。"
+            return False, "无法查询系统凭据存储（钥匙串/Windows 凭据管理器）中的交大云盘凭据状态。"
         if not configured:
-            return False, "尚未在系统 Keychain 中配置交大云盘 UserToken。"
+            return False, "尚未在系统凭据存储（钥匙串/Windows 凭据管理器）中配置交大云盘 UserToken。"
         return True, None
 
     def status(self) -> dict[str, Any]:

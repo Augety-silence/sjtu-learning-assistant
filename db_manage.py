@@ -73,7 +73,7 @@ def configure_database() -> None:
     except (EOFError, KeyboardInterrupt) as exc:
         raise DatabaseConfigError("已取消数据库配置。") from exc
     save_database_url(database_url)
-    print("PostgreSQL 连接配置已安全保存到 macOS Keychain。")
+    print("PostgreSQL 连接配置已安全保存到系统凭据存储（macOS 钥匙串 / Windows 凭据管理器）。")
 
 
 def _print_health(database_url: str) -> None:

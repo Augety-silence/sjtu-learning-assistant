@@ -188,7 +188,7 @@ def _load_json(path: Path) -> dict[str, Any]:
         if metadata.st_size > MAX_PACK_BYTES:
             _fail(str(path), "resource exceeds size limit")
         parsed = json.loads(
-            path.read_text(encoding="utf-8"),
+            path.read_text(encoding="utf-8-sig"),
             object_pairs_hook=reject_duplicate_fields,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
@@ -334,7 +334,10 @@ def _contains(haystack: str, phrase: str) -> bool:
         return True
     compact_phrase = "".join(character for character in phrase if _HAN.match(character))
     compact_haystack = "".join(character for character in haystack if _HAN.match(character))
-    return bool(compact_phrase and compact_phrase in compact_haystack)
+    if not compact_phrase or compact_phrase not in compact_haystack:
+        return False
+    # 中英混写术语（如 “STP模型”“K均值聚类”）要求英文部分也命中，避免只凭“模型”“分析”误判。
+    return not normalized_phrase or f" {normalized_phrase} " in f" {normalized_haystack} "
 
 
 def _domain_score(pack: GlossaryPack, metadata_text: str, current_text: str) -> int:

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const lockPath = path.join(root, "dashboard-web", "package-lock.json");
 const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-const forbidden = /(^|[^L])A?GPL(?:-|$)/i;
+const forbidden = /(^|[^L])A?GPL(?:v?\d|[-+\s)]|$)/i;
 const errors = [];
 let checked = 0;
 

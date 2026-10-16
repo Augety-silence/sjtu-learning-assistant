@@ -1,6 +1,6 @@
 """Desktop-only Canvas assignment and SJTU Pan integration.
 
-Credentials are loaded lazily from macOS Keychain. They are never logged, returned to
+Credentials are loaded lazily from the platform credential store. They are never logged, returned to
 JavaScript, or included in exceptions.
 """
 from __future__ import annotations
@@ -16,6 +16,7 @@ from sjtu_learning_assistant.assignment_service import AssignmentService, Submis
 from sjtu_learning_assistant.canvas_client import CanvasClient, DEFAULT_BASE_URL
 from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
 from sjtu_learning_assistant.canvas_sync import CanvasCheckError, get_saved_token
+from sjtu_learning_assistant.credential_store import credential_storage_name
 from sjtu_learning_assistant.models import Assignment, Course
 
 
@@ -28,9 +29,9 @@ def load_canvas_token() -> str:
     try:
         token = get_saved_token()
     except CanvasCheckError:
-        raise LearningServiceError("无法从 macOS Keychain 读取 Canvas Access Token。") from None
+        raise LearningServiceError(f"无法从 {credential_storage_name()} 读取 Canvas Access Token。") from None
     if token is None:
-        raise LearningServiceError("尚未在 macOS Keychain 中配置 Canvas Access Token。")
+        raise LearningServiceError(f"尚未在 {credential_storage_name()} 中配置 Canvas Access Token。")
     return token
 
 
@@ -310,7 +311,9 @@ class DesktopLearningService:
         return self._result(self._assignment_service().open_external(course_id, assignment_id))
 
     def close(self) -> None:
-        if self._canvas is not None and self._owns_canvas:
-            self._canvas.close()
-        if self._pan is not None and self._owns_pan:
-            self._pan.close()
+        try:
+            if self._canvas is not None and self._owns_canvas:
+                self._canvas.close()
+        finally:
+            if self._pan is not None and self._owns_pan:
+                self._pan.close()

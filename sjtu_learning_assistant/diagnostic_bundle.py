@@ -62,7 +62,7 @@ _MASKED_EMAIL_PATTERN = re.compile(r"\[ph_EMAIL_[0-9]+_ph\]")
 _MAC_USER_PATH = re.compile(r"/Users/[^/\s\"'<>]+(?:/[^\s\"'<>]*)?")
 _LINUX_USER_PATH = re.compile(r"/home/[^/\s\"'<>]+(?:/[^\s\"'<>]*)?")
 _WINDOWS_USER_PATH = re.compile(
-    r"(?i)(?:\\\\\?\\)?[A-Z]:\\Users\\[^\\\r\n\t\"'<>]+"
+    r"(?i)(?:\\{2,4}\?\\{1,2})?[A-Z]:\\{1,2}Users\\{1,2}[^\\\r\n\t\"'<>]+"
     r"(?:\\[^\r\n\t\"'<>]*)?"
 )
 _JWT_PATTERN = re.compile(
@@ -111,7 +111,10 @@ def sanitize_text(value: object, *, limit: int = MAX_ENTRY_BYTES) -> str:
     text_value = _MAC_USER_PATH.sub("/Users/[redacted]", text_value)
     text_value = _LINUX_USER_PATH.sub("/home/[redacted]", text_value)
     text_value = _WINDOWS_USER_PATH.sub(
-        lambda _match: r"C:\Users\[redacted]", text_value
+        lambda match: r"C:\\Users\\[redacted]"
+        if "Users\\\\" in match.group(0)
+        else r"C:\Users\[redacted]",
+        text_value,
     )
     text_value = _JWT_PATTERN.sub("[redacted_token]", text_value)
     text_value = _KNOWN_TOKEN_PATTERN.sub("[redacted_token]", text_value)

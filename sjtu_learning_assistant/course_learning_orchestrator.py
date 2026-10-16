@@ -39,7 +39,7 @@ from .course_learning_schemas import (
     stable_json_dumps,
     unique_text_span,
 )
-from .course_memory import CourseMemoryStore, MemoryValidationError
+from .course_memory import SINGLE_AI_SOURCES, CourseMemoryStore, MemoryValidationError
 from .seed_glossary import (
     GlossaryPack,
     SeedGlossaryValidationError,
@@ -54,7 +54,7 @@ PROMPT_VERSION = "course-learning-prompts-v6-critic-source-evidence-scope"
 MAX_CRITIC_LOOPS = 3
 _EMPTY_DELTA = MemoryDelta((), (), (), (), ())
 _NEGATIONS = re.compile(r"(?:不|没|无|未|非|否|勿|莫|not|no|never|without|cannot|can't|isn't|aren't)", re.I)
-_NUMBER = re.compile(r"(?<![\w])[-+]?\d+(?:[.,]\d+)*(?:%|e[-+]?\d+)?", re.I)
+_NUMBER = re.compile(r"(?<![0-9A-Za-z_])[-+]?\d+(?:[.,]\d+)*(?:%|e[-+]?\d+)?", re.I)
 _FORMULA = re.compile(r"(?:[=<>±×÷∑∫√^]|\b(?:sin|cos|log|ln|exp)\s*\()", re.I)
 _PERSON_TYPE = frozenset({"person", "person_name", "name", "人名", "姓名"})
 
@@ -791,6 +791,8 @@ def _memory_updates(delta: MemoryDelta) -> list[dict[str, object]]:
             raise MemoryValidationError("memory delta row requires key and value")
         if type(evidence) is not list or not evidence or not all(type(item) is str and item for item in evidence):
             raise MemoryValidationError("memory delta row requires evidence")
+        if row.get("source") not in SINGLE_AI_SOURCES or row.get("verification") != "UNVERIFIED":
+            raise MemoryValidationError("memory agent output must remain single-AI and UNVERIFIED")
         updates.append({
             "operation": "upsert", "section": section, "key": key, "value": value,
             "source": row.get("source", "single_ai"),
@@ -1055,7 +1057,7 @@ class CourseLearningOrchestrator:
             return None
         try:
             result = OrchestratorResult.from_json(path.read_text("utf-8"))
-        except (OSError, UnicodeError, SchemaValidationError):
+        except (OSError, UnicodeError, ValueError, RecursionError):
             return None
         if result.course_id != course_id or result.video_id != video_id or result.cache_key != key:
             return None
@@ -1073,15 +1075,21 @@ class CourseLearningOrchestrator:
         )
         if path is None:
             return
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         payload = result.to_json().encode("utf-8")
         temporary = path.with_name(path.name + ".tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _call(self, role: str, messages: Sequence[Mapping[str, str]], parser: Any,
               events: list[dict[str, Any]], *, repair_source: object = None, is_repair: bool = False) -> Any:

@@ -14,10 +14,15 @@ import httpx
 from sjtu_learning_assistant.credential_store import (
     CANVAS_ACCOUNT as KEYCHAIN_ACCOUNT,
     CANVAS_SERVICE as KEYCHAIN_SERVICE,
+    credential_storage_name,
 )
 
 DEFAULT_BASE_URL = "https://oc.sjtu.edu.cn"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+# Canvas announcements default to the last 14 days; use a fixed, wide window
+# so full-snapshot delete detection and ETag URLs stay stable.
+ANNOUNCEMENT_START_DATE = "2000-01-01T00:00:00Z"
+ANNOUNCEMENT_END_DATE = "2100-01-01T00:00:00Z"
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 100
 
@@ -114,7 +119,9 @@ def get_saved_token() -> str | None:
         try:
             stored = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
         except KeyringError as exc:
-            raise CanvasCheckError("无法从 macOS Keychain 读取 Canvas Access Token。") from exc
+            raise CanvasCheckError(
+                f"无法从 {credential_storage_name()} 读取 Canvas Access Token。"
+            ) from exc
         if not stored:
             return None
         _cached_token = stored
@@ -133,6 +140,8 @@ def get_token(use_keychain: bool) -> tuple[str, bool]:
                 print("已从 macOS Keychain 读取 Canvas Access Token。")
                 return stored, True
 
+    if sys.stdin is None:
+        raise CanvasCheckError("尚未保存 Canvas Access Token，请在设置中配置后重试。")
     try:
         token = getpass.getpass("请输入 Canvas Access Token（输入内容不会显示）：").strip()
     except (EOFError, KeyboardInterrupt) as exc:
@@ -245,6 +254,8 @@ def fetch_paginated(
                 if remote_id:
                     seen_ids.add(remote_id)
                 records.append(record)
+        if next_url is None:
+            return records
     raise CanvasCheckError(f"分页超过安全上限 {MAX_PAGES} 页，已停止请求。")
 
 
@@ -327,8 +338,8 @@ def fetch_course_announcements(
         ("context_codes[]", f"course_{course_id}"),
         ("per_page", str(DEFAULT_PAGE_SIZE)),
     ]
-    if posted_since:
-        params.append(("start_date", posted_since))
+    params.append(("start_date", posted_since or ANNOUNCEMENT_START_DATE))
+    params.append(("end_date", ANNOUNCEMENT_END_DATE))
     return fetch_paginated(client, "/api/v1/announcements", params=params)
 
 
@@ -362,6 +373,8 @@ def fetch_course_announcements_incremental(
         params=[
             ("context_codes[]", f"course_{course_id}"),
             ("per_page", str(DEFAULT_PAGE_SIZE)),
+            ("start_date", ANNOUNCEMENT_START_DATE),
+            ("end_date", ANNOUNCEMENT_END_DATE),
         ],
         etag=etag,
     )

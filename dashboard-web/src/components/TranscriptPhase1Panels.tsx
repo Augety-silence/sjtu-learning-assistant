@@ -392,7 +392,7 @@ export function TranscriptLearningFlow({
 }) {
   const summary = parseLearningSummary(content);
   return (
-    <div className="learning-flow" aria-label="本节学习流">
+    <div className="learning-flow" role="group" aria-label="本节学习流">
       <section aria-labelledby="learning-knowledge-title">
         <h4 id="learning-knowledge-title">知识点</h4>
         {summary.knowledgePoints.length ? (
@@ -511,7 +511,8 @@ function readUncertain(value: unknown): ParsedUncertainSpan | null {
 }
 
 function formatPercent(value: number | null) {
-  if (value === null || value < 0 || value > 1) return "未提供";
+  if (value === null || !Number.isFinite(value) || value < 0 || value > 1)
+    return "未提供";
   return `${Math.round(value * 100)}%`;
 }
 
@@ -672,7 +673,7 @@ export function TranscriptQualityWarning({ quality }: { quality: unknown }) {
   const value = asRecord(quality);
   if (!value || !isTranscriptQualityRisk(value)) return null;
   return (
-    <div className="transcript-quality-warning" role="alert">
+    <div className="transcript-quality-warning" role="status">
       <strong>AI 校对未通过，关键术语、数字和公式请对照视频核实</strong>
       <span>
         Schema {asBoolean(value.schema_pass) === false ? "未通过" : "通过"} ·
@@ -773,6 +774,7 @@ function DiffPanel({ artifact }: { artifact: Phase1ArtifactRead }) {
             </div>
             <div
               className="phase1-change-copy"
+              role="group"
               aria-label={`${change.original} 修改为 ${change.corrected}`}
             >
               <del>{change.original}</del>
@@ -935,7 +937,7 @@ function TokenUsagePanel({ artifact }: { artifact: Phase1ArtifactRead }) {
       (event): event is UnknownRecord =>
         event !== null &&
         typeof event.agent === "string" &&
-        Object.hasOwn(semanticRoles, event.agent) &&
+        Object.prototype.hasOwnProperty.call(semanticRoles, event.agent) &&
         event.status !== "skipped",
     );
   if (!calls.length)
@@ -958,7 +960,7 @@ function TokenUsagePanel({ artifact }: { artifact: Phase1ArtifactRead }) {
     return `${sum.toLocaleString("zh-CN")}${values.length === events.length ? "" : `（已知部分，${events.length - values.length} 次未知）`}`;
   };
   return (
-    <div className="phase1-quality" aria-label="AI 校对用量">
+    <div className="phase1-quality" role="group" aria-label="AI 校对用量">
       <p>
         这份校对产物生成时的服务端用量；读取缓存不会重新计费。原始字幕整理和本节小结不在此统计内。
       </p>

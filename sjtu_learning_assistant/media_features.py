@@ -198,7 +198,7 @@ def _zip_container_kind(payload: bytes, limits: PreviewLimits) -> str | None:
         _preflight_zip(payload, limits)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             names = set(archive.namelist())
-    except (OSError, ValueError, zipfile.BadZipFile):
+    except (MediaFeatureError, OSError, ValueError, zipfile.BadZipFile):
         return None
     if "word/document.xml" in names:
         return "docx"
@@ -340,7 +340,9 @@ def _validate_archive(
     seen: set[str] = set()
     active_content = False
     for info in infos:
-        safe_name = _safe_member_name(info.filename, limits)
+        safe_name = _safe_member_name(
+            getattr(info, "orig_filename", info.filename), limits
+        )
         folded = unicodedata.normalize("NFKC", safe_name).casefold()
         if folded in seen:
             raise UnsafeArchiveError("ZIP 包含重名条目。")
@@ -668,7 +670,7 @@ def _ipynb_preview(payload: bytes, limits: PreviewLimits) -> dict[str, Any]:
             payload.decode("utf-8-sig"),
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
         raise MediaFeatureError("IPYNB 不是有效的 UTF-8 JSON。") from exc
     if not isinstance(notebook, dict) or not isinstance(notebook.get("cells"), list):
         raise MediaFeatureError("IPYNB 缺少 cells 数组。")
@@ -1169,6 +1171,7 @@ def video_screenshots_pdf(
                 stderr=subprocess.DEVNULL,
                 timeout=timeout_seconds,
                 check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise MediaFeatureError("ffmpeg 截图失败或超时。") from exc

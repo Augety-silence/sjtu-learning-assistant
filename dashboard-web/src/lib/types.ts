@@ -152,6 +152,11 @@ export interface AITaskSnapshot {
       };
     } | null;
     error?: string | null;
+    cancel_requested?: boolean;
+    created_at?: string | null;
+    updated_at?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
     budget: {
       input_tokens: number;
       output_tokens: number;

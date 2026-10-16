@@ -20,7 +20,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -155,7 +157,7 @@ class CloudFile(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     path: Mapped[str | None] = mapped_column(Text)
     is_directory: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false", nullable=False
+        Boolean, default=False, server_default=false(), nullable=False
     )
     size: Mapped[int | None] = mapped_column(BigInteger)
     content_type: Mapped[str | None] = mapped_column(String(255))
@@ -352,7 +354,7 @@ class CourseFile(TimestampMixin, Base):
         ForeignKey("course_folders.id", ondelete="SET NULL")
     )
     manual_override: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false", nullable=False
+        Boolean, default=False, server_default=false(), nullable=False
     )
     hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -694,7 +696,7 @@ class AITask(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     page_id: Mapped[str] = mapped_column(String(32), nullable=False)
     capability_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", server_default="queued")
     model: Mapped[str | None] = mapped_column(String(64))
     context: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict, nullable=False)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
@@ -702,13 +704,13 @@ class AITask(TimestampMixin, Base):
     input_token_budget: Mapped[int] = mapped_column(Integer, nullable=False)
     output_token_budget: Mapped[int] = mapped_column(Integer, nullable=False)
     max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
-    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    charged_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    unknown_usage_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    charged_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    unknown_usage_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -762,7 +764,7 @@ class AIUsageRecord(Base):
         ForeignKey("ai_tasks.id", ondelete="CASCADE"), nullable=False
     )
     call_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="openai-compatible")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="openai-compatible", server_default="openai-compatible")
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
@@ -916,7 +918,7 @@ class ArchiveAuthorizedRoot(TimestampMixin, Base):
     absolute_path: Mapped[str] = mapped_column(Text, nullable=False)
     volume_identity: Mapped[str] = mapped_column(String(255), nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     jobs: Mapped[list["ArchiveJob"]] = relationship(back_populates="authorized_root")

@@ -1,18 +1,18 @@
 .calm-schedule {
   --calm-ink: #222826;
   --calm-muted: #697169;
-  --calm-faint: #98a199;
+  --calm-faint: #7b847c;
   --calm-line: #e8eae4;
   --calm-surface: #f6f7f4;
   --calm-control: rgba(28, 40, 34, 0.05);
   --calm-control-strong: rgba(28, 40, 34, 0.09);
   --calm-accent: var(--action-primary, #2f6de1);
   --calm-accent-soft: color-mix(in srgb, var(--calm-accent) 11%, transparent);
-  --calm-warm: #a8743c;
+  --calm-warm: #8a5a28;
   --calm-warm-soft: rgba(168, 116, 60, 0.12);
   --calm-danger: #b3452f;
   --calm-danger-soft: rgba(179, 69, 47, 0.1);
-  --calm-done: #54896a;
+  --calm-done: #3f7656;
   --calm-on-accent: #ffffff;
   color: var(--calm-ink);
 }
@@ -20,7 +20,7 @@
 :root[data-theme="dark"] .calm-schedule {
   --calm-ink: #eceee9;
   --calm-muted: #97a098;
-  --calm-faint: #606a63;
+  --calm-faint: #848f86;
   --calm-line: rgba(255, 255, 255, 0.085);
   --calm-surface: #1c2024;
   --calm-control: rgba(255, 255, 255, 0.06);
@@ -168,7 +168,8 @@
 
 .calm-utility-retry {
   flex: none;
-  padding: 0;
+  min-height: 24px;
+  padding: 0 4px;
   border: none;
   background: transparent;
   color: var(--calm-accent);
@@ -398,6 +399,7 @@
 }
 
 .calm-day-marks .deadline {
+  border-radius: 1px;
   background: var(--calm-warm);
 }
 
@@ -579,6 +581,30 @@
   background: transparent;
 }
 
+.calm-task-item.is-openable:hover .calm-task-title {
+  color: var(--calm-accent);
+}
+
+.calm-ai-btn:focus-visible,
+.calm-today-pill:focus-visible,
+.calm-icon-btn:focus-visible,
+.calm-utility-retry:focus-visible,
+.calm-task-item.is-openable:focus-visible,
+.calm-agenda-item.is-openable:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.calm-day:focus-visible {
+  outline: 2px solid transparent;
+}
+
+.calm-day:focus-visible::before {
+  display: block;
+  box-shadow: 0 0 0 1.5px var(--aura-backdrop-solid),
+    0 0 0 3.5px var(--focus-ring);
+}
+
 .calm-task-top {
   display: flex;
   align-items: center;
@@ -671,7 +697,7 @@
 
 .calm-deadline-toolbar p {
   margin: 3px 0 0;
-  color: var(--calm-muted);
+  color: var(--calm-muted, var(--text-secondary));
   font-size: 12.5px;
 }
 
@@ -703,8 +729,8 @@
 }
 
 :root[data-theme="dark"] .calm-horizon-trigger[data-state="active"] {
-  background: #2d333b;
-  color: var(--calm-ink);
+  background: var(--aura-panel-strong);
+  color: var(--text-primary);
   box-shadow: none;
 }
 
@@ -736,8 +762,8 @@
 }
 
 :root[data-theme="dark"] .calm-seg-trigger[data-state="active"] {
-  background: #2d333b;
-  color: #eceee9;
+  background: var(--aura-panel-strong);
+  color: var(--text-primary);
   box-shadow: none;
 }
 
@@ -774,7 +800,8 @@
 }
 
 /* Aura material alignment for the schedule workspace. */
-.calm-schedule {
+.calm-schedule,
+:root[data-theme="dark"] .calm-schedule {
   --calm-surface: var(--aura-panel-strong);
   --calm-surface-soft: var(--aura-control);
   --calm-line: var(--aura-border);

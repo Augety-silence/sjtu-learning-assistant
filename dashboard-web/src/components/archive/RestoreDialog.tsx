@@ -82,7 +82,7 @@ export function RestoreDialog({
       });
       setPlan(result);
       setConfirmDirs(!result.requires_directory_confirmation);
-      if (!result.existing) setPolicy("overwrite");
+      setPolicy("save_as");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "恢复计划创建失败");
     } finally {
@@ -178,7 +178,7 @@ export function RestoreDialog({
             />
             <span>
               <strong>另存到所选目录</strong>
-              <small>只能通过 macOS 原生目录选择器授权，不接受手输路径。</small>
+              <small>只能通过系统原生目录选择器授权，不接受手输路径。</small>
             </span>
           </label>
         </fieldset>
@@ -292,6 +292,12 @@ export function RestoreDialog({
                   </label>
                 ))}
               </fieldset>
+            )}
+
+            {plan.existing && policy === "overwrite" && (
+              <p className="archive-notice" role="note">
+                将用云端版本替换现有文件，原文件不会保留副本。
+              </p>
             )}
 
             {plan.requires_directory_confirmation && (

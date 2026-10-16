@@ -3,8 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
-    <title>SJTU Learning Assistant</title>
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      :root:not([data-theme]) {
+        background: #eaf1fb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) {
+          background: #17191d;
+        }
+      }
+    </style>
+    <title>SJTU 学习助手</title>
   </head>
   <body>
     <div id="root"></div>

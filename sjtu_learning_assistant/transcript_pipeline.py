@@ -485,7 +485,11 @@ def _validated_json(
         try:
             validated = validator(parsed)
             encoded_length = len(
-                json.dumps(validated, ensure_ascii=False, separators=(",", ":"))
+                json.dumps(
+                    {key: item for key, item in validated.items() if key != "cleaned_transcript"},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
             )
             if encoded_length > MAX_VALIDATED_JSON_CHARS:
                 raise ValueError("validated JSON too long")
@@ -926,7 +930,7 @@ def _coerce_time(value, path):
                 seconds = float(text.removesuffix("s").strip())
             except ValueError:
                 seconds = -1
-            if seconds >= 0:
+            if 0 <= seconds < 1e12:
                 return round(seconds.__mul__(1000))
         if text.isdigit():
             return int(text)
@@ -1093,7 +1097,7 @@ def normalize_map_output(value, cues=None):
     total = 0
     for index, row in enumerate(rows):
         path = "cleaned_transcript[%d]" % index
-        text = _coerce_text(row, path + ".text", 600)
+        text = _coerce_text(row, path + ".text", MAX_CHUNK_CHARS if cues is not None else 600)
         if cues is not None:
             positional = next(positions, None)
             cue_id_value = _alias(row, ("cue_id", "cueId", "id")) if type(row) is dict else None
@@ -1519,9 +1523,15 @@ def render_summary(summary: Mapping[str, Any]) -> str:
     if isinstance(review, Mapping):
         lines.append(f"- 状态：{_markdown_text(review.get('status', '未审校'))}")
         for item in review.get("issues", ()):
+            evidence = item.get("evidence", "")
             lines.append(
                 "- **%s**：%s；证据：%s；修改：%s"
-                % tuple(_markdown_text(item.get(key, "")) for key in ("type", "problem", "evidence", "fix"))
+                % (
+                    _markdown_text(item.get("type", "")),
+                    _markdown_text(item.get("problem", "")),
+                    _evidence_markdown(evidence) if isinstance(evidence, list) else _markdown_text(evidence),
+                    _markdown_text(item.get("fix", "")),
+                )
             )
         for row in review.get("coverage_ledger", ()):
             lines.append(
@@ -2125,7 +2135,7 @@ def _protected_audit_merge(
         if key not in known_theme_keys and _evidence_in_chunk(candidate.get("evidence", ()), chunk):
             themes.append(candidate)
             known_theme_keys.add(key)
-    merged["themes"] = themes
+    merged["themes"] = themes[:12]
 
     current_questions = list(current.get("questions", ()))
     revised_questions = {

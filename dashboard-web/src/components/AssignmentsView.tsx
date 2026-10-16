@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import assignmentSubmittedIllustration from "@/assets/empty-states/assignment-submitted.webp";
 import { ContentReveal } from "@/components/ContentReveal";
 import { PanFilePicker } from "@/components/PanFilePicker";
+import { RichPreviewContent } from "@/components/RichPreviewContent";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
@@ -293,16 +294,22 @@ export function AssignmentsView({
   const [result, setResult] = useState<SubmissionResult | null>(null);
   const categoryRef = useRef(category);
   const handledTargetRef = useRef("");
+  const listRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
   categoryRef.current = category;
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
+    const request = ++listRequestRef.current;
     setItems(null);
     setError("");
     try {
-      setItems((await getAssignments(category)).items);
+      const next = (await getAssignments(category)).items;
+      if (listRequestRef.current === request) setItems(next);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "作业读取失败");
+      if (listRequestRef.current === request) {
+        setError(reason instanceof Error ? reason.message : "作业读取失败");
+      }
     }
   }, [category]);
   useEffect(() => void load(), [load]);
@@ -351,14 +358,23 @@ export function AssignmentsView({
   }, [initialTarget, onInitialTargetHandled]);
 
   const selectAssignment = async (item: AssignmentItem) => {
+    const request = ++detailRequestRef.current;
     setError("");
     setResult(null);
+    if (!selected || !sameAssignment(selected, item)) {
+      setLocalFile(null);
+      setShowPan(false);
+    }
     try {
-      setSelected(
-        await getAssignmentDetail(Number(item.course_id), Number(item.id)),
+      const detail = await getAssignmentDetail(
+        Number(item.course_id),
+        Number(item.id),
       );
+      if (detailRequestRef.current === request) setSelected(detail);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "作业详情读取失败");
+      if (detailRequestRef.current === request) {
+        setError(reason instanceof Error ? reason.message : "作业详情读取失败");
+      }
     }
   };
 
@@ -589,9 +605,13 @@ export function AssignmentsView({
                 {selected.description && (
                   <section className="assignment-requirements">
                     <h4>作业要求</h4>
-                    <p className="assignment-description">
-                      {selected.description}
-                    </p>
+                    <div className="assignment-description">
+                      <RichPreviewContent
+                        kind="html"
+                        title="作业要求"
+                        content={selected.description}
+                      />
+                    </div>
                   </section>
                 )}
                 {selected.requires_external_submission && (

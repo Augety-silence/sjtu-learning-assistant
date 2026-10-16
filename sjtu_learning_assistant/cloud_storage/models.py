@@ -53,6 +53,12 @@ class CloudDirectoryPage:
 
     @property
     def has_more(self) -> bool:
+        # A short page whose position exactly reaches total is the honoured last page.
+        if (
+            len(self.items) < self.page_size
+            and (self.page - 1) * self.page_size + len(self.items) == self.total
+        ):
+            return False
         return bool(self.items) and self.page * len(self.items) < self.total
 
 
@@ -78,6 +84,8 @@ class UploadSession:
         return sum(self.part_sizes.get(part, 0) for part in self.uploaded_parts)
 
     def validate_contiguous(self) -> None:
+        if type(self.next_part) is not int or self.next_part < 1:
+            raise ValueError("上传会话的下一个分片序号无效。")
         expected = list(range(1, self.next_part))
         if self.uploaded_parts != expected or set(self.part_sizes) != set(expected):
             raise ValueError("上传会话的已完成分片不是连续前缀。")
@@ -108,14 +116,26 @@ class UploadSession:
         part_sizes_value = value.get("part_sizes", {})
         if not isinstance(part_sizes_value, Mapping):
             raise ValueError("上传会话分片大小格式错误。")
-        session = cls(
-            remote_path=tuple(str(part) for part in value["remote_path"]),
-            confirm_key=str(value["confirm_key"]),
-            overwrite=bool(value.get("overwrite", False)),
-            next_part=int(value.get("next_part", 1)),
-            uploaded_parts=[int(part) for part in value.get("uploaded_parts", [])],
-            part_sizes={int(part): int(size) for part, size in part_sizes_value.items()},
-        )
+        remote_path_value = value.get("remote_path")
+        confirm_key_value = value.get("confirm_key")
+        if (
+            not isinstance(remote_path_value, (list, tuple))
+            or not remote_path_value
+            or not isinstance(confirm_key_value, str)
+            or not confirm_key_value
+        ):
+            raise ValueError("上传会话格式错误。")
+        try:
+            session = cls(
+                remote_path=tuple(str(part) for part in remote_path_value),
+                confirm_key=confirm_key_value,
+                overwrite=bool(value.get("overwrite", False)),
+                next_part=int(value.get("next_part", 1)),
+                uploaded_parts=[int(part) for part in value.get("uploaded_parts", [])],
+                part_sizes={int(part): int(size) for part, size in part_sizes_value.items()},
+            )
+        except TypeError as exc:
+            raise ValueError("上传会话格式错误。") from exc
         session.validate_contiguous()
         claimed_bytes = int(value.get("bytes_uploaded", session.bytes_uploaded))
         if claimed_bytes != session.bytes_uploaded:

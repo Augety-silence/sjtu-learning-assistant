@@ -103,7 +103,7 @@ class TranscriptAutomationTests(unittest.TestCase):
         finally:
             release.set()
             thread.join(3)
-        stored = json.loads(service._batch_path(batch["id"]).read_text())
+        stored = json.loads(service._batch_path(batch["id"]).read_text(encoding="utf-8"))
         self.assertTrue(stored["cancel_requested"])
         self.assertEqual("cancelled", stored["jobs"][0]["status"])
         self.assertEqual([], pipeline.calls)
@@ -249,7 +249,7 @@ class TranscriptAutomationTests(unittest.TestCase):
         service.run_pending()
         self.assertEqual(["A chunk saved", "B organized", "A resumed"], events)
         self.assertEqual("completed", service.get_batch(first["id"])["status"])
-        self.assertFalse(json.loads(service._batch_path(first["id"]).read_text())["cancel_requested"])
+        self.assertFalse(json.loads(service._batch_path(first["id"]).read_text(encoding="utf-8"))["cancel_requested"])
 
     def test_remote_wait_in_mixed_failure_batch_still_retries_and_is_bounded(self):
         clock = [datetime(2026, 10, 14, tzinfo=timezone.utc)]

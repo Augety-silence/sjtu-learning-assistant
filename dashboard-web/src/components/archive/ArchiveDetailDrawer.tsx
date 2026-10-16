@@ -2,7 +2,10 @@ import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
-import { archiveStatusLabel } from "@/components/archive/archiveUtils";
+import {
+  archiveStatusLabel,
+  latestVersion,
+} from "@/components/archive/archiveUtils";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import { getArchiveDetail } from "@/lib/api";
@@ -70,7 +73,9 @@ export function ArchiveDetailDrawer({
       >
         <header>
           <div>
-            <ArchiveStatusChip status={current.status} />
+            <ArchiveStatusChip
+              status={latestVersion(current)?.status ?? current.status}
+            />
             <h3 id="archive-detail-title">{current.filename}</h3>
           </div>
           <Button
@@ -153,11 +158,7 @@ export function ArchiveDetailDrawer({
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={
-                          !["archived", "needs_reconcile"].includes(
-                            version.status,
-                          )
-                        }
+                        disabled={version.status !== "archived"}
                         onClick={() => onRestore(current, version)}
                       >
                         恢复此版本

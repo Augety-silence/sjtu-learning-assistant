@@ -264,6 +264,20 @@ export function AIChatComposer({
     null,
   );
   const controlsRef = useRef<HTMLDivElement>(null);
+  const agentTriggerRef = useRef<HTMLButtonElement>(null);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (openMenu !== "agent") return;
+    queueMicrotask(() => {
+      const menu = agentMenuRef.current;
+      (
+        menu?.querySelector<HTMLButtonElement>(
+          '[role="option"][aria-selected="true"]',
+        ) ?? menu?.querySelector<HTMLButtonElement>('[role="option"]')
+      )?.focus();
+    });
+  }, [openMenu]);
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
 
@@ -327,10 +341,12 @@ export function AIChatComposer({
           placeholder="让 Agent 检索课程、文件、截止日期或消息…"
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
+            // Ignore Enter while an IME (e.g. Chinese pinyin) is composing a candidate.
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             const shouldSend =
               event.key === "Enter" &&
               !event.shiftKey &&
-              (sendShortcut === "enter" || event.metaKey);
+              (sendShortcut === "enter" || event.metaKey || event.ctrlKey);
             if (shouldSend) {
               event.preventDefault();
               onSubmit(draft);
@@ -378,8 +394,15 @@ export function AIChatComposer({
             )}
             <div className="ai-compact-choice ai-agent-choice">
               <button
+                ref={agentTriggerRef}
                 type="button"
                 className="ai-agent-trigger"
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    if (openMenu !== "agent") setOpenMenu("agent");
+                  }
+                }}
                 aria-label={`Agent：${selectedPreset?.name ?? "未选择"}`}
                 aria-controls="ai-composer-agent-menu"
                 aria-haspopup="listbox"
@@ -397,6 +420,33 @@ export function AIChatComposer({
                     id="ai-composer-agent-menu"
                     className="ai-choice-menu ai-agent-menu"
                     label="Agent 预设"
+                    menuRef={agentMenuRef}
+                    onKeyDown={(event) => {
+                      const options = Array.from(
+                        event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                          '[role="option"]',
+                        ),
+                      );
+                      const current = options.indexOf(
+                        document.activeElement as HTMLButtonElement,
+                      );
+                      let next: number;
+                      if (event.key === "ArrowDown")
+                        next = (current + 1) % options.length;
+                      else if (event.key === "ArrowUp")
+                        next = current <= 0 ? options.length - 1 : current - 1;
+                      else if (event.key === "Home") next = 0;
+                      else if (event.key === "End") next = options.length - 1;
+                      else if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setOpenMenu(null);
+                        queueMicrotask(() => agentTriggerRef.current?.focus());
+                        return;
+                      } else return;
+                      event.preventDefault();
+                      options[next]?.focus();
+                    }}
                   >
                     <header>选择 Agent</header>
                     {presets.map((preset) => (
@@ -408,6 +458,9 @@ export function AIChatComposer({
                         onClick={() => {
                           onSelectPreset(preset.id);
                           setOpenMenu(null);
+                          queueMicrotask(() =>
+                            agentTriggerRef.current?.focus(),
+                          );
                         }}
                       >
                         <img src={aiAgentLogo} alt="" aria-hidden="true" />

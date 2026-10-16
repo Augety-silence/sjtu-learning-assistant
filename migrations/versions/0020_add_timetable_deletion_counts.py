@@ -59,6 +59,9 @@ def downgrade() -> None:
     if constraint is not None and "deleted" in str(
         constraint.get("sqltext") or ""
     ):
+        # Rows using the 0020-only action would violate the restored CHECK
+        # while batch mode copies the table.
+        op.execute("DELETE FROM timetable_import_audit WHERE action = 'deleted'")
         with op.batch_alter_table("timetable_import_audit") as batch:
             batch.drop_constraint("ck_timetable_audit_action", type_="check")
             batch.create_check_constraint(

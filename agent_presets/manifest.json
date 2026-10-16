@@ -19,7 +19,7 @@
     {
       "id": "material-manager",
       "name": "资料管理员",
-      "description": "检索和梳理本地课程资料，只读不移动文件。",
+      "description": "检索和梳理课程资料（本地/云端/远程），只读不移动文件。",
       "skill": "skills/material-manager.md",
       "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
     },
@@ -28,7 +28,7 @@
       "name": "截止事项教练",
       "description": "根据真实截止日期制定优先级。",
       "skill": "skills/deadline-coach.md",
-      "allowed_tools": ["list_courses", "get_deadlines", "search_ai_attachments", "read_ai_attachment_text"]
+      "allowed_tools": ["list_courses", "get_deadlines", "search_course_files", "list_course_files", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "message-analyst",
@@ -49,7 +49,7 @@
       "name": "课程总结",
       "description": "基于课程与资料元数据形成课程概览。",
       "skill": "skills/course-summarizer.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_material_tree", "search_messages", "get_message_detail", "search_ai_attachments", "read_ai_attachment_text"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "get_deadlines", "get_material_tree", "search_messages", "get_message_detail", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "learning-diagnostics",

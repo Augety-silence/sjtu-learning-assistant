@@ -75,7 +75,19 @@ class AgentLoop:
             if name in seen or name not in self.preset.allowed_tools:
                 continue
             seen.add(name)
-            execution = self.tools.execute(name, arguments, self.preset.allowed_tools)
+            try:
+                execution = self.tools.execute(name, arguments, self.preset.allowed_tools)
+            except AgentToolError as exc:
+                runs.append(
+                    {
+                        "tool_name": name,
+                        "phase": "prefetch",
+                        "status": "rejected",
+                        "arguments_summary": {},
+                        "result_summary": {"status": "error", "error": str(exc)[:240]},
+                    }
+                )
+                continue
             messages.append(
                 {
                     "role": "system",
@@ -172,6 +184,7 @@ class AgentLoop:
                         system_prompt=False,
                     )
             except AIToolsUnsupportedError:
+                definitions = []
                 completion = self.client.chat_completion(
                     conversation,
                     max_tokens=max_tokens,
@@ -202,7 +215,7 @@ class AgentLoop:
             assistant_message: dict[str, Any] = {"role": "assistant", "content": content or "", "tool_calls": tool_calls}
             conversation.append(assistant_message)
             for index, call in enumerate(tool_calls):
-                call_id = str(call.get("id") or f"call-{step}-{index}")[:128]
+                call_id = str((call.get("id") if isinstance(call, dict) else None) or f"call-{step}-{index}")[:128]
                 function = call.get("function") if isinstance(call, dict) else None
                 name = function.get("name") if isinstance(function, dict) else None
                 raw_arguments = function.get("arguments") if isinstance(function, dict) else None

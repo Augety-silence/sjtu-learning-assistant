@@ -44,7 +44,15 @@ export interface CalendarViewProps {
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 function asDate(value: Date | string) {
-  const date = value instanceof Date ? new Date(value) : new Date(value);
+  const dateOnly =
+    typeof value === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : null;
+  const date = dateOnly
+    ? new Date(
+        Number(dateOnly[1]),
+        Number(dateOnly[2]) - 1,
+        Number(dateOnly[3]),
+      )
+    : new Date(value);
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
@@ -364,7 +372,7 @@ export function CalendarView({
                   <button
                     type="button"
                     className={`list-row list-row-button calendar-event-row ${event.eventType === "course" ? "calendar-course-row" : ""}`}
-                    key={event.id}
+                    key={`${event.eventType ?? "assignment"}:${event.id}`}
                     onClick={() => onOpenEvent?.(event)}
                     disabled={!onOpenEvent}
                   >
@@ -394,7 +402,7 @@ export function CalendarView({
                   <button
                     type="button"
                     className={`list-row list-row-button calendar-event-row ${event.eventType === "course" ? "calendar-course-row" : ""}`}
-                    key={event.id}
+                    key={`${event.eventType ?? "assignment"}:${event.id}`}
                     onClick={() => onOpenEvent?.(event)}
                     disabled={!onOpenEvent}
                   >

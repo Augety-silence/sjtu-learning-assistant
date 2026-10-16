@@ -166,7 +166,11 @@ class AIManagedFileServiceTests(unittest.TestCase):
             lambda command, **_kwargs: commands.append(command) or SimpleNamespace(returncode=0),
         )
         self.assertEqual("revealed", revealed["status"])
-        self.assertEqual(["/usr/bin/open", "-R"], commands[0][:2])
+        if os.name == "nt":
+            self.assertEqual("explorer.exe", commands[0][0])
+            self.assertTrue(commands[0][1].startswith("/select,"))
+        else:
+            self.assertEqual(["/usr/bin/open", "-R"], commands[0][:2])
         self.assertTrue(service.resolve_controlled_copy(item["id"]).exists())
         self.assertNotIn(str(self.root), json.dumps(revealed, ensure_ascii=False))
 

@@ -14,10 +14,12 @@ const POLL_INTERVAL_MS = 1000;
 function safeText(value: string | null | undefined, fallback = "—") {
   if (!value) return fallback;
   return value
+    .replace(/\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n]+(?=[\\/]|$)/gi, "~")
     .replace(/\/Users\/[^/\r\n]+(?=\/|$)/g, "~")
+    .replace(/\/home\/[^/\r\n]+(?=\/|$)/g, "~")
     .replace(/\bBearer\s+\S+/gi, "[凭据已隐藏]")
     .replace(
-      /\b(?:access[_-]?token|refresh[_-]?token|token|authorization)\b\s*[:=]\s*\S+/gi,
+      /\b(?:user[_-]?token|access[_-]?token|refresh[_-]?token|token|authorization|password|passwd|cookie|secret)\b\s*[:=]\s*\S+/gi,
       "[凭据已隐藏]",
     );
 }
@@ -110,8 +112,7 @@ export function BackupView() {
     try {
       const next = await getBackupStatus();
       setBackup(next);
-      if (next.status === "running") setWatching(true);
-      if (next.status === "finished") setWatching(false);
+      setWatching(next.status === "running");
     } catch (reason) {
       setLoadError(
         reason instanceof Error ? reason.message : "备份状态读取失败",

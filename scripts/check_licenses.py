@@ -15,7 +15,7 @@ RUNTIME_FILE = ROOT / "requirements.txt"
 OPTIONAL_FILE = ROOT / "requirements-postgres.txt"
 DEV_FILE = ROOT / "requirements-dev.txt"
 WINDOWS_FILE = ROOT / "requirements-windows.txt"
-STRONG_COPYLEFT = re.compile(r"(?:^|[^l])(?:a?gpl)(?:[- v]|$)", re.IGNORECASE)
+STRONG_COPYLEFT = re.compile(r"(?:^|[^l])a?gpl(?:[-\s v)+\d]|$)", re.IGNORECASE)
 PERMISSIVE_ALTERNATIVES = ("apache", "bsd", "isc", "mit")
 REVIEWED_LICENSE_OVERRIDES = {
     "clr-loader": "MIT",
@@ -32,7 +32,10 @@ def requirement_names(path: Path) -> set[str]:
         line = raw_line.split("#", 1)[0].strip()
         if not line or line.startswith("-r "):
             continue
-        names.add(canonical(Requirement(line).name))
+        requirement = Requirement(line)
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        names.add(canonical(requirement.name))
     return names
 
 

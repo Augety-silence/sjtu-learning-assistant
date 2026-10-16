@@ -6,6 +6,8 @@ import json
 import os
 import stat
 import tempfile
+import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -53,6 +55,11 @@ PRE_AI_KEYS = PRE_PERSONALIZATION_KEYS - {
 }
 LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
+# ERROR_ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION while a reader or
+# scanner holds settings.json open without FILE_SHARE_DELETE.
+_WINDOWS_REPLACE_RETRY_ERRORS = frozenset({5, 32, 33})
+_WINDOWS_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
+_UPDATE_LOCK = threading.RLock()
 
 
 class SettingsError(ValueError):
@@ -237,6 +244,46 @@ def _fsync_parent_directory(path: Path, *, platform: str | None = None) -> None:
         os.close(directory_fd)
 
 
+def _replace_with_retry(source: Path, target: Path, *, platform: str | None = None) -> None:
+    """os.replace, retrying transient Windows sharing violations."""
+    if (platform or os.name) != "nt":
+        os.replace(source, target)
+        return
+    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS, None):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if delay is None or getattr(exc, "winerror", None) not in _WINDOWS_REPLACE_RETRY_ERRORS:
+                raise
+            time.sleep(delay)
+
+
+def _salvage_settings(payload: object, mail_account: str) -> dict[str, Any]:
+    """Keep each individually valid field instead of bricking startup."""
+    values = LocalSettings(mail_account=mail_account).to_dict()
+    if not isinstance(payload, dict):
+        return values
+    archive_invalid = False
+    for key in ALLOWED_KEYS & set(payload):
+        try:
+            values.update(_validate_mapping({key: payload[key]}, partial=True))
+        except SettingsError:
+            archive_invalid = archive_invalid or key == "archive_root"
+    if archive_invalid:
+        # Never start bulk downloads into a silently substituted default root.
+        values["auto_download_current_term"] = False
+    return values
+
+
+def _quarantine_corrupt_settings(path: Path) -> None:
+    """Best-effort: keep an unreadable file for diagnosis, then use defaults."""
+    try:
+        os.replace(path, path.with_name(f"{path.name}.corrupt"))
+    except OSError:
+        pass
+
+
 class SettingsStore:
     def __init__(self, path: Path = SETTINGS_PATH) -> None:
         self.path = Path(path).expanduser()
@@ -247,9 +294,12 @@ class SettingsStore:
         if not self.path.exists():
             return LocalSettings(mail_account=initial_mail_account)
         try:
-            with self.path.open("r", encoding="utf-8") as stream:
+            with self.path.open("r", encoding="utf-8-sig") as stream:
                 payload = json.load(stream)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        except (UnicodeError, json.JSONDecodeError):
+            _quarantine_corrupt_settings(self.path)
+            return LocalSettings(mail_account=initial_mail_account)
+        except OSError as exc:
             raise SettingsError("本地设置文件无法读取。") from exc
         if isinstance(payload, dict) and set(payload) == LEGACY_KEYS:
             payload = {**payload, "mail_account": initial_mail_account}
@@ -272,7 +322,10 @@ class SettingsStore:
                     for key in PERSONALIZATION_KEYS
                 },
             }
-        values = _validate_mapping(payload, partial=False)
+        try:
+            values = _validate_mapping(payload, partial=False)
+        except SettingsError:
+            values = _salvage_settings(payload, initial_mail_account)
         return LocalSettings(**values)
 
     def save(self, settings: LocalSettings) -> LocalSettings:
@@ -295,7 +348,7 @@ class SettingsStore:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary_path, self.path)
+            _replace_with_retry(temporary_path, self.path)
             # Windows cannot open directories with os.open(); file fsync above
             # is sufficient there, while POSIX also persists the directory entry.
             _fsync_parent_directory(self.path.parent)
@@ -305,9 +358,10 @@ class SettingsStore:
 
     def update(self, payload: object) -> LocalSettings:
         changes = _validate_mapping(payload, partial=True)
-        values = self.load().to_dict()
-        values.update(changes)
-        return self.save(LocalSettings(**values))
+        with _UPDATE_LOCK:
+            values = self.load().to_dict()
+            values.update(changes)
+            return self.save(LocalSettings(**values))
 
     def resolve(
         self,

@@ -15,8 +15,8 @@ CATEGORY_ORDER = tuple(CATEGORY_LABELS)
 LEGACY_CATEGORY_ALIASES = {"supplementary": "other"}
 LEGACY_CATEGORY_LABELS = ("补充资料",)
 KEYWORDS = (
-    ("assignments", ("作业", "homework", "assignment", "exercise", "实验", "lab")),
-    ("courseware", ("课件", "讲义", "lecture", "slide", "ppt", "slides", "教案")),
+    ("assignments", ("作业", "homework", "homeworks", "assignment", "assignments", "exercise", "exercises", "实验", "lab", "labs")),
+    ("courseware", ("课件", "讲义", "lecture", "lectures", "slide", "ppt", "slides", "教案")),
 )
 
 

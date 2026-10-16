@@ -6,7 +6,7 @@ import hashlib
 import re
 from html import escape
 from html.parser import HTMLParser
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 _ALLOWED_TAGS = frozenset(
     {
@@ -17,8 +17,9 @@ _ALLOWED_TAGS = frozenset(
 )
 _VOID_TAGS = frozenset({"br", "img"})
 _SUPPRESSED_TAGS = frozenset(
-    {"script", "style", "iframe", "form", "object", "embed", "template", "noscript"}
+    {"script", "style", "iframe", "form", "object", "template", "noscript", "title"}
 )
+_MAX_OPEN_TAGS = 256
 _BLOCK_TAGS = frozenset(
     {
         "address", "article", "aside", "blockquote", "br", "div", "dl", "dt",
@@ -47,6 +48,10 @@ def _canvas_image_url(value: str) -> str | None:
         or parsed.username is not None
         or parsed.password is not None
         or port not in (None, 443)
+        or any(
+            segment in {".", ".."}
+            for segment in unquote(parsed.path).replace("\\", "/").split("/")
+        )
     ):
         return None
     return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, ""))
@@ -84,7 +89,10 @@ class _HTMLSanitizer(HTMLParser):
         if tag == "a":
             href = values.get("href")
             if href:
-                parsed = urlsplit(href.strip())
+                try:
+                    parsed = urlsplit(href.strip())
+                except ValueError:
+                    return []
                 if parsed.scheme.casefold() == "https" and parsed.netloc:
                     return [("href", href.strip())]
             return []
@@ -130,9 +138,11 @@ class _HTMLSanitizer(HTMLParser):
             f' {name}="{escape(value, quote=True)}"'
             for name, value in safe_attributes
         )
-        self.parts.append(f"<{tag}{attributes}>")
         if tag not in _VOID_TAGS:
+            if len(self.open_tags) >= _MAX_OPEN_TAGS:
+                return
             self.open_tags.append(tag)
+        self.parts.append(f"<{tag}{attributes}>")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.casefold()
@@ -204,10 +214,17 @@ class _TextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.hidden_depth = 0
+        self.head_open = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized = tag.casefold()
+        if normalized == "body" and self.head_open:
+            self.head_open = False
+            self.hidden_depth = max(0, self.hidden_depth - 1)
+        if normalized == "head" and self.head_open:
+            return
         if normalized in _HIDDEN_TAGS:
+            self.head_open = self.head_open or normalized == "head"
             self.hidden_depth += 1
         elif not self.hidden_depth and normalized in _BLOCK_TAGS:
             self.parts.append("\n")
@@ -218,6 +235,10 @@ class _TextExtractor(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         normalized = tag.casefold()
+        if normalized == "head":
+            if not self.head_open:
+                return
+            self.head_open = False
         if normalized in _HIDDEN_TAGS:
             if self.hidden_depth:
                 self.hidden_depth -= 1

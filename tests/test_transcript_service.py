@@ -90,12 +90,13 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertIn("WEBVTT", service.read_artifact(raw["id"])["content"])
         kinds = {item["kind"] for item in service.list_artifacts(job["id"])["items"]}
         self.assertIn("cues", kinds)
-        manifest = json.loads(next(self.root.glob("videos/*/manifest.json")).read_text())
+        manifest = json.loads(next(self.root.glob("videos/*/manifest.json")).read_text(encoding="utf-8"))
         self.assertNotIn("api_key", json.dumps(manifest))
         self.assertNotIn(str(self.root), json.dumps(manifest))
-        self.assertEqual(0o700, os.stat(self.root.parent).st_mode & 0o777)
-        self.assertEqual(0o700, os.stat(self.root).st_mode & 0o777)
-        self.assertEqual(0o600, os.stat(next(self.root.glob("videos/*/raw.vtt"))).st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o700, os.stat(self.root.parent).st_mode & 0o777)
+            self.assertEqual(0o700, os.stat(self.root).st_mode & 0o777)
+            self.assertEqual(0o600, os.stat(next(self.root.glob("videos/*/raw.vtt"))).st_mode & 0o777)
         second = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
         service.run_pending()
         self.assertEqual(1, self.fetches)
@@ -104,7 +105,7 @@ class TranscriptServiceTests(unittest.TestCase):
     def test_two_live_service_instances_do_not_interrupt_or_steal_batch(self):
         owner = self.service()
         batch = owner.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))
-        stored = json.loads(owner._batch_path(batch.get("id")).read_text())
+        stored = json.loads(owner._batch_path(batch.get("id")).read_text(encoding="utf-8"))
         batch_owner = stored.get("owner")
         job_owner = next(iter(stored.get("jobs"))).get("owner")
         self.assertEqual(os.getpid(), batch_owner.get("pid"))
@@ -122,7 +123,7 @@ class TranscriptServiceTests(unittest.TestCase):
         batch = service.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))
         service.run_pending()
         path = service._batch_path(batch.get("id"))
-        stored = json.loads(path.read_text())
+        stored = json.loads(path.read_text(encoding="utf-8"))
         stale = dict(
             pid=os.getpid(),
             process_start="definitely-not-this-process",
@@ -135,12 +136,12 @@ class TranscriptServiceTests(unittest.TestCase):
         stored_job.update(owner=stale, status="organizing", stage="map_reduce")
         service._write_json(path, stored)
         manifest_path = service._manifest_path(VIDEO.get("source_id"))
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(status="organizing", stage="map_reduce")
         service._write_json(manifest_path, manifest)
         recovered = self.service()
         self.assertEqual("interrupted", recovered.get_batch(batch.get("id")).get("status"))
-        self.assertEqual("interrupted", json.loads(manifest_path.read_text()).get("status"))
+        self.assertEqual("interrupted", json.loads(manifest_path.read_text(encoding="utf-8")).get("status"))
         old_job = next(iter(batch.get("jobs")))
         retry = recovered.retry(old_job.get("id"))
         recovered.cancel(batch_id=retry.get("id"))
@@ -199,11 +200,12 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertIn("cues", kinds)
         self.assertIn("cleaned", kinds)
         video_dir = service._video_dir(VIDEO["source_id"])
-        manifest = json.loads((video_dir / "manifest.json").read_text())
+        manifest = json.loads((video_dir / "manifest.json").read_text(encoding="utf-8"))
         record = manifest["chunks"]["0"]
         self.assertEqual("chunks/0000.json", record["path"])
         chunk_path = video_dir / "chunks" / "0000.json"
-        self.assertEqual(0o600, os.stat(chunk_path).st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o600, os.stat(chunk_path).st_mode & 0o777)
         self.assertEqual(hashlib.sha256(chunk_path.read_bytes()).hexdigest(), record["sha256"])
 
 
@@ -213,11 +215,11 @@ class TranscriptServiceTests(unittest.TestCase):
         service.run_pending()
         job = next(iter(service.get_batch(batch.get("id")).get("jobs")))
         manifest_path = service._manifest_path(VIDEO.get("source_id"))
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(pipeline=dict(prompt_version="transcript-v1"), ai=dict(model="old", endpoint_fingerprint="old"))
         service._write_json(manifest_path, manifest)
         service.retry(job.get("id"))
-        refreshed = json.loads(manifest_path.read_text())
+        refreshed = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(PROMPT_VERSION, refreshed.get("pipeline").get("prompt_version"))
         self.assertEqual(PIPELINE_VERSION, refreshed.get("pipeline").get("pipeline_version"))
         self.assertEqual(64, len(refreshed.get("ai").get("model_fingerprint")))
@@ -283,7 +285,7 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertTrue(recovered.get("partial_warning"))
         self.assertEqual("completed_with_warnings", service.get_batch(retry.get("id")).get("status"))
         video_dir = service._video_dir(VIDEO.get("source_id"))
-        manifest = json.loads((video_dir / "manifest.json").read_text())
+        manifest = json.loads((video_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(2, manifest.get("schema_version"))
         self.assertEqual(manifest.get("idempotency_key"), manifest.get("artifact_idempotency_key"))
         self.assertNotIn("ai_warning", manifest)
@@ -292,8 +294,9 @@ class TranscriptServiceTests(unittest.TestCase):
             record = manifest.get("artifacts").get(kind)
             self.assertEqual(name, record.get("path"))
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record.get("sha256"))
-            self.assertEqual(0o600, os.stat(path).st_mode & 0o777)
-        summary = json.loads((video_dir / "summary.json").read_text())
+            if os.name != "nt":
+                self.assertEqual(0o600, os.stat(path).st_mode & 0o777)
+        summary = json.loads((video_dir / "summary.json").read_text(encoding="utf-8"))
         evidence = next(iter(next(iter(summary.get("emphasized_points"))).get("evidence")))
         self.assertEqual("cue-000001", evidence.get("cue_id"))
         self.assertIn(evidence.get("quote"), VTT)
@@ -303,9 +306,9 @@ class TranscriptServiceTests(unittest.TestCase):
         service.pipeline = TranscriptPipeline()
         video_dir = service._video_dir(VIDEO.get("source_id"))
         manifest_path = video_dir / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         context = AIContext(object(), "qwen", "endpoint-hash", True)
-        raw = (video_dir / "raw.vtt").read_text()
+        raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
         original_context = dict(manifest.get("chunk_context"))
         original_raw_hash = manifest.get("raw_sha256")
         manifest.update(raw_sha256="0".ljust(64, "0"))
@@ -398,7 +401,7 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual("partial", job.get("status"))
         self.assertEqual("summary_empty", job.get("stage"))
         self.assertEqual(SUMMARY_EMPTY_WARNING, job.get("message"))
-        manifest = json.loads(service._manifest_path(VIDEO.get("source_id")).read_text())
+        manifest = json.loads(service._manifest_path(VIDEO.get("source_id")).read_text(encoding="utf-8"))
         self.assertEqual("partial", manifest.get("status"))
         self.assertEqual("summary_empty", manifest.get("stage"))
 
@@ -437,7 +440,7 @@ class TranscriptServiceTests(unittest.TestCase):
             def orchestrate(inner_self, **kwargs):
                 del kwargs
                 visible = service.get_batch(batch["id"])["jobs"][0]
-                stored = json.loads(service._batch_path(batch["id"]).read_text())["jobs"][0]
+                stored = json.loads(service._batch_path(batch["id"]).read_text(encoding="utf-8"))["jobs"][0]
                 self.assertEqual("reviewing", visible["stage"])
                 self.assertEqual("reviewing", stored["stage"])
                 self.assertEqual("organizing", visible["status"])
@@ -556,7 +559,7 @@ class TranscriptServiceTests(unittest.TestCase):
         service.run_pending()
 
         job = service.get_batch(batch["id"])["jobs"][0]
-        manifest = json.loads(service._manifest_path(VIDEO["source_id"]).read_text())
+        manifest = json.loads(service._manifest_path(VIDEO["source_id"]).read_text(encoding="utf-8"))
         self.assertEqual("completed", manifest["status"])
         self.assertNotIn("partial_warnings", manifest)
         self.assertEqual("completed", job["phase1_status"])

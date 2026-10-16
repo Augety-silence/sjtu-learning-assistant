@@ -65,7 +65,7 @@ const themeOptions = [
   {
     mode: "system",
     label: "跟随系统",
-    description: "自动匹配 macOS 外观",
+    description: "自动匹配系统外观",
     icon: Monitor,
   },
   { mode: "light", label: "浅色", description: "始终使用浅色外观", icon: Sun },
@@ -231,7 +231,9 @@ export function SettingsView({
       applyStatus(
         await deleteCredential(
           editing,
-          editing === "mail" ? mailAccount.trim() : "",
+          editing === "mail"
+            ? (status?.mail_account ?? mailAccount).trim()
+            : "",
         ),
       );
       setSecret("");
@@ -325,7 +327,15 @@ export function SettingsView({
       updateResult?.download_plan?.release_page_url ??
       updateResult?.release?.page_url;
     if (!url) return;
-    await openExternal(url);
+    try {
+      await openExternal(url);
+    } catch (reason) {
+      showToast({
+        id: "update-release",
+        kind: "error",
+        message: reason instanceof Error ? reason.message : "发布页打开失败",
+      });
+    }
   };
 
   const chooseFolder = async () => {
@@ -422,7 +432,7 @@ export function SettingsView({
         <div className="section-header">
           <div>
             <h3 id="appearance-title">外观</h3>
-            <p>选择界面主题；跟随系统会实时响应 macOS 外观变化。</p>
+            <p>选择界面主题；跟随系统会实时响应系统外观变化。</p>
           </div>
         </div>
         <div
@@ -678,7 +688,11 @@ export function SettingsView({
             onAiModel={setAiModel}
             onSecret={setSecret}
             onClose={() => {
-              if (!busy) setEditing(null);
+              if (busy) return;
+              setMailAccount(status.mail_account);
+              setAiBaseUrl(status.ai_base_url);
+              setAiModel(status.ai_model);
+              setEditing(null);
             }}
             onSave={saveConfig}
             onDelete={() => void removeCredential()}
@@ -760,7 +774,7 @@ function ConfigDialog({
         style={{
           position: "absolute",
           inset: 0,
-          background: "var(--shadow-overlay)",
+          background: "var(--surface-mask-soft)",
           pointerEvents: isPresent ? "auto" : "none",
         }}
         initial={reduceMotion ? false : { opacity: 0 }}
@@ -839,6 +853,10 @@ function ConfigDialog({
                 <input
                   value={aiBaseUrl}
                   onChange={(event) => onAiBaseUrl(event.target.value)}
+                  inputMode="url"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoComplete="off"
                 />
               </label>
               <label>

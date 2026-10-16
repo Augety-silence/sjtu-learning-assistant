@@ -20,7 +20,7 @@ SQLITE_BACKUP_COUNT = 3
 SQLITE_MAINTENANCE_INTERVAL_SECONDS = 24 * 60 * 60
 SQLITE_TIMEOUT_SECONDS = 5.0
 _IS_WINDOWS = os.name == "nt"
-_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({32, 33})
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32, 33})
 _WINDOWS_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 _SQLITE_CORRUPTION_CODES = {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
 
@@ -78,6 +78,7 @@ def sqlite_maintenance_lock(database_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(lock_path.parent, 0o700)
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    locked = False
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(descriptor, 0o600)
@@ -85,17 +86,36 @@ def sqlite_maintenance_lock(database_path: Path) -> Iterator[None]:
             if os.fstat(descriptor).st_size == 0:
                 os.write(descriptor, b"\0")
             os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            try:
+                # LK_LOCK gives up with OSError after ~10 one-second retries.
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            except OSError as exc:
+                raise SQLiteRecoveryError(
+                    "另一个学习助手进程正在维护本地数据库，请稍后重试。"
+                ) from exc
         else:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
         yield
     finally:
-        if os.name == "nt":
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if locked:
+            if os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _integrity_failure_marker(database_path: Path) -> Path:
+    return database_path.with_name(f"{database_path.name}.integrity-failed")
+
+
+def _clear_integrity_failure_marker(database_path: Path) -> None:
+    try:
+        _integrity_failure_marker(database_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _is_corruption_error(error: sqlite3.DatabaseError) -> bool:
@@ -301,7 +321,9 @@ def _restore_from_backup_locked(database_path: Path, backup_path: Path) -> bool:
         if not check_sqlite_integrity(temporary_path, full=True):
             return False
         for sidecar in _database_sidecars(database_path):
-            sidecar.unlink(missing_ok=True)
+            _retry_windows_file_operation(
+                lambda sidecar=sidecar: sidecar.unlink(missing_ok=True)
+            )
         _replace_file(temporary_path, database_path)
         os.chmod(database_path, 0o600)
         return True
@@ -339,13 +361,19 @@ def prepare_sqlite_database(database_path: Path) -> SQLiteRecoveryResult:
     os.chmod(path.parent, 0o700)
     with sqlite_maintenance_lock(path):
         if not path.exists() or path.stat().st_size == 0:
+            _clear_integrity_failure_marker(path)
             return SQLiteRecoveryResult(status="new")
-        if check_sqlite_integrity(path):
+        # quick_check skips index/UNIQUE checks; after a failed daily full check
+        # the next launch must run the same full check or it never recovers.
+        full = _integrity_failure_marker(path).exists()
+        if check_sqlite_integrity(path, full=full):
+            _clear_integrity_failure_marker(path)
             return SQLiteRecoveryResult(status="healthy")
         try:
             _quarantine_database_family(path)
         except OSError as exc:
             raise SQLiteRecoveryError("无法隔离损坏的本地数据库。") from exc
+        _clear_integrity_failure_marker(path)
         for index, backup_path in enumerate(sqlite_backup_paths(path), start=1):
             if _restore_from_backup_locked(path, backup_path):
                 return SQLiteRecoveryResult(status="restored", backup_index=index)
@@ -363,5 +391,6 @@ def maintain_sqlite_database(database_path: Path) -> Path | None:
     ):
         return newest
     if not check_sqlite_integrity(path, full=True):
+        _integrity_failure_marker(path).touch()
         raise SQLiteRecoveryError("本地数据库完整性校验失败，请重新启动应用以恢复。")
     return create_sqlite_backup(path)

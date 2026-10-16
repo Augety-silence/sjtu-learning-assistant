@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,7 +40,8 @@ class LocalProjectServiceTests(unittest.TestCase):
         self.assertEqual(added["id"], duplicated["id"])
         restored = LocalProjectService(self.registry, self.compiler).list()
         self.assertEqual(1, len(restored["items"]))
-        self.assertEqual(0o600, self.registry.stat().st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o600, self.registry.stat().st_mode & 0o777)
 
     def test_refresh_updates_inventory_and_remove_never_deletes_project_files(self) -> None:
         project = self.service.add(str(self.source), str(self.target))

@@ -14,6 +14,7 @@ from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
+from sjtu_learning_assistant.credential_store import credential_storage_name
 from sjtu_learning_assistant.sqlite_recovery import (
     SQLiteRecoveryResult,
     prepare_sqlite_database,
@@ -88,9 +89,15 @@ def _validate_postgres_url(parsed: URL, database_url: str) -> str:
     if not parsed.database:
         raise DatabaseConfigError("数据库地址必须包含数据库名称。")
 
-    host = parsed.host or parsed.query.get("host")
-    local_hosts = {None, "localhost", "127.0.0.1", "::1"}
-    is_local = host in local_hosts or str(host).startswith("/")
+    # psycopg lets ?host= override the authority host and ?hostaddr= pick the real
+    # address, so every endpoint must be local before TLS can be skipped.
+    query_host = parsed.query.get("host")
+    endpoints: list[str | None] = []
+    for value in (query_host if query_host is not None else parsed.host, parsed.query.get("hostaddr")):
+        for item in value if isinstance(value, tuple) else (value,):
+            endpoints.extend([None] if item is None else str(item).split(","))
+    local_hosts = {None, "", "localhost", "127.0.0.1", "::1"}
+    is_local = all(item in local_hosts or str(item).startswith("/") for item in endpoints)
     sslmode = parsed.query.get("sslmode")
     if not is_local and sslmode not in {"require", "verify-ca", "verify-full"}:
         raise DatabaseConfigError(
@@ -148,7 +155,7 @@ def get_postgres_database_url(*, required: bool = True) -> str | None:
     try:
         from_keychain = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
     except KeyringError as exc:
-        raise DatabaseConfigError("无法读取数据库 Keychain 配置。") from exc
+        raise DatabaseConfigError(f"无法从 {credential_storage_name()} 读取数据库配置。") from exc
     if from_keychain:
         return validate_postgres_database_url(from_keychain)
     if required:
@@ -165,7 +172,7 @@ def save_database_url(database_url: str) -> None:
     try:
         keyring.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, validated)
     except KeyringError as exc:
-        raise DatabaseConfigError("无法保存数据库配置到 Keychain。") from exc
+        raise DatabaseConfigError(f"无法保存数据库配置到 {credential_storage_name()}。") from exc
 
 
 def delete_database_url() -> bool:
@@ -176,7 +183,7 @@ def delete_database_url() -> bool:
             return False
         keyring.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
     except KeyringError as exc:
-        raise DatabaseConfigError("无法删除数据库 Keychain 配置。") from exc
+        raise DatabaseConfigError(f"无法从 {credential_storage_name()} 删除数据库配置。") from exc
     return True
 
 

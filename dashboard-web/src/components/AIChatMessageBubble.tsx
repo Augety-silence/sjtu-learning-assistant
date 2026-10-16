@@ -100,7 +100,11 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   const [copied, setCopied] = useState(false);
   const shouldReduceMotion = useReducedMotion();
   const copy = async () => {
-    await navigator.clipboard.writeText(message.content);
+    try {
+      await navigator.clipboard.writeText(message.content);
+    } catch {
+      return;
+    }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
@@ -145,7 +149,11 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
           showCodeLineNumbers={showCodeLineNumbers}
         />
         {message.attachments && message.attachments.length > 0 && (
-          <div className="ai-message-attachments" aria-label="消息附件">
+          <div
+            className="ai-message-attachments"
+            role="group"
+            aria-label="消息附件"
+          >
             {message.attachments.map((attachment) => (
               <button
                 key={attachment.id}

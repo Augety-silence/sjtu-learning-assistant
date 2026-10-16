@@ -302,6 +302,9 @@ export function MessageDetailContent({
       const clearFailure = () => {
         image.classList.remove("message-resource-failed");
         image.alt = originalAlt;
+        if (retryButton && document.activeElement === retryButton) {
+          container.focus();
+        }
         retryButton?.remove();
         retryButton = null;
       };
@@ -327,6 +330,9 @@ export function MessageDetailContent({
         retryButton.type = "button";
         retryButton.className = "message-resource-retry";
         retryButton.textContent = "重试";
+        retryButton.title = originalAlt
+          ? `重新加载图片：${originalAlt}`
+          : "重新加载图片";
         image.insertAdjacentElement("afterend", retryButton);
       };
       const loadRemoteImage = (force = false) => {

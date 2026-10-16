@@ -293,7 +293,9 @@ function ScheduleAdapter({
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const calendarRequest = useRef(0);
   const loadCanvas = useCallback(async () => {
+    const request = ++calendarRequest.current;
     setLoading(true);
     setError(null);
     try {
@@ -301,6 +303,7 @@ function ScheduleAdapter({
         month.getFullYear(),
         month.getMonth() + 1,
       );
+      if (calendarRequest.current !== request) return;
       setEvents(
         [...result.month_events, ...result.upcoming_events]
           .map(adaptCalendarEvent)
@@ -312,9 +315,10 @@ function ScheduleAdapter({
           ),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "Canvas 日历加载失败"));
+      if (calendarRequest.current === request)
+        setError(messageFrom(reason, "Canvas 日历加载失败"));
     } finally {
-      setLoading(false);
+      if (calendarRequest.current === request) setLoading(false);
     }
   }, [month]);
   useEffect(() => void loadCanvas(), [loadCanvas]);
@@ -406,18 +410,21 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
   const [book, setBook] = useState<GradebookResult | null>(null);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    if (!courseId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setBook(await getGradebook(courseId));
-    } catch (reason) {
-      setError(messageFrom(reason, "评分册加载失败"));
-    } finally {
-      setLoading(false);
-    }
-  }, [courseId]);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!courseId) return;
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        setBook(await getGradebook(courseId));
+      } catch (reason) {
+        setError(messageFrom(reason, "评分册加载失败"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [courseId],
+  );
   useEffect(() => void load(), [load]);
   const adapted = useMemo(
     () => (book ? adaptGradebook(book) : { assignments: [], students: [] }),
@@ -431,7 +438,7 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
       Number(input.studentId),
       { grade: input.score },
     );
-    await load();
+    await load(true);
   };
   return (
     <GradesView
@@ -532,13 +539,15 @@ function adaptGradingSubmission(
   const comments = Array.isArray(submission.submission_comments)
     ? submission.submission_comments
     : [];
-  const status = submission.missing
-    ? "missing"
-    : submission.late
-      ? "late"
-      : submission.score != null || submission.grade != null
-        ? "graded"
-        : "submitted";
+  const status =
+    submission.missing ||
+    (submission.workflow_state === "unsubmitted" && !submission.submitted_at)
+      ? "missing"
+      : submission.late
+        ? "late"
+        : submission.score != null || submission.grade != null
+          ? "graded"
+          : "submitted";
   return {
     id: String(submission.id ?? `${studentId}:${index}`),
     studentId,
@@ -578,45 +587,54 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
   const [submissions, setSubmissions] = useState<GradingSubmission[]>([]);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    if (!courseId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const book = await getGradebook(courseId);
-      const availableAssignments = book.assignments.map((item) => ({
-        id: String(item.id),
-        name: item.name ?? `作业 ${item.id}`,
-        pointsPossible:
-          typeof item.points_possible === "number"
-            ? item.points_possible
-            : null,
-      }));
-      setAssignments(availableAssignments);
-      const nextAssignment =
-        availableAssignments.find((item) => item.id === selectedAssignmentId) ??
-        availableAssignments[0];
-      if (!nextAssignment) {
-        setSelectedAssignmentId("");
-        setAssignment(null);
-        setSubmissions([]);
-        return;
+  const gradingRequest = useRef(0);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!courseId) return;
+      const request = ++gradingRequest.current;
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const book = await getGradebook(courseId);
+        if (gradingRequest.current !== request) return;
+        const availableAssignments = book.assignments.map((item) => ({
+          id: String(item.id),
+          name: item.name ?? `作业 ${item.id}`,
+          pointsPossible:
+            typeof item.points_possible === "number"
+              ? item.points_possible
+              : null,
+        }));
+        setAssignments(availableAssignments);
+        const nextAssignment =
+          availableAssignments.find(
+            (item) => item.id === selectedAssignmentId,
+          ) ?? availableAssignments[0];
+        if (!nextAssignment) {
+          setSelectedAssignmentId("");
+          setAssignment(null);
+          setSubmissions([]);
+          return;
+        }
+        if (nextAssignment.id !== selectedAssignmentId)
+          setSelectedAssignmentId(nextAssignment.id);
+        setAssignment(nextAssignment);
+        const result = await getGrading(courseId, Number(nextAssignment.id));
+        if (gradingRequest.current !== request) return;
+        const items =
+          "items" in result && Array.isArray(result.items)
+            ? result.items
+            : [result as GradingSubmissionDto];
+        setSubmissions(items.map(adaptGradingSubmission));
+      } catch (reason) {
+        if (gradingRequest.current === request)
+          setError(messageFrom(reason, "作业提交加载失败"));
+      } finally {
+        if (gradingRequest.current === request) setLoading(false);
       }
-      if (nextAssignment.id !== selectedAssignmentId)
-        setSelectedAssignmentId(nextAssignment.id);
-      setAssignment(nextAssignment);
-      const result = await getGrading(courseId, Number(nextAssignment.id));
-      const items =
-        "items" in result && Array.isArray(result.items)
-          ? result.items
-          : [result as GradingSubmissionDto];
-      setSubmissions(items.map(adaptGradingSubmission));
-    } catch (reason) {
-      setError(messageFrom(reason, "作业提交加载失败"));
-    } finally {
-      setLoading(false);
-    }
-  }, [courseId, selectedAssignmentId]);
+    },
+    [courseId, selectedAssignmentId],
+  );
   useEffect(() => void load(), [load]);
   const update = async (
     studentId: string,
@@ -629,7 +647,7 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
       Number(studentId),
       payload,
     );
-    await load();
+    await load(true);
   };
   return (
     <ContentReveal className="section-stack" ready={!loading}>
@@ -1365,15 +1383,18 @@ export default function App() {
   }, []);
 
   const statusRequestPending = useRef(false);
+  const syncAccepted = useRef(false);
   const loadStatus = useCallback(async () => {
     if (statusRequestPending.current) return;
     statusRequestPending.current = true;
     try {
+      const accepted = syncAccepted.current;
       const next = await invoke<SyncStatus>("sync_status");
       setSyncStatus((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
       );
-      if (syncRequested && next.status === "idle") {
+      if (syncRequested && accepted && next.status === "idle") {
+        syncAccepted.current = false;
         setSyncRequested(false);
         showToast({
           id: "sync-operation",
@@ -1418,6 +1439,7 @@ export default function App() {
   }, [loadStatus, syncRequested, syncStatus?.status]);
 
   const triggerSync = async () => {
+    syncAccepted.current = false;
     setSyncRequested(true);
     showToast({
       id: "sync-operation",
@@ -1427,6 +1449,7 @@ export default function App() {
     });
     try {
       const result = await invoke<{ status: string }>("sync_trigger");
+      syncAccepted.current = true;
       showToast({
         id: "sync-operation",
         kind: "info",

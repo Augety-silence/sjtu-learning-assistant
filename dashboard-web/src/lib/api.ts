@@ -18,12 +18,18 @@ export interface BridgeError {
 
 const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
 
+function redactLocalPaths(text: string) {
+  return text
+    .replace(/\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n]+(?=[\\/]|$)/gi, "~")
+    .replace(/\/(?:Users|home)\/[^/\r\n]+(?=\/|$)/g, "~");
+}
+
 export class BridgeInvocationError extends Error {
   readonly action: string;
   readonly code: string;
 
   constructor(action: string, error?: BridgeError) {
-    super(error?.message || "操作失败");
+    super(redactLocalPaths(error?.message || "操作失败"));
     this.name = "BridgeInvocationError";
     this.action = action;
     this.code = error?.code || "unknown_error";
@@ -65,31 +71,67 @@ declare global {
   }
 }
 
-async function bridgeApi() {
-  if (window.pywebview?.api) return window.pywebview.api;
-  await new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(
-      () => reject(new Error("桌面 Bridge 尚未就绪，请重新打开应用。")),
-      5000,
-    );
-    window.addEventListener(
-      "pywebviewready",
-      () => {
-        window.clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
+type BridgeApi = NonNullable<NonNullable<Window["pywebview"]>["api"]>;
+
+const BRIDGE_READY_TIMEOUT_MS = 15_000;
+let bridgeReady: Promise<BridgeApi> | null = null;
+
+function readyBridge(hostWindow: Window = window): BridgeApi | null {
+  const api = hostWindow.pywebview?.api;
+  return api && typeof api.invoke === "function" ? api : null;
+}
+
+function waitForBridge() {
+  const hostWindow = window;
+  return new Promise<BridgeApi>((resolve, reject) => {
+    const finish = () => {
+      const api = readyBridge(hostWindow);
+      if (!api) return;
+      hostWindow.clearTimeout(timeout);
+      hostWindow.clearInterval(poll);
+      hostWindow.removeEventListener("pywebviewready", finish);
+      resolve(api);
+    };
+    const timeout = hostWindow.setTimeout(() => {
+      hostWindow.clearInterval(poll);
+      hostWindow.removeEventListener("pywebviewready", finish);
+      bridgeReady = null;
+      reject(
+        new Error(
+          "桌面 Bridge 尚未就绪，请稍后重试；若持续出现请重新打开应用。",
+        ),
+      );
+    }, BRIDGE_READY_TIMEOUT_MS);
+    const poll = hostWindow.setInterval(finish, 100);
+    hostWindow.addEventListener("pywebviewready", finish);
   });
-  if (!window.pywebview?.api) throw new Error("桌面 Bridge 不可用。");
-  return window.pywebview.api;
+}
+
+async function bridgeApi(): Promise<BridgeApi> {
+  const ready = readyBridge();
+  if (ready) return ready;
+  const pending = bridgeReady ?? waitForBridge();
+  bridgeReady = pending;
+  return pending;
 }
 
 export async function invoke<T>(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<T> {
-  const response = await (await bridgeApi()).invoke<T>(action, payload);
+  const api = await bridgeApi();
+  let response: BridgeResponse<T>;
+  try {
+    response = await api.invoke<T>(action, payload);
+  } catch {
+    throw new BridgeInvocationError(action, {
+      code: "bridge_failed",
+      message: "桌面 Bridge 通信失败，请稍后重试。",
+    });
+  }
+  if (!response || typeof response !== "object") {
+    throw new BridgeInvocationError(action);
+  }
   if (!response.ok) {
     const error = CAPABILITY_UNAVAILABLE_CODES.has(
       response.error?.code || "unknown_error",
@@ -312,6 +354,7 @@ export async function sendAiChatMessage(
   presetId: string,
   attachmentIds?: number[],
 ) {
+  const pageContext = activeAIPageContext();
   let snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
     "ai_chat_stream_start",
     {
@@ -321,7 +364,7 @@ export async function sendAiChatMessage(
       thinking_depth: thinkingDepth,
       preset_id: presetId,
       ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
-      ...(activeAIPageContext() ? { page_context: activeAIPageContext() } : {}),
+      ...(pageContext ? { page_context: pageContext } : {}),
     },
   );
   const taskId = snapshot.task.id;
@@ -342,7 +385,9 @@ export async function sendAiChatMessage(
     if (snapshot.task.status === "failed") {
       const failure = snapshot.task.result?.failure;
       const error = new Error(
-        failure?.message || snapshot.task.error || "AI 任务执行失败。",
+        redactLocalPaths(
+          failure?.message || snapshot.task.error || "AI 任务执行失败。",
+        ),
       ) as Error & { category?: string; retryable?: boolean };
       error.category = failure?.category;
       error.retryable = failure?.retryable ?? true;
@@ -352,10 +397,17 @@ export async function sendAiChatMessage(
       throw new Error("AI 任务已取消。");
     }
     await waitForTaskPoll();
-    snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
-      "ai_task_status",
-      { task_id: taskId, after_sequence: sequence },
-    );
+    try {
+      snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+        "ai_task_status",
+        { task_id: taskId, after_sequence: sequence },
+      );
+    } catch (error) {
+      await invoke("ai_task_cancel", { task_id: taskId }).catch(
+        () => undefined,
+      );
+      throw error;
+    }
     sequence = snapshot.next_sequence;
     for (const event of snapshot.events) {
       if (event.kind === "content_delta" || event.kind === "reasoning_delta") {

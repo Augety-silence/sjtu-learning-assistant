@@ -683,12 +683,19 @@ function StatusBadge({ status }: { status: UnifiedStatus }) {
 }
 
 function formatDuration(seconds?: number | null) {
-  if (seconds === null || seconds === undefined) return "时长未知";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
+  if (
+    seconds === null ||
+    seconds === undefined ||
+    !Number.isFinite(seconds) ||
+    seconds < 0
+  )
+    return "时长未知";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   return hours
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
-    : `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
+    : `${minutes}:${String(total % 60).padStart(2, "0")}`;
 }
 
 function formatRecordedAt(value?: string | null) {
@@ -739,7 +746,7 @@ function CoursePicker({
   const [popupPosition, setPopupPosition] =
     useState<CoursePopupPosition | null>(null);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
-  const current = options[selectedIndex];
+  const current = options.find((option) => option.id === value);
 
   useEffect(() => setActiveIndex(selectedIndex), [selectedIndex]);
   useEffect(() => {
@@ -868,6 +875,9 @@ function CoursePicker({
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       select(activeIndex);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      close(true);
     }
   };
 
@@ -911,7 +921,6 @@ function CoursePicker({
             }}
             role="listbox"
             aria-label="课程列表"
-            aria-activedescendant={`${id}-option-${options[activeIndex]?.id}`}
           >
             {options.map((option, index) => (
               <button
@@ -1415,9 +1424,10 @@ export function VideosView({
 
   useEffect(() => {
     const valid = new Set(videos.map((video) => video.id));
-    setSelectedIds(
-      (current) => new Set([...current].filter((id) => valid.has(id))),
-    );
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => valid.has(id)));
+      return next.size === current.size ? current : next;
+    });
     if (selected && !valid.has(selected.id)) setSelected(null);
   }, [videos, selected]);
   useLayoutEffect(() => {
@@ -1475,6 +1485,11 @@ export function VideosView({
     setDetailJob(null);
     setOpenMenuId(null);
     setMenuPosition(null);
+    setSpeedMenuOpen(false);
+    setShortcutsOpen(false);
+    if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
+    feedbackTimer.current = null;
+    setPlayerFeedback(null);
     setPendingSummarySourceId(null);
     setSummaryRequestError(null);
     summaryRequestedJobId.current = null;
@@ -1590,8 +1605,17 @@ export function VideosView({
         setShortcutsOpen(false);
       }
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setSpeedMenuOpen(false);
+      setShortcutsOpen(false);
+    };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, [shortcutsOpen, speedMenuOpen]);
   useEffect(() => {
     if (speedMenuOpen) {
@@ -2069,7 +2093,11 @@ export function VideosView({
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
-        isInteractiveTarget(event.target)
+        event.isComposing ||
+        isInteractiveTarget(event.target) ||
+        document.querySelector(
+          "[data-modal-layer]:not([aria-hidden='true'])",
+        ) !== null
       )
         return;
 
@@ -2276,7 +2304,7 @@ export function VideosView({
     setSelected(video);
   };
 
-  const useSubtitleResult = (result: VideoPlaybackResult) => {
+  const applySubtitleResult = (result: VideoPlaybackResult) => {
     revokeSubtitleBlob();
     if (result.subtitleVtt) {
       const objectUrl = URL.createObjectURL(
@@ -2327,7 +2355,7 @@ export function VideosView({
           playRequest.current === request &&
           subtitleReadRequest.current === reading.id
         )
-          useSubtitleResult(result);
+          applySubtitleResult(result);
       })
       .catch(() => {
         if (lastSubtitleJobRevisionRef.current === revision)
@@ -2362,7 +2390,7 @@ export function VideosView({
             subtitleReadRequest.current !== reading.id
           )
             return;
-          useSubtitleResult(result);
+          applySubtitleResult(result);
           if (result.subtitleStatus !== "processing") return;
         } catch (reason) {
           if (!active || playRequest.current !== request) return;
@@ -2400,11 +2428,20 @@ export function VideosView({
         const reading = beginSubtitleRead(video);
         subtitleId = reading.id;
         const result = await reading.promise;
-        if (isRelevant()) useSubtitleResult(result);
+        if (isRelevant()) applySubtitleResult(result);
       },
       (message) => setSubtitleMessage(message),
       [`subtitle:${video.id}`],
       isRelevant,
+    );
+  };
+
+  const failMediaLoad = () => {
+    playerLoadedRef.current = false;
+    autoPlaySourceId.current = null;
+    setPlaybackUrl(null);
+    setPlaybackError(
+      "录像加载失败：播放地址可能已过期或格式不受支持，请重新播放。",
     );
   };
 
@@ -2466,7 +2503,7 @@ export function VideosView({
         setSubtitleMessage(null);
       } else if (result) {
         nextUrl = result.url ?? video.playbackUrl ?? null;
-        useSubtitleResult({
+        applySubtitleResult({
           ...result,
           subtitleUrl: result.subtitleUrl ?? video.subtitleUrl,
         });
@@ -2489,7 +2526,7 @@ export function VideosView({
               playRequest.current === request &&
               subtitleReadRequest.current === reading.id
             )
-              useSubtitleResult(subtitleResult);
+              applySubtitleResult(subtitleResult);
           })
           .catch((reason) => {
             if (
@@ -2816,7 +2853,21 @@ export function VideosView({
             {generated && <small>位于临时目录，需另存长期保留。</small>}
           </span>
           {generated && openPdf && (
-            <Button variant="outline" size="sm" onClick={() => void openPdf()}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void Promise.resolve(openPdf()).catch((reason) =>
+                  showToast({
+                    kind: "error",
+                    message:
+                      reason instanceof Error
+                        ? reason.message
+                        : "无法打开课件。",
+                  }),
+                )
+              }
+            >
               打开
             </Button>
           )}
@@ -2994,6 +3045,10 @@ export function VideosView({
           }}
           onPause={() => setPreservedAcrossSource(false)}
           onEnded={() => setPreservedAcrossSource(false)}
+          onError={(event) => {
+            if (event.currentTarget.error?.code === 1) return;
+            failMediaLoad();
+          }}
           onTimeUpdate={(event) => {
             setPlaybackTime(event.currentTarget.currentTime);
             if (selected)
@@ -3057,7 +3112,7 @@ export function VideosView({
             }
           }}
         >
-          <source src={playbackUrl} />
+          <source src={playbackUrl} onError={failMediaLoad} />
           {subtitleUrl && (
             <track
               kind="subtitles"
@@ -3091,6 +3146,13 @@ export function VideosView({
           <CircleAlert aria-hidden="true" />
           <strong>{selected.title} 无法载入</strong>
           <span>{playbackError}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void play(selected)}
+          >
+            重新播放
+          </Button>
         </div>
       ) : selected ? (
         <div className="video-player-empty" role="status">
@@ -3363,6 +3425,10 @@ export function VideosView({
                             else if (event.key === "End")
                               nextIndex = playbackRates.length - 1;
                             else if (event.key === "Escape") {
+                              event.preventDefault();
+                              setSpeedMenuOpen(false);
+                              speedTriggerRef.current?.focus();
+                            } else if (event.key === "Tab") {
                               event.preventDefault();
                               setSpeedMenuOpen(false);
                               speedTriggerRef.current?.focus();
@@ -3642,8 +3708,15 @@ export function VideosView({
           ) : filtered.length === 0 ? (
             <div className="video-list-empty">
               <span>当前来源没有视频</span>
-              <Button variant="link" size="sm" onClick={() => setSource("all")}>
-                查看全部来源
+              <Button
+                variant="link"
+                size="sm"
+                onClick={() => {
+                  changeSource("all");
+                  setOrganizationFilter("all");
+                }}
+              >
+                {source === "all" ? "清除状态筛选" : "查看全部来源"}
               </Button>
             </div>
           ) : (
@@ -3791,6 +3864,14 @@ export function VideosView({
                                     event.stopPropagation()
                                   }
                                   onKeyDown={(event) => {
+                                    if (event.key === "Tab") {
+                                      event.preventDefault();
+                                      closeVideoMenu();
+                                      menuTriggerRefs.current
+                                        .get(video.id)
+                                        ?.focus();
+                                      return;
+                                    }
                                     if (
                                       ![
                                         "ArrowDown",
@@ -4144,6 +4225,7 @@ export function VideosView({
                       <Button
                         variant="link"
                         size="sm"
+                        loading={isBusy(`task:${job.id}`)}
                         onClick={() =>
                           void run(`task:${job.id}`, "任务已取消。", () =>
                             onCancelTask(job.task as VideoTaskItem),

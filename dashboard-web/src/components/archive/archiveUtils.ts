@@ -15,7 +15,7 @@ export const archiveStatusLabels: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
   interrupted: "已中断",
-  needs_verification: "需要校验",
+  needs_verification: "待强校验",
   needs_reconcile: "需要校验",
   unavailable: "不可用",
   skipped: "已跳过",

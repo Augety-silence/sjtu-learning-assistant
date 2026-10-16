@@ -1,4 +1,4 @@
-"""PyInstaller hook for the native Windows Credential Locker backend."""
+"""PyInstaller hook for the native Windows Credential Manager backend (WinVaultKeyring)."""
 
 from PyInstaller.utils.hooks import copy_metadata
 
@@ -8,6 +8,9 @@ hiddenimports = [
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.Windows",
+    "win32ctypes.core",
+    "win32ctypes.pywin32.pywintypes",
+    "win32ctypes.pywin32.win32cred",
 ]
 excludedimports = [
     "keyring.backends.KWallet",

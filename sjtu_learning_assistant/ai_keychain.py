@@ -7,7 +7,11 @@ from typing import Any
 
 from sjtu_learning_assistant.credential_store import credential_storage_name
 
-from sjtu_learning_assistant.credential_store import keychain_item_exists
+from sjtu_learning_assistant.credential_store import (
+    keychain_item_exists,
+    keyring_backend_hint,
+    secret_fits_platform_store,
+)
 
 AI_KEYCHAIN_SERVICE = "SJTU Learning Assistant - AI Classification"
 AI_KEYCHAIN_ACCOUNT = "openai-api-key"
@@ -39,6 +43,10 @@ def validate_ai_api_key(value: object) -> str:
         or any(ord(character) < 32 or ord(character) == 127 for character in key)
     ):
         raise AIKeychainError("AI API key 格式不正确。")
+    if not secret_fits_platform_store(key):
+        raise AIKeychainError(
+            f"AI API key 过长，超出 {credential_storage_name()} 单条凭据 2560 字节的上限。"
+        )
     return key
 
 
@@ -69,9 +77,9 @@ def save_ai_api_key(value: object, *, keyring_module: Any | None = None) -> None
         backend = load_keyring_module()
         try:
             backend.set_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT, key)
-        except Exception:
+        except Exception as exc:
             raise AIKeychainError(
-                f"无法保存 AI API key 到 {credential_storage_name()}。"
+                f"无法保存 AI API key 到 {credential_storage_name()}。{keyring_backend_hint(exc)}"
             ) from None
         _cached_api_key = key
 
@@ -121,6 +129,16 @@ def delete_ai_api_key(*, keyring_module: Any | None = None) -> None:
         try:
             backend.delete_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
         except Exception:
+            # Windows/macOS 后端在条目不存在时抛 PasswordDeleteError；删除应幂等。
+            try:
+                missing = (
+                    backend.get_password(AI_KEYCHAIN_SERVICE, AI_KEYCHAIN_ACCOUNT)
+                    is None
+                )
+            except Exception:
+                missing = False
+            if missing:
+                return
             raise AIKeychainError(
                 f"无法从 {credential_storage_name()} 删除 AI API key。"
             ) from None

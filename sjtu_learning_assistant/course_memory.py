@@ -605,6 +605,7 @@ class DisabledFineTuneProvider(FineTuneProvider):
 @contextmanager
 def _exclusive_file_lock(path: Path, timeout: float) -> Iterator[None]:
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    locked = False
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(descriptor, 0o600)
@@ -618,6 +619,7 @@ def _exclusive_file_lock(path: Path, timeout: float) -> Iterator[None]:
                     msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
                 else:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
                 break
             except (BlockingIOError, OSError):
                 if time.monotonic() >= deadline:
@@ -626,11 +628,12 @@ def _exclusive_file_lock(path: Path, timeout: float) -> Iterator[None]:
         yield
     finally:
         try:
-            if os.name == "nt":
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            if locked:
+                if os.name == "nt":
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
 
@@ -652,7 +655,14 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         os.chmod(path, 0o600)
         if os.name != "nt":
             directory = os.open(path.parent, os.O_RDONLY)

@@ -284,9 +284,15 @@ def _is_obvious_duplicate(previous: PreprocessedCue, current: PreprocessedCue) -
     )
 
 
-def _sentence_units(text: str) -> list[str]:
-    units = [match.group(0).strip() for match in _SENTENCE_PART.finditer(text)]
-    return [unit for unit in units if unit]
+def _sentence_units(text: str) -> list[tuple[str, str]]:
+    """Return ``(separator, unit)`` pairs; the separator keeps original spacing."""
+    units: list[tuple[str, str]] = []
+    for match in _SENTENCE_PART.finditer(text):
+        raw = match.group(0)
+        unit = raw.strip()
+        if unit:
+            units.append((" " if raw[:1].isspace() else "", unit))
+    return units
 
 
 def _split_oversized_unit(text: str, limit: int) -> list[str]:
@@ -321,12 +327,13 @@ def _split_cue(cue: PreprocessedCue, limit: int) -> list[_Piece]:
     units = _sentence_units(cue.cleaned_text)
     parts: list[str] = []
     buffer = ""
-    for unit in units:
-        for subunit in _split_oversized_unit(unit, limit):
+    for separator, unit in units:
+        for position, subunit in enumerate(_split_oversized_unit(unit, limit)):
+            gap = separator if position == 0 else ""
             if not buffer:
                 buffer = subunit
-            elif len(buffer) + len(subunit) <= limit:
-                buffer += subunit
+            elif len(buffer) + len(gap) + len(subunit) <= limit:
+                buffer += gap + subunit
             else:
                 parts.append(buffer)
                 buffer = subunit

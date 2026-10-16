@@ -21,7 +21,7 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-VERSION="$($PYTHON_BIN -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
+VERSION="$("$PYTHON_BIN" -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
 ARCH="$(uname -m)"
 DMG_PATH="$ROOT_DIR/dist/SJTU-Learning-Assistant-${VERSION}-macOS-${ARCH}.dmg"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sjtu-learning-assistant-dmg.XXXXXX")"

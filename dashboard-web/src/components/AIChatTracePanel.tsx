@@ -23,6 +23,7 @@ const traceStatusLabels: Record<string, string> = {
   complete: "已完成",
   ok: "已完成",
   max_steps: "已达步骤上限",
+  timeout: "已超时",
   failed: "未完成",
 };
 

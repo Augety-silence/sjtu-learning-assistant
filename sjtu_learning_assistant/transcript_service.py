@@ -227,7 +227,7 @@ def _process_start_marker(pid: int) -> str | None:
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "(Get-Process -Id %d -ErrorAction Stop).StartTime.ToUniversalTime().ToString(" + chr(39) + "o" + chr(39) + ")" % pid,
+            "(Get-Process -Id %d -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')" % pid,
         )
     else:
         command = ("ps", "-o", "lstart=", "-p", str(pid))
@@ -238,6 +238,7 @@ def _process_start_marker(pid: int) -> str | None:
             capture_output=True,
             text=True,
             timeout=2,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -260,6 +261,7 @@ def _parse_time(value: object) -> datetime | None:
 def _safe_error(value: object) -> str:
     text = " ".join(str(value).split())
     text = re.sub(r"/Users/\S+", "[已隐藏]", text)
+    text = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/]\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[=:]\s*\S+", r"\1=[已隐藏]", text)
     return text[:400] or "字幕任务失败，请稍后重试。"
 
@@ -375,6 +377,10 @@ class TranscriptService:
                     os.write(descriptor, b"0")
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        try:
             yield
         finally:
             if fcntl is not None:
@@ -436,7 +442,14 @@ class TranscriptService:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            for delay in (0.05, 0.1, 0.25, 0.5, None):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or delay is None:
+                        raise
+                    time.sleep(delay)
             os.chmod(path, 0o600)
             if os.name != "nt":
                 directory_fd = os.open(parent, os.O_RDONLY)
@@ -2580,7 +2593,7 @@ class TranscriptService:
                     and (not bool(job.get("force_phase1")) or not self.enable_phase1)
                     and not self._phase1_needs_upgrade(video_dir, manifest)
                 )
-                raw = raw_path.read_text(encoding="utf-8")
+                raw = raw_path.read_bytes().decode("utf-8")
                 offline_chunks = None
                 if not can_reuse_complete and manifest.get("status") in ("partial", "interrupted"):
                     offline_chunks = self._validated_cached_chunks(
@@ -2701,7 +2714,7 @@ class TranscriptService:
         raw_path = video_dir / "raw.vtt"
         if not self._hashed_file_valid(raw_path, manifest.get("raw_sha256")):
             raise TranscriptError("原始字幕哈希校验失败。")
-        raw = raw_path.read_text(encoding="utf-8")
+        raw = raw_path.read_bytes().decode("utf-8")
         source_cues = None
         if (
             self.enable_phase1
@@ -3052,7 +3065,9 @@ class TranscriptService:
         elif is_v2 and kind == "training_examples":
             rows: list[dict[str, Any]] = []
             try:
-                for line in content.splitlines():
+                for line in content.split("\n"):
+                    if not line.strip():
+                        continue
                     value = json.loads(line)
                     if type(value) is not dict:
                         raise ValueError
@@ -3085,6 +3100,10 @@ class TranscriptService:
 
     @staticmethod
     def _default_reveal(path: Path) -> None:
+        if sys.platform == "win32":
+            # explorer.exe returns exit code 1 even on success; ignore it.
+            subprocess.run(["explorer.exe", f"/select,{path}"], check=False)
+            return
         subprocess.run(("/usr/bin/open", "-R", "--", str(path)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def close(self) -> None:

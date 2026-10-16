@@ -42,7 +42,8 @@ class LocalSettingsTests(unittest.TestCase):
         saved = self.store.update({"archive_root": str(archive)})
         self.assertEqual(str(archive), saved.archive_root)
         self.assertEqual(saved, self.store.load())
-        self.assertEqual(0o600, self.store.path.stat().st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o600, self.store.path.stat().st_mode & 0o777)
         self.assertEqual([], list(self.store.path.parent.glob(".settings-*")))
         payload = json.loads(self.store.path.read_text(encoding="utf-8"))
         self.assertEqual(

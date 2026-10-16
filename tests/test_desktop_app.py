@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -120,7 +122,7 @@ class FakeService:
         return {"reply": messages[-1]["content"], "model": "qwen"}
 
     def ai_attachment_ingest(self, path):
-        return {"id": 7, "name": path.rsplit("/", 1)[-1], "status": "local"}
+        return {"id": 7, "name": Path(path).name, "status": "local"}
 
     def local_projects_list(self):
         return {"items": []}
@@ -462,8 +464,9 @@ class DesktopBridgeTests(unittest.TestCase):
             )
 
     def test_ai_attachment_ingest_is_strictly_allowlisted(self):
+        absolute_path = str(Path(tempfile.gettempdir()) / "lecture-notes.md")
         result = self.bridge.invoke(
-            "ai_attachment_ingest", {"path": "/tmp/lecture-notes.md"}
+            "ai_attachment_ingest", {"path": absolute_path}
         )
         self.assertTrue(result["ok"])
         self.assertEqual("lecture-notes.md", result["data"]["name"])
@@ -471,9 +474,9 @@ class DesktopBridgeTests(unittest.TestCase):
         for payload in (
             {},
             {"path": "relative.txt"},
-            {"path": "/tmp/file.txt", "extra": True},
+            {"path": absolute_path, "extra": True},
             {"path": 42},
-            {"path": "/tmp/bad\x00.txt"},
+            {"path": absolute_path + "\x00"},
         ):
             with self.subTest(payload=payload):
                 self.assertEqual(
@@ -627,7 +630,10 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertTrue(create_window_call.kwargs["vibrancy"])
         self.assertEqual(_enable_macos_window_material, webview.start.call_args.args[0])
         self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
-        self.assertEqual({"debug": False}, webview.start.call_args.kwargs)
+        start_kwargs = webview.start.call_args.kwargs
+        self.assertFalse(start_kwargs["debug"])
+        self.assertFalse(start_kwargs["private_mode"])
+        self.assertTrue(start_kwargs["storage_path"].endswith("webview"))
         manager_factory.assert_called_once_with(
             engine,
             archive_root=dashboard.archive_root,

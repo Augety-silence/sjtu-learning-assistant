@@ -308,7 +308,7 @@ def test_event_details_and_public_errors_are_redacted(archive_env, monkeypatch):
         })
         session.commit()
     result = _service.archive_job_events("redact-job")["items"][0]["details"]
-    assert result["path"].startswith("~/")
+    assert result["path"].replace("\\", "/").startswith("~/")
     assert result["token"] == "<redacted>"
     assert result["nested"]["cookie"] == "<redacted>"
     assert str(home) not in str(result)

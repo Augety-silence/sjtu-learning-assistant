@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -118,6 +119,7 @@ def _dialect_insert(session: Session, model: Any):
 
 
 MAIL_ATTACHMENTS_ROOT = APP_SUPPORT_DIR / "mail-attachments"
+_REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.25)
 _SAFE_ATTACHMENT_CHARACTER = re.compile(r"[^\w.() -]+", re.UNICODE)
 
 
@@ -126,9 +128,31 @@ def _safe_attachment_filename(filename: str, resource_id: str) -> str:
     leaf = _SAFE_ATTACHMENT_CHARACTER.sub("_", leaf).strip(" .")
     if leaf in {"", ".", ".."}:
         leaf = "attachment"
-    leaf = leaf[:180].rstrip(" .") or "attachment"
+    suffix = Path(leaf).suffix
+    if len(suffix) > 16:
+        suffix = ""
+    stem = leaf[: len(leaf) - len(suffix)] if suffix else leaf
+    # Keep the full path under Windows MAX_PATH and each component under the
+    # 255-byte limit of APFS/NTFS/ext4 even for long CJK filenames.
+    while stem and (
+        len(stem) + len(suffix) > 80
+        or len((stem + suffix).encode("utf-8")) > 150
+    ):
+        stem = stem[:-1]
+    leaf = (stem.rstrip(" .") or "attachment") + suffix
     prefix = hashlib.sha256(resource_id.encode("utf-8", errors="replace")).hexdigest()[:12]
     return f"{prefix}-{leaf}"
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    for delay in (*_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or delay is None:
+                raise
+            time.sleep(delay)
 
 
 def _mail_attachment_directory(root: Path, source_id: str) -> Path:
@@ -175,7 +199,7 @@ def _write_attachment_payload(
         os.chmod(temporary, 0o600)
         if target.is_symlink():
             raise RuntimeError("邮件附件目标路径是符号链接。")
-        os.replace(temporary, target)
+        _replace_with_retry(temporary, target)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -221,7 +245,7 @@ def _persist_email_attachments(
             rows[(email_id, attachment.resource_id)] = row
     if not rows:
         return
-    statement = _dialect_insert(session, EmailAttachment).values(list(rows.values()))
+    statement = _dialect_insert(session, EmailAttachment)
     statement = statement.on_conflict_do_update(
         index_elements=[EmailAttachment.email_id, EmailAttachment.resource_id],
         set_={
@@ -238,7 +262,7 @@ def _persist_email_attachments(
             "updated_at": now,
         },
     )
-    session.execute(statement)
+    session.execute(statement, list(rows.values()))
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:
@@ -257,9 +281,10 @@ def decimal_or_none(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+    return result if result.is_finite() else None
 
 
 def int_or_none(value: Any) -> int | None:
@@ -390,7 +415,7 @@ def _upsert_courses(session: Session, rows: list[dict[str, Any]], now: datetime)
         timestamped_rows = [
             {**row, "created_at": now, "updated_at": now} for row in rows
         ]
-        statement = _dialect_insert(session, Course).values(timestamped_rows)
+        statement = _dialect_insert(session, Course)
         statement = statement.on_conflict_do_update(
             index_elements=[Course.source_id],
             set_={
@@ -402,7 +427,7 @@ def _upsert_courses(session: Session, rows: list[dict[str, Any]], now: datetime)
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, timestamped_rows)
     return _result(source_ids, existing_ids)
 
 
@@ -479,7 +504,7 @@ def _upsert_announcements(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Announcement, source_ids)
     if rows:
-        statement = _dialect_insert(session, Announcement).values(rows)
+        statement = _dialect_insert(session, Announcement)
         statement = statement.on_conflict_do_update(
             index_elements=[Announcement.source_id],
             set_={
@@ -496,7 +521,7 @@ def _upsert_announcements(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
         record_ids = _record_id_map(session, Announcement, source_ids)
         for item_row in item_rows:
             item_row["announcement_id"] = record_ids[item_row["source_id"]]
@@ -597,7 +622,7 @@ def _upsert_assignments(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Assignment, source_ids)
     if rows:
-        statement = _dialect_insert(session, Assignment).values(rows)
+        statement = _dialect_insert(session, Assignment)
         statement = statement.on_conflict_do_update(
             index_elements=[Assignment.source_id],
             set_={
@@ -615,7 +640,7 @@ def _upsert_assignments(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
         record_ids = _record_id_map(session, Assignment, source_ids)
         for item_row in item_rows:
             item_row["assignment_id"] = record_ids[item_row["source_id"]]
@@ -706,7 +731,7 @@ def _upsert_folders(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseFolder, source_ids)
     if rows:
-        statement = _dialect_insert(session, CourseFolder).values(rows)
+        statement = _dialect_insert(session, CourseFolder)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseFolder.source_id],
             set_={
@@ -725,7 +750,7 @@ def _upsert_folders(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
         folder_ids = _record_id_map(session, CourseFolder, source_ids)
         for source_id, parent_source_id in parent_sources.items():
             if parent_source_id is None:
@@ -826,7 +851,7 @@ def _upsert_files(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseFile, source_ids)
     if rows:
-        statement = _dialect_insert(session, CourseFile).values(rows)
+        statement = _dialect_insert(session, CourseFile)
         metadata_changed = or_(
             CourseFile.source_updated_at.is_distinct_from(
                 statement.excluded.source_updated_at
@@ -877,7 +902,7 @@ def _upsert_files(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
         record_ids = _record_id_map(session, CourseFile, source_ids)
         for item_row in item_rows:
             item_row["course_file_id"] = record_ids[item_row["source_id"]]
@@ -945,7 +970,7 @@ def _upsert_modules(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseModule, source_ids)
     if rows:
-        statement = _dialect_insert(session, CourseModule).values(rows)
+        statement = _dialect_insert(session, CourseModule)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseModule.source_id],
             set_={
@@ -962,7 +987,7 @@ def _upsert_modules(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
 
     for database_course_id, seen_ids in seen_by_course.items():
         _deactivate_missing(
@@ -1041,7 +1066,7 @@ def _upsert_module_items(
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, CourseModuleItem, source_ids)
     if rows:
-        statement = _dialect_insert(session, CourseModuleItem).values(rows)
+        statement = _dialect_insert(session, CourseModuleItem)
         statement = statement.on_conflict_do_update(
             index_elements=[CourseModuleItem.source_id],
             set_={
@@ -1063,7 +1088,7 @@ def _upsert_module_items(
                 "updated_at": now,
             },
         )
-        session.execute(statement)
+        session.execute(statement, rows)
 
     for database_course_id, seen_ids in seen_by_course.items():
         _deactivate_missing(
@@ -1081,7 +1106,7 @@ def _upsert_items(
 ) -> None:
     if not rows:
         return
-    statement = _dialect_insert(session, UnifiedItem).values(rows)
+    statement = _dialect_insert(session, UnifiedItem)
     statement = statement.on_conflict_do_update(
         index_elements=[UnifiedItem.source, UnifiedItem.item_type, UnifiedItem.source_id],
         set_={
@@ -1101,7 +1126,7 @@ def _upsert_items(
             "updated_at": now,
         },
     )
-    session.execute(statement)
+    session.execute(statement, rows)
 
 
 def persist_canvas_data(
@@ -1252,7 +1277,7 @@ def persist_emails(
         source_ids = [row["source_id"] for row in rows]
         existing_ids = _existing_ids(session, Email, source_ids)
         if rows:
-            statement = _dialect_insert(session, Email).values(rows)
+            statement = _dialect_insert(session, Email)
             statement = statement.on_conflict_do_update(
                 index_elements=[Email.source_id],
                 set_={
@@ -1268,7 +1293,7 @@ def persist_emails(
                     "updated_at": now,
                 },
             )
-            session.execute(statement)
+            session.execute(statement, rows)
             record_ids = _record_id_map(session, Email, source_ids)
             _persist_email_attachments(
                 session,
@@ -1528,7 +1553,7 @@ def upsert_cloud_files(
             ).all()
         ) if rows else set()
         if rows:
-            statement = _dialect_insert(session, CloudFile).values(rows)
+            statement = _dialect_insert(session, CloudFile)
             statement = statement.on_conflict_do_update(
                 index_elements=[CloudFile.provider, CloudFile.account_id, CloudFile.remote_id],
                 set_={
@@ -1544,7 +1569,7 @@ def upsert_cloud_files(
                     "updated_at": now,
                 },
             )
-            session.execute(statement)
+            session.execute(statement, rows)
         persisted = tuple(
             session.scalars(
                 select(CloudFile).where(

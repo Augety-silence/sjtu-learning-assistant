@@ -47,6 +47,7 @@ function formatDate(value?: string | null) {
   return Number.isNaN(date.getTime())
     ? value
     : new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
@@ -67,7 +68,9 @@ export function RosterView({
   const [role, setRole] = useState("all");
   const [section, setSection] = useState("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [localExporting, setLocalExporting] = useState(false);
+  const [localExporting, setLocalExporting] = useState<
+    false | "filtered" | "selected"
+  >(false);
   const { showToast } = useToast();
   const roles = useMemo(
     () => Array.from(new Set(members.map((member) => member.role))).sort(),
@@ -116,7 +119,7 @@ export function RosterView({
       });
       return;
     }
-    setLocalExporting(true);
+    setLocalExporting(scope);
     try {
       await onExport({ members: targets, scope, format: "csv" });
       showToast({
@@ -163,9 +166,12 @@ export function RosterView({
             variant="outline"
             size="sm"
             disabled={
-              !onExport || localExporting || exporting || selected.length === 0
+              !onExport ||
+              localExporting !== false ||
+              exporting ||
+              selected.length === 0
             }
-            loading={localExporting || exporting}
+            loading={localExporting === "selected" || exporting}
             onClick={() => void runExport("selected")}
           >
             <Download aria-hidden="true" />
@@ -174,8 +180,12 @@ export function RosterView({
           <Button
             size="sm"
             disabled={
-              !onExport || localExporting || exporting || filtered.length === 0
+              !onExport ||
+              localExporting !== false ||
+              exporting ||
+              filtered.length === 0
             }
+            loading={localExporting === "filtered" || exporting}
             onClick={() => void runExport("filtered")}
           >
             <Download aria-hidden="true" />

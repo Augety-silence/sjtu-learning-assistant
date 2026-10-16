@@ -55,6 +55,10 @@ class InvalidUpdateMetadataError(UpdateServiceError, ValueError):
     pass
 
 
+class _NoMatchingReleaseAssetError(InvalidUpdateMetadataError):
+    pass
+
+
 class UnsafeUpdateURLError(UpdateServiceError, ValueError):
     pass
 
@@ -418,9 +422,14 @@ def select_release_asset(
             and any(token in asset.name.casefold() for token in arch_tokens)
         ]
         # 某些 DMG/Setup 命名已蕴含固定架构；没有架构 token 时允许唯一 OS 资产。
+        # 名称里写明了其他架构的资产不能作为回退（避免给 Intel Mac 推荐 arm64 DMG）。
         if not matches:
+            known_arch_tokens = ("arm64", "aarch64", "x64", "amd64", "x86_64")
             os_matches = [
-                asset for asset in installable if any(token in asset.name.casefold() for token in os_tokens)
+                asset
+                for asset in installable
+                if any(token in asset.name.casefold() for token in os_tokens)
+                and not any(token in asset.name.casefold() for token in known_arch_tokens)
             ]
             matches = os_matches if len(os_matches) == 1 else []
         normalized_system = (system or sys.platform).casefold()
@@ -428,10 +437,16 @@ def select_release_asset(
             setup_matches = [asset for asset in matches if asset.name.casefold().endswith("-setup.exe")]
             portable_matches = [asset for asset in matches if asset.name.casefold().endswith("-portable.zip")]
             if len(setup_matches) > 1 or len(portable_matches) > 1:
-                matches = []
+                raise InvalidUpdateMetadataError(
+                    "无法唯一确定当前平台的 Release asset。"
+                )
             elif len(setup_matches) == 1:
                 matches = setup_matches
-    if len(matches) != 1:
+    if not matches:
+        raise _NoMatchingReleaseAssetError(
+            "无法唯一确定当前平台的 Release asset。"
+        )
+    if len(matches) > 1:
         raise InvalidUpdateMetadataError("无法唯一确定当前平台的 Release asset。")
     return matches[0]
 
@@ -523,6 +538,8 @@ class UpdateService:
                 trust_env=False,
                 headers={
                     "Accept": "application/vnd.github+json",
+                    # 元数据很小；请求明文可让大小上限按真实字节计算，也避免解压炸弹。
+                    "Accept-Encoding": "identity",
                     "User-Agent": "SJTU-Learning-Assistant-Update-Checker",
                 },
             ) as client:
@@ -536,6 +553,10 @@ class UpdateService:
                                 urljoin(current_url, location), purpose=purpose
                             )
                             continue
+                        if response.status_code in {403, 429}:
+                            raise UpdateServiceError(
+                                "GitHub 暂时拒绝了更新检查（可能是访问频率受限），请稍后再试。"
+                            )
                         response.raise_for_status()
                         declared_size = response.headers.get("content-length")
                         if declared_size is not None:
@@ -559,9 +580,17 @@ class UpdateService:
                                 )
                             chunks.append(chunk)
                         content = b"".join(chunks)
+                        # iter_bytes() 已按 Content-Encoding 解压；若原样保留该头，
+                        # 新 Response 会对明文再次 gzip 解码并抛 DecodingError。
+                        headers = [
+                            (key, value)
+                            for key, value in response.headers.multi_items()
+                            if key.lower()
+                            not in {"content-encoding", "content-length", "transfer-encoding"}
+                        ]
                         return httpx.Response(
                             status_code=response.status_code,
-                            headers=response.headers,
+                            headers=headers,
                             content=content,
                             request=response.request,
                         )
@@ -615,15 +644,22 @@ class UpdateService:
         available = is_newer_version(release.version, current)
         plan = None
         if available:
-            asset = select_release_asset(
-                release,
-                asset_name=asset_name,
-                system=system,
-                machine=machine,
-            )
-            if fetch_checksum:
-                asset = self.resolve_asset_checksum(asset)
-            plan = build_download_plan(release, asset)
+            try:
+                asset: ReleaseAsset | None = select_release_asset(
+                    release,
+                    asset_name=asset_name,
+                    system=system,
+                    machine=machine,
+                )
+            except _NoMatchingReleaseAssetError:
+                if asset_name is not None:
+                    raise
+                # 无法匹配平台资产时仍报告“有新版本”，UI 回退到 release.page_url。
+                asset = None
+            if asset is not None:
+                if fetch_checksum:
+                    asset = self.resolve_asset_checksum(asset)
+                plan = build_download_plan(release, asset)
         return UpdateCheck(current, release.version, available, release, plan)
 
     def check_for_update(self, *args: Any, **kwargs: Any) -> UpdateCheck:

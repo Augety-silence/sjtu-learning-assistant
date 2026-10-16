@@ -44,6 +44,7 @@ from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import (
+    APP_SUPPORT_DIR,
     create_database_engine,
     database_recovery_result,
 )
@@ -73,6 +74,7 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
     re.compile(r"(?i)(?:token|password|secret|database_url)\s*[=:]\s*[^\s,;]+"),
     re.compile(r"/Users/[^\s'\"]+"),
+    re.compile(r"(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\s'\"]+"),
 )
 
 
@@ -637,7 +639,7 @@ class DesktopBridge:
             payload.get("target_root"), limit=4096, label="输出目录"
         )
         mode = payload.get("mode")
-        if mode not in {"foundation", "full"}:
+        if type(mode) is not str or mode not in {"foundation", "full"}:
             raise DashboardError("编译范围不受支持。")
         return self._service.knowledge_compiler_start(
             source_root, target_root, mode
@@ -870,7 +872,11 @@ class DesktopBridge:
     def _deadlines(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"window"})
         window = payload.get("window", "7d")
-        hours = {"24h": 24, "7d": 168, "14d": 336}.get(window)
+        hours = (
+            {"24h": 24, "7d": 168, "14d": 336}.get(window)
+            if type(window) is str
+            else None
+        )
         if hours is None:
             raise DashboardError("截止时间筛选条件无效。")
         return {"items": self._service.deadlines(hours)}
@@ -1257,15 +1263,10 @@ class DesktopBridge:
         source_ids: list[str] = list()
         for value in raw_source_ids:
             source_id = _bounded_id(value, limit=255, label="远程视频标识")
-            parts = source_id.split(":")
-            if (
-                len(parts) != 3
-                or parts[0] != "sjtu-video"
-                or not parts[1].isdigit()
-                or not parts[2].isdigit()
-                or int(parts[1]) != course_id
-                or int(parts[2]) <= 0
-            ):
+            match = re.fullmatch(
+                r"sjtu-video:([1-9][0-9]{0,18}):[1-9][0-9]{0,18}", source_id
+            )
+            if match is None or int(match.group(1)) != course_id:
                 raise DashboardError("所选录像不属于当前课程。")
             if source_id in source_ids:
                 raise DashboardError("录像列表包含重复项目。")
@@ -1592,7 +1593,12 @@ def run_desktop_app() -> int:
         # Reconciliation is a one-time application-startup operation and only
         # expires jobs whose owner lease is missing/stale.
         if isinstance(engine, Engine) and inspect(engine).has_table("persistent_jobs"):
-            PersistentJobService(engine).reconcile_interrupted()
+            try:
+                from sjtu_learning_assistant.persistent_jobs import PersistentJobService
+            except ImportError:
+                PersistentJobService = None  # type: ignore[assignment,misc]
+            if PersistentJobService is not None:
+                PersistentJobService(engine).reconcile_interrupted()
 
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
@@ -1670,10 +1676,15 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
         )
         scheduler.start()
+        start_options = {
+            "debug": False,
+            "private_mode": False,
+            "storage_path": str(APP_SUPPORT_DIR / "webview"),
+        }
         if native_vibrancy:
-            webview.start(_enable_macos_window_material, (window,), debug=False)
+            webview.start(_enable_macos_window_material, (window,), **start_options)
         else:
-            webview.start(debug=False)
+            webview.start(**start_options)
         return 0
     finally:
         if scheduler is not None:
@@ -1693,6 +1704,10 @@ def main() -> int:
         from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
         from sjtu_learning_assistant.mcp_server import run_stdio_server
 
+        for stream in (sys.stdin, sys.stdout):
+            # MCP stdio 要求 UTF-8 + LF；Windows 无控制台时默认是本地代码页（如 cp936）。
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:
             run_stdio_server(ReadOnlyToolRegistry(engine))

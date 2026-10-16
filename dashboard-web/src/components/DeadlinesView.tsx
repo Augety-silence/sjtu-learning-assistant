@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import deadlinesClearIllustration from "@/assets/empty-states/deadlines-clear.webp";
 import { ContentReveal } from "@/components/ContentReveal";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
@@ -101,15 +101,18 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
   const [error, setError] = useState("");
   const compact = useCompactViewport();
   const { showToast } = useToast();
+  const loadRequestRef = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setItems(null);
     setError("");
     try {
       const data = await invoke<{ items: Deadline[] }>("deadlines", {
         window: windowValue,
       });
-      setItems(data.items);
+      if (requestId === loadRequestRef.current) setItems(data.items);
     } catch (reason) {
+      if (requestId !== loadRequestRef.current) return;
       setError(reason instanceof Error ? reason.message : "未知错误");
     }
   }, [windowValue]);

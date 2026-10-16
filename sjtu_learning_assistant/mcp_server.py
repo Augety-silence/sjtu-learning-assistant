@@ -237,6 +237,8 @@ class MCPServer:
         try:
             if isinstance(line, bytes):
                 line = line.decode("utf-8")
+            if isinstance(line, str) and not line.strip():
+                return None
             message = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
             response: object = _error_response(None, _PARSE_ERROR, "Parse error")
@@ -297,6 +299,9 @@ def main() -> int:
     try:
         from sjtu_learning_assistant.database import create_database_engine
 
+        for stream in (sys.stdin, sys.stdout):
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         run_stdio_server(ReadOnlyToolRegistry(engine))
     except KeyboardInterrupt:

@@ -46,6 +46,14 @@ _ROLE_ALIASES = {
     "designer": "designer",
 }
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# 评论允许换行与制表符；其余 C0 控制字符仍拒绝。
+_COMMENT_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_WINDOWS_UNSAFE_FILENAME = re.compile(r'[<>:"|?*]')
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
 _SECRET = re.compile(
     r"(?i)(authorization\s*[:=]\s*bearer\s+|bearer\s+|(?:access_)?token\s*[=:]\s*)"
     r"[^\s,;&]+"
@@ -145,7 +153,7 @@ def _canvas_id(value: int | str, label: str) -> str:
     if isinstance(value, bool):
         raise AcademicValidationError(f"{label}格式无效。")
     text = str(value).strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not text.isascii() or not text.isdigit() or int(text) <= 0:
         raise AcademicValidationError(f"{label}格式无效。")
     return text
 
@@ -248,7 +256,9 @@ def _display_grade(submission: Mapping[str, Any]) -> str:
 def _csv_cell(value: object) -> str:
     text = "" if value is None else str(value)
     # Prevent spreadsheet formula execution while preserving genuine numeric cells.
-    if isinstance(value, str) and text.startswith(("=", "+", "-", "@", "\t", "\r")):
+    if isinstance(value, str) and text.startswith(
+        ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
+    ):
         return f"'{text}"
     return text
 
@@ -530,12 +540,12 @@ class AcademicFeatureService:
     ) -> list[dict[str, Any]]:
         try:
             start = datetime(year, month, 1, tzinfo=timezone_info)
-        except (TypeError, ValueError) as exc:
+            if month == 12:
+                end = datetime(year + 1, 1, 1, tzinfo=timezone_info)
+            else:
+                end = datetime(year, month + 1, 1, tzinfo=timezone_info)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise AcademicValidationError("年月格式无效。") from exc
-        if month == 12:
-            end = datetime(year + 1, 1, 1, tzinfo=timezone_info)
-        else:
-            end = datetime(year, month + 1, 1, tzinfo=timezone_info)
         return self.events_between(start, end, course_ids=course_ids)
 
     def upcoming_events(
@@ -730,6 +740,8 @@ class AcademicFeatureService:
                     total_score += numeric
                     student_graded += 1
                     graded_cells += 1
+            # 浮点累加会出现 17.799999999999997 之类的尾差，写入 CSV 前收敛。
+            total_score = round(total_score, 6)
             totals.append(total_score)
             rows.append(
                 {
@@ -822,7 +834,11 @@ class AcademicFeatureService:
         value = (filename or f"{default_stem}.csv").strip()
         if not value or value in {".", ".."} or Path(value).name != value or "/" in value or "\\" in value:
             raise AcademicValidationError("导出文件名无效；不允许传入路径。")
-        if _CONTROL.search(value):
+        if (
+            _CONTROL.search(value)
+            or _WINDOWS_UNSAFE_FILENAME.search(value)
+            or value.split(".", 1)[0].strip().casefold() in _WINDOWS_RESERVED_STEMS
+        ):
             raise AcademicValidationError("导出文件名包含无效字符。")
         if not value.casefold().endswith(".csv"):
             value = f"{value}.csv"
@@ -847,6 +863,8 @@ class AcademicFeatureService:
             except OSError:
                 pass
             with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as stream:
+                # 文件对象接管 fd；之后不得再 os.close，避免关掉被复用的其他 fd。
+                descriptor = -1
                 writer = csv.writer(stream)
                 for row in rows:
                     writer.writerow([_csv_cell(value) for value in row])
@@ -855,13 +873,18 @@ class AcademicFeatureService:
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
         except Exception as exc:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             temporary.unlink(missing_ok=True)
             if isinstance(exc, AcademicFeatureError):
                 raise
+            if isinstance(exc, PermissionError):
+                raise AcademicFeatureError(
+                    "CSV 导出失败：目标文件可能正被其他程序（如 Excel）占用，请关闭后重试。"
+                ) from exc
             raise AcademicFeatureError("CSV 导出失败。") from exc
         return ExportArtifact(target, target.name, "text/csv; charset=utf-8", row_count)
 
@@ -1044,7 +1067,7 @@ class AcademicFeatureService:
         matching = [
             item
             for item in cls._comments(submission)
-            if str(item.get("comment") or item.get("text_comment") or "").strip() == text
+            if str(item.get("comment") or item.get("text_comment") or "").replace("\r\n", "\n").strip() == text
         ]
         identifiers = {
             str(item["id"])
@@ -1064,7 +1087,7 @@ class AcademicFeatureService:
         matching = [
             item
             for item in cls._comments(after)
-            if str(item.get("comment") or item.get("text_comment") or "").strip() == text
+            if str(item.get("comment") or item.get("text_comment") or "").replace("\r\n", "\n").strip() == text
         ]
         if any(
             item.get("id") is not None
@@ -1113,8 +1136,8 @@ class AcademicFeatureService:
         normalized_assignment = _canvas_id(assignment_id, "作业 ID")
         normalized_student = _canvas_id(student_id, "学生 ID")
         if comment is not None:
-            comment = comment.strip()
-            if not comment or len(comment) > 10_000 or _CONTROL.search(comment):
+            comment = comment.replace("\r\n", "\n").replace("\r", "\n").strip()
+            if not comment or len(comment) > 10_000 or _COMMENT_CONTROL.search(comment):
                 raise AcademicValidationError("评论内容无效。")
         if not set_grade and comment is None:
             raise AcademicValidationError("评分和评论不能同时为空。")
