@@ -273,9 +273,9 @@ export function TranscriptTimedContent({
 }) {
   const linked = onSeek
     ? content.replace(
-        /\b(\d{2,}):([0-5]\d)–(\d{2,}):([0-5]\d)\b/g,
-        (range, minutes, seconds) =>
-          `[${range}](#video-time=${Number(minutes) * 60 + Number(seconds)})`,
+        /\b(\d{1,3}):([0-5]\d)\s?[–-]\s?(\d{1,3}):([0-5]\d)\b/g,
+        (range, startMinutes, startSeconds) =>
+          `[${range.replace(/\s/g, "").replace("-", "–")}](#video-time=${Number(startMinutes) * 60 + Number(startSeconds)})`,
       )
     : content;
   return (
