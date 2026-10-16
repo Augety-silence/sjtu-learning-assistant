@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ntpath
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -39,15 +41,22 @@ on run argv
 end run
 """.strip()
 
+# powershell.exe 会把 -Command 之后的所有参数拼接成代码执行，因此通知文本
+# 只能通过环境变量传入，-Command 必须是最后一个参数。
+WINDOWS_NOTIFICATION_ENV = (
+    "SJTU_NOTIFICATION_TITLE",
+    "SJTU_NOTIFICATION_SUBTITLE",
+    "SJTU_NOTIFICATION_BODY",
+)
 WINDOWS_NOTIFICATION_SCRIPT = r"""
-param([string]$Title, [string]$Subtitle, [string]$Body)
+$ErrorActionPreference = 'Stop'
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
 $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText04
 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
 $text = $xml.GetElementsByTagName('text')
-$text.Item(0).AppendChild($xml.CreateTextNode($Title)) > $null
-$text.Item(1).AppendChild($xml.CreateTextNode($Subtitle)) > $null
-$text.Item(2).AppendChild($xml.CreateTextNode($Body)) > $null
+$text.Item(0).AppendChild($xml.CreateTextNode($env:SJTU_NOTIFICATION_TITLE)) > $null
+$text.Item(1).AppendChild($xml.CreateTextNode($env:SJTU_NOTIFICATION_SUBTITLE)) > $null
+$text.Item(2).AppendChild($xml.CreateTextNode($env:SJTU_NOTIFICATION_BODY)) > $null
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('SJTU Learning Assistant').Show($toast)
 """.strip()
@@ -167,7 +176,14 @@ class MacOSNotificationSender:
             )
 
 
+def _windows_powershell_path() -> str:
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    return ntpath.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
 class WindowsNotificationSender:
+    """使用固定路径 powershell.exe；文本经环境变量传入，不拼进命令行代码。"""
+
     def __init__(self, *, runner=subprocess.run, platform: str | None = None) -> None:
         self.runner = runner
         self.platform = platform or sys.platform
@@ -176,7 +192,7 @@ class WindowsNotificationSender:
         if self.platform != "win32":
             raise NotificationError("Windows 系统通知只能在 Windows 上发送。")
         arguments = [
-            "powershell.exe",
+            _windows_powershell_path(),
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -184,17 +200,28 @@ class WindowsNotificationSender:
             "Bypass",
             "-Command",
             WINDOWS_NOTIFICATION_SCRIPT,
-            sanitize_notification_text(title) or "SJTU Learning Assistant",
-            sanitize_notification_text(subtitle),
-            sanitize_notification_text(body) or "同步完成。",
         ]
+        environment = dict(os.environ)
+        environment.update(
+            zip(
+                WINDOWS_NOTIFICATION_ENV,
+                (
+                    sanitize_notification_text(title) or "SJTU Learning Assistant",
+                    sanitize_notification_text(subtitle),
+                    sanitize_notification_text(body) or "同步完成。",
+                ),
+            )
+        )
         try:
             completed = self.runner(
                 arguments,
                 check=False,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=10,
+                env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise NotificationError(f"无法执行 Windows 通知：{exc}") from exc
@@ -533,7 +560,7 @@ class NotificationService:
                 item_id=item.id,
                 title=f"{labels[item_type]}：{item.title}",
                 subtitle=_course_subtitle(course_name),
-                body="点击 Canvas 查看详情。" if item.url else "请打开 Canvas 查看详情。",
+                body="请打开学习助手或 Canvas 查看详情。",
             )
             for item, course_name in rows
         ]

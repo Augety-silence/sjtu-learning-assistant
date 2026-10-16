@@ -162,11 +162,17 @@ class WindowsNotificationSenderTests(unittest.TestCase):
             "标题", "副标题", "正文\x00内容"
         )
         arguments, kwargs = calls[0]
-        self.assertEqual("powershell.exe", arguments[0])
-        self.assertEqual("-Command", arguments[6])
-        self.assertEqual("标题", arguments[8])
-        self.assertNotIn("标题", arguments[7])
-        self.assertNotIn("\x00", arguments[10])
+        self.assertTrue(arguments[0].lower().endswith("powershell.exe"))
+        # -Command 之后的参数会被 powershell.exe 拼接成代码，因此必须是最后一个参数。
+        self.assertEqual("-Command", arguments[-2])
+        self.assertNotIn("标题", " ".join(arguments))
+        environment = kwargs["env"]
+        self.assertEqual("标题", environment["SJTU_NOTIFICATION_TITLE"])
+        self.assertEqual("副标题", environment["SJTU_NOTIFICATION_SUBTITLE"])
+        self.assertNotIn("\x00", environment["SJTU_NOTIFICATION_BODY"])
+        self.assertEqual(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0), kwargs["creationflags"]
+        )
         self.assertNotIn("shell", kwargs)
 
     @patch("sjtu_learning_assistant.notifications.sys.platform", "win32")
