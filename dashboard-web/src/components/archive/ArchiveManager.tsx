@@ -35,11 +35,7 @@ const runningStatuses = new Set([
   "downloading",
   "verifying",
 ]);
-const restorableStatuses = new Set([
-  "archived",
-  "needs_reconcile",
-  "needs_verification",
-]);
+const restorableStatuses = new Set(["archived"]);
 type RestoreVersion = Pick<ArchiveVersion, "id">;
 
 function isOfflineMessage(message: string) {
@@ -77,6 +73,7 @@ export function ArchiveManager() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const pageRequest = useRef(0);
+  const jobsRequest = useRef(0);
 
   const resetPagination = useCallback(() => {
     setCursor(undefined);
@@ -127,7 +124,9 @@ export function ArchiveManager() {
   const loadJobs = useCallback(async (quiet = false) => {
     if (!quiet) setJobsLoading(true);
     try {
+      const request = ++jobsRequest.current;
       const result = await getArchiveJobs(20);
+      if (request !== jobsRequest.current) return;
       setJobs(result.items);
     } catch (reason) {
       if (!quiet)
@@ -184,7 +183,14 @@ export function ArchiveManager() {
       );
       await Promise.all([loadPage(), loadJobs()]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "归档启动失败");
+      const message =
+        reason instanceof Error ? reason.message : "归档启动失败";
+      if (message.startsWith("未选择")) {
+        setNotice("已取消选择，未开始归档。");
+      } else {
+        setNotice("");
+        setError(message);
+      }
     } finally {
       setStarting(false);
     }
@@ -208,8 +214,16 @@ export function ArchiveManager() {
   };
 
   const restoreSelected = () => {
-    const queue = visibleEntries.filter((entry) => selected.has(entry.id));
-    if (!queue.length) return;
+    const queue = visibleEntries.filter(
+      (entry) =>
+        selected.has(entry.id) &&
+        Boolean(entry.current_version_id) &&
+        restorableStatuses.has(entry.version_status),
+    );
+    if (!queue.length) {
+      setNotice("所选文件暂无可恢复的已归档版本。");
+      return;
+    }
     setRestoreQueue(queue.slice(1));
     setRestoreTarget(queue[0]);
     setRestoreVersion(currentVersion(queue[0]));
@@ -335,15 +349,12 @@ export function ArchiveManager() {
           >
             <option value="all">筛选：全部状态</option>
             <option value="archived">筛选：已归档</option>
-            <option value="local_changed">筛选：本地有变更</option>
-            <option value="cloud_only">筛选：仅云端</option>
-            <option value="local_only">筛选：仅本地</option>
+            <option value="pending">筛选：等待处理</option>
             <option value="uploading">筛选：上传中</option>
-            <option value="downloading">筛选：下载中</option>
-            <option value="verifying">筛选：校验中</option>
             <option value="failed">筛选：失败</option>
-            <option value="interrupted">筛选：已中断</option>
+            <option value="needs_verification">筛选：待强校验</option>
             <option value="needs_reconcile">筛选：需要校验</option>
+            <option value="unavailable">筛选：不可用</option>
           </select>
         </label>
         <label>
@@ -564,6 +575,7 @@ export function ArchiveManager() {
       )}
       {restoreTarget && (
         <RestoreDialog
+          key={restoreTarget.id + ":" + (restoreVersion?.id ?? "")}
           entry={restoreTarget}
           version={restoreVersion}
           onClose={() => {
