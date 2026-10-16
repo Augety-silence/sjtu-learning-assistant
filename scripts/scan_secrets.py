@@ -30,13 +30,13 @@ ALLOWLIST = {
 
 def candidates() -> list[Path]:
     result = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
-    return [ROOT / line for line in result.stdout.splitlines() if line]
+    return [ROOT / line for line in result.stdout.split("\0") if line]
 
 
 def main() -> int:
