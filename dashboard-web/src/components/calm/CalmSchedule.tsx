@@ -202,6 +202,13 @@ export function CalmSchedule({
   const dates = useMemo(() => buildMonthGrid(visibleMonth), [visibleMonth]);
   const todayKey = dateKey(startOfDay(now));
   const monthKey = `${visibleMonth.getFullYear()}-${visibleMonth.getMonth()}`;
+  const previousTodayKey = useRef(todayKey);
+  useEffect(() => {
+    const previous = previousTodayKey.current;
+    if (previous === todayKey) return;
+    previousTodayKey.current = todayKey;
+    setSelectedKey((current) => (current === previous ? todayKey : current));
+  }, [todayKey]);
 
   const eventsByDate = useMemo(() => {
     const grouped = new Map<string, CalendarEventItem[]>();
@@ -270,6 +277,12 @@ export function CalmSchedule({
   );
   const selectedEvents = eventsByDate.get(selectedKey) ?? [];
   const selectedIsToday = selectedKey === todayKey;
+  const rovingKey =
+    selectedIndex >= 0
+      ? selectedKey
+      : dateKey(
+          new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1),
+        );
 
   const monthIsCurrent =
     visibleMonth.getFullYear() === now.getFullYear() &&
@@ -369,7 +382,11 @@ export function CalmSchedule({
             </span>
           </span>
         </div>
-        <div className="calm-overview-stats" aria-label="日程摘要">
+        <div
+          className="calm-overview-stats"
+          role="group"
+          aria-label="日程摘要"
+        >
           <span>
             7 天内 <em>{dueCount}</em> 项待交
           </span>
@@ -435,7 +452,7 @@ export function CalmSchedule({
                 duration: 0.3,
                 ease: [0.22, 0.8, 0.22, 1],
               }}
-              role="grid"
+              role="group"
               aria-label="月历"
             >
               {selectedIndex >= 0 ? (
@@ -477,6 +494,7 @@ export function CalmSchedule({
                     }`}
                     aria-current={key === todayKey ? "date" : undefined}
                     aria-pressed={key === selectedKey}
+                    tabIndex={key === rovingKey ? 0 : -1}
                     onClick={() => selectDay(date)}
                     onKeyDown={(event) => handleDayKeyDown(event, date)}
                   >
