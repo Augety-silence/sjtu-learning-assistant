@@ -2129,7 +2129,9 @@ class DashboardService:
         record = self._material_record(source_id)
         name = record.display_name or record.filename or "文件"
         kind = material_preview_kind(name, record.content_type)
-        if kind is None:
+        if kind is None or kind not in MATERIAL_PREVIEW_LIMITS:
+            # “structured”（docx/pptx/xlsx/ipynb/zip）由 media_preview 通道处理；
+            # 走到这里必须给出可展示错误，而不是让 MATERIAL_PREVIEW_LIMITS[kind] 抛 KeyError。
             raise DashboardError("该文件类型不支持 App 内预览，请使用“打开”。")
         limit = MATERIAL_PREVIEW_LIMITS[kind]
         payload: bytes
