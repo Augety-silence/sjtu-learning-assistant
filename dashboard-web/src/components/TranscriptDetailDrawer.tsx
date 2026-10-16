@@ -423,6 +423,8 @@ export function TranscriptDetailDrawer({
         type="button"
         className="transcript-overlay-backdrop"
         aria-label="关闭字幕详情"
+        aria-hidden="true"
+        tabIndex={-1}
         onClick={onClose}
       />
       <section
@@ -431,7 +433,6 @@ export function TranscriptDetailDrawer({
         role="dialog"
         aria-modal="true"
         aria-labelledby="transcript-detail-title"
-        aria-busy={active || undefined}
         tabIndex={-1}
       >
         <header className="transcript-drawer-header">
@@ -463,9 +464,9 @@ export function TranscriptDetailDrawer({
           </Button>
         </header>
 
-        <div className="transcript-progress-block" aria-live="polite">
+        <div className="transcript-progress-block">
           <div>
-            <span>{progressMessage}</span>
+            <span aria-live="polite">{progressMessage}</span>
             <strong>{progress}%</strong>
           </div>
           {failedStage ? (
