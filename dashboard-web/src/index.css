@@ -3769,7 +3769,7 @@ a {
   cursor: pointer;
 }
 
-.theme-option:hover:not(:disabled) {
+.theme-option:hover:not(:has(input:disabled)) {
   border-color: var(--border-focus-soft);
   background: var(--surface-hover);
 }
@@ -3786,7 +3786,7 @@ a {
   outline-offset: 2px;
 }
 
-.theme-option:disabled {
+.theme-option:has(input:disabled) {
   cursor: wait;
   opacity: 0.65;
 }
