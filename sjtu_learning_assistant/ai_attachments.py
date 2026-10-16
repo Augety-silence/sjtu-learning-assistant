@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -107,14 +108,16 @@ def _controlled_path(root: Path, relative: str, *, must_exist: bool = True) -> P
         raise AIFileError("附件受控副本不存在或不安全。") from None
 
 
-def _decode_text(payload: bytes) -> str:
-    if b"\x00" in payload[:4096] and not (
-        payload.startswith(b"\xff\xfe") or payload.startswith(b"\xfe\xff")
-    ):
+def _decode_text(payload: bytes, *, truncated: bool = False) -> str:
+    has_bom = payload.startswith((b"\xff\xfe", b"\xfe\xff"))
+    if b"\x00" in payload[:4096] and not has_bom:
         raise UnicodeError("binary")
-    for encoding in ("utf-8-sig", "utf-16", "gb18030"):
+    # 无 BOM 时不尝试 UTF-16：偶数长度的 GBK 文本或被截断的 UTF-8 会被“成功”解成乱码。
+    encodings = ("utf-16",) if has_bom else ("utf-8-sig", "gb18030")
+    for encoding in encodings:
         try:
-            return payload.decode(encoding)
+            # 截断时 final=False，丢弃末尾半个多字节字符，而不是整段换编码。
+            return codecs.getincrementaldecoder(encoding)().decode(payload, final=not truncated)
         except UnicodeError:
             continue
     raise UnicodeError("encoding")
@@ -130,10 +133,11 @@ def extract_text(path: Path, name: str) -> tuple[str, str]:
             payload = stream.read(MAX_EXTRACT_BYTES + 1)
     except OSError:
         raise AIFileError("无法读取受控副本。") from None
-    if len(payload) > MAX_EXTRACT_BYTES:
+    truncated = len(payload) > MAX_EXTRACT_BYTES
+    if truncated:
         payload = payload[:MAX_EXTRACT_BYTES]
     try:
-        text = _decode_text(payload)
+        text = _decode_text(payload, truncated=truncated)
     except UnicodeError:
         raise AIFileError("unsupported") from None
     extractor = "stdlib-text"
@@ -141,7 +145,7 @@ def extract_text(path: Path, name: str) -> tuple[str, str]:
         try:
             text = json.dumps(json.loads(text), ensure_ascii=False, indent=2)
             extractor = "stdlib-json"
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             extractor = "stdlib-text"
     return text[:MAX_EXTRACT_CHARS], extractor
 
@@ -201,10 +205,13 @@ class AIManagedFileService:
     def _copy_source(self, source: Path) -> tuple[str, int, str, Path]:
         if "\x00" in os.fspath(source):
             raise AIFileError("所选文件无效。")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor: int | None = None
         temporary: Path | None = None
         try:
+            if os.name == "nt" and source.expanduser().is_symlink():
+                # Windows 没有 O_NOFOLLOW；仅拒绝真正的符号链接，不拒绝 OneDrive 等云占位重解析点。
+                raise AIFileError("无法安全读取所选文件。")
             descriptor = os.open(source.expanduser(), flags)
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_SOURCE_SIZE:
@@ -239,9 +246,8 @@ class AIManagedFileService:
             relative = target.relative_to(self.managed_root).as_posix()
             if target.exists():
                 existing = _controlled_path(self.managed_root, relative)
-                if existing.stat().st_size != copied or hashlib.sha256(existing.read_bytes()).hexdigest() != sha256:
+                if self._hash_path(existing) != (copied, sha256):
                     raise AIFileError("受控副本哈希冲突，已拒绝覆盖。")
-                temporary.unlink(missing_ok=True)
             else:
                 os.chmod(temporary, 0o600)
                 os.replace(temporary, target)
@@ -257,7 +263,10 @@ class AIManagedFileService:
                 except OSError:
                     pass
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass  # Windows 上被杀软/索引器短暂占用时不掩盖原始结果。
 
     def ingest(self, source_path: str | Path) -> dict[str, Any]:
         source = Path(source_path)
@@ -453,8 +462,13 @@ class AIManagedFileService:
         for attachment_id in ids:
             row = self._get_row(attachment_id)
             item = attachment_dto(row)
-            excerpt = self.read_text(attachment_id, max_chars=max(1, min(remaining, 4000)))
-            text = excerpt.get("text", "") if remaining > 0 else ""
+            if remaining > 0:
+                excerpt = self.read_text(attachment_id, max_chars=min(remaining, 4000))
+                text = excerpt.get("text", "")
+            else:
+                # 预算耗尽时不再读取正文（cloud_only 会触发整文件下载与哈希校验）。
+                excerpt = {"status": item["text_status"], "truncated": item["text_status"] == "ready"}
+                text = ""
             remaining -= len(text)
             result.append(
                 {
@@ -677,11 +691,16 @@ class AIManagedFileService:
             return self.get(attachment_id)
         except AIFileError:
             raise
+        except PermissionError:
+            raise AIFileError("受控副本正被其他程序占用，请关闭相关程序后重试。") from None
         except Exception:
             raise AIFileError("云端附件恢复失败，请检查网络后重试。") from None
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
             close = getattr(provider, "close", None)
             if callable(close):
                 try:
