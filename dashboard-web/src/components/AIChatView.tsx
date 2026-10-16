@@ -137,6 +137,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const activityToggleRef = useRef<HTMLButtonElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const lastThreadScrollTopRef = useRef(0);
   const pendingComposerFocusRef = useRef(false);
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
@@ -242,6 +244,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const applySession = useCallback((session: AIChatSession) => {
     setMotionMessageIds([]);
+    stickToBottomRef.current = true;
     setActive(session);
     setModel((session.model as AIModel) || "auto");
     setDepth(session.thinking_depth);
@@ -368,7 +371,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, [activityOpen, isPresent, focusIfPresent]);
 
   useEffect(() => {
-    if (!isPresent) return;
+    if (!isPresent || !stickToBottomRef.current) return;
     endRef.current?.scrollIntoView?.({
       behavior: shouldReduceMotion ? "auto" : "smooth",
       block: "end",
@@ -573,7 +576,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             }
           : current,
       );
-      setDraft((current) => current || request.text);
+      setDraft((current) =>
+        !current.trim()
+          ? request.text
+          : current.includes(request.text)
+            ? current
+            : `${current}\n\n${request.text}`,
+      );
       setAttachments((current) => {
         const restored = [...current];
         for (const attachment of request.attachments) {
@@ -627,6 +636,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       presetId: selectedPresetId,
     };
 
+    stickToBottomRef.current = true;
     setMotionMessageIds([optimisticId]);
     setActive((current) =>
       current?.id === request.sessionId
@@ -833,6 +843,16 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             className="ai-chat-thread"
             data-page-reveal-part="thread"
             aria-live="polite"
+            onScroll={(event) => {
+              const thread = event.currentTarget;
+              const nearBottom =
+                thread.scrollHeight - thread.scrollTop - thread.clientHeight <
+                48;
+              if (nearBottom) stickToBottomRef.current = true;
+              else if (thread.scrollTop < lastThreadScrollTopRef.current - 2)
+                stickToBottomRef.current = false;
+              lastThreadScrollTopRef.current = thread.scrollTop;
+            }}
           >
             {loading ? (
               <motion.div
