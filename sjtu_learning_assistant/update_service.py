@@ -423,6 +423,14 @@ def select_release_asset(
                 asset for asset in installable if any(token in asset.name.casefold() for token in os_tokens)
             ]
             matches = os_matches if len(os_matches) == 1 else []
+        normalized_system = (system or sys.platform).casefold()
+        if asset_name is None and len(matches) > 1 and normalized_system in {"windows", "win32", "win"}:
+            setup_matches = [asset for asset in matches if asset.name.casefold().endswith("-setup.exe")]
+            portable_matches = [asset for asset in matches if asset.name.casefold().endswith("-portable.zip")]
+            if len(setup_matches) > 1 or len(portable_matches) > 1:
+                matches = []
+            elif len(setup_matches) == 1:
+                matches = setup_matches
     if len(matches) != 1:
         raise InvalidUpdateMetadataError("无法唯一确定当前平台的 Release asset。")
     return matches[0]

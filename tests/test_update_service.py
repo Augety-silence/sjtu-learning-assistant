@@ -7,6 +7,7 @@ import httpx
 
 from sjtu_learning_assistant.update_service import (
     ChecksumMismatchError,
+    InvalidUpdateMetadataError,
     InvalidVersionError,
     UpdateService,
     UnsafeUpdateURLError,
@@ -56,6 +57,46 @@ def release_payload(*, version="v1.3.0", digest=None):
             },
         ],
     }
+
+
+def multi_platform_release_payload(artifact_names):
+    assets = []
+    checksum_by_name = {}
+    for name in artifact_names:
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+        checksum_by_name[name] = digest
+        url = (
+            "https://github.com/Augety-silence/sjtu-learning-assistant/releases/download/"
+            f"v1.7.3/{name}"
+        )
+        assets.extend(
+            (
+                {
+                    "name": name,
+                    "browser_download_url": url,
+                    "size": 1234,
+                    "content_type": "application/octet-stream",
+                },
+                {
+                    "name": name + ".sha256",
+                    "browser_download_url": url + ".sha256",
+                    "size": 100,
+                    "content_type": "text/plain",
+                },
+            )
+        )
+    return {
+        "tag_name": "v1.7.3",
+        "html_url": (
+            "https://github.com/Augety-silence/sjtu-learning-assistant/"
+            "releases/tag/v1.7.3"
+        ),
+        "published_at": "2026-10-16T00:00:00Z",
+        "body": "synthetic release fixture",
+        "draft": False,
+        "prerelease": False,
+        "assets": assets,
+    }, checksum_by_name
 
 
 class UpdateServiceTests(unittest.TestCase):
@@ -117,6 +158,95 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertTrue(result.download_plan.requires_sha256_verification)
         # 服务只生成计划：不会请求二进制资产，也不会覆盖正在运行的应用。
         self.assertNotIn(ASSET_URL, [str(request.url) for request in seen])
+
+    def test_windows_release_prefers_unique_setup_and_resolves_its_sidecar(self):
+        names = [
+            "SJTU-Learning-Assistant-1.7.3-macOS-arm64.dmg",
+            "SJTU-Learning-Assistant-1.7.3-Windows-x64-portable.zip",
+            "SJTU-Learning-Assistant-1.7.3-Windows-x64-Setup.exe",
+        ]
+        payload, checksums = multi_platform_release_payload(names)
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            if request.url.host == "api.github.com":
+                return httpx.Response(200, json=payload)
+            for name, digest in checksums.items():
+                if str(request.url).endswith("/" + name + ".sha256"):
+                    return httpx.Response(200, text=f"{digest}  {name}\n")
+            raise AssertionError(f"unexpected synthetic request: {request.url}")
+
+        result = UpdateService("1.7.2", transport=httpx.MockTransport(handler)).check(
+            system="Windows", machine="x64"
+        )
+
+        self.assertTrue(result.update_available)
+        self.assertEqual(names[2], result.download_plan.asset_name)
+        self.assertEqual(checksums[names[2]], result.download_plan.sha256)
+        self.assertTrue(result.download_plan.requires_sha256_verification)
+        self.assertEqual(2, len(seen))
+        explicitly_portable = UpdateService(
+            "1.7.2", transport=httpx.MockTransport(handler)
+        ).check(system="Windows", machine="x64", asset_name=names[1])
+        self.assertEqual(names[1], explicitly_portable.download_plan.asset_name)
+        self.assertEqual(checksums[names[1]], explicitly_portable.download_plan.sha256)
+        mac_release = UpdateService("1.7.2", transport=httpx.MockTransport(handler)).check(
+            system="Darwin", machine="arm64", fetch_checksum=False
+        )
+        self.assertEqual(names[0], mac_release.download_plan.asset_name)
+
+    def test_windows_release_selects_portable_when_it_is_the_only_windows_asset(self):
+        portable = "SJTU-Learning-Assistant-1.7.3-Windows-x64-portable.zip"
+        payload, checksums = multi_platform_release_payload([portable])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "api.github.com":
+                return httpx.Response(200, json=payload)
+            return httpx.Response(200, text=f"{checksums[portable]}  {portable}\n")
+
+        result = UpdateService("1.7.2", transport=httpx.MockTransport(handler)).check(
+            system="Windows", machine="x64"
+        )
+        self.assertEqual(portable, result.download_plan.asset_name)
+        explicit = UpdateService("1.7.2", transport=httpx.MockTransport(handler)).check(
+            system="Windows", machine="x64", asset_name=portable
+        )
+        self.assertEqual(portable, explicit.download_plan.asset_name)
+        self.assertEqual(checksums[portable], explicit.download_plan.sha256)
+
+    def test_windows_release_still_rejects_duplicate_setup_or_portable_assets(self):
+        cases = {
+            "duplicate setup": [
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-Setup.exe",
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-Full-Setup.exe",
+            ],
+            "duplicate portable": [
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-portable.zip",
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-Backup-portable.zip",
+            ],
+            "portable plus unknown windows asset": [
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-portable.zip",
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-debug.tar",
+            ],
+            "unique setup plus duplicate portable": [
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-Setup.exe",
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-portable.zip",
+                "SJTU-Learning-Assistant-1.7.3-Windows-x64-Backup-portable.zip",
+            ],
+        }
+        for label, names in cases.items():
+            with self.subTest(label=label):
+                payload, _checksums = multi_platform_release_payload(names)
+                transport = httpx.MockTransport(
+                    lambda request, payload=payload: httpx.Response(200, json=payload)
+                )
+                with self.assertRaisesRegex(
+                    InvalidUpdateMetadataError, "无法唯一确定"
+                ):
+                    UpdateService("1.7.2", transport=transport).check(
+                        system="Windows", machine="x64", fetch_checksum=False
+                    )
 
     def test_no_update_does_not_resolve_or_download_asset(self) -> None:
         calls = []
