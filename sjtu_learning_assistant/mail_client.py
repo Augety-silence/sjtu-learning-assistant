@@ -10,6 +10,7 @@ import ssl
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email import policy
+from email.header import decode_header, make_header
 from email.message import Message
 from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
@@ -32,6 +33,8 @@ from sjtu_learning_assistant.mail_sync import (
 DEFAULT_INITIAL_LIMIT = 100
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_MESSAGE_ATTACHMENT_BYTES = 50 * 1024 * 1024
+# Chinese clients often label GBK/GB18030 bytes as gb2312; decode with the superset.
+_GB_CHARSET_ALIASES = frozenset({"gb2312", "gbk", "x-gbk", "cp936", "euc-cn", "euc_cn"})
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,63 @@ def _parse_internal_date(metadata: bytes) -> datetime | None:
     return _parse_datetime(match.group(1).decode("ascii", errors="replace"))
 
 
+def _effective_charset(charset: str | None) -> str | None:
+    if charset and charset.casefold() in _GB_CHARSET_ALIASES:
+        return "gb18030"
+    return charset
+
+
+def _decode_raw_header(raw: str) -> str:
+    text = re.sub(r"\r?\n(?=[ \t])", "", raw)
+    if any("\udc80" <= character <= "\udcff" for character in text):
+        data = text.encode("utf-8", "surrogateescape")
+        for codec in ("utf-8", "gb18030"):
+            try:
+                text = data.decode(codec)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = data.decode("utf-8", errors="replace")
+    try:
+        parts = [(chunk, _effective_charset(charset)) for chunk, charset in decode_header(text)]
+        return str(make_header(parts))
+    except Exception:
+        return text
+
+
+def _header_text(message: Message, name: str) -> str | None:
+    """Read a header without letting malformed structured values abort the sync."""
+    try:
+        value = message.get(name)
+    except Exception:  # headerregistry may raise AttributeError/IndexError/CharsetError
+        value = None
+    else:
+        if value is None:
+            return None
+        if "\ufffd" not in str(value):
+            return str(value)
+    wanted = name.casefold()
+    for key, raw in message.raw_items():
+        if key.casefold() == wanted:
+            return _decode_raw_header(str(raw))
+    return None if value is None else str(value)
+
+
+def _content_disposition(part: Message) -> str:
+    try:
+        return (part.get_content_disposition() or "").casefold()
+    except Exception:  # malformed RFC 2231 parameters raise IndexError
+        return ""
+
+
+def _filename(part: Message) -> str | None:
+    try:
+        return part.get_filename()
+    except Exception:
+        return None
+
+
 def _decode_part_payload(part: Message) -> bytes:
     payload = part.get_payload(decode=True)
     if isinstance(payload, bytes):
@@ -172,16 +232,18 @@ def _decode_part_payload(part: Message) -> bytes:
 
 def _decode_text_part(part: Message) -> str | None:
     payload = _decode_part_payload(part)
-    charset = part.get_content_charset()
+    charset = _effective_charset(part.get_content_charset())
     if charset:
         try:
             return payload.decode(charset, errors="replace")
         except LookupError:
             pass
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        return payload.decode("latin-1", errors="replace")
+    for fallback in ("utf-8", "gb18030"):
+        try:
+            return payload.decode(fallback)
+        except UnicodeDecodeError:
+            continue
+    return payload.decode("latin-1", errors="replace")
 
 
 def _normalized_content_id(value: str | None) -> str | None:
@@ -200,14 +262,14 @@ def _message_content(
     def add_attachment(part: Message) -> None:
         nonlocal attachment_index
         attachment_index += 1
-        content_id = _normalized_content_id(part.get("Content-ID"))
+        content_id = _normalized_content_id(_header_text(part, "Content-ID"))
         resource_id = content_id or f"part-{attachment_index}"
-        filename = decode_mime_text(part.get_filename(), "").strip()
+        filename = decode_mime_text(_filename(part), "").strip()
         if not filename:
             filename = content_id or f"attachment-{attachment_index}"
         payload = _decode_part_payload(part)
         size = len(payload)
-        disposition = (part.get_content_disposition() or "").casefold() or None
+        disposition = _content_disposition(part) or None
         attachments.append(
             EmailAttachment(
                 resource_id=resource_id,
@@ -222,8 +284,8 @@ def _message_content(
         )
 
     def extract(part: Message, *, force_attachment: bool = False) -> tuple[list[str], list[str]]:
-        disposition = (part.get_content_disposition() or "").casefold()
-        explicit_attachment = disposition == "attachment" or bool(part.get_filename())
+        disposition = _content_disposition(part)
+        explicit_attachment = disposition == "attachment" or bool(_filename(part))
         if force_attachment or explicit_attachment or part.get_content_maintype() == "message":
             add_attachment(part)
             return [], []
@@ -247,7 +309,7 @@ def _message_content(
                 root_index = 0
                 if start:
                     for index, child in enumerate(children):
-                        if _normalized_content_id(child.get("Content-ID")) == start:
+                        if _normalized_content_id(_header_text(child, "Content-ID")) == start:
                             root_index = index
                             break
                 plain, html = extract(children[root_index])
@@ -300,20 +362,20 @@ def _parse_message(
     # ``headers`` retains its historical name so header-only callers remain compatible.
     message = BytesParser(policy=policy.default).parsebytes(headers)
     body_text, body_html, attachments = _message_content(message)
-    sender_raw = decode_mime_text(message.get("From"), "")
+    sender_raw = decode_mime_text(_header_text(message, "From"), "")
     sender_name, sender_address = parseaddr(sender_raw)
     sender_name = decode_mime_text(sender_name, "") or None
     sender_address = sender_address or None
-    sent_at = _parse_datetime(message.get("Date"))
+    sent_at = _parse_datetime(_header_text(message, "Date"))
     received_at = _parse_internal_date(metadata) or sent_at
     flags_match = re.search(rb"FLAGS \(([^)]*)\)", metadata)
     flags = flags_match.group(1).split() if flags_match else []
     is_unread = b"\\Seen" not in flags
-    message_id = decode_mime_text(message.get("Message-ID"), "") or None
+    message_id = decode_mime_text(_header_text(message, "Message-ID"), "") or None
 
     return EmailRecord(
         source_id=f"{email_address}:INBOX:{uid_validity}:{uid}",
-        subject=decode_mime_text(message.get("Subject"), "（无主题）"),
+        subject=decode_mime_text(_header_text(message, "Subject"), "（无主题）"),
         sender_name=sender_name,
         sender_address=sender_address,
         sent_at=sent_at,
@@ -460,15 +522,37 @@ def fetch_incremental_mail(
                 if status != "OK" or not fetch_data:
                     raise MailCheckError(f"UID {uid} 邮件读取失败。")
                 metadata, message_bytes = _extract_fetch_parts(fetch_data)
-                messages.append(
-                    _parse_message(
+                try:
+                    record = _parse_message(
                         email_address=email_address,
                         uid_validity=uid_validity,
                         uid=uid,
                         metadata=metadata,
                         headers=message_bytes,
                     )
-                )
+                except Exception:
+                    # A single malformed message must not pin the UID cursor forever.
+                    flags_match = re.search(rb"FLAGS \(([^)]*)\)", metadata)
+                    flags = flags_match.group(1).split() if flags_match else []
+                    record = EmailRecord(
+                        source_id=f"{email_address}:INBOX:{uid_validity}:{uid}",
+                        subject="（邮件格式异常，无法解析）",
+                        sender_name=None,
+                        sender_address=None,
+                        sent_at=None,
+                        received_at=_parse_internal_date(metadata),
+                        body_preview=None,
+                        is_unread=b"\\Seen" not in flags,
+                        raw_data={
+                            "folder": "INBOX",
+                            "uid": uid,
+                            "uid_validity": uid_validity,
+                            "message_id": None,
+                            "rich_content_fetched": True,
+                            "parse_failed": True,
+                        },
+                    )
+                messages.append(record)
 
             return MailFetchResult(
                 messages=messages,
