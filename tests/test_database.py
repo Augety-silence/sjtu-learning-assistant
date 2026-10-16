@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from platformdirs import user_data_path
+from sqlalchemy.engine import make_url
 from sjtu_learning_assistant.database import (
     APP_SUPPORT_DIR_ENV,
     DATABASE_URL_ENV,
@@ -35,15 +37,15 @@ class DatabaseConfigTests(unittest.TestCase):
         ) as load_keyring:
             value = get_database_url()
         self.assertEqual(default_sqlite_url(DEFAULT_SQLITE_PATH), value)
-        self.assertEqual(
-            Path.home()
+        expected_support = (
+            user_data_path("SJTU Learning Assistant", appauthor=False)
+            if sys.platform == "win32"
+            else Path.home()
             / "Library"
             / "Application Support"
             / "SJTU Learning Assistant"
-            / "data"
-            / "app.db",
-            DEFAULT_SQLITE_PATH,
         )
+        self.assertEqual(expected_support / "data" / "app.db", DEFAULT_SQLITE_PATH)
         load_keyring.assert_not_called()
 
     def test_environment_postgres_url_explicitly_overrides_sqlite(self) -> None:
@@ -123,7 +125,10 @@ print(json.dumps({
         root = Path(expected)
         self.assertEqual(str(root), paths["support"])
         self.assertEqual(str(root / "data" / "app.db"), paths["database"])
-        self.assertIn(str(root / "data" / "app.db"), paths["database_url"])
+        self.assertEqual(
+            root / "data" / "app.db",
+            Path(make_url(paths["database_url"]).database),
+        )
         self.assertEqual(str(root / "settings.json"), paths["settings"])
         self.assertEqual(str(root / "transcripts" / "v1"), paths["transcripts"])
         self.assertEqual(

@@ -214,8 +214,13 @@ class LaunchdPlistTests(unittest.TestCase):
         self.assertEqual(str(launchd_control.CONTROL_SCRIPT), arguments[1])
         self.assertIn("--mail-only", arguments)
         self.assertIn("321", arguments)
-        self.assertIn("Application Support", plist["StandardOutPath"])
-        self.assertIn("Application Support", plist["StandardErrorPath"])
+        self.assertEqual(
+            launchd_control.LOG_DIR,
+            Path(plist["StandardOutPath"]).parent,
+        )
+        self.assertEqual(
+            launchd_control.LOG_DIR, Path(plist["StandardErrorPath"]).parent
+        )
 
     def test_plistlib_round_trip_escapes_special_argument_characters(self) -> None:
         source = launchd_control.build_plist(self.options())

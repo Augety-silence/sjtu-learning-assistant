@@ -236,7 +236,10 @@ def test_execute_rejects_tampered_parent_escape_and_absolute_target(restore_env)
     authorized = restore.authorize_root(target_root)
     plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
     job_id = plan["job"]["id"]
-    for hostile in (str(target_root / ".." / "escape.txt"), "/tmp/absolute-escape.txt"):
+    for hostile in (
+        str(target_root / ".." / "escape.txt"),
+        str((root.parent / "absolute-escape.txt").resolve()),
+    ):
         with Session(engine) as session:
             session.get(ArchiveJob, job_id).target_abs_path = hostile
             session.commit()

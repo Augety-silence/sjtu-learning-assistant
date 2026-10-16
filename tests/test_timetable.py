@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +36,17 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sjtu_lessons_anonymous.json"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+@contextmanager
+def temporary_file(suffix: str, content: str | bytes):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / f"input{suffix}"
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
+        yield str(path)
+
+
 def lesson(source_id: str, name: str, sessions: list[dict]) -> dict:
     return {
         "id": source_id,
@@ -61,17 +73,14 @@ class TimetableTests(unittest.TestCase):
         self.engine.dispose()
 
     def commit_payload(self, lessons: list[dict]) -> dict:
-        with tempfile.NamedTemporaryFile(
-            suffix=".json", mode="w", encoding="utf-8"
-        ) as file:
-            json.dump({"data": {"lessons": lessons}}, file)
-            file.flush()
-            preview = self.service.preview_local_file(file.name)
+        content = json.dumps({"data": {"lessons": lessons}}, ensure_ascii=False)
+        with temporary_file(".json", content) as path:
+            preview = self.service.preview_local_file(path)
         return self.service.commit_preview(preview["previewId"])
 
     def test_official_parser_preserves_explicit_week_day_period_and_gaps(self):
         courses, sessions, warnings = parse_sjtu_lessons(
-            json.loads(FIXTURE.read_text())
+            json.loads(FIXTURE.read_text(encoding="utf-8"))
         )
         self.assertEqual(1, len(courses))
         self.assertEqual([1, 3, 4], [item.week for item in sessions])
@@ -160,13 +169,10 @@ class TimetableTests(unittest.TestCase):
         ]
         for lessons in invalid_payloads:
             with self.subTest(lessons=lessons):
-                with tempfile.NamedTemporaryFile(
-                    suffix=".json", mode="w", encoding="utf-8"
-                ) as file:
-                    json.dump({"data": {"lessons": lessons}}, file)
-                    file.flush()
+                content = json.dumps({"data": {"lessons": lessons}})
+                with temporary_file(".json", content) as path:
                     with self.assertRaisesRegex(TimetableError, "快照不完整|无效"):
-                        self.service.preview_local_file(file.name)
+                        self.service.preview_local_file(path)
                 with Session(self.engine) as db:
                     self.assertEqual(
                         ["a-1"],
@@ -323,12 +329,10 @@ END:VCALENDAR
         with self.assertRaises(TimetableError):
             self.service.preview_local_file("relative.json")
         with (
-            tempfile.NamedTemporaryFile(suffix=".txt") as file,
+            temporary_file(".txt", b"x") as path,
             self.assertRaises(TimetableError),
         ):
-            file.write(b"x")
-            file.flush()
-            self.service.preview_local_file(file.name)
+            self.service.preview_local_file(path)
 
     def test_one_click_ics_import_and_extension_guard(self):
         ics = """BEGIN:VCALENDAR
@@ -340,24 +344,18 @@ DTEND;TZID=Asia/Shanghai:20261012T094000
 END:VEVENT
 END:VCALENDAR
 """
-        with tempfile.NamedTemporaryFile(
-            suffix=".ics", mode="w", encoding="utf-8"
-        ) as file:
-            file.write(ics)
-            file.flush()
-            result = self.service.import_ics_local_file(file.name)
+        with temporary_file(".ics", ics) as path:
+            result = self.service.import_ics_local_file(path)
         self.assertEqual("committed", result["status"])
         self.assertEqual("ics", result["format"])
         self.assertEqual(1, result["importedCourses"])
         self.assertEqual(1, result["importedSessions"])
 
         with (
-            tempfile.NamedTemporaryFile(suffix=".json") as file,
+            temporary_file(".json", b"{}") as path,
             self.assertRaisesRegex(TimetableError, r"仅支持导入 \.ics"),
         ):
-            file.write(b"{}")
-            file.flush()
-            self.service.import_ics_local_file(file.name)
+            self.service.import_ics_local_file(path)
 
     def test_desktop_bridge_imports_ics_with_dedicated_picker(self):
         ics = """BEGIN:VCALENDAR
@@ -369,14 +367,10 @@ DTEND:20261013T094000
 END:VEVENT
 END:VCALENDAR
 """
-        with tempfile.NamedTemporaryFile(
-            suffix=".ics", mode="w", encoding="utf-8"
-        ) as file:
-            file.write(ics)
-            file.flush()
+        with temporary_file(".ics", ics) as path:
             bridge = DesktopBridge(
                 object(),
-                ics_file_picker=lambda: file.name,
+                ics_file_picker=lambda: path,
                 timetable_service=self.service,
             )
             response = bridge.invoke("timetable_import_ics", {})
@@ -422,7 +416,9 @@ END:VCALENDAR
             config.set_main_option(
                 "script_location", str(Path(__file__).parent.parent / "migrations")
             )
-            config.set_main_option("sqlalchemy.url", str(engine.url))
+            config.set_main_option(
+                "sqlalchemy.url", str(engine.url).replace("%", "%%")
+            )
             self.assertEqual("0021", bootstrap_sqlite(engine))
             with engine.begin() as connection:
                 config.attributes["connection"] = connection

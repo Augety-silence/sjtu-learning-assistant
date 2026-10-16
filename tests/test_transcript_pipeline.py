@@ -619,7 +619,7 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual("必须保留术语与数字", next(iter(result.summary.get("emphasized_points"))).get("text"))
 
     def test_redacted_real_shape_fixture_reports_length_truncation(self):
-        shape = json.loads((Path(__file__).parent / "fixtures" / "transcript_map_length_diagnostic.json").read_text())
+        shape = json.loads((Path(__file__).parent / "fixtures" / "transcript_map_length_diagnostic.json").read_text(encoding="utf-8"))
         fixture = (chr(123) + chr(34) + "redacted" + chr(34) + ":" + chr(91) + chr(34) + "REDACTED").ljust(shape.get("content_length"), "x")
         with self.assertRaises(TranscriptAIFormatError) as raised:
             _validated_map_response(

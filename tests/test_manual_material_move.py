@@ -211,7 +211,8 @@ class ManualMaterialMoveTests(unittest.TestCase):
         self.assertEqual(self.first_folder_id, record.manual_folder_id)
         context = self.service._load_contexts(source_id="file-1")[0]
         self.assertEqual(("Week 1",), context.folder_names)
-        tree = build_material_tree(Session(self.engine))
+        with Session(self.engine) as session:
+            tree = build_material_tree(session)
         target_node = ArchiveService._find_tree_node(tree["root"], folder_target)
         self.assertIsNotNone(target_node)
         self.assertEqual("file-1", target_node["children"][0]["source_id"])

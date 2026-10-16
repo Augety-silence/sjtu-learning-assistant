@@ -235,7 +235,7 @@ class KeychainSettingsTests(unittest.TestCase):
             saved = []
             service = DashboardService(SimpleNamespace(), settings_store=store, archive_root=Path(directory) / "archive", ai_key_loader=lambda: (_ for _ in ()).throw(AssertionError("must not read keychain")), ai_key_saver=saved.append, ai_key_saved_checker=lambda: True)
             status = service.save_ai_connection_json(json.dumps({"_type": "newapi_channel_conn", "url": "https://models.sjtu.edu.cn/api/v1/", "key": "fake-key", "model": "deepseek-chat"}))
-            persisted = store.path.read_text()
+            persisted = store.path.read_text(encoding="utf-8")
         self.assertEqual(["fake-key"], saved)
         self.assertTrue(status["ai_key_saved"])
         self.assertNotIn("fake-key", persisted)

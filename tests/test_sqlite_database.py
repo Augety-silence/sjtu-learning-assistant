@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import sqlite3
 import tempfile
@@ -143,6 +144,7 @@ class SQLiteRecoveryTests(unittest.TestCase):
         self.path = Path(self.temporary.name) / "app.db"
 
     def tearDown(self) -> None:
+        gc.collect()
         self.temporary.cleanup()
 
     def _write_value(self, value: str) -> None:
