@@ -63,14 +63,16 @@ export function MessagesView() {
     setDetailItem(null);
   }, []);
 
+  const loadRequestRef = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setItems(null);
     setError("");
     try {
       const data = await getMessages(kind);
-      setItems(data.items);
+      if (requestId === loadRequestRef.current) setItems(data.items);
     } catch (reason) {
-      setError(messageError(reason));
+      if (requestId === loadRequestRef.current) setError(messageError(reason));
     }
   }, [kind]);
 
@@ -209,7 +211,10 @@ export function MessagesView() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        event.defaultPrevented ||
+        event.isComposing ||
         detailItem ||
+        document.querySelector('[data-modal-layer]:not([aria-hidden="true"])') ||
         isEditableTarget(event.target) ||
         event.metaKey ||
         event.ctrlKey ||
@@ -233,6 +238,14 @@ export function MessagesView() {
         setSelectedKey(nextKey);
         scheduleRowFocus(nextKey);
       } else if (event.key === "Enter") {
+        if (
+          event.target instanceof Element &&
+          event.target.closest(
+            'button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"]',
+          )
+        ) {
+          return;
+        }
         event.preventDefault();
         openDetail(items[selectedIndex]);
       } else if (event.key.toLowerCase() === "r" && event.shiftKey) {

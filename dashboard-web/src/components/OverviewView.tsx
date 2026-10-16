@@ -248,7 +248,11 @@ export function OverviewView({
                     </div>
                     <span>
                       {item.source_label} ·{" "}
-                      {item.kind === "email" ? "邮件" : "公告"}
+                      {item.kind === "email"
+                        ? "邮件"
+                        : item.kind === "assignment"
+                          ? "作业"
+                          : "公告"}
                     </span>
                   </div>
                   <span className="row-time">

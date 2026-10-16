@@ -1,8 +1,9 @@
 import { ChevronLeft, ChevronRight, File, Folder } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import { getPanFiles } from "@/lib/api";
+import { formatSize } from "@/lib/format";
 import type { PanItem, PanPage } from "@/lib/types";
 
 export function PanFilePicker({
@@ -17,12 +18,16 @@ export function PanFilePicker({
   const [page, setPage] = useState<PanPage | null>(null);
   const [error, setError] = useState("");
 
+  const requestRef = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
     setPage(null);
     setError("");
     try {
-      setPage(await getPanFiles(path, pageNumber));
+      const nextPage = await getPanFiles(path, pageNumber);
+      if (requestId === requestRef.current) setPage(nextPage);
     } catch (reason) {
+      if (requestId !== requestRef.current) return;
       setError(reason instanceof Error ? reason.message : "云盘目录读取失败");
     }
   }, [pageNumber, path]);
@@ -64,31 +69,31 @@ export function PanFilePicker({
               <p className="finder-empty">此目录为空</p>
             )}
             {page.items.map((item) => (
-              <button
-                type="button"
-                role="listitem"
-                className="pan-row"
-                key={item.remote_path}
-                disabled={disabled}
-                onClick={() =>
-                  item.is_directory ? openDirectory(item) : onSelect(item)
-                }
-              >
-                {item.is_directory ? (
-                  <Folder aria-hidden="true" />
-                ) : (
-                  <File aria-hidden="true" />
-                )}
-                <span>{item.name}</span>
-                <small>
-                  {item.is_directory
-                    ? "文件夹"
-                    : item.size === null
-                      ? "—"
-                      : `${item.size} B`}
-                </small>
-                <small>{item.modified_at || ""}</small>
-              </button>
+              <div role="listitem" key={item.remote_path}>
+                <button
+                  type="button"
+                  className="pan-row"
+                  disabled={disabled}
+                  onClick={() =>
+                    item.is_directory ? openDirectory(item) : onSelect(item)
+                  }
+                >
+                  {item.is_directory ? (
+                    <Folder aria-hidden="true" />
+                  ) : (
+                    <File aria-hidden="true" />
+                  )}
+                  <span>{item.name}</span>
+                  <small>
+                    {item.is_directory
+                      ? "文件夹"
+                      : item.size === null
+                        ? "—"
+                        : formatSize(item.size)}
+                  </small>
+                  <small>{item.modified_at || ""}</small>
+                </button>
+              </div>
             ))}
           </div>
           <div className="pan-pagination" aria-label="分页">
