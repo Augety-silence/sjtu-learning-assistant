@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -45,6 +47,25 @@ class PlaybackBridgeTests(unittest.TestCase):
     def tearDown(self):
         self.engine.dispose()
         self.temp.cleanup()
+
+    @staticmethod
+    def wait_for_job_status(transcripts, batch_id, expected, *, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            batch = transcripts.get_batch(batch_id)
+            status = batch["jobs"][0]["status"]
+            if status == expected or (
+                expected == "completed" and status == "completed_with_warnings"
+            ):
+                return batch
+            if status in {"failed", "partial", "interrupted"}:
+                raise AssertionError(f"worker ended in {status!r}, expected {expected!r}")
+            time.sleep(0.05)
+        batch = transcripts.get_batch(batch_id)
+        raise AssertionError(
+            f"worker did not reach {expected!r} before deadline; "
+            f"last status was {batch['jobs'][0]['status']!r}"
+        )
 
     def test_playback_contract_crosses_real_bridge_and_course_validation(self):
         payload = {"course_id": 12, "source_id": "sjtu-video:12:99", "position_seconds": 123, "playback_rate": 2}
@@ -108,6 +129,132 @@ class PlaybackBridgeTests(unittest.TestCase):
             self.assertEqual(len(list((transcripts.root / "batches").glob("*.json"))), before)
         finally:
             transcripts.close()
+
+    def test_bridge_prepare_wakes_background_worker_and_publishes_segments(self):
+        fetch_started = threading.Event()
+        release_fetch = threading.Event()
+        fetch_calls = []
+        vtt = (
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n原问题有界。\n\n"
+            "00:00:01.000 --> 00:00:02.000\n对偶问题可行。\n"
+        )
+
+        def controlled_fetch(_source):
+            fetch_calls.append("fetch")
+            fetch_started.set()
+            if not release_fetch.wait(20):
+                raise TimeoutError("synthetic fetch gate was not released")
+            return {"status": "ready", "vtt": vtt}
+
+        transcripts = TranscriptService(
+            root=Path(self.temp.name) / "threaded-transcripts",
+            memory_root=Path(self.temp.name) / "threaded-memory",
+            autostart_worker=True,
+            enable_phase1=False,
+            subtitle_fetcher=controlled_fetch,
+        )
+        self.service._transcript_service_instance = transcripts
+        payload = {"course_id": 12, "source_id": "sjtu-video:12:99"}
+        worker = transcripts._thread
+        try:
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.is_alive())
+            prepared = self.bridge.invoke("transcript_playback_prepare", payload)
+            self.assertTrue(prepared["ok"], prepared)
+            batch_id = prepared["data"]["id"]
+
+            # The fetcher can only be entered by the service's autostart worker;
+            # this test intentionally never invokes run_pending().
+            self.assertTrue(fetch_started.wait(15), "background worker did not start the prepared job")
+            during_fetch = self.bridge.invoke("transcript_learning_segments", payload)
+            self.assertTrue(during_fetch["ok"], during_fetch)
+            self.assertEqual("processing", during_fetch["data"]["processing_state"])
+            self.assertEqual(["fetch"], fetch_calls)
+
+            release_fetch.set()
+            completed_batch = self.wait_for_job_status(transcripts, batch_id, "completed")
+            self.assertIn(
+                completed_batch["jobs"][0]["status"],
+                {"completed", "completed_with_warnings"},
+            )
+            result = self.bridge.invoke("transcript_learning_segments", payload)
+            self.assertTrue(result["ok"], result)
+            data = result["data"]
+            self.assertEqual("ai_unconfigured", data["processing_state"])
+            self.assertFalse(data["processing_done"])
+            self.assertFalse(data["auto_retryable"])
+            self.assertIsNone(data["retry_after"])
+            self.assertTrue(data["segments"])
+            self.assertTrue(data["available_ranges"])
+            raw_path = transcripts._video_dir(payload["source_id"]) / "raw.vtt"
+            self.assertEqual(
+                hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+                data["source_raw_sha256"],
+            )
+            self.assertTrue(data["learning_revision"])
+            self.assertEqual(["fetch"], fetch_calls)
+        finally:
+            release_fetch.set()
+            transcripts.close()
+            if worker is not None:
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive(), "background worker leaked after close")
+
+    def test_bridge_cancel_during_background_fetch_stays_cancelled_without_retry(self):
+        fetch_started = threading.Event()
+        release_fetch = threading.Event()
+        fetch_calls = []
+
+        def controlled_fetch(_source):
+            fetch_calls.append("fetch")
+            fetch_started.set()
+            if not release_fetch.wait(20):
+                raise TimeoutError("synthetic fetch gate was not released")
+            return {"status": "ready", "vtt": "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n合成字幕。\n"}
+
+        transcripts = TranscriptService(
+            root=Path(self.temp.name) / "threaded-cancel-transcripts",
+            memory_root=Path(self.temp.name) / "threaded-cancel-memory",
+            autostart_worker=True,
+            enable_phase1=False,
+            subtitle_fetcher=controlled_fetch,
+        )
+        self.service._transcript_service_instance = transcripts
+        payload = {"course_id": 12, "source_id": "sjtu-video:12:99"}
+        worker = transcripts._thread
+        try:
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.is_alive())
+            prepared = self.bridge.invoke("transcript_playback_prepare", payload)
+            self.assertTrue(prepared["ok"], prepared)
+            batch_id = prepared["data"]["id"]
+            job_id = prepared["data"]["jobs"][0]["id"]
+            self.assertTrue(fetch_started.wait(15), "background worker did not start the prepared job")
+
+            cancelled = self.bridge.invoke("transcript_cancel", {"job_id": job_id})
+            self.assertTrue(cancelled["ok"], cancelled)
+            self.assertTrue(transcripts._read_json(transcripts._batch_path(batch_id))["jobs"][0]["cancel_requested"])
+            release_fetch.set()
+
+            final_batch = self.wait_for_job_status(transcripts, batch_id, "cancelled")
+            self.assertEqual("cancelled", final_batch["jobs"][0]["status"])
+            self.assertEqual(1, len(fetch_calls))
+            state = self.bridge.invoke("transcript_learning_segments", payload)
+            self.assertTrue(state["ok"], state)
+            self.assertEqual("cancelled", state["data"]["processing_state"])
+            self.assertFalse(state["data"]["processing_done"])
+            self.assertFalse(state["data"]["auto_retryable"])
+            self.assertIsNone(state["data"]["retry_after"])
+            persisted_jobs = transcripts.jobs(course_id=12)["items"]
+            self.assertEqual(1, len(persisted_jobs), "cancelled playback must not leave an automatic retry child")
+            self.assertEqual(job_id, persisted_jobs[0]["id"])
+            self.assertEqual("cancelled", persisted_jobs[0]["status"])
+        finally:
+            release_fetch.set()
+            transcripts.close()
+            if worker is not None:
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive(), "background worker leaked after close")
 
     def test_bridge_cancel_reports_cancelled_state_without_auto_recovery(self):
         transcripts = TranscriptService(
