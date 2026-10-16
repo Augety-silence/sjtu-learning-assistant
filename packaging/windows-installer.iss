@@ -56,7 +56,11 @@ var
   Version: String;
 begin
   Result := False;
-  if RegQueryStringValue(HKLM32, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
+  { 64 位安装器默认只读 HKLM32；Evergreen Runtime 的 64 位注册项位于 64 位视图，
+    必须额外查询 HKLM64，否则在仅有机器级安装时会误报缺失并弹下载提示。 }
+  if RegQueryStringValue(HKLM64, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
+    Result := True
+  else if RegQueryStringValue(HKLM32, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
     Result := True
   else if RegQueryStringValue(HKCU, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
     Result := True;
