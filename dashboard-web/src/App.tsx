@@ -293,7 +293,9 @@ function ScheduleAdapter({
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const calendarRequest = useRef(0);
   const loadCanvas = useCallback(async () => {
+    const request = ++calendarRequest.current;
     setLoading(true);
     setError(null);
     try {
@@ -301,6 +303,7 @@ function ScheduleAdapter({
         month.getFullYear(),
         month.getMonth() + 1,
       );
+      if (calendarRequest.current !== request) return;
       setEvents(
         [...result.month_events, ...result.upcoming_events]
           .map(adaptCalendarEvent)
@@ -312,9 +315,10 @@ function ScheduleAdapter({
           ),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "Canvas 日历加载失败"));
+      if (calendarRequest.current === request)
+        setError(messageFrom(reason, "Canvas 日历加载失败"));
     } finally {
-      setLoading(false);
+      if (calendarRequest.current === request) setLoading(false);
     }
   }, [month]);
   useEffect(() => void loadCanvas(), [loadCanvas]);
@@ -406,9 +410,9 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
   const [book, setBook] = useState<GradebookResult | null>(null);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     if (!courseId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       setBook(await getGradebook(courseId));
@@ -431,7 +435,7 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
       Number(input.studentId),
       { grade: input.score },
     );
-    await load();
+    await load(true);
   };
   return (
     <GradesView
@@ -532,9 +536,11 @@ function adaptGradingSubmission(
   const comments = Array.isArray(submission.submission_comments)
     ? submission.submission_comments
     : [];
-  const status = submission.missing
-    ? "missing"
-    : submission.late
+  const status =
+    submission.missing ||
+    (submission.workflow_state === "unsubmitted" && !submission.submitted_at)
+      ? "missing"
+      : submission.late
       ? "late"
       : submission.score != null || submission.grade != null
         ? "graded"
@@ -578,12 +584,15 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
   const [submissions, setSubmissions] = useState<GradingSubmission[]>([]);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
+  const gradingRequest = useRef(0);
+  const load = useCallback(async (silent = false) => {
     if (!courseId) return;
-    setLoading(true);
+    const request = ++gradingRequest.current;
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const book = await getGradebook(courseId);
+      if (gradingRequest.current !== request) return;
       const availableAssignments = book.assignments.map((item) => ({
         id: String(item.id),
         name: item.name ?? `作业 ${item.id}`,
@@ -606,15 +615,17 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
         setSelectedAssignmentId(nextAssignment.id);
       setAssignment(nextAssignment);
       const result = await getGrading(courseId, Number(nextAssignment.id));
+      if (gradingRequest.current !== request) return;
       const items =
         "items" in result && Array.isArray(result.items)
           ? result.items
           : [result as GradingSubmissionDto];
       setSubmissions(items.map(adaptGradingSubmission));
     } catch (reason) {
-      setError(messageFrom(reason, "作业提交加载失败"));
+      if (gradingRequest.current === request)
+        setError(messageFrom(reason, "作业提交加载失败"));
     } finally {
-      setLoading(false);
+      if (gradingRequest.current === request) setLoading(false);
     }
   }, [courseId, selectedAssignmentId]);
   useEffect(() => void load(), [load]);
@@ -629,7 +640,7 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
       Number(studentId),
       payload,
     );
-    await load();
+    await load(true);
   };
   return (
     <ContentReveal className="section-stack" ready={!loading}>
