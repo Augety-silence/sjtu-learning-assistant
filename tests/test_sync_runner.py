@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import plistlib
@@ -12,6 +11,30 @@ from pathlib import Path
 
 import launchd_control
 from sync_runner import SyncRunner
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    import msvcrt
+
+
+def lock_exclusive_nonblocking(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"0")
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+
+def unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 class FakeProcess:
@@ -100,12 +123,12 @@ class SyncRunnerTests(unittest.TestCase):
     def test_lock_conflict_logs_skip_and_returns_success(self) -> None:
         self.lock_path.parent.mkdir(parents=True)
         lock_fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_exclusive_nonblocking(lock_fd)
         try:
             runner, popen = self.make_runner([0])
             self.assertEqual(0, runner.run())
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            unlock(lock_fd)
             os.close(lock_fd)
         self.assertEqual([], popen.commands)
         self.assertEqual("skip_locked", self.read_events()[0]["event"])
