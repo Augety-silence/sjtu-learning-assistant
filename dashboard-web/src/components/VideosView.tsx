@@ -2355,7 +2355,7 @@ export function VideosView({
           playRequest.current === request &&
           subtitleReadRequest.current === reading.id
         )
-          useSubtitleResult(result);
+          applySubtitleResult(result);
       })
       .catch(() => {
         if (lastSubtitleJobRevisionRef.current === revision)
@@ -2390,7 +2390,7 @@ export function VideosView({
             subtitleReadRequest.current !== reading.id
           )
             return;
-          useSubtitleResult(result);
+          applySubtitleResult(result);
           if (result.subtitleStatus !== "processing") return;
         } catch (reason) {
           if (!active || playRequest.current !== request) return;
