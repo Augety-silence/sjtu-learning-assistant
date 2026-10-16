@@ -11,12 +11,35 @@ CANVAS_SERVICE = "SJTU Learning Assistant - oc.sjtu.edu.cn"
 CANVAS_ACCOUNT = "canvas-access-token"
 MAIL_SERVICE = "SJTU Learning Assistant - mail.sjtu.edu.cn"
 MAX_SECRET_LENGTH = 4096
+# CRED_MAX_CREDENTIAL_BLOB_SIZE: keyring writes UTF-16, i.e. about 1280 characters.
+WINDOWS_CREDENTIAL_BLOB_LIMIT = 2560
 
 _lock = threading.RLock()
 
 
 class CredentialStoreError(RuntimeError):
     """A bounded error that never includes credential values."""
+
+
+def secret_fits_platform_store(value: str) -> bool:
+    """Windows Credential Manager rejects blobs larger than 2560 bytes."""
+    return (
+        sys.platform != "win32"
+        or len(value.encode("utf-16-le")) <= WINDOWS_CREDENTIAL_BLOB_LIMIT
+    )
+
+
+def keyring_backend_hint(exc: BaseException) -> str:
+    """Return a value-free hint for missing dependency/backend failures."""
+    if isinstance(exc, CredentialStoreError):
+        return str(exc)
+    try:
+        from keyring.errors import NoKeyringError  # type: ignore[import-not-found]
+    except ImportError:
+        return ""
+    if isinstance(exc, NoKeyringError):
+        return "未检测到可用的系统凭据后端，请重新安装应用后重试。"
+    return ""
 
 
 def credential_storage_name() -> str:
@@ -48,6 +71,10 @@ def _secret(value: object, label: str) -> str:
         or any(ord(character) < 32 or ord(character) == 127 for character in clean)
     ):
         raise CredentialStoreError(f"{label}格式不正确。")
+    if not secret_fits_platform_store(clean):
+        raise CredentialStoreError(
+            f"{label}过长，超出 {credential_storage_name()} 单条凭据 2560 字节的上限。"
+        )
     return clean
 
 
@@ -109,9 +136,9 @@ def _save(service: str, account: str, value: object, label: str) -> None:
     try:
         with _lock:
             _keyring().set_password(service, account, clean)
-    except Exception:
+    except Exception as exc:
         raise CredentialStoreError(
-            f"无法将{label}保存到 {credential_storage_name()}。"
+            f"无法将{label}保存到 {credential_storage_name()}。{keyring_backend_hint(exc)}"
         ) from None
 
 
