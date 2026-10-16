@@ -3143,8 +3143,12 @@ class DashboardService:
         self._close_client(transcript_service)
         self._close_client(canvas_client)
         self._close_client(ai_client)
-        self._material_temp.cleanup()
-        self._academic_temp.cleanup()
+        for temporary in (self._material_temp, self._academic_temp):
+            try:
+                temporary.cleanup()
+            except OSError:
+                # Windows keeps files opened by external apps locked; never abort shutdown.
+                pass
 
     def save_credential(
         self, kind: object, value: object, account: object = ""
@@ -3319,6 +3323,7 @@ class DashboardService:
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
                 start_new_session=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             threading.Thread(
                 target=self._release_sync_when_done,
@@ -3337,7 +3342,11 @@ class DashboardService:
         if getattr(sys, "frozen", False):
             command = [sys.executable, "--background-sync"]
         else:
-            python = PROJECT_ROOT / ".venv" / "bin" / "python"
+            python = (
+                PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+                if sys.platform == "win32"
+                else PROJECT_ROOT / ".venv" / "bin" / "python"
+            )
             if not python.is_file():
                 python = Path(sys.executable)
             command = [
