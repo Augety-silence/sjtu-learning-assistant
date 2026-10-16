@@ -338,7 +338,8 @@ class RestoreService:
         mode = existing.stat().st_mode
         if mode & 0o222 == 0 or not os.access(existing, os.W_OK):
             raise RestoreError("恢复目标不可写。")
-        flags = getattr(os.statvfs(existing), "f_flag", 0)
+        statvfs = getattr(os, "statvfs", None)
+        flags = getattr(statvfs(existing), "f_flag", 0) if statvfs else 0
         readonly = getattr(os, "ST_RDONLY", 1)
         if flags & readonly:
             raise RestoreError("恢复目标所在卷为只读。")
@@ -505,11 +506,12 @@ class RestoreService:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
             os.replace(temporary, target)
             temporary = None
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            if os.name != "nt":
+                directory_fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is None:

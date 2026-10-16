@@ -144,7 +144,7 @@ export function ArchiveJobsPanel({
                   )}
 
                 {job.last_error && (
-                  <p className="archive-job-error" role="alert">
+                  <p className="archive-job-error">
                     {job.last_error}
                   </p>
                 )}
@@ -156,7 +156,7 @@ export function ArchiveJobsPanel({
                   >
                     {eventError && <p role="alert">{eventError}</p>}
                     {!events[job.id] ? (
-                      <p role="status">正在读取事件…</p>
+                      eventError ? null : <p role="status">正在读取事件…</p>
                     ) : events[job.id].length ? (
                       <ol>
                         {events[job.id].map((event) => (
