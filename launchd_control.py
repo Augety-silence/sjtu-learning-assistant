@@ -72,6 +72,8 @@ def validate_sync_options(
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
     if args.email is not None and not args.email.strip():
         parser.error("--email 不能是空白字符串。")
+    if args.email is not None and any(ord(char) < 32 or ord(char) == 127 for char in args.email):
+        parser.error("--email 不能包含控制字符。")
     if not 1 <= args.initial_mail_limit <= 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
     if args.archive_root is not None:
@@ -238,7 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("uninstall", help="卸载任务并删除 plist。")
     subparsers.add_parser("status", help="显示 launchd 服务状态。")
     subparsers.add_parser("kickstart", help="立即触发已安装服务。")
-    subparsers.add_parser("notify-test", help="发送一条 macOS 系统测试通知。")
+    subparsers.add_parser("notify-test", help="发送一条系统测试通知。")
 
     run_parser = subparsers.add_parser(
         "run-once", help="前台执行一次受锁和重试保护的同步。"
@@ -250,6 +252,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"install", "uninstall", "status", "kickstart"} and sys.platform != "darwin":
+        print(f"错误：{args.command} 仅支持 macOS（launchd）。", file=sys.stderr)
+        return 2
     if args.command == "install":
         validate_sync_options(parser, args, non_interactive=True)
         return install(args)
