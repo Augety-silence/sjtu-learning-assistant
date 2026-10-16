@@ -1291,7 +1291,7 @@ class ArchiveService:
         temporary.unlink()
         try:
             _copy_regular_file(source, temporary)
-            os.replace(temporary, target)
+            _replace_with_retry(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -1396,7 +1396,7 @@ class ArchiveService:
         database_updated = False
         try:
             try:
-                os.replace(source, final_target)
+                _replace_with_retry(source, final_target)
                 renamed = True
             except OSError as exc:
                 if exc.errno != errno.EXDEV:
@@ -1556,7 +1556,12 @@ class ArchiveService:
                     raise ArchiveError("旧归档路径不是普通文件，已拒绝处理。")
             _replace_with_regular_file(self.archive_root, temporary_path, target)
             if previous_path != target and _is_regular_file(previous_path):
-                previous_path.unlink()
+                try:
+                    previous_path.unlink()
+                except OSError:
+                    # 新文件已就位、旧内容已存入 .versions；Windows 上旧文件被占用时
+                    # 不能让本次下载判失败（否则每轮重复下载并膨胀 .versions）。
+                    pass
         except Exception:
             temporary_path.unlink(missing_ok=True)
             raise
