@@ -130,7 +130,11 @@ export function KnowledgeCompilerView() {
     let active = true;
     void Promise.all([
       getSettings(),
-      getKnowledgeCompilerStatus(targetRoot || undefined),
+      getKnowledgeCompilerStatus(targetRoot || undefined).catch((reason) => {
+        if (!targetRoot) throw reason;
+        // 已保存的输出目录可能已被删除或位于已拔出的磁盘；回退到全局状态，避免整页卡在错误页。
+        return getKnowledgeCompilerStatus();
+      }),
     ])
       .then(([settings, next]) => {
         if (!active) return;
@@ -362,7 +366,7 @@ export function KnowledgeCompilerView() {
             <li
               key={label}
               className={
-                (task?.phase_index ?? 0) > index
+                (task?.phase_index ?? 0) > index + 1
                   ? "knowledge-phase-done"
                   : (task?.phase_index ?? 0) === index + 1
                     ? "knowledge-phase-active"
