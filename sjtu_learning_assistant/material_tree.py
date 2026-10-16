@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -182,7 +183,9 @@ def build_material_tree(session: Any) -> dict[str, Any]:
                 "category": category,
                 "manual_override": manual_override,
                 "size": file.size,
-                "updated_at": file.source_updated_at.isoformat()
+                "updated_at": file.source_updated_at.replace(
+                    tzinfo=file.source_updated_at.tzinfo or timezone.utc
+                ).isoformat()
                 if file.source_updated_at
                 else None,
                 "download_status": file.download_status,
