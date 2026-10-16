@@ -185,8 +185,9 @@ class CanvasClient:
                         seen_ids.add(identity)
             link = response.links.get("next")
             next_url = link.get("url") if link else None
-            if next_url:
-                self._assert_same_origin(next_url)
+            if not next_url:
+                return records
+            self._assert_same_origin(next_url)
             next_params = None
         raise CanvasProtocolError(f"分页超过安全上限 {MAX_PAGES} 页。")
 
@@ -271,7 +272,13 @@ class CanvasClient:
     def announcements(self, course_id: int | str) -> list[dict[str, Any]]:
         return self._paginate(
             "/api/v1/announcements",
-            params=[("context_codes[]", f"course_{course_id}"), ("per_page", str(DEFAULT_PAGE_SIZE))],
+            params=[
+                ("context_codes[]", f"course_{course_id}"),
+                ("per_page", str(DEFAULT_PAGE_SIZE)),
+                # Canvas defaults to the last 14 days without an explicit window.
+                ("start_date", "2000-01-01T00:00:00Z"),
+                ("end_date", "2100-01-01T00:00:00Z"),
+            ],
         )
 
     list_announcements = announcements
@@ -500,7 +507,7 @@ class CanvasClient:
     ) -> dict[str, Any]:
         path = Path(file_path)
         if not path.is_file():
-            raise CanvasError(f"待上传文件不存在：{path}")
+            raise CanvasError(f"待上传文件不存在：{path.name}")
         payload = {
             "name": path.name,
             "size": str(path.stat().st_size),
