@@ -76,24 +76,25 @@ type BridgeApi = NonNullable<NonNullable<Window["pywebview"]>["api"]>;
 const BRIDGE_READY_TIMEOUT_MS = 15_000;
 let bridgeReady: Promise<BridgeApi> | null = null;
 
-function readyBridge(): BridgeApi | null {
-  const api = window.pywebview?.api;
+function readyBridge(hostWindow: Window = window): BridgeApi | null {
+  const api = hostWindow.pywebview?.api;
   return api && typeof api.invoke === "function" ? api : null;
 }
 
 function waitForBridge() {
+  const hostWindow = window;
   return new Promise<BridgeApi>((resolve, reject) => {
     const finish = () => {
-      const api = readyBridge();
+      const api = readyBridge(hostWindow);
       if (!api) return;
-      window.clearTimeout(timeout);
-      window.clearInterval(poll);
-      window.removeEventListener("pywebviewready", finish);
+      hostWindow.clearTimeout(timeout);
+      hostWindow.clearInterval(poll);
+      hostWindow.removeEventListener("pywebviewready", finish);
       resolve(api);
     };
-    const timeout = window.setTimeout(() => {
-      window.clearInterval(poll);
-      window.removeEventListener("pywebviewready", finish);
+    const timeout = hostWindow.setTimeout(() => {
+      hostWindow.clearInterval(poll);
+      hostWindow.removeEventListener("pywebviewready", finish);
       bridgeReady = null;
       reject(
         new Error(
@@ -101,8 +102,8 @@ function waitForBridge() {
         ),
       );
     }, BRIDGE_READY_TIMEOUT_MS);
-    const poll = window.setInterval(finish, 100);
-    window.addEventListener("pywebviewready", finish);
+    const poll = hostWindow.setInterval(finish, 100);
+    hostWindow.addEventListener("pywebviewready", finish);
   });
 }
 

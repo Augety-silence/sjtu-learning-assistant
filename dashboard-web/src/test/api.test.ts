@@ -102,6 +102,29 @@ describe("pywebview bridge client", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("keeps bridge polling cleanup bound to the window that started it", async () => {
+    vi.useFakeTimers();
+    try {
+      const hostWindow = {
+        setTimeout: globalThis.setTimeout,
+        clearTimeout: globalThis.clearTimeout,
+        setInterval: globalThis.setInterval,
+        clearInterval: globalThis.clearInterval,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as Window;
+      vi.stubGlobal("window", hostWindow);
+      const result = invoke("health").catch((error: unknown) => error);
+      vi.unstubAllGlobals();
+      await vi.advanceTimersByTimeAsync(15_000);
+      const timeoutError = await result;
+      expect(timeoutError).toBeInstanceOf(Error);
+      expect((timeoutError as Error).message).toContain("桌面 Bridge 尚未就绪");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exports the debug bundle without renderer-controlled paths", async () => {
     const bridge = vi.fn().mockResolvedValue({
       ok: true,
