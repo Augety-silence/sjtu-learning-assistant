@@ -501,7 +501,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       await revealAiAttachment(attachmentId);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "无法在 Finder 中显示附件",
+        reason instanceof Error ? reason.message : "无法在文件夹中显示附件",
       );
     }
   }, []);
