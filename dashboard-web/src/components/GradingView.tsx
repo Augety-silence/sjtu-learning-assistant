@@ -432,7 +432,8 @@ export function GradingView({
                             id="grading-score"
                             inputMode="decimal"
                             value={scoreDraft}
-                            disabled={Boolean(busy)}
+                            readOnly={Boolean(busy)}
+                            aria-busy={busy === "score" || undefined}
                             onChange={(event) =>
                               setScoreDraft(event.target.value)
                             }
@@ -558,7 +559,7 @@ export function GradingView({
                         <textarea
                           id="grading-comment"
                           value={commentDraft}
-                          disabled={Boolean(busy)}
+                          readOnly={Boolean(busy)}
                           maxLength={5000}
                           onChange={(event) =>
                             setCommentDraft(event.target.value)
