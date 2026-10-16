@@ -1277,7 +1277,7 @@ def persist_emails(
         source_ids = [row["source_id"] for row in rows]
         existing_ids = _existing_ids(session, Email, source_ids)
         if rows:
-            statement = _dialect_insert(session, Email).values(rows)
+            statement = _dialect_insert(session, Email)
             statement = statement.on_conflict_do_update(
                 index_elements=[Email.source_id],
                 set_={
@@ -1293,7 +1293,7 @@ def persist_emails(
                     "updated_at": now,
                 },
             )
-            session.execute(statement)
+            session.execute(statement, rows)
             record_ids = _record_id_map(session, Email, source_ids)
             _persist_email_attachments(
                 session,
@@ -1553,7 +1553,7 @@ def upsert_cloud_files(
             ).all()
         ) if rows else set()
         if rows:
-            statement = _dialect_insert(session, CloudFile).values(rows)
+            statement = _dialect_insert(session, CloudFile)
             statement = statement.on_conflict_do_update(
                 index_elements=[CloudFile.provider, CloudFile.account_id, CloudFile.remote_id],
                 set_={
@@ -1569,7 +1569,7 @@ def upsert_cloud_files(
                     "updated_at": now,
                 },
             )
-            session.execute(statement)
+            session.execute(statement, rows)
         persisted = tuple(
             session.scalars(
                 select(CloudFile).where(
