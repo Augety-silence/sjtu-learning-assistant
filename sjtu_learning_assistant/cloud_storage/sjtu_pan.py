@@ -20,7 +20,10 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from sjtu_learning_assistant.credential_store import keychain_item_exists
+from sjtu_learning_assistant.credential_store import (
+    keychain_item_exists,
+    secret_fits_platform_store,
+)
 
 from .base import CloudStorageProvider, RemotePath, TemporaryDownload
 from .errors import (
@@ -105,6 +108,8 @@ def load_user_token(*, keyring_module: Any | None = None) -> str | None:
 def save_user_token(value: object, *, keyring_module: Any | None = None) -> None:
     global _cached_user_token
     token = validate_user_token_value(value)
+    if not secret_fits_platform_store(token):
+        raise CloudAuthError("交大云盘 UserToken 过长，超出 Windows 凭据管理器的存储上限。")
     if keyring_module is not None:
         try:
             keyring_module.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
@@ -556,7 +561,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             if response is None:
                 raise CloudNetworkError("无法连接交大云盘服务。")
             try:
-                if response.status_code in (301, 302):
+                if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location")
                     response.close()
                     if not location:
@@ -564,7 +569,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
                     target = self._validate_object_url(urljoin(str(pan_url), location))
                     # Never forward Pan query credentials; only Range is copied.
                     response = send_stream(target)
-                if response.status_code >= 400 or response.status_code in (301, 302):
+                if response.status_code >= 300:
                     response.read()
                     self._decode(response, "下载文件")
                 self._validate_download_range(response, start, end)
@@ -583,7 +588,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         descriptor, temporary_name = tempfile.mkstemp(prefix="sjtu-pan-", suffix=".part", dir=target_dir)
         temporary_path = Path(temporary_name)
         try:
-            with os.fdopen(descriptor, "wb") as output:
+            output_file = os.fdopen(descriptor, "wb")
+            descriptor = -1
+            with output_file as output:
                 for chunk in self.download_stream(path):
                     output.write(chunk)
                 output.flush()
@@ -592,10 +599,11 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             os.replace(temporary_path, final_path)
             return TemporaryDownload(final_path)
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             temporary_path.unlink(missing_ok=True)
             temporary_path.with_suffix("").unlink(missing_ok=True)
             raise
@@ -644,7 +652,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         url = self._signed_url(domain, object_path, params)
         safe_headers = {str(key): str(value) for key, value in headers.items()}
         response = self._send_raw("PUT", url, headers=safe_headers, content=data)
-        if response.status_code >= 400:
+        if not 200 <= response.status_code < 300:
             raise CloudRemoteApiError(f"对象存储上传失败（HTTP {response.status_code}）。", status_code=response.status_code)
 
     def simple_upload(self, path: RemotePath, source: bytes | BinaryIO, *, overwrite: bool = False) -> CloudItem:
