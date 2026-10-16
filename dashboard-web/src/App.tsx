@@ -1376,15 +1376,18 @@ export default function App() {
   }, []);
 
   const statusRequestPending = useRef(false);
+  const syncAccepted = useRef(false);
   const loadStatus = useCallback(async () => {
     if (statusRequestPending.current) return;
     statusRequestPending.current = true;
     try {
+      const accepted = syncAccepted.current;
       const next = await invoke<SyncStatus>("sync_status");
       setSyncStatus((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
       );
-      if (syncRequested && next.status === "idle") {
+      if (syncRequested && accepted && next.status === "idle") {
+        syncAccepted.current = false;
         setSyncRequested(false);
         showToast({
           id: "sync-operation",
@@ -1429,6 +1432,7 @@ export default function App() {
   }, [loadStatus, syncRequested, syncStatus?.status]);
 
   const triggerSync = async () => {
+    syncAccepted.current = false;
     setSyncRequested(true);
     showToast({
       id: "sync-operation",
@@ -1438,6 +1442,7 @@ export default function App() {
     });
     try {
       const result = await invoke<{ status: string }>("sync_trigger");
+      syncAccepted.current = true;
       showToast({
         id: "sync-operation",
         kind: "info",
