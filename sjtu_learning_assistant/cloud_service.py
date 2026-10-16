@@ -63,9 +63,14 @@ class CloudService:
                 result = adapter.list_directory(path, page=page_number, page_size=100)
             else:
                 result = adapter.list_directory(remote_id)
-            page_items = getattr(result, "items", result)
-            items.extend(list(page_items))
-            if not supports_paging or not bool(getattr(result, "has_more", False)):
+            page_items = list(getattr(result, "items", result))
+            items.extend(page_items)
+            if (
+                not supports_paging
+                or not page_items
+                or page_number >= 1000
+                or not bool(getattr(result, "has_more", False))
+            ):
                 break
             page_number += 1
         return self.upsert_metadata(

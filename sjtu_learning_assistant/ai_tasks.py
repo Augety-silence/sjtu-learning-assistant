@@ -261,6 +261,8 @@ class AITaskLedger:
             row = session.get(AITask, task_id)
             if row is None:
                 raise AITaskError("AI 任务不存在。")
+            if row.status in TERMINAL_STATUSES:
+                return
             if row.cancel_requested:
                 row.status = "cancelled"
                 row.finished_at = self.now()
