@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -96,10 +97,14 @@ class AIClassificationError(RuntimeError):
         message: str,
         category: str = "validation",
         status_code: int | None = None,
+        error_code: str | None = None,
+        exception_type: str | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
         self.status_code = status_code
+        self.error_code = error_code or category
+        self.exception_type = exception_type
 
 
 class AIToolsUnsupportedError(AIClassificationError):
@@ -179,7 +184,7 @@ class OpenAIClassificationClient:
         model: str = DEFAULT_AI_MODEL,
         transport: httpx.BaseTransport | None = None,
         limiter: Callable[[], None] | None = None,
-        timeout: httpx.Timeout | float = httpx.Timeout(120.0, connect=5.0),
+        timeout: httpx.Timeout | float | None = None,
     ) -> None:
         if not api_key:
             raise AIClassificationError("AI API key 为空。")
@@ -187,6 +192,16 @@ class OpenAIClassificationClient:
             raise AIClassificationError("AI 模型不受支持。")
         self.model = model
         self._limiter = limiter or _GLOBAL_LIMITER.wait
+        if timeout is None:
+            try:
+                timeout_seconds = float(os.environ.get("SJTU_AI_REQUEST_TIMEOUT_SECONDS", "120"))
+            except (TypeError, ValueError):
+                timeout_seconds = 120.0
+            timeout_seconds = max(1.0, min(timeout_seconds, 120.0))
+            timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
+        elif type(timeout) in (int, float):
+            timeout_seconds = max(1.0, min(float(timeout), 120.0))
+            timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
         self._client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -419,24 +434,30 @@ class OpenAIClassificationClient:
                 message = "AI 对话请求失败，请稍后重试。"
                 category = "http_error"
             raise AIClassificationError(
-                message, category=category, status_code=status_code
+                message, category=category, status_code=status_code,
+                error_code=f"http_{status_code}", exception_type=type(exc).__name__,
             ) from None
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             raise AIClassificationError(
-                "AI 请求超时，请检查网络或稍后重试。", category="timeout"
+                "AI 请求超时，请检查网络或稍后重试。", category="timeout",
+                error_code="request_timeout", exception_type=type(exc).__name__,
             ) from None
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
             raise AIClassificationError(
-                "无法连接 AI 服务，请检查网络与 Base URL。", category="network"
+                "无法连接 AI 服务，请检查网络与 Base URL。", category="network",
+                error_code=type(exc).__name__.lower(), exception_type=type(exc).__name__,
             ) from None
         except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
             raise AIClassificationError(
                 "AI 服务返回格式不兼容，请检查模型接口兼容性。",
                 category="response_format",
             ) from None
-        except Exception:
+        except Exception as exc:
             raise AIClassificationError(
-                "AI 对话请求失败，请稍后重试。", category="client_error"
+                "AI 对话请求失败，请稍后重试。",
+                category="client_error",
+                error_code="client_error",
+                exception_type=type(exc).__name__,
             ) from None
 
     def chat_completion_stream(
@@ -447,6 +468,8 @@ class OpenAIClassificationClient:
         temperature: float = 0.3,
         system_prompt: bool = True,
         on_delta: Callable[[str, str], None] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: object | None = None,
     ) -> dict[str, Any]:
         """Consume a real OpenAI-compatible SSE response and report visible deltas.
 
@@ -476,6 +499,26 @@ class OpenAIClassificationClient:
         if system_prompt:
             request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
         request_messages.extend(clean_messages)
+        if tools is not None:
+            if type(tools) is not list or len(tools) > 16:
+                raise AIClassificationError("AI 工具定义无效。")
+            try:
+                encoded_tools = json.dumps(tools, ensure_ascii=False)
+            except (TypeError, ValueError):
+                raise AIClassificationError("AI 工具定义无效。") from None
+            if len(encoded_tools) > 32_000 or any(
+                type(item) is not dict
+                or item.get("type") != "function"
+                or type(item.get("function")) is not dict
+                or type(item["function"].get("name")) is not str
+                for item in tools
+            ):
+                raise AIClassificationError("AI 工具定义无效。")
+        if tool_choice is not None and not (
+            type(tool_choice) is str and tool_choice in {"auto", "none", "required"}
+            or type(tool_choice) is dict
+        ):
+            raise AIClassificationError("AI tool_choice 无效。")
         body: dict[str, object] = {
             "model": self.model,
             "max_tokens": max(256, min(int(max_tokens), 4096)),
@@ -483,12 +526,16 @@ class OpenAIClassificationClient:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = tool_choice or "auto"
         if self.model != "deepseek-reasoner":
             body["temperature"] = max(0.0, min(float(temperature), 1.5))
 
         def consume(request_body: Mapping[str, object]) -> dict[str, Any]:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
+            tool_call_parts: dict[int, dict[str, str]] = {}
             usage: dict[str, int] = {}
             finish_reason: str | None = None
             with self._client.stream("POST", "chat/completions", json=dict(request_body)) as response:
@@ -527,8 +574,49 @@ class OpenAIClassificationClient:
                         reasoning_parts.append(reasoning)
                         if on_delta is not None:
                             on_delta("reasoning", reasoning)
+                    raw_tool_calls = delta.get("tool_calls")
+                    if isinstance(raw_tool_calls, list):
+                        for raw_call in raw_tool_calls:
+                            if not isinstance(raw_call, Mapping):
+                                continue
+                            index = raw_call.get("index")
+                            if type(index) is not int or index < 0 or index >= 16:
+                                raise ValueError("invalid streamed tool call index")
+                            current = tool_call_parts.setdefault(
+                                index,
+                                {"id": "", "type": "function", "name": "", "arguments": ""},
+                            )
+                            call_id = raw_call.get("id")
+                            if type(call_id) is str:
+                                current["id"] += call_id
+                            call_type = raw_call.get("type")
+                            if type(call_type) is str:
+                                current["type"] = call_type
+                            function = raw_call.get("function")
+                            if isinstance(function, Mapping):
+                                name = function.get("name")
+                                arguments = function.get("arguments")
+                                if type(name) is str:
+                                    current["name"] += name
+                                if type(arguments) is str:
+                                    current["arguments"] += arguments
+            tool_calls = []
+            for index in sorted(tool_call_parts):
+                item = tool_call_parts[index]
+                if not item["name"] or len(item["arguments"]) > 8_000:
+                    raise ValueError("invalid streamed tool call")
+                tool_calls.append(
+                    {
+                        "id": item["id"] or f"call-{index}",
+                        "type": item["type"] or "function",
+                        "function": {
+                            "name": item["name"],
+                            "arguments": item["arguments"] or "{}",
+                        },
+                    }
+                )
             content = "".join(content_parts).strip()
-            if not content:
+            if not content and not tool_calls:
                 raise ValueError("empty response")
             reasoning = "".join(reasoning_parts).strip() or None
             metadata = {
@@ -540,7 +628,7 @@ class OpenAIClassificationClient:
             return {
                 "content": content,
                 "reasoning_content": reasoning,
-                "tool_calls": [],
+                "tool_calls": tool_calls,
                 "usage": usage,
                 "response_metadata": metadata,
             }
@@ -559,6 +647,12 @@ class OpenAIClassificationClient:
             raise
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
+            if tools and status_code in (400, 404, 405, 415, 422):
+                raise AIToolsUnsupportedError(
+                    "当前模型接口不支持流式工具调用。",
+                    category="unsupported_tools",
+                    status_code=status_code,
+                ) from None
             if status_code in (401, 403):
                 message, category = "AI 认证或访问权限失败，请检查 API key。", "authentication"
             elif status_code == 429:

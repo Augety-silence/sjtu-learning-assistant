@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import fields
 
 from sjtu_learning_assistant.course_learning_schemas import (
     CorrectionChange,
@@ -17,7 +18,9 @@ from sjtu_learning_assistant.course_learning_schemas import (
     UncertainSpan,
     resolve_product_status,
     stable_json_dumps,
+    unique_text_span,
 )
+from sjtu_learning_assistant.course_learning_prompts import ROLE_SCHEMAS
 
 
 def chunk_payload() -> dict[str, object]:
@@ -75,6 +78,65 @@ def result_payload() -> dict[str, object]:
 
 
 class CourseLearningSchemaTests(unittest.TestCase):
+    def test_unique_text_span_computes_unicode_offsets_and_rejects_ambiguity(self):
+        source = "开头\n机器学席是关键词。\n结尾"
+        start, end = unique_text_span(source, "机器学席是关键词。", "机器学席")
+        self.assertEqual("机器学席", source[start:end])
+        self.assertEqual((3, 7), (start, end))
+        for cue_text, original in (
+            ("重复", "词"),
+            ("唯一词唯一词", "唯一"),
+            ("不在源中的 cue", "词"),
+        ):
+            with self.subTest(cue_text=cue_text, original=original), self.assertRaises(SchemaValidationError):
+                unique_text_span("重复 cue 内有词，另一处有词", cue_text, original)
+
+    def test_model_contract_fields_match_strict_dataclasses_at_every_depth(self):
+        contracts = [
+            (TermCandidate, ROLE_SCHEMAS["Terminology"]["properties"]["terms"]["items"]),
+            (TermCandidate, ROLE_SCHEMAS["Correction"]["properties"]["uncertain"]["items"]["properties"]["candidates"]["items"]),
+            (CriticResult, ROLE_SCHEMAS["Critic"]),
+            (MemoryDelta, ROLE_SCHEMAS["Memory"]),
+        ]
+        for schema, contract in contracts:
+            with self.subTest(schema=schema):
+                expected = {field.name for field in fields(schema)}
+                self.assertEqual(expected, set(contract["required"]))
+                self.assertEqual(expected, set(contract["properties"]))
+                self.assertFalse(contract["additionalProperties"])
+        correction_wire = ROLE_SCHEMAS["Correction"]
+        self.assertEqual({"changes", "uncertain", "confidence"}, set(correction_wire["required"]))
+        self.assertEqual({"chunk_id", "corrected_text", "changes", "uncertain", "confidence"}, set(correction_wire["properties"]))
+        proposal = correction_wire["properties"]["changes"]["items"]
+        self.assertEqual(
+            {"cue_id", "original", "replacement", "type", "confidence", "reason", "evidence"},
+            set(proposal["required"]),
+        )
+        self.assertNotIn("chunk_id", correction_wire["required"])
+        self.assertNotIn("corrected_text", correction_wire["required"])
+        self.assertNotIn("start", proposal["properties"])
+        self.assertNotIn("end", proposal["properties"])
+        uncertain_wire = correction_wire["properties"]["uncertain"]["items"]
+        self.assertEqual({"cue_id", "text", "candidates", "confidence"}, set(uncertain_wire["required"]))
+        self.assertNotIn("start", uncertain_wire["properties"])
+        self.assertNotIn("end", uncertain_wire["properties"])
+        self.assertNotIn("cue_ids", uncertain_wire["properties"])
+        self.assertEqual(
+            {decision.value for decision in CriticDecision},
+            set(ROLE_SCHEMAS["Critic"]["properties"]["decision"]["enum"]),
+        )
+
+    def test_null_values_and_boolean_offsets_do_not_bypass_strict_types(self):
+        for field in ("chunk_id", "corrected_text", "changes", "uncertain", "confidence"):
+            payload = result_payload()
+            payload[field] = None
+            with self.subTest(field=field), self.assertRaises(SchemaValidationError):
+                CorrectionResult.from_dict(payload)
+        payload = result_payload()
+        payload["changes"][0]["start"] = False
+        with self.assertRaises(SchemaValidationError):
+            CorrectionResult.from_dict(payload)
+
     def test_round_trip_is_strict_and_serialization_is_stable(self):
         chunk = SubtitleChunk.from_dict(chunk_payload())
         self.assertEqual(chunk_payload(), chunk.to_dict())

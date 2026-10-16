@@ -271,8 +271,21 @@ class AITaskLedger:
             row.finished_at = self.now()
             self._event(session, task_id, "completed", {})
 
-    def fail(self, task_id: str, message: str) -> None:
+    def fail(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        category: str = "unknown",
+        retryable: bool = True,
+    ) -> None:
         safe = str(message).strip()[:500] or "AI 任务执行失败。"
+        safe_category = str(category).strip()[:64] or "unknown"
+        failure = {
+            "message": safe,
+            "category": safe_category,
+            "retryable": bool(retryable),
+        }
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None or row.status in TERMINAL_STATUSES:
@@ -284,8 +297,9 @@ class AITaskLedger:
                 return
             row.status = "failed"
             row.error_text = safe
+            row.result = {"failure": failure}
             row.finished_at = self.now()
-            self._event(session, task_id, "failed", {"message": safe})
+            self._event(session, task_id, "failed", failure)
 
     def cancel(self, task_id: str) -> dict[str, Any]:
         with Session(self.engine) as session, session.begin():

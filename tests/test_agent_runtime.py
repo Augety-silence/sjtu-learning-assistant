@@ -236,6 +236,59 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("ok", result.tool_runs[0]["status"])
         self.assertTrue(any(message["role"] == "tool" for message in client.requests[1][0]))
 
+    def test_tool_enabled_agent_uses_streaming_for_tool_and_final_answer(self) -> None:
+        class StreamingClient:
+            supports_streaming = True
+
+            def __init__(inner_self):
+                inner_self.requests = []
+                inner_self.replies = [
+                    {
+                        "content": "",
+                        "reasoning_content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_courses",
+                                    "arguments": '{"limit":2}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "content": "共有一门课程。",
+                        "reasoning_content": None,
+                        "tool_calls": [],
+                    },
+                ]
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.requests.append((messages, kwargs))
+                reply = inner_self.replies.pop(0)
+                if reply["content"] and kwargs.get("on_delta"):
+                    kwargs["on_delta"]("content", reply["content"])
+                return reply
+
+        client = StreamingClient()
+        deltas = []
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [{"role": "user", "content": "你好"}],
+            user_text="你好",
+            max_tokens=500,
+            temperature=0,
+            event_callback=lambda kind, payload: deltas.append((kind, payload)),
+        )
+        self.assertEqual("共有一门课程。", result.content)
+        self.assertEqual(2, len(client.requests))
+        self.assertTrue(client.requests[0][1]["tools"])
+        self.assertEqual("auto", client.requests[0][1]["tool_choice"])
+        self.assertIn(
+            ("content_delta", {"delta": "共有一门课程。"}),
+            deltas,
+        )
+
     def test_unauthorized_tool_is_rejected(self) -> None:
         client = ScriptedClient(
             [

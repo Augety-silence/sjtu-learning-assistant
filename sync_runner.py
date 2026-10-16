@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
-from platformdirs import user_data_path
+from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 
 try:
     import fcntl
@@ -25,11 +25,6 @@ except ImportError:
     fcntl = None
     import msvcrt
 
-APP_SUPPORT_DIR = (
-    user_data_path("sjtu-learning-assistant", appauthor=False)
-    if sys.platform == "win32"
-    else Path.home() / "Library" / "Application Support" / "sjtu-learning-assistant"
-)
 DEFAULT_RUNTIME_DIR = APP_SUPPORT_DIR / "run"
 DEFAULT_LOG_DIR = APP_SUPPORT_DIR / "logs"
 DEFAULT_LOCK_PATH = DEFAULT_RUNTIME_DIR / "sync.lock"

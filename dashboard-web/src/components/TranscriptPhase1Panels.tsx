@@ -6,6 +6,8 @@ import type {
   Phase1CorrectionChange,
   Phase1TermCandidate,
   Phase1UncertainSpan,
+  TranscriptJob,
+  TranscriptProcessingState,
 } from "@/lib/types";
 
 const MAX_CORRECTED_CHARACTERS = 100_000;
@@ -262,7 +264,54 @@ function parseLearningSummary(content: string): LearningSummary {
   };
 }
 
-function LearningItems({ items }: { items: string[] }) {
+export function TranscriptTimedContent({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
+  const linked = onSeek
+    ? content.replace(
+        /\b(\d{2,}):([0-5]\d)–(\d{2,}):([0-5]\d)\b/g,
+        (range, minutes, seconds) =>
+          `[${range}](#video-time=${Number(minutes) * 60 + Number(seconds)})`,
+      )
+    : content;
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize]}
+      components={{
+        a: ({ href, children }) => {
+          const time = href?.match(/^#video-time=(\d+(?:\.\d+)?)$/);
+          return time && onSeek ? (
+            <button
+              type="button"
+              className="aura-button-link"
+              aria-label={`跳转到 ${children}`}
+              onClick={() => onSeek(Number(time[1]))}
+            >
+              {children}
+            </button>
+          ) : (
+            <a href={href}>{children}</a>
+          );
+        },
+      }}
+    >
+      {linked}
+    </ReactMarkdown>
+  );
+}
+
+function LearningItems({
+  items,
+  onSeek,
+}: {
+  items: string[];
+  onSeek?: (seconds: number) => void;
+}) {
   return (
     <div className="learning-flow-items">
       {items.map((item, index) => (
@@ -270,19 +319,20 @@ function LearningItems({ items }: { items: string[] }) {
           className="ai-markdown transcript-markdown"
           key={`${index}:${item.slice(0, 24)}`}
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeSanitize]}
-          >
-            {item}
-          </ReactMarkdown>
+          <TranscriptTimedContent content={item} onSeek={onSeek} />
         </div>
       ))}
     </div>
   );
 }
 
-export function TranscriptPractice({ content }: { content: string }) {
+export function TranscriptPractice({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
   const summary = parseLearningSummary(content);
   const items = summary.practiceItems;
   if (!items.length) return <p className="phase1-empty">本节暂无自编练习。</p>;
@@ -304,9 +354,12 @@ export function TranscriptPractice({ content }: { content: string }) {
               </ReactMarkdown>
             </div>
             {Boolean(item.evidence?.length) && (
-              <p className="transcript-muted">
-                字幕证据：{item.evidence?.join("；")}
-              </p>
+              <div className="transcript-muted">
+                <TranscriptTimedContent
+                  content={`字幕证据：${item.evidence?.join("；")}`}
+                  onSeek={onSeek}
+                />
+              </div>
             )}
             {item.answer ? (
               <details>
@@ -330,14 +383,20 @@ export function TranscriptPractice({ content }: { content: string }) {
   );
 }
 
-export function TranscriptLearningFlow({ content }: { content: string }) {
+export function TranscriptLearningFlow({
+  content,
+  onSeek,
+}: {
+  content: string;
+  onSeek?: (seconds: number) => void;
+}) {
   const summary = parseLearningSummary(content);
   return (
     <div className="learning-flow" aria-label="本节学习流">
       <section aria-labelledby="learning-knowledge-title">
         <h4 id="learning-knowledge-title">知识点</h4>
         {summary.knowledgePoints.length ? (
-          <LearningItems items={summary.knowledgePoints} />
+          <LearningItems items={summary.knowledgePoints} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             本节暂未整理出知识点，可先查看规整字幕。
@@ -347,7 +406,7 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
       {summary.emphasizedPoints.length > 0 && (
         <section aria-labelledby="learning-emphasis-title">
           <h4 id="learning-emphasis-title">课堂强调</h4>
-          <LearningItems items={summary.emphasizedPoints} />
+          <LearningItems items={summary.emphasizedPoints} onSeek={onSeek} />
         </section>
       )}
       <section aria-labelledby="learning-examples-title">
@@ -357,9 +416,9 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
             : "课堂例子"}
         </h4>
         {summary.classroomExamples.length ? (
-          <LearningItems items={summary.classroomExamples} />
+          <LearningItems items={summary.classroomExamples} onSeek={onSeek} />
         ) : summary.legacyCases.length ? (
-          <LearningItems items={summary.legacyCases} />
+          <LearningItems items={summary.legacyCases} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             旧版小结未单独标注课堂例子，可结合规整字幕回看讲解。
@@ -370,13 +429,13 @@ export function TranscriptLearningFlow({ content }: { content: string }) {
         summary.legacyCases.length > 0 && (
           <section aria-labelledby="learning-legacy-cases-title">
             <h4 id="learning-legacy-cases-title">案例、公式与结论</h4>
-            <LearningItems items={summary.legacyCases} />
+            <LearningItems items={summary.legacyCases} onSeek={onSeek} />
           </section>
         )}
       <section aria-labelledby="learning-training-title">
         <h4 id="learning-training-title">辅助训练</h4>
         {summary.auxiliaryTraining.length ? (
-          <LearningItems items={summary.auxiliaryTraining} />
+          <LearningItems items={summary.auxiliaryTraining} onSeek={onSeek} />
         ) : (
           <p className="learning-flow-fallback">
             暂无配套训练，建议根据知识点完成一次复述或自测。
@@ -465,6 +524,138 @@ function unresolvedRate(quality: UnknownRecord) {
     asNumber(metrics?.unresolved_rate) ??
     asNumber(metrics?.pending_confirmation_rate)
   );
+}
+
+const processingStates: readonly TranscriptProcessingState[] = [
+  "not_started",
+  "cancelled",
+  "processing",
+  "waiting_source",
+  "ai_unconfigured",
+  "completed",
+  "finished_needs_review",
+  "recovering",
+  "recovery_exhausted",
+  "failed",
+];
+
+/** Narrow an untrusted `processing_state` value; unknown values are ignored. */
+export function asTranscriptProcessingState(
+  value: unknown,
+): TranscriptProcessingState | null {
+  return typeof value === "string" &&
+    processingStates.includes(value as TranscriptProcessingState)
+    ? (value as TranscriptProcessingState)
+    : null;
+}
+
+/**
+ * Mirrors the backend rule for a finished, schema-valid review whose content
+ * is only uncertain (never a technical failure, never auto-retried).
+ */
+export function isPhase1ContentUncertain(value: unknown) {
+  const quality = asRecord(value);
+  if (!quality) return false;
+  const uncertain = asNumber(quality.uncertain_rate);
+  const critic = asNumber(quality.critic_pass_rate);
+  return (
+    asBoolean(quality.schema_pass) === true &&
+    asBoolean(quality.passed) !== true &&
+    ((uncertain !== null && uncertain > 0) || (critic !== null && critic < 1))
+  );
+}
+
+const stageLabels: Record<string, string> = {
+  map: "字幕分块整理",
+  guide_generation: "学习讲义生成",
+  audit: "讲义审校",
+  v1: "字幕整理",
+  phase1: "AI 深度校对",
+  phase1_quality: "AI 深度校对",
+  deep_review: "AI 深度校对",
+  reviewing: "AI 深度校对",
+  organizing: "字幕整理",
+  fetching: "字幕获取",
+  subtitle: "字幕获取",
+};
+
+/** Human-readable failed stage; unknown codes are shown as-is. */
+export function transcriptStageLabel(stage?: string | null) {
+  if (!stage) return "未知阶段";
+  return stageLabels[stage] ?? stage;
+}
+
+/** Local clock time of a future retry, or null for missing/past/invalid. */
+export function formatFutureRetryTime(
+  retryAfter?: string | null,
+  now = Date.now(),
+): string | null {
+  if (!retryAfter) return null;
+  const time = new Date(retryAfter).getTime();
+  if (!Number.isFinite(time) || time <= now) return null;
+  return new Date(time).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+type TranscriptJobStateInput = TranscriptJob & {
+  processing_state?: unknown;
+  auto_retryable?: boolean;
+  next_retry_at?: string | null;
+  diagnostic?: unknown;
+};
+
+export type TranscriptJobRecoveryState =
+  | "finished_needs_review"
+  | "recovering"
+  | "recovery_exhausted";
+
+/**
+ * Finished-review / recovery classification for a job record. Prefers an
+ * explicit `processing_state`; older job payloads fall back to the legacy
+ * flags. Anything else returns null so existing status copy is unchanged.
+ */
+export function deriveTranscriptJobRecoveryState(
+  job?: TranscriptJob | null,
+  active = false,
+): TranscriptJobRecoveryState | null {
+  if (!job || active) return null;
+  const value = job as TranscriptJobStateInput;
+  const explicit = asTranscriptProcessingState(value.processing_state);
+  if (explicit)
+    return explicit === "finished_needs_review" ||
+      explicit === "recovering" ||
+      explicit === "recovery_exhausted"
+      ? explicit
+      : null;
+  if (job.status === "cancelled") return null;
+  if (value.auto_retry_exhausted === true) return "recovery_exhausted";
+  const diagnostic = asRecord(value.diagnostic);
+  const code = asString(diagnostic?.code);
+  if (
+    value.auto_retryable === true &&
+    code !== "content_uncertain" &&
+    formatFutureRetryTime(value.next_retry_at ?? job.retry_after)
+  )
+    return "recovering";
+  const technical =
+    job.review_status === "failed" ||
+    Boolean(job.phase1_warning) ||
+    (code !== null && code !== "content_uncertain");
+  if (
+    job.status === "completed" &&
+    !technical &&
+    isPhase1ContentUncertain(job.quality)
+  )
+    return "finished_needs_review";
+  return null;
+}
+
+/** Failed stage recorded for a job (diagnostic first, then current stage). */
+export function transcriptJobFailedStage(job: TranscriptJob) {
+  const diagnostic = asRecord((job as TranscriptJobStateInput).diagnostic);
+  return asString(diagnostic?.stage) ?? job.stage;
 }
 
 export function isTranscriptQualityRisk(value: unknown) {

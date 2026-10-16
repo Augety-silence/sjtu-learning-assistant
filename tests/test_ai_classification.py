@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 from sqlalchemy import create_engine, inspect, select
@@ -87,20 +89,38 @@ class AIClientTests(unittest.TestCase):
             client.chat([{"role": "user", "content": "x" * 4001}])
         client.close()
 
-    def test_default_timeout_allows_long_running_transcript_completion(self):
-        client = OpenAIClassificationClient(
-            api_key="fake-key",
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(
-                    200,
-                    json=dict(choices=(dict(message=dict(content="ok")),)),
-                    request=request,
-                )
-            ),
-            limiter=lambda: None,
-        )
-        self.assertEqual(120.0, client._client.timeout.read)
-        client.close()
+    def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
+        with patch.dict(os.environ):
+            os.environ.pop("SJTU_AI_REQUEST_TIMEOUT_SECONDS", None)
+            client = OpenAIClassificationClient(
+                api_key="fake-key",
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200,
+                        json=dict(choices=(dict(message=dict(content="ok")),)),
+                        request=request,
+                    )
+                ),
+                limiter=lambda: None,
+            )
+            self.assertEqual(120.0, client._client.timeout.read)
+            client.close()
+
+            os.environ["SJTU_AI_REQUEST_TIMEOUT_SECONDS"] = "90"
+            configured = OpenAIClassificationClient(
+                api_key="fake-key", transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request)),
+                limiter=lambda: None,
+            )
+            self.assertEqual(90.0, configured._client.timeout.read)
+            configured.close()
+
+            os.environ["SJTU_AI_REQUEST_TIMEOUT_SECONDS"] = "999"
+            bounded = OpenAIClassificationClient(
+                api_key="fake-key", transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request)),
+                limiter=lambda: None,
+            )
+            self.assertEqual(120.0, bounded._client.timeout.read)
+            bounded.close()
 
     def test_chat_error_categories_are_bounded_and_actionable(self):
         cases = (

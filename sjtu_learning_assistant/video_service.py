@@ -594,16 +594,8 @@ class SJTUVideoService:
         return records, "ready"
 
     def slides_metadata(self, source_id: str) -> dict[str, Any]:
-        course_id, video_id = parse_remote_source_id(source_id)
         with self._http_client() as client:
-            token = self._launch_jwt(course_id, client)
-            payload = self._api_json(
-                client,
-                token,
-                "/v1/course/ai/ppt",
-                params={"courseId": video_id},
-            )
-        records, status = self._slide_records(payload)
+            records, status = self._fetch_slide_records(source_id, client)
         message = (
             "课件已就绪。"
             if status == "ready"
@@ -614,6 +606,38 @@ class SJTUVideoService:
             )
         )
         return {"status": status, "message": message, "pages": records}
+
+    def _fetch_slide_records(
+        self, source_id: str, client: Any
+    ) -> tuple[list[dict[str, Any]], str]:
+        course_id, video_id = parse_remote_source_id(source_id)
+        token = self._launch_jwt(course_id, client)
+        payload = self._api_json(
+            client,
+            token,
+            "/v1/course/ai/ppt",
+            params={"courseId": video_id},
+        )
+        return self._slide_records(payload)
+
+    def slide_image(self, source_id: str, page_index: int) -> bytes:
+        if type(page_index) is not int or not 0 <= page_index < self.max_slide_pages:
+            raise SJTUVideoError("课件页码不正确。")
+        with self._http_client() as client:
+            records, status = self._fetch_slide_records(source_id, client)
+            if status != "ready":
+                raise SJTUVideoError(
+                    "课件正在生成，请稍后重试。"
+                    if status == "processing"
+                    else "该录像暂无课件。"
+                )
+            page = next(
+                (record for record in records if record["index"] == page_index),
+                None,
+            )
+            if page is None:
+                raise SJTUVideoError("课件页码不正确。")
+            return self._download_slide_image(client, page["url"])
 
     def _download_slide_image(self, client: Any, url: str) -> bytes:
         for attempt in range(self.image_retries + 1):

@@ -644,3 +644,67 @@ interface FilePreviewer {
 
 - 本轮未切换用户 macOS 的深色主题、系统“减少透明度”和“减少动态”设置；对应变量、媒体查询和自动化样式测试已覆盖，但不能替代系统级实画面验收。
 - 未使用真实学习数据执行提交、上传或删除操作。
+
+## 28. 视频页实时课件分屏与播放器全屏（2026-10-13）
+
+目标与改造：
+
+- 移除视频页重复展示 AI 配置状态、字幕条件和设置入口的横幅，保留学习材料操作中的具体状态说明。
+- 补充播放器全屏控制；标准 Fullscreen API 不可用时回退到 WebKit 视频全屏能力。
+- 补充可拖动、可调尺寸的 PPT 悬浮分屏。读取视频服务已有的课件页时间点，按播放或拖动进度显示对应页，并同步展示当前字幕与视频时间。
+- 新增只读 Bridge 操作读取课件页时间元数据和单页图片；保留原有 PDF 导出、字幕、视频播放 URL 和 Python/WebKit 桌面架构。
+
+学生价值：
+
+- 播放时可同时查看对应课件和字幕；暂停、快进、拖动进度条会带动课件页更新，分屏可移动和缩放。
+
+兼容与验收：
+
+- 仅在视频空间课件能力可用时展示入口。若课件服务没有时间戳，界面会说明无法自动同步，不会推测页码映射。
+- 最终前端 TypeScript/Vite 生产构建通过；最新全量前端 47 个测试文件、410 项通过（运行时设置 `NODE_OPTIONS=--no-experimental-webstorage`）；Portal/WebKit 事件回归所在的视频专项 73/73 通过。Python 视频服务专项 16/16 通过；Biome 检查通过。
+- 最终版本已安装至 `/Applications/SJTU Learning Assistant.app`。旧安装包保存在 `/private/tmp/sjtu-learning-assistant-luna-20261013/previous-installed-before-runtime-fix.app` 与原始检查点 `/private/tmp/sjtu-learning-assistant-luna-20261013/previous-installed.app`。安装包前端 16 个文件与构建产物逐项一致；主程序与嵌入 Python 采用原本地开发证书、签名 flags=none，提权 `codesign --verify --deep --strict` 通过。旧主进程 32473 已退出，最终版以 PID 36997 启动。
+- 实机确认视频页常驻 AI 横幅已移除；所选真实录像可播放并有字幕。最终 Portal 全屏覆盖整个应用内容区，左侧导航和页头均不可见；点击退出后正常视频页布局恢复，退出后的自动续播仍待核对。PPT 浮窗已显示真实第 74 页图片、视频时间 2:37 和当前字幕；拖动浮窗及缩小尺寸均已实机验证。macOS 原生窗口全屏未接入。
+
+## 29. AI 任务恢复、真实流式输出与校对重跑（2026-10-14）
+
+已完成（本地分支 `aime/1791949000-ai-reliability-streaming`，未提交、未推送）：
+
+- 修复 Agent 携带工具定义时绕过流式接口的问题；课程、作业、文件与消息等真实 Agent 请求现在同样使用 OpenAI 兼容 SSE，并能聚合流式 `tool_calls` 分片。
+- 上游不支持流式工具调用时，保留带工具定义的非流式降级，避免降级后丢失课程查询能力；最终回答仍会在支持 SSE 的后续调用中继续产生可见增量。
+- 将内容事件批次从 48 字收紧到 12 字，并在工具事件前冲刷文本/推理增量，减少首字等待并保持消息、工具事件的真实顺序。
+- AI 失败任务持久化错误类别、可重试性与安全提示；前端恢复原草稿和附件，可恢复错误展示“重试本次”，认证与参数类错误不提供无意义重试。
+- AI 校对的用户重试强制绕过旧 `partial` Phase1 缓存，真正重新执行；增加 `review_status`、已处理分块数和总分块数，避免基础流程 100% 与“正在校对”同时误导。
+- Phase1 校对完成、需人工确认和失败使用独立终态；原始字幕与旧版摘要在校对失败时继续保持可用。
+
+验证结果：
+
+- 新增流式工具分片、带工具 Agent 流式循环、最终回答 delta、校对分块进度和 partial 后强制重跑回归测试；AI/Agent/字幕相关 41 项 Python 测试全部通过。
+- 全量前端 47 个测试文件、410 项既有测试通过；另新增并通过 1 项 AI 失败恢复/重试测试。Biome、TypeScript、Vite production build 与 `git diff --check` 通过。
+- 全量 Python 为 593 项通过、1 项跳过；唯一失败是既有 `tests/test_archive_models.py` 仍断言数据库版本 `0020`，而当前源码已为 `0021`，与本轮 AI 改动无关。
+- macOS bundle 完成前端、Python、许可证、秘密扫描和 PyInstaller 构建。桌面目录的 File Provider 会恢复 FinderInfo，故将成品复制到 `/private/tmp` 清理扩展属性后使用本机开发证书签名；Bundle、plist 与 `codesign --verify --deep --strict` 均通过。
+- 新版已安装并启动于 `/Applications/SJTU Learning Assistant.app`；旧版可恢复备份为 `/Applications/SJTU Learning Assistant.backup-20261014-144506.app`。
+
+下一步与风险：
+
+- 需要用户在真实 DeepSeek/兼容接口下分别测试普通对话、调用课程工具的对话以及一次可恢复失败；自动化测试使用隔离 SSE 模拟，未消耗真实 API 额度。
+- 使用真实失败过的 AI 校对任务点击“重试”，确认界面显示 `已处理 X / N` 且新任务确实重新执行；不得用真实学习数据执行提交、上传或删除。
+- 修正独立的数据库版本测试断言前，需要先核对 `0021` 迁移与发布基线，不在本轮 AI 修复中顺带改动。
+
+## 30. 视频 AI 自动整理与随播同步修复验收（2026-10-14，1.7.1）
+
+已完成（沿用本地分支 aime/1791949000-ai-reliability-streaming，仍未提交、未推送）：
+
+- 针对 10-14 多 agent 审阅的 F1–F8 与 G1–G2 完成修复：字幕 waiting_remote 退避自动重查、取消独立持久化并在模型边界重读、启用 AI 后旧工件升级、单任务异常隔离与 worker 可恢复、有界网络重试、播放自动准备与去重、分块动态优先级与即时发布、稳定时间顺序合并、移除跨课程问卷硬编码、可信校正同步讲义与字幕、结构错误一次修复且不改事实、当前录像优先、终态停止轮询、切录像不弹错详情、字幕/课件自动恢复与课件预取。
+- 新增 transcript_playback 时间投影与 corrected_source_cues 对齐；bridge 新增 transcript_playback_prepare、transcript_playback_update、transcript_learning_segments 与课件图片只读端点；前端新增 VideoSynchronizedLearning 随播面板（当前段高亮、证据时间戳跳播、提前量提示）。
+- 角色契约（course_learning_prompts）按当前块绑定 cue_ids 枚举与 Correction 常量模板，Critic PASS 约束收紧；orchestrator 解析后二次校验 cue 归属，并新增只修结构、不改事实的一次修复。
+- 独立复核：前端 48 文件 427 项通过；全量 Python 599 项通过、1 项跳过；包内前端资产与源码构建 SHA-256 一致，关键后端模块字节码结构等价。
+- 打包签名：1.7.1 以本机开发证书 SJTU Learning Assistant Local Development 签名，codesign 严格验证、verify_macos_bundle.py、plist 校验通过；旧 1.7.0 回滚副本保留在 Application Support/SJTU Learning Assistant/app-rollback/1.7.0-20261014；新版已安装并启动于 /Applications。
+- 真实链路（临时 DB 副本与临时 transcript/memory 根，真实 SJTU 网络与 deepseek-chat）：连接 3/3 成功；播放入口自动准备且幂等；85 秒发布首个同步分段，约 2 分钟 6 段 52 个可用区间；真实知识点带 cue 逐字证据且无问卷课污染；切录像使前台立即转为抓取；取消持久化且之后 20 秒零模型调用；重启回收已取消任务不触发任何抓取或 AI。
+
+下一步与风险：
+
+- 需用户在运行中的 1.7.1 目视确认：真实播放、随播高亮、时间戳跳播、倍速/seek 提前量、界面取消与切录像不弹错详情、设置页版本号。
+- 取消在字幕抓取 HTTP 进行中需等有界请求返回才落终态；标记已持久化且不会产生后续 AI 调用，是否在抓取 I/O 中再加取消点为后续可选项。
+- 本次未让单节跑完 Phase1 深度校对到 quality.passed 的完整长链路（主动取消以控制真实额度）；真实校正回灌长链路建议在日常使用中自然验证一节。
+- 间歇「无法连接 AI 服务」根因未最终确认，当前探测 3/3 成功；再现时需抓取失败时刻原始响应分类。
+- 验收记录：docs/video-ai-audit-2026-10-14/ACCEPTANCE_1.7.1.md 与 acceptance-evidence-1.7.1.json。

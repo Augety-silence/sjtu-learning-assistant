@@ -143,7 +143,14 @@ export interface AITaskSnapshot {
     status: "queued" | "running" | "completed" | "failed" | "cancelled";
     model?: string | null;
     context: AIPageContext;
-    result?: { chat_result?: AIChatSendResult } | null;
+    result?: {
+      chat_result?: AIChatSendResult;
+      failure?: {
+        message: string;
+        category: string;
+        retryable: boolean;
+      };
+    } | null;
     error?: string | null;
     budget: {
       input_tokens: number;
@@ -980,6 +987,51 @@ export type TranscriptJobStatus =
   | "interrupted"
   | "cancelled";
 
+/**
+ * Overall per-recording state reported as `processing_state` by the
+ * learning-segments payload. Values are listed in backend evaluation priority
+ * order (first matching rule wins):
+ *
+ * - `not_started`: no job and no stored subtitle.
+ * - `cancelled`: cancelled; overrides a stale active/organizing status.
+ * - `processing`: queued / fetching / saved / organizing.
+ * - `waiting_source`: no validated subtitle yet (remote generating or paused).
+ * - `ai_unconfigured`: waiting for AI, or the stored draft was made without AI.
+ * - `completed`: V1 clean and verified Phase1 quality passed.
+ * - `finished_needs_review`: V1 clean, schema-valid Phase1 with only content
+ *   uncertainty; finished, never re-run automatically.
+ * - `recovering`: technical failure with a real pending automatic retry
+ *   (`retry_after` is the scheduled time).
+ * - `recovery_exhausted`: auto-recoverable technical failure whose automatic
+ *   retry budget is used up; manual `retryable` may still apply.
+ * - `failed`: technical failure that automatic recovery never applies to.
+ *
+ * Only `completed` / `finished_needs_review` imply `processing_done`; only
+ * `recovering` implies `auto_retryable`. The field is optional so older
+ * responses without it can fall back to the legacy boolean fields.
+ */
+export type TranscriptProcessingState =
+  | "not_started"
+  | "cancelled"
+  | "processing"
+  | "waiting_source"
+  | "ai_unconfigured"
+  | "completed"
+  | "finished_needs_review"
+  | "recovering"
+  | "recovery_exhausted"
+  | "failed";
+
+/** Shared, optional processing-state fields of transcript status payloads. */
+export interface TranscriptProcessingStateFields {
+  processing_state?: TranscriptProcessingState | null;
+  processing_done?: boolean;
+  phase1_processing_done?: boolean;
+  auto_retryable?: boolean;
+  retryable?: boolean;
+  retry_after?: string | null;
+}
+
 export type Phase1PipelineStatus =
   | "completed"
   | "completed_with_warnings"
@@ -1010,6 +1062,11 @@ export interface TranscriptJob {
   attempts: number;
   message?: string | null;
   error?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  retryable?: boolean;
+  retry_after?: string | null;
+  updated_at?: string | null;
   reused?: boolean;
   phase1_status?: Phase1PipelineStatus | null;
   pipeline_status?: Phase1PipelineStatus | null;
@@ -1017,6 +1074,11 @@ export interface TranscriptJob {
   phase1_reused?: boolean;
   phase1_warning?: string | null;
   partial_warning?: boolean;
+  review_status?: "running" | "completed" | "needs_review" | "failed" | null;
+  review_completed?: number;
+  review_total?: number;
+  /** Recoverable failure whose automatic retry budget is used up. */
+  auto_retry_exhausted?: boolean;
 }
 
 export interface TranscriptBatch {

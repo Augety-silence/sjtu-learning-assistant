@@ -20,22 +20,37 @@ from sjtu_learning_assistant.sqlite_recovery import (
 )
 
 DATABASE_URL_ENV = "SJTU_DATABASE_URL"
+APP_SUPPORT_DIR_ENV = "SJTU_APP_SUPPORT_DIR"
 KEYCHAIN_SERVICE = "SJTU Learning Assistant - PostgreSQL"
 KEYCHAIN_ACCOUNT = "database-url"
-APP_SUPPORT_DIR = (
-    user_data_path("SJTU Learning Assistant", appauthor=False)
-    if sys.platform == "win32"
-    else Path.home() / "Library" / "Application Support" / "SJTU Learning Assistant"
-)
+
+
+class DatabaseConfigError(RuntimeError):
+    """Raised when database configuration cannot be loaded or validated."""
+
+
+def _default_app_support_dir() -> Path:
+    configured = os.environ.get(APP_SUPPORT_DIR_ENV)
+    if configured is not None and configured.strip():
+        candidate = Path(configured.strip())
+        if not candidate.is_absolute():
+            raise DatabaseConfigError(
+                f"{APP_SUPPORT_DIR_ENV} 必须是绝对路径。"
+            )
+        return candidate.resolve()
+    return (
+        user_data_path("SJTU Learning Assistant", appauthor=False)
+        if sys.platform == "win32"
+        else Path.home() / "Library" / "Application Support" / "SJTU Learning Assistant"
+    )
+
+
+APP_SUPPORT_DIR = _default_app_support_dir()
 DEFAULT_SQLITE_PATH = APP_SUPPORT_DIR / "data" / "app.db"
 SQLITE_BUSY_TIMEOUT_MS = 5000
 
 _ENGINE_RECOVERY_RESULTS: WeakKeyDictionary[Engine, SQLiteRecoveryResult] = WeakKeyDictionary()
 _ENGINE_RECOVERY_LOCK = Lock()
-
-
-class DatabaseConfigError(RuntimeError):
-    """Raised when database configuration cannot be loaded or validated."""
 
 
 @dataclass(frozen=True)

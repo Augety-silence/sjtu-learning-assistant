@@ -134,3 +134,60 @@ def test_real_sse_parser_emits_deltas_and_preserves_provider_usage():
         "completion_tokens": 2,
         "total_tokens": 7,
     }
+
+
+def test_real_sse_parser_assembles_streamed_tool_call_fragments():
+    body = "".join(
+        [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1",',
+            '"type":"function","function":{"name":"list_","arguments":"{\\"li"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,',
+            '"function":{"name":"courses","arguments":"mit\\":2}"}}]},',
+            '"finish_reason":"tool_calls"}]}\n\n',
+            "data: [DONE]\n\n",
+        ]
+    )
+    definitions = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_courses",
+                "description": "列出课程",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["stream"] is True
+        assert payload["tools"] == definitions
+        assert payload["tool_choice"] == "auto"
+        return httpx.Response(
+            200,
+            text=body,
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    client = OpenAIClassificationClient(
+        api_key="fake",
+        transport=httpx.MockTransport(handler),
+        limiter=lambda: None,
+    )
+    try:
+        result = client.chat_completion_stream(
+            [{"role": "user", "content": "课程"}],
+            tools=definitions,
+            tool_choice="auto",
+        )
+    finally:
+        client.close()
+    assert result["content"] == ""
+    assert result["tool_calls"] == [
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "list_courses", "arguments": '{"limit":2}'},
+        }
+    ]

@@ -41,7 +41,13 @@ class VideoServiceTests(unittest.TestCase):
                 service.remote_source_id(value, 34)
 
         unsafe = SJTUVideoService(
-            lambda: CanvasLaunchClient("https://evil.example/jump")
+            lambda: CanvasLaunchClient("https://evil.example/jump"),
+            http_client_factory=lambda: httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: self.fail("unsafe launch must never reach HTTP")
+                ),
+                trust_env=False,
+            ),
         )
         with self.assertRaisesRegex(SJTUVideoError, "不安全"):
             unsafe.list_course_videos(12)
