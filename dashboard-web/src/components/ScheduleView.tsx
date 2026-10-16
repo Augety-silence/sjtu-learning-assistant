@@ -1,5 +1,5 @@
 import { Upload } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type CalendarEventItem } from "@/components/CalendarView";
 import { ContentReveal } from "@/components/ContentReveal";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
@@ -58,7 +58,9 @@ export function ScheduleView({
   const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState("");
 
+  const loadRequestRef = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setLoadError(null);
     const range = visibleCalendarRange(month);
     try {
@@ -66,6 +68,7 @@ export function ScheduleView({
         getTimetableStatus(),
         getTimetableSchedule(range.startAt, range.endAt),
       ]);
+      if (requestId !== loadRequestRef.current) return;
       const nextEvents: CalendarEventItem[] = schedule.events.map((event) => ({
         ...event,
         eventType: "course",
@@ -73,11 +76,16 @@ export function ScheduleView({
       setStatus(nextStatus);
       setCourseEvents(nextEvents);
       setOffline(false);
-      localStorage.setItem(
-        CACHE_KEY,
-        JSON.stringify({ status: nextStatus, events: nextEvents, range }),
-      );
+      try {
+        localStorage.setItem(
+          CACHE_KEY,
+          JSON.stringify({ status: nextStatus, events: nextEvents, range }),
+        );
+      } catch {
+        // Quota or privacy mode: the fresh schedule is already shown, only the offline cache is skipped.
+      }
     } catch (reason) {
+      if (requestId !== loadRequestRef.current) return;
       const cached = localStorage.getItem(CACHE_KEY);
       if (cached) {
         try {
