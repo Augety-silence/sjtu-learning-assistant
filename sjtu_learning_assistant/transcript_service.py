@@ -227,7 +227,7 @@ def _process_start_marker(pid: int) -> str | None:
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "(Get-Process -Id %d -ErrorAction Stop).StartTime.ToUniversalTime().ToString(" + chr(39) + "o" + chr(39) + ")" % pid,
+            "(Get-Process -Id %d -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')" % pid,
         )
     else:
         command = ("ps", "-o", "lstart=", "-p", str(pid))
@@ -238,6 +238,7 @@ def _process_start_marker(pid: int) -> str | None:
             capture_output=True,
             text=True,
             timeout=2,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -260,6 +261,7 @@ def _parse_time(value: object) -> datetime | None:
 def _safe_error(value: object) -> str:
     text = " ".join(str(value).split())
     text = re.sub(r"/Users/\S+", "[已隐藏]", text)
+    text = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/]\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[=:]\s*\S+", r"\1=[已隐藏]", text)
     return text[:400] or "字幕任务失败，请稍后重试。"
 
@@ -375,6 +377,10 @@ class TranscriptService:
                     os.write(descriptor, b"0")
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        try:
             yield
         finally:
             if fcntl is not None:
@@ -436,7 +442,14 @@ class TranscriptService:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            for delay in (0.05, 0.1, 0.25, 0.5, None):
+                try:
+                    os.replace(temporary, path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or delay is None:
+                        raise
+                    time.sleep(delay)
             os.chmod(path, 0o600)
             if os.name != "nt":
                 directory_fd = os.open(parent, os.O_RDONLY)
