@@ -1605,8 +1605,17 @@ export function VideosView({
         setShortcutsOpen(false);
       }
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setSpeedMenuOpen(false);
+      setShortcutsOpen(false);
+    };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, [shortcutsOpen, speedMenuOpen]);
   useEffect(() => {
     if (speedMenuOpen) {
@@ -2084,7 +2093,11 @@ export function VideosView({
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
-        isInteractiveTarget(event.target)
+        event.isComposing ||
+        isInteractiveTarget(event.target) ||
+        document.querySelector(
+          "[data-modal-layer]:not([aria-hidden='true'])",
+        ) !== null
       )
         return;
 
@@ -2291,7 +2304,7 @@ export function VideosView({
     setSelected(video);
   };
 
-  const useSubtitleResult = (result: VideoPlaybackResult) => {
+  const applySubtitleResult = (result: VideoPlaybackResult) => {
     revokeSubtitleBlob();
     if (result.subtitleVtt) {
       const objectUrl = URL.createObjectURL(
@@ -2415,11 +2428,20 @@ export function VideosView({
         const reading = beginSubtitleRead(video);
         subtitleId = reading.id;
         const result = await reading.promise;
-        if (isRelevant()) useSubtitleResult(result);
+        if (isRelevant()) applySubtitleResult(result);
       },
       (message) => setSubtitleMessage(message),
       [`subtitle:${video.id}`],
       isRelevant,
+    );
+  };
+
+  const failMediaLoad = () => {
+    playerLoadedRef.current = false;
+    autoPlaySourceId.current = null;
+    setPlaybackUrl(null);
+    setPlaybackError(
+      "录像加载失败：播放地址可能已过期或格式不受支持，请重新播放。",
     );
   };
 
@@ -2481,7 +2503,7 @@ export function VideosView({
         setSubtitleMessage(null);
       } else if (result) {
         nextUrl = result.url ?? video.playbackUrl ?? null;
-        useSubtitleResult({
+        applySubtitleResult({
           ...result,
           subtitleUrl: result.subtitleUrl ?? video.subtitleUrl,
         });
@@ -2504,7 +2526,7 @@ export function VideosView({
               playRequest.current === request &&
               subtitleReadRequest.current === reading.id
             )
-              useSubtitleResult(subtitleResult);
+              applySubtitleResult(subtitleResult);
           })
           .catch((reason) => {
             if (
@@ -2831,7 +2853,19 @@ export function VideosView({
             {generated && <small>位于临时目录，需另存长期保留。</small>}
           </span>
           {generated && openPdf && (
-            <Button variant="outline" size="sm" onClick={() => void openPdf()}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void Promise.resolve(openPdf()).catch((reason) =>
+                  showToast({
+                    kind: "error",
+                    message:
+                      reason instanceof Error ? reason.message : "无法打开课件。",
+                  }),
+                )
+              }
+            >
               打开
             </Button>
           )}
@@ -3009,6 +3043,10 @@ export function VideosView({
           }}
           onPause={() => setPreservedAcrossSource(false)}
           onEnded={() => setPreservedAcrossSource(false)}
+          onError={(event) => {
+            if (event.currentTarget.error?.code === 1) return;
+            failMediaLoad();
+          }}
           onTimeUpdate={(event) => {
             setPlaybackTime(event.currentTarget.currentTime);
             if (selected)
@@ -3072,7 +3110,7 @@ export function VideosView({
             }
           }}
         >
-          <source src={playbackUrl} />
+          <source src={playbackUrl} onError={failMediaLoad} />
           {subtitleUrl && (
             <track
               kind="subtitles"
@@ -3106,6 +3144,13 @@ export function VideosView({
           <CircleAlert aria-hidden="true" />
           <strong>{selected.title} 无法载入</strong>
           <span>{playbackError}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void play(selected)}
+          >
+            重新播放
+          </Button>
         </div>
       ) : selected ? (
         <div className="video-player-empty" role="status">
