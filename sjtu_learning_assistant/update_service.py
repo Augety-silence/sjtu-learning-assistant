@@ -55,6 +55,10 @@ class InvalidUpdateMetadataError(UpdateServiceError, ValueError):
     pass
 
 
+class _NoMatchingReleaseAssetError(InvalidUpdateMetadataError):
+    pass
+
+
 class UnsafeUpdateURLError(UpdateServiceError, ValueError):
     pass
 
@@ -433,10 +437,16 @@ def select_release_asset(
             setup_matches = [asset for asset in matches if asset.name.casefold().endswith("-setup.exe")]
             portable_matches = [asset for asset in matches if asset.name.casefold().endswith("-portable.zip")]
             if len(setup_matches) > 1 or len(portable_matches) > 1:
-                matches = []
+                raise InvalidUpdateMetadataError(
+                    "无法唯一确定当前平台的 Release asset。"
+                )
             elif len(setup_matches) == 1:
                 matches = setup_matches
-    if len(matches) != 1:
+    if not matches:
+        raise _NoMatchingReleaseAssetError(
+            "无法唯一确定当前平台的 Release asset。"
+        )
+    if len(matches) > 1:
         raise InvalidUpdateMetadataError("无法唯一确定当前平台的 Release asset。")
     return matches[0]
 
@@ -641,7 +651,7 @@ class UpdateService:
                     system=system,
                     machine=machine,
                 )
-            except InvalidUpdateMetadataError:
+            except _NoMatchingReleaseAssetError:
                 if asset_name is not None:
                     raise
                 # 无法匹配平台资产时仍报告“有新版本”，UI 回退到 release.page_url。

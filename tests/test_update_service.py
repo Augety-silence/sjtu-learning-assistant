@@ -248,6 +248,21 @@ class UpdateServiceTests(unittest.TestCase):
                         system="Windows", machine="x64", fetch_checksum=False
                     )
 
+    def test_newer_release_without_matching_platform_asset_uses_release_page(self):
+        windows_asset = "SJTU-Learning-Assistant-1.7.3-Windows-x64-Setup.exe"
+        payload, _checksums = multi_platform_release_payload([windows_asset])
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload)
+        )
+
+        result = UpdateService("1.7.2", transport=transport).check(
+            system="Darwin", machine="arm64", fetch_checksum=False
+        )
+
+        self.assertTrue(result.update_available)
+        self.assertIsNone(result.download_plan)
+        self.assertEqual(payload["html_url"], result.release.page_url)
+
     def test_no_update_does_not_resolve_or_download_asset(self) -> None:
         calls = []
 
