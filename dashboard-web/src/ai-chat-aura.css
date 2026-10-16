@@ -1156,8 +1156,8 @@
   }
 
   .ai-activity {
-    width: min(var(--ai-activity-width), calc(100% - 16px));
-    max-width: calc(100% - 16px);
+    width: min(var(--ai-activity-width), var(--ai-floating-activity-width, calc(100% - 16px)));
+    max-width: var(--ai-floating-activity-width, calc(100% - 16px));
   }
 
   .ai-sidebar {
