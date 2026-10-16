@@ -652,7 +652,14 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         os.chmod(path, 0o600)
         if os.name != "nt":
             directory = os.open(path.parent, os.O_RDONLY)
