@@ -23,6 +23,7 @@ export function deadlineDistance(value: string | null): string {
   if (!value) return "截止时间未知";
   const milliseconds = new Date(value).getTime() - Date.now();
   if (Number.isNaN(milliseconds)) return "截止时间未知";
+  if (milliseconds <= 0) return "已截止";
   const hours = Math.max(0, Math.ceil(milliseconds / 3_600_000));
   if (hours < 24) return `${hours} 小时后截止`;
   return `${Math.ceil(hours / 24)} 天后截止`;
