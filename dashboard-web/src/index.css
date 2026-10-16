@@ -8496,9 +8496,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   white-space: normal;
 }
 
-.video-course-popup button:hover,
+.video-course-popup button:hover {
+  background: var(--surface-hover);
+}
+
 .video-course-popup button:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
   background: var(--surface-hover);
 }
 
@@ -8986,9 +8990,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   cursor: pointer;
 }
 
-.video-more-menu button:hover,
+.video-more-menu button:hover {
+  background: var(--surface-hover);
+}
+
 .video-more-menu button:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
   background: var(--surface-hover);
 }
 
@@ -9303,6 +9311,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   background: var(--surface-hover);
 }
 
+.video-player-tool-trigger:focus-visible,
+.video-shortcuts-trigger:focus-visible,
+.video-history-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .video-player-tool-trigger svg,
 .video-history-trigger svg {
   width: 13px;
@@ -9341,9 +9356,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   cursor: pointer;
 }
 
-.video-speed-menu button:hover,
+.video-speed-menu button:hover {
+  background: var(--surface-hover);
+}
+
 .video-speed-menu button:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
   background: var(--surface-hover);
 }
 
@@ -9516,6 +9535,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .knowledge-mode-grid label:hover { border-color: var(--border-focus-soft); background: var(--surface-accent-soft); }
 .knowledge-mode-grid label.knowledge-mode-selected { border-color: var(--action-primary); background: var(--surface-accent-soft); box-shadow: var(--shadow-focus); }
 .knowledge-mode-grid input { position: absolute; opacity: 0; pointer-events: none; }
+.knowledge-mode-grid label:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .knowledge-mode-grid svg { color: var(--action-primary); }
 .knowledge-mode-grid span { display: grid; gap: 4px; }
 .knowledge-mode-grid small { color: var(--text-caption); line-height: 1.5; }
@@ -9523,7 +9543,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .knowledge-phase-strip li { display: flex; gap: 7px; align-items: center; min-width: 0; padding: 8px; border-radius: 8px; color: var(--text-caption); background: var(--surface-workspace); font-size: 12px; }
 .knowledge-phase-strip li > span { display: grid; flex: 0 0 auto; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: var(--surface-control); font-size: 10px; }
 .knowledge-phase-strip .knowledge-phase-active { color: var(--action-primary); background: var(--surface-accent-soft); font-weight: 600; }
-.knowledge-phase-strip .knowledge-phase-active > span { color: white; background: var(--action-primary); }
+.knowledge-phase-strip .knowledge-phase-active > span { color: var(--text-inverse); background: var(--action-primary); }
 .knowledge-phase-strip .knowledge-phase-done { color: var(--status-success); }
 .knowledge-phase-strip .knowledge-phase-done > span { color: var(--status-success); background: var(--status-success-bg); }
 .knowledge-run-heading, .knowledge-run-heading > div, .knowledge-run-actions { display: flex; align-items: center; }
