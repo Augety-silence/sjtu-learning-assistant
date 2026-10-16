@@ -153,5 +153,5 @@ class PresetLoader:
         ]
 
     def validate_allowed_tools(self, names: Iterable[str]) -> None:
-        if not set(names).issubset(KNOWN_TOOLS):
+        if isinstance(names, str) or not set(names).issubset(KNOWN_TOOLS):
             raise PresetError("包含未知 agent 工具。")
