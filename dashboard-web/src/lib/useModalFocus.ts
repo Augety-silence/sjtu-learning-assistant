@@ -6,6 +6,7 @@ const FOCUSABLE = [
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  "summary",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
@@ -47,6 +48,17 @@ function backgroundSiblings(container: HTMLElement): BackgroundState[] {
   }));
 }
 
+function isInsideClosedDetails(element: HTMLElement) {
+  let details = element.closest("details");
+  while (details) {
+    const ownSummary =
+      element.tagName === "SUMMARY" && element.parentElement === details;
+    if (!details.open && !ownSummary) return true;
+    details = details.parentElement?.closest("details") ?? null;
+  }
+  return false;
+}
+
 export function useModalFocus(
   containerRef: RefObject<HTMLElement | null>,
   onDismiss: () => void,
@@ -81,7 +93,11 @@ export function useModalFocus(
           !element.hasAttribute("disabled") &&
           !element.hasAttribute("hidden") &&
           element.getAttribute("aria-hidden") !== "true" &&
-          !element.closest("[inert]"),
+          !element.closest("[inert]") &&
+          element.tabIndex >= 0 &&
+          !isInsideClosedDetails(element) &&
+          (typeof element.checkVisibility !== "function" ||
+            element.checkVisibility()),
       );
 
     const initialTimer = window.setTimeout(() => {
@@ -103,6 +119,7 @@ export function useModalFocus(
         return;
       }
       if (event.key === "Escape") {
+        if (event.defaultPrevented || event.isComposing) return;
         event.preventDefault();
         if (optionsRef.current.dismissible !== false) dismissRef.current();
         return;
@@ -121,7 +138,7 @@ export function useModalFocus(
       const active = document.activeElement;
       const inside = active instanceof Node && container.contains(active);
 
-      if (!inside) {
+      if (!inside || active === container) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();
       } else if (event.shiftKey && active === first) {
