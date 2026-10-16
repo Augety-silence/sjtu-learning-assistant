@@ -20,6 +20,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if op.get_context().dialect.name == "sqlite":
+        raise RuntimeError(
+            "0001-0016 迁移仅适用于 PostgreSQL；桌面 SQLite 请运行 "
+            "`python db_manage.py upgrade`，由应用建表并 stamp 到基线版本。"
+        )
     op.create_table(
         "courses",
         sa.Column("id", sa.BigInteger(), sa.Identity(), nullable=False),
