@@ -7,12 +7,15 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, func, or_, select
+from sqlalchemy import Engine, case, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.ai_attachments import AIFileError, AIManagedFileService
 from sjtu_learning_assistant.material_tree import build_material_tree
+from sjtu_learning_assistant.text_content import content_to_plain_text
 from sjtu_learning_assistant.models import (
     Announcement,
     Assignment,
@@ -24,14 +27,17 @@ from sjtu_learning_assistant.models import (
 )
 
 TOOL_RESULT_CHAR_LIMIT = 12_000
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 DONE_STATES = {"submitted", "graded", "pending_review"}
 MESSAGE_KINDS = frozenset({"email", "announcement", "assignment"})
 FILE_CATEGORIES = frozenset({"assignments", "courseware", "supplementary", "other"})
 SENSITIVE_TEXT = (
-    re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
-    re.compile(r"(?i)\b(token|password|secret|api[_ -]?key)\s*[=:]\s*[^\s,;]+"),
+    # 不用 \b：中文字符属于 \w，“访问token=…”“资料在C:\…”之间没有词边界。
+    re.compile(r"(?i)(?<![A-Za-z0-9])(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
+    re.compile(r"(?i)(?<![A-Za-z0-9])(token|password|passwd|secret|api[_ -]?key|密码|口令|令牌|密钥)\s*[=:：]\s*[^\s,;，；]+"),
     re.compile(r"(?:/Users|/home)/[^\s]+"),
-    re.compile(r"\b[A-Za-z]:\\[^\s]+"),
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s]+"),
+    re.compile(r"\\\\[^\s\\]+\\[^\s]+"),
     re.compile(r"\w+://[^\s/:]+:[^\s]+@[^\s]+"),
 )
 
@@ -78,7 +84,7 @@ def _iso(value: datetime | None) -> str | None:
         return None
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat(timespec="seconds")
+    return value.astimezone(LOCAL_TIMEZONE).isoformat(timespec="seconds")
 
 
 def _clip(value: object, limit: int) -> str:
@@ -101,6 +107,17 @@ def _bounded_payload(value: dict[str, Any]) -> dict[str, Any]:
                 break
             kept.append(item)
         return {**value, "items": kept, "count": len(kept), "truncated": True}
+    text = value.get("text")
+    if isinstance(text, str):
+        # 附件正文超限时只截正文，保留 id/name/status 结构。
+        clipped = text
+        while clipped:
+            candidate = {**value, "text": clipped, "truncated": True}
+            overflow = len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) - TOOL_RESULT_CHAR_LIMIT
+            if overflow <= 0:
+                break
+            clipped = clipped[: max(0, len(clipped) - overflow)]
+        return {**value, "text": clipped, "truncated": True, "returned_chars": len(clipped)}
     return {"truncated": True, "summary": _clip(encoded, TOOL_RESULT_CHAR_LIMIT - 50)}
 
 
@@ -159,7 +176,11 @@ class ReadOnlyToolRegistry:
             raise AgentToolError("未知工具。")
         if name not in allowed_tools:
             raise AgentToolError("当前 agent preset 未授权该工具。")
-        result, arg_summary = self._handlers[name](arguments)
+        try:
+            result, arg_summary = self._handlers[name](arguments)
+        except SQLAlchemyError:
+            # loop 只捕获 AgentToolError；数据库锁/损坏不应让整轮对话失败。
+            raise AgentToolError("本地数据库暂时不可用，请稍后重试。") from None
         result = _bounded_payload(result)
         items = result.get("items")
         summary = {
@@ -208,7 +229,12 @@ class ReadOnlyToolRegistry:
             pattern = f"%{query.casefold()}%"
             statement = statement.where(or_(func.lower(CourseFile.display_name).like(pattern), func.lower(CourseFile.filename).like(pattern), func.lower(Course.name).like(pattern)))
         if category:
-            statement = statement.where(or_(CourseFile.manual_category == category, CourseFile.ai_category == category))
+            effective = case((CourseFile.manual_override.is_(True), CourseFile.manual_category), else_=CourseFile.ai_category)
+            if category == "other":
+                known = sorted(FILE_CATEGORIES - {"other"})
+                statement = statement.where(or_(effective.is_(None), effective.not_in(known)))
+            else:
+                statement = statement.where(effective == category)
         with Session(self.engine) as session:
             return [self._file_row(*row) for row in session.execute(statement).all()]
 
@@ -240,6 +266,8 @@ class ReadOnlyToolRegistry:
         now = self.now_provider()
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
+        # SQLite DateTime 绑定时直接丢弃偏移，必须先换算成 UTC。
+        now = now.astimezone(timezone.utc)
         statement = select(Assignment, Course).join(Course, Course.id == Assignment.course_id).where(Assignment.is_active.is_(True), Assignment.due_at.is_not(None), Assignment.due_at >= now, Assignment.due_at <= now + timedelta(hours=hours), or_(Assignment.submission_state.is_(None), func.lower(Assignment.submission_state).not_in(DONE_STATES))).order_by(Assignment.due_at.asc()).limit(limit)
         if course_id:
             statement = statement.where(Course.source_id == course_id)
@@ -318,7 +346,7 @@ class ReadOnlyToolRegistry:
                         "title": _clip(item.title, 240),
                         "source_label": _clip(course.name, 180),
                         "occurred_at": _iso(unified.occurred_at),
-                        "preview": _clip(item.body, 320),
+                        "preview": _clip(content_to_plain_text(item.body), 320),
                     }
                     for item, course, unified in rows
                 )
@@ -369,7 +397,8 @@ class ReadOnlyToolRegistry:
             raise AgentToolError("kind 无效。")
         ref = _bounded_text(args.get("ref"), "ref", limit=80)
         prefix = kind + ":"
-        if not ref.startswith(prefix) or not ref[len(prefix):].isdigit():
+        digits = ref[len(prefix):]
+        if not ref.startswith(prefix) or not digits.isascii() or not digits.isdigit() or len(digits) > 18:
             raise AgentToolError("消息 ref 无效。")
         item_id = int(ref[len(prefix):])
         with Session(self.engine) as session:
@@ -383,14 +412,14 @@ class ReadOnlyToolRegistry:
                 if row is None:
                     raise AgentToolError("消息不存在。")
                 item, course = row
-                result = {"ref": ref, "kind": kind, "title": _clip(item.title, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.posted_at), "body": _clip(item.body, 3000), "attachments": []}
+                result = {"ref": ref, "kind": kind, "title": _clip(item.title, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.posted_at), "body": _clip(content_to_plain_text(item.body), 3000), "attachments": []}
             else:
                 row = session.execute(select(Assignment, Course).join(Course, Course.id == Assignment.course_id).where(Assignment.id == item_id, Assignment.is_active.is_(True))).one_or_none()
                 if row is None:
                     raise AgentToolError("消息不存在。")
                 item, course = row
                 description = item.raw_data.get("description", "") if isinstance(item.raw_data, Mapping) else ""
-                result = {"ref": ref, "kind": kind, "title": _clip(item.name, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.due_at), "body": _clip(description, 3000), "attachments": []}
+                result = {"ref": ref, "kind": kind, "title": _clip(item.name, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.due_at), "body": _clip(content_to_plain_text(description), 3000), "attachments": []}
         return result, {"kind": kind, "ref_type": "opaque_local"}
 
     def _get_material_tree(self, raw: object):
@@ -401,7 +430,7 @@ class ReadOnlyToolRegistry:
             tree = build_material_tree(session)
         flat: list[dict[str, Any]] = []
         def visit(node: dict[str, Any], parents: tuple[str, ...] = ()) -> None:
-            if len(flat) >= limit:
+            if len(flat) > limit:
                 return
             if node.get("kind") == "file" and (not course_id or node.get("course_id") == course_id):
                 flat.append({"source_id": node.get("source_id"), "name": _clip(node.get("name"), 255), "course_id": node.get("course_id"), "category": node.get("category"), "folders": list(parents[-6:]), "size": node.get("size"), "availability": "cloud" if node.get("cloud_ready") else ("local" if node.get("can_open") else "remote")})
@@ -411,7 +440,9 @@ class ReadOnlyToolRegistry:
             for child in node.get("children", []):
                 visit(child, next_parents)
         visit(tree["root"])
-        return {"items": flat, "count": len(flat), "truncated": len(flat) >= limit}, {"course_filtered": bool(course_id), "limit": limit}
+        truncated = len(flat) > limit
+        flat = flat[:limit]
+        return {"items": flat, "count": len(flat), "truncated": truncated}, {"course_filtered": bool(course_id), "limit": limit}
 
 
     def _require_ai_files(self) -> AIManagedFileService:
