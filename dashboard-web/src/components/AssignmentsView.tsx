@@ -534,7 +534,8 @@ export function AssignmentsView({
                   key={`${item.course_id}:${item.id}`}
                   type="button"
                   className={
-                    selected?.id === item.id
+                    selected &&
+                    sameAssignment(selected, item)
                       ? "assignment-card assignment-card-active"
                       : "assignment-card"
                   }
