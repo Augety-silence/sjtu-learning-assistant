@@ -284,7 +284,10 @@ def sync_canvas(
                 f"幂等跳过 {notification_result.duplicate_events} 条。"
             )
         except Exception as exc:
-            print(f"警告：通知处理失败，但数据同步已成功：{exc}", file=sys.stderr)
+            print(
+                f"警告：通知处理失败，但数据同步已成功：{type(exc).__name__}",
+                file=sys.stderr,
+            )
 
 
 def sync_mail(
