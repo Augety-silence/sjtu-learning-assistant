@@ -92,6 +92,7 @@ export function CanvasAgentView({
 }: CanvasAgentViewProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -104,7 +105,8 @@ export function CanvasAgentView({
 
   const send = async (value: string) => {
     const message = value.trim();
-    if (!message || busy) return;
+    if (!message || busy || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
     setSendError(null);
     try {
@@ -116,6 +118,7 @@ export function CanvasAgentView({
       setSendError(messageText);
       showToast({ kind: "error", message: messageText });
     } finally {
+      sendingRef.current = false;
       setSending(false);
       window.setTimeout(() => inputRef.current?.focus(), 0);
     }
@@ -127,8 +130,8 @@ export function CanvasAgentView({
       ...options,
       [field]:
         field === "maxTurns"
-          ? clamp(parsed, 1, 12, defaultOptions.maxTurns)
-          : clamp(parsed, 256, 8192, defaultOptions.maxTokens),
+          ? clamp(parsed, 1, 6, defaultOptions.maxTurns)
+          : clamp(parsed, 256, 3000, defaultOptions.maxTokens),
     };
     onOptionsChange?.(next);
   };
@@ -343,6 +346,8 @@ export function CanvasAgentView({
                 disabled={busy}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing || event.keyCode === 229)
+                    return;
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void send(draft);
