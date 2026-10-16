@@ -127,7 +127,7 @@ export function ScheduleView({
       const result = await importTimetableIcs();
       if ("cancelled" in result) return;
       setNotice(
-        `已导入 ${result.importedCourses} 门课程、${result.importedSessions} 节课${result.updatedSessions ? `，更新 ${result.updatedSessions} 节` : ""}。`,
+        `已导入 ${result.importedCourses} 门课程、${result.importedSessions} 节课${result.updatedSessions ? `，更新 ${result.updatedSessions} 节` : ""}。${result.warnings?.length ? ` ${result.warnings[0]}${result.warnings.length > 1 ? `（另有 ${result.warnings.length - 1} 条提示）` : ""}` : ""}`,
       );
       await load();
     } catch (reason) {

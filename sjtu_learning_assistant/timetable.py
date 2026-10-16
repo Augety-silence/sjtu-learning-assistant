@@ -101,7 +101,8 @@ def _datetime(value: object, date: object = None) -> datetime:
     if not text:
         raise TimetableError("课表时间字段缺失。")
     if date and re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
-        text = f"{date}T{text}"
+        hour, rest = text.split(":", 1)
+        text = f"{date}T{hour.zfill(2)}:{rest}"
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
@@ -249,7 +250,7 @@ def _ics_datetime(value: str, tzid: str | None = None) -> datetime:
     raw = value[:-1] if utc else value
     try:
         source_timezone = timezone.utc if utc else ZoneInfo(tzid) if tzid else SHANGHAI
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise TimetableError(f"ICS 包含未知时区 TZID={tzid}。") from exc
     for fmt in ("%Y%m%dT%H%M%S", "%Y%m%dT%H%M", "%Y%m%d"):
         try:
@@ -278,8 +279,13 @@ def parse_ics(text: str) -> tuple[list[ParsedCourse], list[ParsedSession], list[
             property_name, separator, value = line.partition(":")
             parts = property_name.split(";")
             key = parts[0].upper()
-            if separator and key in {"UID", "SUMMARY", "DTSTART", "DTEND", "LOCATION"}:
-                current[key] = value.replace("\\,", ",").replace("\\n", "\n")
+            if separator and key in {
+                "UID", "SUMMARY", "DTSTART", "DTEND", "LOCATION", "RRULE", "RECURRENCE-ID"
+            }:
+                current[key] = (
+                    value.replace("\\N", "\n").replace("\\n", "\n").replace("\\,", ",")
+                    .replace("\\;", ";").replace("\\\\", "\\")
+                )
                 if key in {"DTSTART", "DTEND"}:
                     for parameter in parts[1:]:
                         name, equals, parameter_value = parameter.partition("=")
@@ -292,11 +298,18 @@ def parse_ics(text: str) -> tuple[list[ParsedCourse], list[ParsedSession], list[
     courses: dict[str, ParsedCourse] = {}
     sessions: list[ParsedSession] = []
     warnings: list[str] = []
+    seen_uids: set[str] = set()
     for index, event in enumerate(events):
         uid, summary = _text(event.get("UID"), 512), _text(event.get("SUMMARY"))
         if not uid or not summary or not event.get("DTSTART") or not event.get("DTEND"):
             warnings.append(f"第 {index + 1} 个 VEVENT 缺少字段，已跳过。")
             continue
+        if event.get("RECURRENCE-ID") or uid in seen_uids:
+            warnings.append(f"第 {index + 1} 个 VEVENT 是重复 UID 或单次改期实例，已跳过。")
+            continue
+        seen_uids.add(uid)
+        if event.get("RRULE"):
+            warnings.append(f"第 {index + 1} 个 VEVENT 含重复规则（RRULE），当前仅导入首次上课。")
         course_id = (
             "ics:" + hashlib.sha256(summary.casefold().encode()).hexdigest()[:24]
         )
@@ -346,6 +359,8 @@ class TimetableService:
                 session.scalar(select(func.count(TimetableSession.id)))
             )
             latest = session.scalar(select(func.max(TimetableImportRun.created_at)))
+            if latest is not None and latest.tzinfo is None:
+                latest = latest.replace(tzinfo=timezone.utc)
             result["lastSyncedAt"] = latest.isoformat() if latest else None
         return result
 
@@ -409,10 +424,16 @@ class TimetableService:
         suffix = candidate.suffix.lower()
         if allowed_suffix is not None and suffix != allowed_suffix:
             raise TimetableError(f"仅支持导入 {allowed_suffix} 日历文件。")
-        size = candidate.stat().st_size
-        if size <= 0 or size > MAX_IMPORT_BYTES:
+        try:
+            size = candidate.stat().st_size
+            if size <= 0 or size > MAX_IMPORT_BYTES:
+                raise TimetableError("文件为空或超过 10 MiB 限制。")
+            data = candidate.read_bytes()
+        except OSError as exc:
+            raise TimetableError("无法读取所选文件，请确认文件未被其他程序占用。") from exc
+        if not data or len(data) > MAX_IMPORT_BYTES:
             raise TimetableError("文件为空或超过 10 MiB 限制。")
-        return candidate.read_bytes(), suffix
+        return data, suffix
 
     def import_ics_local_file(self, path: str) -> dict[str, Any]:
         data, _suffix = self._read_local_file(path, allowed_suffix=".ics")
