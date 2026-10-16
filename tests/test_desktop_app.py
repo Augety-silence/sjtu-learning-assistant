@@ -627,7 +627,10 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertTrue(create_window_call.kwargs["vibrancy"])
         self.assertEqual(_enable_macos_window_material, webview.start.call_args.args[0])
         self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
-        self.assertEqual({"debug": False}, webview.start.call_args.kwargs)
+        start_kwargs = webview.start.call_args.kwargs
+        self.assertFalse(start_kwargs["debug"])
+        self.assertFalse(start_kwargs["private_mode"])
+        self.assertTrue(start_kwargs["storage_path"].endswith("webview"))
         manager_factory.assert_called_once_with(
             engine,
             archive_root=dashboard.archive_root,

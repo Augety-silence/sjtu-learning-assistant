@@ -44,6 +44,7 @@ from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import (
+    APP_SUPPORT_DIR,
     create_database_engine,
     database_recovery_result,
 )
@@ -1262,15 +1263,10 @@ class DesktopBridge:
         source_ids: list[str] = list()
         for value in raw_source_ids:
             source_id = _bounded_id(value, limit=255, label="远程视频标识")
-            parts = source_id.split(":")
-            if (
-                len(parts) != 3
-                or parts[0] != "sjtu-video"
-                or not parts[1].isdigit()
-                or not parts[2].isdigit()
-                or int(parts[1]) != course_id
-                or int(parts[2]) <= 0
-            ):
+            match = re.fullmatch(
+                r"sjtu-video:([1-9][0-9]{0,18}):[1-9][0-9]{0,18}", source_id
+            )
+            if match is None or int(match.group(1)) != course_id:
                 raise DashboardError("所选录像不属于当前课程。")
             if source_id in source_ids:
                 raise DashboardError("录像列表包含重复项目。")
@@ -1597,7 +1593,12 @@ def run_desktop_app() -> int:
         # Reconciliation is a one-time application-startup operation and only
         # expires jobs whose owner lease is missing/stale.
         if isinstance(engine, Engine) and inspect(engine).has_table("persistent_jobs"):
-            PersistentJobService(engine).reconcile_interrupted()
+            try:
+                from sjtu_learning_assistant.persistent_jobs import PersistentJobService
+            except ImportError:
+                PersistentJobService = None  # type: ignore[assignment,misc]
+            if PersistentJobService is not None:
+                PersistentJobService(engine).reconcile_interrupted()
 
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
@@ -1675,10 +1676,15 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
         )
         scheduler.start()
+        start_options = {
+            "debug": False,
+            "private_mode": False,
+            "storage_path": str(APP_SUPPORT_DIR / "webview"),
+        }
         if native_vibrancy:
-            webview.start(_enable_macos_window_material, (window,), debug=False)
+            webview.start(_enable_macos_window_material, (window,), **start_options)
         else:
-            webview.start(debug=False)
+            webview.start(**start_options)
         return 0
     finally:
         if scheduler is not None:
@@ -1698,6 +1704,10 @@ def main() -> int:
         from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
         from sjtu_learning_assistant.mcp_server import run_stdio_server
 
+        for stream in (sys.stdin, sys.stdout):
+            # MCP stdio 要求 UTF-8 + LF；Windows 无控制台时默认是本地代码页（如 cp936）。
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:
             run_stdio_server(ReadOnlyToolRegistry(engine))
