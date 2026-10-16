@@ -212,6 +212,58 @@ class OpenAIClassificationClient:
     def close(self) -> None:
         self._client.close()
 
+    @classmethod
+    def _clean_chat_messages(
+        cls, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Validate and normalize OpenAI chat history for both request modes."""
+        if not messages or len(messages) > 64:
+            raise AIClassificationError("AI 对话消息数量无效。")
+        clean_messages: list[dict[str, Any]] = []
+        total_length = 0
+        for message in messages:
+            if type(message) is not dict or set(message) - {
+                "role", "content", "tool_calls", "tool_call_id", "name"
+            }:
+                raise AIClassificationError("AI 对话消息格式无效。")
+            role = message.get("role")
+            content = message.get("content")
+            if type(role) is not str or role not in {"system", "user", "assistant", "tool"}:
+                raise AIClassificationError("AI 对话消息格式无效。")
+            if role in {"system", "user"} and {"tool_calls", "tool_call_id", "name"}.intersection(message):
+                raise AIClassificationError("AI 对话消息格式无效。")
+            if role == "assistant" and "tool_call_id" in message:
+                raise AIClassificationError("AI 对话消息格式无效。")
+            if role == "tool" and "tool_calls" in message:
+                raise AIClassificationError("AI 工具消息格式无效。")
+            if content is None and role == "assistant" and message.get("tool_calls"):
+                content = ""
+            if type(content) is not str or len(content) > 14_000:
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            if role in {"user", "system"} and not content.strip():
+                raise AIClassificationError("单条消息不能为空或超过长度限制。")
+            clean: dict[str, Any] = {"role": role, "content": content.strip()}
+            if "tool_calls" in message:
+                clean["tool_calls"] = cls._parse_tool_calls(message.get("tool_calls"))
+            if role == "assistant" and "name" in message:
+                name = message.get("name")
+                if type(name) is not str or not name or len(name) > 80:
+                    raise AIClassificationError("AI 对话消息格式无效。")
+                clean["name"] = name
+            if role == "tool":
+                call_id = message.get("tool_call_id")
+                name = message.get("name")
+                if type(call_id) is not str or not call_id or len(call_id) > 128:
+                    raise AIClassificationError("AI 工具消息格式无效。")
+                clean["tool_call_id"] = call_id
+                if name is not None:
+                    if type(name) is not str or not name or len(name) > 80:
+                        raise AIClassificationError("AI 工具消息格式无效。")
+                    clean["name"] = name
+            total_length += len(content)
+            clean_messages.append(clean)
+        return clean_messages, total_length
+
     def classify_many(
         self, items: Iterable[ClassificationInput]
     ) -> dict[str, str]:
@@ -289,41 +341,7 @@ class OpenAIClassificationClient:
             not isinstance(response_format, Mapping) or dict(response_format) != {"type": "json_object"}
         ):
             raise AIClassificationError("AI response_format 仅支持 json_object。")
-        if not messages or len(messages) > 64:
-            raise AIClassificationError("AI 对话消息数量无效。")
-        clean_messages: list[dict[str, Any]] = []
-        total_length = 0
-        for message in messages:
-            if type(message) is not dict or set(message) - {
-                "role", "content", "tool_calls", "tool_call_id", "name"
-            }:
-                raise AIClassificationError("AI 对话消息格式无效。")
-            role = message.get("role")
-            content = message.get("content")
-            if role not in {"system", "user", "assistant", "tool"}:
-                raise AIClassificationError("AI 对话消息格式无效。")
-            if content is None and role == "assistant" and message.get("tool_calls"):
-                content = ""
-            if type(content) is not str or len(content) > 14_000:
-                raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            if role in {"user", "system"} and not content.strip():
-                raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            clean: dict[str, Any] = {"role": role, "content": content.strip()}
-            if "tool_calls" in message:
-                calls = self._parse_tool_calls(message.get("tool_calls"))
-                clean["tool_calls"] = calls
-            if role == "tool":
-                call_id = message.get("tool_call_id")
-                name = message.get("name")
-                if type(call_id) is not str or not call_id or len(call_id) > 128:
-                    raise AIClassificationError("AI 工具消息格式无效。")
-                clean["tool_call_id"] = call_id
-                if name is not None:
-                    if type(name) is not str or not name or len(name) > 80:
-                        raise AIClassificationError("AI 工具消息格式无效。")
-                    clean["name"] = name
-            total_length += len(content)
-            clean_messages.append(clean)
+        clean_messages, total_length = self._clean_chat_messages(messages)
         if total_length > 60_000 or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。")
         request_messages: list[dict[str, Any]] = []
@@ -471,31 +489,11 @@ class OpenAIClassificationClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: object | None = None,
     ) -> dict[str, Any]:
-        """Consume a real OpenAI-compatible SSE response and report visible deltas.
-
-        Tool calls deliberately stay on ``chat_completion``. The Agent runtime uses
-        this path only after deterministic prefetch has removed the need for tools.
-        """
-        if not messages or len(messages) > 64:
-            raise AIClassificationError("AI 对话消息数量无效。")
-        clean_messages: list[dict[str, str]] = []
-        total_length = 0
-        for message in messages:
-            if type(message) is not dict or set(message) != {"role", "content"}:
-                raise AIClassificationError("流式 AI 对话消息格式无效。")
-            role = message.get("role")
-            content = message.get("content")
-            if role not in {"system", "user", "assistant"}:
-                raise AIClassificationError("流式 AI 对话消息格式无效。")
-            if type(content) is not str or len(content) > 14_000:
-                raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            if role in {"system", "user"} and not content.strip():
-                raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            total_length += len(content)
-            clean_messages.append({"role": role, "content": content.strip()})
+        """Consume an OpenAI-compatible SSE response, including tool continuations."""
+        clean_messages, total_length = self._clean_chat_messages(messages)
         if total_length > 60_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。")
-        request_messages: list[dict[str, str]] = []
+        request_messages: list[dict[str, Any]] = []
         if system_prompt:
             request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
         request_messages.extend(clean_messages)
@@ -575,10 +573,12 @@ class OpenAIClassificationClient:
                         if on_delta is not None:
                             on_delta("reasoning", reasoning)
                     raw_tool_calls = delta.get("tool_calls")
+                    if "tool_calls" in delta and type(raw_tool_calls) is not list:
+                        raise ValueError("invalid streamed tool calls")
                     if isinstance(raw_tool_calls, list):
                         for raw_call in raw_tool_calls:
-                            if not isinstance(raw_call, Mapping):
-                                continue
+                            if type(raw_call) is not dict or set(raw_call) - {"index", "id", "type", "function"}:
+                                raise ValueError("invalid streamed tool call fields")
                             index = raw_call.get("index")
                             if type(index) is not int or index < 0 or index >= 16:
                                 raise ValueError("invalid streamed tool call index")
@@ -586,19 +586,37 @@ class OpenAIClassificationClient:
                                 index,
                                 {"id": "", "type": "function", "name": "", "arguments": ""},
                             )
-                            call_id = raw_call.get("id")
-                            if type(call_id) is str:
+                            if "id" in raw_call:
+                                call_id = raw_call["id"]
+                                if type(call_id) is not str:
+                                    raise ValueError("invalid streamed tool call id")
+                                if len(current["id"]) + len(call_id) > 128:
+                                    raise ValueError("streamed tool call id too long")
                                 current["id"] += call_id
-                            call_type = raw_call.get("type")
-                            if type(call_type) is str:
+                            if "type" in raw_call:
+                                call_type = raw_call["type"]
+                                if type(call_type) is not str:
+                                    raise ValueError("invalid streamed tool call type")
+                                if call_type != "function":
+                                    raise ValueError("invalid streamed tool call type")
                                 current["type"] = call_type
-                            function = raw_call.get("function")
-                            if isinstance(function, Mapping):
-                                name = function.get("name")
-                                arguments = function.get("arguments")
-                                if type(name) is str:
+                            if "function" in raw_call:
+                                function = raw_call["function"]
+                                if type(function) is not dict or set(function) - {"name", "arguments"}:
+                                    raise ValueError("invalid streamed tool function fields")
+                                if "name" in function:
+                                    name = function["name"]
+                                    if type(name) is not str:
+                                        raise ValueError("invalid streamed tool function name")
+                                    if len(current["name"]) + len(name) > 80:
+                                        raise ValueError("streamed tool function name too long")
                                     current["name"] += name
-                                if type(arguments) is str:
+                                if "arguments" in function:
+                                    arguments = function["arguments"]
+                                    if type(arguments) is not str:
+                                        raise ValueError("invalid streamed tool arguments")
+                                    if len(current["arguments"]) + len(arguments) > 8_000:
+                                        raise ValueError("streamed tool arguments too long")
                                     current["arguments"] += arguments
             tool_calls = []
             for index in sorted(tool_call_parts):
