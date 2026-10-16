@@ -1,3 +1,4 @@
+#Requires -Version 7.4
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 $env:PYTHONUTF8 = "1"
@@ -57,7 +58,7 @@ foreach ($SeedGlossary in $ExpectedSeedGlossaries) {
 }
 
 $Zip = Join-Path $Root "dist\SJTU-Learning-Assistant-$Version-Windows-x64-portable.zip"
-Compress-Archive -Path "$AppDir\*" -DestinationPath $Zip -CompressionLevel Optimal -Force
+Get-ChildItem -LiteralPath $AppDir -Force | Compress-Archive -DestinationPath $Zip -CompressionLevel Optimal -Force
 $ZipHash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
     "$Zip.sha256",
@@ -68,9 +69,13 @@ $ZipHash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
 $IsccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 $IsccPath = if ($IsccCommand) { $IsccCommand.Source } else { $null }
 if (-not $IsccPath) {
-    $Candidate = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
-    if (Test-Path $Candidate) {
-        $IsccPath = $Candidate
+    foreach ($Base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs"))) {
+        if (-not $Base) { continue }
+        $Candidate = Join-Path $Base "Inno Setup 6\ISCC.exe"
+        if (Test-Path -LiteralPath $Candidate) {
+            $IsccPath = $Candidate
+            break
+        }
     }
 }
 if ($IsccPath) {
@@ -86,6 +91,9 @@ if ($IsccPath) {
         [System.Text.Encoding]::ASCII
     )
 } else {
+    if ($env:GITHUB_ACTIONS -eq "true") {
+        throw "CI 中未找到 Inno Setup，拒绝在缺少安装器的情况下继续发布。"
+    }
     Write-Warning "未找到 Inno Setup；已生成 portable ZIP，但跳过安装器。"
 }
 
