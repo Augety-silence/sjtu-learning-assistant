@@ -150,6 +150,7 @@ function ProjectCard({
             aria-valuemin={0}
             aria-valuemax={project.total_phases}
             aria-valuenow={project.phase_index}
+            aria-valuetext={`第 ${project.phase_index} / ${project.total_phases} 轮`}
           >
             <i
               style={{
@@ -327,7 +328,11 @@ export function LocalProjectsView({
             3 轮或 12 轮编译流程。
           </p>
         </div>
-        <Button type="button" onClick={() => setShowForm((value) => !value)}>
+        <Button
+          type="button"
+          aria-expanded={showForm}
+          onClick={() => setShowForm((value) => !value)}
+        >
           <Plus aria-hidden="true" />
           {showForm ? "收起登记" : "登记项目"}
         </Button>
