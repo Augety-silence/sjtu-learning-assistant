@@ -183,8 +183,7 @@ export function ArchiveManager() {
       );
       await Promise.all([loadPage(), loadJobs()]);
     } catch (reason) {
-      const message =
-        reason instanceof Error ? reason.message : "归档启动失败";
+      const message = reason instanceof Error ? reason.message : "归档启动失败";
       if (message.startsWith("未选择")) {
         setNotice("已取消选择，未开始归档。");
       } else {

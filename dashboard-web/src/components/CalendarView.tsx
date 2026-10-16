@@ -47,7 +47,11 @@ function asDate(value: Date | string) {
   const dateOnly =
     typeof value === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value) : null;
   const date = dateOnly
-    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    ? new Date(
+        Number(dateOnly[1]),
+        Number(dateOnly[2]) - 1,
+        Number(dateOnly[3]),
+      )
     : new Date(value);
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }

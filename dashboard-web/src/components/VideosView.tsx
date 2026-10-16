@@ -2861,7 +2861,9 @@ export function VideosView({
                   showToast({
                     kind: "error",
                     message:
-                      reason instanceof Error ? reason.message : "无法打开课件。",
+                      reason instanceof Error
+                        ? reason.message
+                        : "无法打开课件。",
                   }),
                 )
               }

@@ -96,7 +96,9 @@ function waitForBridge() {
       window.removeEventListener("pywebviewready", finish);
       bridgeReady = null;
       reject(
-        new Error("桌面 Bridge 尚未就绪，请稍后重试；若持续出现请重新打开应用。"),
+        new Error(
+          "桌面 Bridge 尚未就绪，请稍后重试；若持续出现请重新打开应用。",
+        ),
       );
     }, BRIDGE_READY_TIMEOUT_MS);
     const poll = window.setInterval(finish, 100);

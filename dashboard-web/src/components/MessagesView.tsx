@@ -214,7 +214,9 @@ export function MessagesView() {
         event.defaultPrevented ||
         event.isComposing ||
         detailItem ||
-        document.querySelector('[data-modal-layer]:not([aria-hidden="true"])') ||
+        document.querySelector(
+          '[data-modal-layer]:not([aria-hidden="true"])',
+        ) ||
         isEditableTarget(event.target) ||
         event.metaKey ||
         event.ctrlKey ||

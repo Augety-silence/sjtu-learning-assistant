@@ -410,18 +410,21 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
   const [book, setBook] = useState<GradebookResult | null>(null);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async (silent = false) => {
-    if (!courseId) return;
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      setBook(await getGradebook(courseId));
-    } catch (reason) {
-      setError(messageFrom(reason, "评分册加载失败"));
-    } finally {
-      setLoading(false);
-    }
-  }, [courseId]);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!courseId) return;
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        setBook(await getGradebook(courseId));
+      } catch (reason) {
+        setError(messageFrom(reason, "评分册加载失败"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [courseId],
+  );
   useEffect(() => void load(), [load]);
   const adapted = useMemo(
     () => (book ? adaptGradebook(book) : { assignments: [], students: [] }),
@@ -541,10 +544,10 @@ function adaptGradingSubmission(
     (submission.workflow_state === "unsubmitted" && !submission.submitted_at)
       ? "missing"
       : submission.late
-      ? "late"
-      : submission.score != null || submission.grade != null
-        ? "graded"
-        : "submitted";
+        ? "late"
+        : submission.score != null || submission.grade != null
+          ? "graded"
+          : "submitted";
   return {
     id: String(submission.id ?? `${studentId}:${index}`),
     studentId,
@@ -585,49 +588,53 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
   const gradingRequest = useRef(0);
-  const load = useCallback(async (silent = false) => {
-    if (!courseId) return;
-    const request = ++gradingRequest.current;
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      const book = await getGradebook(courseId);
-      if (gradingRequest.current !== request) return;
-      const availableAssignments = book.assignments.map((item) => ({
-        id: String(item.id),
-        name: item.name ?? `作业 ${item.id}`,
-        pointsPossible:
-          typeof item.points_possible === "number"
-            ? item.points_possible
-            : null,
-      }));
-      setAssignments(availableAssignments);
-      const nextAssignment =
-        availableAssignments.find((item) => item.id === selectedAssignmentId) ??
-        availableAssignments[0];
-      if (!nextAssignment) {
-        setSelectedAssignmentId("");
-        setAssignment(null);
-        setSubmissions([]);
-        return;
+  const load = useCallback(
+    async (silent = false) => {
+      if (!courseId) return;
+      const request = ++gradingRequest.current;
+      if (!silent) setLoading(true);
+      setError(null);
+      try {
+        const book = await getGradebook(courseId);
+        if (gradingRequest.current !== request) return;
+        const availableAssignments = book.assignments.map((item) => ({
+          id: String(item.id),
+          name: item.name ?? `作业 ${item.id}`,
+          pointsPossible:
+            typeof item.points_possible === "number"
+              ? item.points_possible
+              : null,
+        }));
+        setAssignments(availableAssignments);
+        const nextAssignment =
+          availableAssignments.find(
+            (item) => item.id === selectedAssignmentId,
+          ) ?? availableAssignments[0];
+        if (!nextAssignment) {
+          setSelectedAssignmentId("");
+          setAssignment(null);
+          setSubmissions([]);
+          return;
+        }
+        if (nextAssignment.id !== selectedAssignmentId)
+          setSelectedAssignmentId(nextAssignment.id);
+        setAssignment(nextAssignment);
+        const result = await getGrading(courseId, Number(nextAssignment.id));
+        if (gradingRequest.current !== request) return;
+        const items =
+          "items" in result && Array.isArray(result.items)
+            ? result.items
+            : [result as GradingSubmissionDto];
+        setSubmissions(items.map(adaptGradingSubmission));
+      } catch (reason) {
+        if (gradingRequest.current === request)
+          setError(messageFrom(reason, "作业提交加载失败"));
+      } finally {
+        if (gradingRequest.current === request) setLoading(false);
       }
-      if (nextAssignment.id !== selectedAssignmentId)
-        setSelectedAssignmentId(nextAssignment.id);
-      setAssignment(nextAssignment);
-      const result = await getGrading(courseId, Number(nextAssignment.id));
-      if (gradingRequest.current !== request) return;
-      const items =
-        "items" in result && Array.isArray(result.items)
-          ? result.items
-          : [result as GradingSubmissionDto];
-      setSubmissions(items.map(adaptGradingSubmission));
-    } catch (reason) {
-      if (gradingRequest.current === request)
-        setError(messageFrom(reason, "作业提交加载失败"));
-    } finally {
-      if (gradingRequest.current === request) setLoading(false);
-    }
-  }, [courseId, selectedAssignmentId]);
+    },
+    [courseId, selectedAssignmentId],
+  );
   useEffect(() => void load(), [load]);
   const update = async (
     studentId: string,

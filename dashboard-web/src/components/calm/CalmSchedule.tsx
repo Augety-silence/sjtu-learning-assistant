@@ -382,11 +382,7 @@ export function CalmSchedule({
             </span>
           </span>
         </div>
-        <div
-          className="calm-overview-stats"
-          role="group"
-          aria-label="日程摘要"
-        >
+        <div className="calm-overview-stats" role="group" aria-label="日程摘要">
           <span>
             7 天内 <em>{dueCount}</em> 项待交
           </span>
