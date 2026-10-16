@@ -340,7 +340,9 @@ def _validate_archive(
     seen: set[str] = set()
     active_content = False
     for info in infos:
-        safe_name = _safe_member_name(info.filename, limits)
+        safe_name = _safe_member_name(
+            getattr(info, "orig_filename", info.filename), limits
+        )
         folded = unicodedata.normalize("NFKC", safe_name).casefold()
         if folded in seen:
             raise UnsafeArchiveError("ZIP 包含重名条目。")
