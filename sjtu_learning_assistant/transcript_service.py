@@ -2593,7 +2593,7 @@ class TranscriptService:
                     and (not bool(job.get("force_phase1")) or not self.enable_phase1)
                     and not self._phase1_needs_upgrade(video_dir, manifest)
                 )
-                raw = raw_path.read_text(encoding="utf-8")
+                raw = raw_path.read_bytes().decode("utf-8")
                 offline_chunks = None
                 if not can_reuse_complete and manifest.get("status") in ("partial", "interrupted"):
                     offline_chunks = self._validated_cached_chunks(
@@ -2714,7 +2714,7 @@ class TranscriptService:
         raw_path = video_dir / "raw.vtt"
         if not self._hashed_file_valid(raw_path, manifest.get("raw_sha256")):
             raise TranscriptError("原始字幕哈希校验失败。")
-        raw = raw_path.read_text(encoding="utf-8")
+        raw = raw_path.read_bytes().decode("utf-8")
         source_cues = None
         if (
             self.enable_phase1
@@ -3065,7 +3065,9 @@ class TranscriptService:
         elif is_v2 and kind == "training_examples":
             rows: list[dict[str, Any]] = []
             try:
-                for line in content.splitlines():
+                for line in content.split("\n"):
+                    if not line.strip():
+                        continue
                     value = json.loads(line)
                     if type(value) is not dict:
                         raise ValueError
