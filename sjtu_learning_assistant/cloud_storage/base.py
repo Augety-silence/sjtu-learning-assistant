@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from pathlib import Path
@@ -68,10 +70,17 @@ class TemporaryDownload:
         return self.path
 
     def cleanup(self) -> None:
-        try:
-            self.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for attempt in range(5):
+            try:
+                self.path.unlink(missing_ok=True)
+                return
+            except PermissionError:
+                # Windows: AV scanners/preview handlers briefly hold the file open.
+                if os.name != "nt" or attempt == 4:
+                    return
+                time.sleep(0.1 * (attempt + 1))
+            except OSError:
+                return
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.cleanup()
