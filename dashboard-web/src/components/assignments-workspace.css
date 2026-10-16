@@ -41,9 +41,9 @@
 
 .assignments-page .assignment-filters .assignment-filter-active {
   background: color-mix(in srgb, var(--aura-panel-strong) 92%, transparent);
-  color: var(--text-primary);
+  color: var(--assignment-accent);
   box-shadow: inset 0 1px 0 var(--aura-border-highlight),
-    0 4px 12px -10px var(--text-primary);
+    var(--aura-shadow-soft);
 }
 
 .assignments-page .assignment-layout {
@@ -85,7 +85,8 @@
     var(--aura-border)
   );
   background: var(--assignment-accent-soft);
-  box-shadow: inset 0 1px 0 var(--aura-border-highlight);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    inset 3px 0 0 var(--assignment-accent);
 }
 
 .assignments-page .assignment-card strong {
