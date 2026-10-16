@@ -1,5 +1,7 @@
 # SJTU Learning Assistant 学生端产品发展路线
 
+> 最新接续（2026-10-17）：[改进图谱与日志](docs/improvement-map/README.md) · [作业默认全部规格](docs/improvement-map/assignments-default-all.md)。**作业默认全部是用户明确需求，尚待实现**；当前静态证据显示普通进入仍为today。历史记录中的分支、工作区与验收状态均为对应日期快照。
+
 > 本文定义 SJTU Learning Assistant 的产品判断、架构演进方向与 Agent 交接基线。后续 Agent 开始工作前，应同时阅读 `AGENT.md`、`README.md` 和本文。
 
 ## 1. 我们要解决的问题
@@ -449,7 +451,7 @@ interface FilePreviewer {
 排障记录：
 
 - 项目目录中的 `package-lock.json` 是 macOS 文件提供器占位文件，标称 218 KB 但持续无法读取，导致 npm 在载入锁文件前挂起。
-- 验证时改为从 Git 对象导出完整前端基线，在 `/private/tmp` 覆盖当前改动，并使用隔离 npm 缓存；依赖安装耗时 8 秒。
+- 验证时改为从 Git 对象导出完整前端基线，在 `本机临时构建目录` 覆盖当前改动，并使用隔离 npm 缓存；依赖安装耗时 8 秒。
 - 未在项目目录保留 `node_modules`、`dist` 或 npm 缓存。
 
 下一步：
@@ -471,7 +473,7 @@ interface FilePreviewer {
 
 - 前端：33 个测试文件、286 项测试全部通过；Biome、TypeScript 与 Vite production build 通过。
 - 后端：559 项 pytest 全部通过。
-- macOS 完整构建通过，已安装至 /Applications 并启动。
+- macOS 完整构建通过，已安装至 系统应用安装目录 并启动。
 
 下一步：
 
@@ -510,7 +512,7 @@ interface FilePreviewer {
 
 - 前端专项 32 项、全量 294 项测试通过；Biome、TypeScript 与 Vite production build 通过。
 - 后端桌面桥接、客户端生命周期与作业服务专项 35 项测试及 26 个子测试通过。
-- macOS App 已重新构建、使用本机开发证书签名、验证并安装至 /Applications；旧安装已移入废纸篓，可恢复。
+- macOS App 已重新构建、使用本机开发证书签名、验证并安装至 系统应用安装目录；旧安装已移入废纸篓，可恢复。
 - 当前工作区保持未暂存、未提交、未推送状态，等待本地真实数据测评。
 
 ## 22. AI 助手 Aura 工作区重构（2026-10-09）
@@ -527,7 +529,7 @@ interface FilePreviewer {
 验证与交付：
 
 - AI Chat、Aura 与通用样式专项 45 项测试通过；Biome、TypeScript 与 Vite production build 通过。
-- 已替换并重新签名 /Applications/SJTU Learning Assistant.app 内前端资源，Bundle 验证通过。
+- 已替换并重新签名 应用安装目录中的 SJTU Learning Assistant.app 内前端资源，Bundle 验证通过。
 - 当前工作区保持未暂存、未提交、未推送状态。
 
 ## 23. Aura 材质系统深化与 AI 阅读层级修复（2026-10-09）
@@ -572,7 +574,7 @@ interface FilePreviewer {
 - 计算样式确认能力标签为 `12px / 24px`、AI 选择入口为 `12px / 32px`；视频六个零数量筛选均可点击且 `aria-pressed` 正确切换。
 - 全量前端 35 个测试文件、302 项测试通过；Biome、TypeScript、Vite production build 与 `git diff --check` 通过。
 - 验收截图与组件映射记录在 `docs/ui-validation/compact-controls-2026-10-09/`。
-- 在 macOS 本机按项目正式打包脚本完成前端、Python、许可证与敏感信息检查，应用在 `/private/tmp` 构建并使用本机开发证书签名；Bundle 严格验证通过后已替换 `/Applications/SJTU Learning Assistant.app` 并重新启动。
+- 在 macOS 本机按项目正式打包脚本完成前端、Python、许可证与敏感信息检查，应用在 `本机临时构建目录` 构建并使用本机开发证书签名；Bundle 严格验证通过后已替换 `应用安装目录中的 SJTU Learning Assistant.app` 并重新启动。
 
 下一步：
 
@@ -636,7 +638,7 @@ interface FilePreviewer {
 验证结果：
 
 - 前端 35 个测试文件、307 项测试全部通过；Biome 109 个文件检查、TypeScript、Vite production build 与 `git diff --check` 通过。
-- macOS App 已更新至 `/Applications/SJTU Learning Assistant.app`，重新签名后通过 `codesign --verify --deep --strict` 与 Bundle 校验，并已启动运行。
+- macOS App 已更新至 `应用安装目录中的 SJTU Learning Assistant.app`，重新签名后通过 `codesign --verify --deep --strict` 与 Bundle 校验，并已启动运行。
 - 真实 WKWebView 在 1280×820、1024×768、960×700 下完成截图验收：窄窗侧栏按规则收起，Activity 入口、长回答、表格与输入区完整，无横向溢出或遮挡。
 - 对比截图及说明位于 `docs/ui-validation/ai-frosted-glass-2026-10-10/`。
 
@@ -662,7 +664,7 @@ interface FilePreviewer {
 
 - 仅在视频空间课件能力可用时展示入口。若课件服务没有时间戳，界面会说明无法自动同步，不会推测页码映射。
 - 最终前端 TypeScript/Vite 生产构建通过；最新全量前端 47 个测试文件、410 项通过（运行时设置 `NODE_OPTIONS=--no-experimental-webstorage`）；Portal/WebKit 事件回归所在的视频专项 73/73 通过。Python 视频服务专项 16/16 通过；Biome 检查通过。
-- 最终版本已安装至 `/Applications/SJTU Learning Assistant.app`。旧安装包保存在 `/private/tmp/sjtu-learning-assistant-luna-20261013/previous-installed-before-runtime-fix.app` 与原始检查点 `/private/tmp/sjtu-learning-assistant-luna-20261013/previous-installed.app`。安装包前端 16 个文件与构建产物逐项一致；主程序与嵌入 Python 采用原本地开发证书、签名 flags=none，提权 `codesign --verify --deep --strict` 通过。旧主进程 32473 已退出，最终版以 PID 36997 启动。
+- 最终版本已安装至 `应用安装目录中的 SJTU Learning Assistant.app`。旧安装包保存在 `本机临时验收目录中的 previous-installed-before-runtime-fix.app` 与原始检查点 `本机临时验收目录中的 previous-installed.app`。安装包前端 16 个文件与构建产物逐项一致；主程序与嵌入 Python 采用原本地开发证书、签名 flags=none，提权 `codesign --verify --deep --strict` 通过。旧主进程已退出，最终版已启动。
 - 实机确认视频页常驻 AI 横幅已移除；所选真实录像可播放并有字幕。最终 Portal 全屏覆盖整个应用内容区，左侧导航和页头均不可见；点击退出后正常视频页布局恢复，退出后的自动续播仍待核对。PPT 浮窗已显示真实第 74 页图片、视频时间 2:37 和当前字幕；拖动浮窗及缩小尺寸均已实机验证。macOS 原生窗口全屏未接入。
 
 ## 29. AI 任务恢复、真实流式输出与校对重跑（2026-10-14）
@@ -681,8 +683,8 @@ interface FilePreviewer {
 - 新增流式工具分片、带工具 Agent 流式循环、最终回答 delta、校对分块进度和 partial 后强制重跑回归测试；AI/Agent/字幕相关 41 项 Python 测试全部通过。
 - 全量前端 47 个测试文件、410 项既有测试通过；另新增并通过 1 项 AI 失败恢复/重试测试。Biome、TypeScript、Vite production build 与 `git diff --check` 通过。
 - 全量 Python 为 593 项通过、1 项跳过；唯一失败是既有 `tests/test_archive_models.py` 仍断言数据库版本 `0020`，而当前源码已为 `0021`，与本轮 AI 改动无关。
-- macOS bundle 完成前端、Python、许可证、秘密扫描和 PyInstaller 构建。桌面目录的 File Provider 会恢复 FinderInfo，故将成品复制到 `/private/tmp` 清理扩展属性后使用本机开发证书签名；Bundle、plist 与 `codesign --verify --deep --strict` 均通过。
-- 新版已安装并启动于 `/Applications/SJTU Learning Assistant.app`；旧版可恢复备份为 `/Applications/SJTU Learning Assistant.backup-20261014-144506.app`。
+- macOS bundle 完成前端、Python、许可证、秘密扫描和 PyInstaller 构建。桌面目录的 File Provider 会恢复 FinderInfo，故将成品复制到 `本机临时构建目录` 清理扩展属性后使用本机开发证书签名；Bundle、plist 与 `codesign --verify --deep --strict` 均通过。
+- 新版已安装并启动于 `应用安装目录中的 SJTU Learning Assistant.app`；旧版可恢复备份为 `应用安装目录中的旧版回退副本`。
 
 下一步与风险：
 
@@ -698,7 +700,7 @@ interface FilePreviewer {
 - 新增 transcript_playback 时间投影与 corrected_source_cues 对齐；bridge 新增 transcript_playback_prepare、transcript_playback_update、transcript_learning_segments 与课件图片只读端点；前端新增 VideoSynchronizedLearning 随播面板（当前段高亮、证据时间戳跳播、提前量提示）。
 - 角色契约（course_learning_prompts）按当前块绑定 cue_ids 枚举与 Correction 常量模板，Critic PASS 约束收紧；orchestrator 解析后二次校验 cue 归属，并新增只修结构、不改事实的一次修复。
 - 独立复核：前端 48 文件 427 项通过；全量 Python 599 项通过、1 项跳过；包内前端资产与源码构建 SHA-256 一致，关键后端模块字节码结构等价。
-- 打包签名：1.7.1 以本机开发证书 SJTU Learning Assistant Local Development 签名，codesign 严格验证、verify_macos_bundle.py、plist 校验通过；旧 1.7.0 回滚副本保留在 Application Support/SJTU Learning Assistant/app-rollback/1.7.0-20261014；新版已安装并启动于 /Applications。
+- 打包签名：1.7.1 以本机开发证书 SJTU Learning Assistant Local Development 签名，codesign 严格验证、verify_macos_bundle.py、plist 校验通过；旧 1.7.0 回滚副本保留在 应用支持目录中的 1.7.0 回滚副本；新版已安装并启动于 系统应用安装目录。
 - 真实链路（临时 DB 副本与临时 transcript/memory 根，真实 SJTU 网络与 deepseek-chat）：连接 3/3 成功；播放入口自动准备且幂等；85 秒发布首个同步分段，约 2 分钟 6 段 52 个可用区间；真实知识点带 cue 逐字证据且无问卷课污染；切录像使前台立即转为抓取；取消持久化且之后 20 秒零模型调用；重启回收已取消任务不触发任何抓取或 AI。
 
 下一步与风险：
@@ -721,3 +723,24 @@ interface FilePreviewer {
 - 交付版本为 1.7.3，内容与兼容边界见 [发布说明](docs/releases/v1.7.3.md)。最终发布提交及资产以 [v1.7.3 Release](https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.7.3) 为准；本机安装验收另保留准确版本、签名、启动与回退身份。
 
 后续风险与工作：真实模型仍可能出现结构失败及部分结果，质量门不强制通过；不得将合成回归或构建成功解释为内容质量通过、公证或 Windows 原生运行通过。继续按实际失败样本改进模型结构契约与内容核对，保留原始字幕和已完成材料。
+
+
+## 32. 改进图谱、项目精简与作业默认范围（2026-10-17）
+
+本轮交付：[图谱与agent入口](docs/improvement-map/README.md)、[当日日志](docs/improvement-map/2026-10-17.md)、[graph.json](docs/improvement-map/graph.json)和[作业实施规格](docs/improvement-map/assignments-default-all.md)。本轮只发布文档，业务功能未改动。为公开交付，历史段落中的本机临时/安装/回退路径及瞬时进程号已改为通用描述；保留原验证结论，不将其视为本轮重新验收。
+
+已验证的治理快照：
+
+- 云端删除5个非main分支后，仅保留main；本地精确删除20个已合并历史分支。
+- 本机291个缓存/构建文件和3个交付压缩包移入专用废纸篓；35个差异编号源码归档并逐文件hash核对。运行环境、现有桌面发行目录及review冲突现场保留。
+- Widget Lab源分支已删除，PR24关闭且未合并；6个独有提交仅保留在本机已验证恢复包中，不作为main既有组件使用。
+- 本机旧工作目录相对本轮b09c39e基线落后136提交，review仍在rebase；main已包含PR27，后续须先比较补丁等价，不能把旧现场直接重放为新改动。
+
+用户明确要求与下一步：
+
+1. `REQ-ASG-ALL / P0`：普通进入作业管理，默认全部作业而非今天截止。当前类型、Bridge、本地与远端列表均需贯通all契约，不能仅改界面初始字符串。状态为待实现。
+2. 首批验收：默认all请求与完整数据范围、Bridge/双查询路径、日历定向详情、空状态和异步刷新；保留提交确认与服务端回读回归。组合筛选为后续增强，不阻塞首批修复。
+3. 工程建议：开发基线治理、review副本分类、依赖锁定与重建、证据索引及真实可用性分层。
+4. 产品实验：可解释学习决策、作业通关卡、课程时间胶囊、DDL沙盘、错题证据闭环、agent执行账本与材料可用性地图；均是待验证假设，详见图谱依赖与最小实验。
+
+验证与风险：本轮仅完成静态代码审查和文档交付核验，没有将作业需求实现、构建或安装。对未来agent而言，本文是接续依据，不是对所有提案或真实数据操作的自动授权；实际工作仍按当次已明确目标推进。

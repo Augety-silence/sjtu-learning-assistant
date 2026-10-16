@@ -1,0 +1,555 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-17",
+  "timezone": "Asia/Shanghai",
+  "repository": "Augety-silence/sjtu-learning-assistant",
+  "baseline_commit": "b09c39e3560cfe70b0142aab93d7b1c2411bd173",
+  "delivery_scope": "documentation_only",
+  "runtime_code_changed": false,
+  "status_legend": {
+    "verified_snapshot": "已验证的带日期快照，使用前刷新",
+    "verified_static": "仅静态代码核查，不代表实际App验收",
+    "user_confirmed_pending_implementation": "用户明确要求，业务实现尚未交付",
+    "proposed": "工程建议，未实施",
+    "hypothesis": "大胆实验提案，效果未验证"
+  },
+  "priority_legend": {
+    "P0": "优先接续，不代表安全漏洞定级",
+    "P1": "接续完成后推进或独立并行评估",
+    "P2": "实验探索"
+  },
+  "nodes": [
+    {
+      "id": "FACT-CLEANUP",
+      "kind": "fact",
+      "title": "本机精简与云端分支清理已验收",
+      "priority": "P0",
+      "status": "verified_snapshot",
+      "claim_type": "observed_local_and_remote",
+      "depends_on": [],
+      "evidence": [
+        "2026-10-17.md#1-事实快照"
+      ]
+    },
+    {
+      "id": "FACT-ASG-TODAY",
+      "kind": "fact",
+      "title": "作业默认today且全链路没有all契约",
+      "priority": "P0",
+      "status": "verified_static",
+      "claim_type": "observed_code",
+      "depends_on": [],
+      "evidence": [
+        "assignments-default-all.md#已核实事实与根因"
+      ]
+    },
+    {
+      "id": "REQ-ASG-ALL",
+      "kind": "requirement",
+      "title": "常规进入作业管理默认全部作业",
+      "priority": "P0",
+      "status": "user_confirmed_pending_implementation",
+      "claim_type": "user_explicit",
+      "depends_on": [],
+      "evidence": [
+        "assignments-default-all.md"
+      ],
+      "affected_paths": [
+        "dashboard-web/src/components/AssignmentsView.tsx",
+        "dashboard-web/src/lib/types.ts",
+        "desktop_app.py",
+        "sjtu_learning_assistant/desktop_learning_service.py"
+      ],
+      "acceptance_ids": [
+        "ASG-AC1",
+        "ASG-AC4",
+        "ASG-AC5",
+        "ASG-AC6",
+        "ASG-AC7"
+      ],
+      "next_action": "在最新main贯通all类型、Bridge白名单/默认、本地与远端查询、普通入口；补fake端到端回归。"
+    },
+    {
+      "id": "ENG-BASELINE",
+      "kind": "engineering",
+      "title": "明确开发基线和本地工作目录身份",
+      "priority": "P0",
+      "status": "proposed",
+      "claim_type": "recommendation",
+      "depends_on": [],
+      "evidence": [
+        "2026-10-17.md#3-工程改进队列"
+      ],
+      "next_action": "先比对PR27与本地rebase的补丁等价，再选择继续整合或建立干净main工作目录；保留冲突现场。"
+    },
+    {
+      "id": "ENG-REVIEW-COPIES",
+      "kind": "engineering",
+      "title": "对review的77个编号副本做差异处置",
+      "priority": "P1",
+      "status": "proposed",
+      "claim_type": "recommendation",
+      "depends_on": [
+        "ENG-BASELINE"
+      ],
+      "evidence": [
+        "2026-10-17.md#3-工程改进队列"
+      ]
+    },
+    {
+      "id": "ENG-REPRO",
+      "kind": "engineering",
+      "title": "依赖可重建与锁文件规则收敛",
+      "priority": "P1",
+      "status": "proposed",
+      "claim_type": "recommendation",
+      "depends_on": [],
+      "evidence": [
+        "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/.gitignore#L48",
+        "2026-10-17.md#3-工程改进队列"
+      ]
+    },
+    {
+      "id": "ENG-EVIDENCE",
+      "kind": "engineering",
+      "title": "验证证据索引与生成物保留策略",
+      "priority": "P1",
+      "status": "proposed",
+      "claim_type": "recommendation",
+      "depends_on": [],
+      "evidence": [
+        "2026-10-17.md#3-工程改进队列"
+      ]
+    },
+    {
+      "id": "ENG-CAPABILITY",
+      "kind": "engineering",
+      "title": "配置、探测与实际可用分层记录",
+      "priority": "P1",
+      "status": "proposed",
+      "claim_type": "recommendation",
+      "depends_on": [
+        "ENG-EVIDENCE"
+      ],
+      "evidence": [
+        "2026-10-17.md#3-工程改进队列"
+      ]
+    },
+    {
+      "id": "IDEA-DECISION",
+      "kind": "experiment",
+      "title": "可解释的学习决策台",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "REQ-ASG-ALL",
+        "ENG-CAPABILITY"
+      ],
+      "evidence": [
+        "2026-10-17.md#41-idea-decision可解释的学习决策台"
+      ]
+    },
+    {
+      "id": "IDEA-PASSPORT",
+      "kind": "experiment",
+      "title": "作业通关卡：要求、材料、缺口与提交证据",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "REQ-ASG-ALL",
+        "ENG-EVIDENCE"
+      ],
+      "evidence": [
+        "2026-10-17.md#42-idea-passport作业通关卡"
+      ]
+    },
+    {
+      "id": "IDEA-REPLAY",
+      "kind": "experiment",
+      "title": "课程时间胶囊与学习上下文回放",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "ENG-EVIDENCE"
+      ],
+      "evidence": [
+        "2026-10-17.md#43-idea-replay课程时间胶囊"
+      ]
+    },
+    {
+      "id": "IDEA-SANDBOX",
+      "kind": "experiment",
+      "title": "DDL负荷沙盘与可逆计划",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "REQ-ASG-ALL"
+      ],
+      "evidence": [
+        "2026-10-17.md#44-idea-sandboxddl负荷沙盘"
+      ]
+    },
+    {
+      "id": "IDEA-RECALL",
+      "kind": "experiment",
+      "title": "错题到原始证据的复习闭环",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "IDEA-REPLAY",
+        "ENG-CAPABILITY"
+      ],
+      "evidence": [
+        "2026-10-17.md#45-idea-recall错题到原始证据的复习闭环"
+      ]
+    },
+    {
+      "id": "IDEA-AGENT-LEDGER",
+      "kind": "experiment",
+      "title": "Agent可接续的执行账本",
+      "priority": "P1",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "ENG-BASELINE",
+        "ENG-EVIDENCE"
+      ],
+      "evidence": [
+        "2026-10-17.md#46-idea-agent-ledgeragent可接续的执行账本"
+      ]
+    },
+    {
+      "id": "IDEA-READINESS",
+      "kind": "experiment",
+      "title": "学习材料可用性地图",
+      "priority": "P2",
+      "status": "hypothesis",
+      "claim_type": "proposal",
+      "depends_on": [
+        "ENG-EVIDENCE",
+        "ENG-CAPABILITY"
+      ],
+      "evidence": [
+        "2026-10-17.md#47-idea-readiness学习材料可用性地图"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "ENG-BASELINE",
+      "to": "ENG-REVIEW-COPIES",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-EVIDENCE",
+      "to": "ENG-CAPABILITY",
+      "type": "requires"
+    },
+    {
+      "from": "REQ-ASG-ALL",
+      "to": "IDEA-DECISION",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-CAPABILITY",
+      "to": "IDEA-DECISION",
+      "type": "requires"
+    },
+    {
+      "from": "REQ-ASG-ALL",
+      "to": "IDEA-PASSPORT",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-EVIDENCE",
+      "to": "IDEA-PASSPORT",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-EVIDENCE",
+      "to": "IDEA-REPLAY",
+      "type": "requires"
+    },
+    {
+      "from": "REQ-ASG-ALL",
+      "to": "IDEA-SANDBOX",
+      "type": "requires"
+    },
+    {
+      "from": "IDEA-REPLAY",
+      "to": "IDEA-RECALL",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-CAPABILITY",
+      "to": "IDEA-RECALL",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-BASELINE",
+      "to": "IDEA-AGENT-LEDGER",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-EVIDENCE",
+      "to": "IDEA-AGENT-LEDGER",
+      "type": "requires"
+    },
+    {
+      "from": "FACT-ASG-TODAY",
+      "to": "REQ-ASG-ALL",
+      "type": "motivates"
+    },
+    {
+      "from": "FACT-CLEANUP",
+      "to": "ENG-BASELINE",
+      "type": "informs"
+    },
+    {
+      "from": "ENG-EVIDENCE",
+      "to": "IDEA-READINESS",
+      "type": "requires"
+    },
+    {
+      "from": "ENG-CAPABILITY",
+      "to": "IDEA-READINESS",
+      "type": "requires"
+    }
+  ],
+  "assignment_acceptance": [
+    {
+      "id": "ASG-AC1",
+      "case": "普通导航/直接#/assignments/离开后重新进入",
+      "expected": "默认选中全部；首次列表请求category=all；未来、逾期、无DDL、已交/已评分均可见，今天0项也不会空掉列表。",
+      "layer": "frontend+App integration",
+      "scope": "core_default_all"
+    },
+    {
+      "id": "ASG-AC2",
+      "case": "显式点击今天截止",
+      "expected": "只显示应用有效时区当天截止的作业；界面可见筛选条件，清除/全部可回到完整列表；测试午夜边界和无DDL。",
+      "layer": "frontend+backend timezone",
+      "scope": "retained_today_shortcut_proposal"
+    },
+    {
+      "id": "ASG-AC3",
+      "case": "课程A+关键词+未提交+未来日期",
+      "expected": "满足所有条件的交集；单独切换一维不清空其他维；重置恢复全部。",
+      "layer": "filter contract",
+      "scope": "extension_proposal"
+    },
+    {
+      "id": "ASG-AC4",
+      "case": "all请求通过桥接、本地DB fake、远端Canvas fake",
+      "expected": "均通过白名单；返回完整有效数据、不因all不在categories而变空；today等旧分类仍正确。",
+      "layer": "bridge+backend isolated tests",
+      "scope": "core_default_all"
+    },
+    {
+      "id": "ASG-AC5",
+      "case": "日历或其他定向入口打开作业",
+      "expected": "详情定位正确且不丢失作业；不得由filters.find把普通all自动变today；保留当前详情/提交确认与服务端回读回归。",
+      "layer": "App/AssignmentsView integration",
+      "scope": "core_default_all"
+    },
+    {
+      "id": "ASG-AC6",
+      "case": "筛选0项/全部0项/首次未同步/API失败",
+      "expected": "四者文案和操作语义可区别；当前条件0项给清除筛选，失败给重试。",
+      "layer": "frontend state matrix",
+      "scope": "core_default_all"
+    },
+    {
+      "id": "ASG-AC7",
+      "case": "提交后刷新、请求乱序与同步重载",
+      "expected": "保持明确生效筛选；旧today请求不能覆盖新all结果；完成状态变化按当前条件更新；无真实账号提交。",
+      "layer": "frontend async+submission regression",
+      "scope": "core_default_all"
+    }
+  ],
+  "source_evidence": [
+    {
+      "id": "default_today",
+      "claim": "无目标普通进入默认today；有目标默认upcoming。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L277-L283",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 277,
+      "end_line": 283
+    },
+    {
+      "id": "eight_filters_no_all",
+      "claim": "8个分类，没有all；today排首位。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L57-L66",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 57,
+      "end_line": 66
+    },
+    {
+      "id": "target_rewrites_category",
+      "claim": "目标详情加载后按filters顺序找到第一个categories命中项并setCategory，可能重新写为today。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L317-L343",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 317,
+      "end_line": 343
+    },
+    {
+      "id": "category_request",
+      "claim": "列表请求仅携带category。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L302-L315",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 302,
+      "end_line": 315
+    },
+    {
+      "id": "tab_explicit_selection",
+      "claim": "分类按钮通过显式点击setCategory。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L499-L516",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 499,
+      "end_line": 516
+    },
+    {
+      "id": "empty_semantics",
+      "claim": "当前空态为此分类暂无作业/Canvas没有返回符合条件作业。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AssignmentsView.tsx#L518-L526",
+      "path": "dashboard-web/src/components/AssignmentsView.tsx",
+      "start_line": 518,
+      "end_line": 526
+    },
+    {
+      "id": "type_no_all",
+      "claim": "AssignmentCategory联合类型不含all。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/lib/types.ts#L421-L429",
+      "path": "dashboard-web/src/lib/types.ts",
+      "start_line": 421,
+      "end_line": 429
+    },
+    {
+      "id": "api_category_only",
+      "claim": "getAssignments仅传category，无课程/搜索/状态组合参数。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/lib/api.ts#L510-L517",
+      "path": "dashboard-web/src/lib/api.ts",
+      "start_line": 510,
+      "end_line": 517
+    },
+    {
+      "id": "bridge_defaults_rejects_all",
+      "claim": "桥接缺省category=today且白名单不含all，仅改前端默认值会被拒绝。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/desktop_app.py#L957-L963",
+      "path": "desktop_app.py",
+      "start_line": 957,
+      "end_line": 963
+    },
+    {
+      "id": "local_membership_filter",
+      "claim": "本地列表限活跃作业并按category in categories过滤，直接传all会过滤空。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/sjtu_learning_assistant/desktop_learning_service.py#L190-L211",
+      "path": "sjtu_learning_assistant/desktop_learning_service.py",
+      "start_line": 190,
+      "end_line": 211
+    },
+    {
+      "id": "remote_membership_filter",
+      "claim": "远端路径同样按category成员过滤。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/sjtu_learning_assistant/desktop_learning_service.py#L213-L230",
+      "path": "sjtu_learning_assistant/desktop_learning_service.py",
+      "start_line": 213,
+      "end_line": 230
+    },
+    {
+      "id": "timezone_today_categories",
+      "claim": "today按now.astimezone的本地日期判断；状态与日期同在categories中。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/sjtu_learning_assistant/desktop_learning_service.py#L73-L102",
+      "path": "sjtu_learning_assistant/desktop_learning_service.py",
+      "start_line": 73,
+      "end_line": 102
+    },
+    {
+      "id": "hash_view_only",
+      "claim": "hash仅识别视图，无query/category解析；不能把目前URL筛选当已存在。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/App.tsx#L170-L177",
+      "path": "dashboard-web/src/App.tsx",
+      "start_line": 170,
+      "end_line": 177
+    },
+    {
+      "id": "set_view_hash",
+      "claim": "setView只写/${next}。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/App.tsx#L1278-L1281",
+      "path": "dashboard-web/src/App.tsx",
+      "start_line": 1278,
+      "end_line": 1281
+    },
+    {
+      "id": "sidebar_entry",
+      "claim": "主导航作业中心仅为assignments视图。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/components/AppShell.tsx#L34-L39",
+      "path": "dashboard-web/src/components/AppShell.tsx",
+      "start_line": 34,
+      "end_line": 39
+    },
+    {
+      "id": "calendar_target_navigation",
+      "claim": "日历可带target进入作业中心。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/App.tsx#L1493-L1502",
+      "path": "dashboard-web/src/App.tsx",
+      "start_line": 1493,
+      "end_line": 1502
+    },
+    {
+      "id": "target_prop",
+      "claim": "AssignmentsView收到initialTarget并在处理后清空。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/App.tsx#L1518-L1524",
+      "path": "dashboard-web/src/App.tsx",
+      "start_line": 1518,
+      "end_line": 1524
+    },
+    {
+      "id": "test_current_categories",
+      "claim": "默认测试夹具为today；断言8分类且切换graded。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/test/AssignmentsView.test.tsx#L67-L117",
+      "path": "dashboard-web/src/test/AssignmentsView.test.tsx",
+      "start_line": 67,
+      "end_line": 117
+    },
+    {
+      "id": "test_target_detail",
+      "claim": "已有日历目标详情定位回归。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/test/AssignmentsView.test.tsx#L216-L232",
+      "path": "dashboard-web/src/test/AssignmentsView.test.tsx",
+      "start_line": 216,
+      "end_line": 232
+    },
+    {
+      "id": "test_app_calendar_target",
+      "claim": "已有日历到作业工作台集成测试，mock upcoming。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/dashboard-web/src/test/App.test.tsx#L774-L849",
+      "path": "dashboard-web/src/test/App.test.tsx",
+      "start_line": 774,
+      "end_line": 849
+    },
+    {
+      "id": "test_backend_categories",
+      "claim": "后端测试today/missing/graded分类。",
+      "url": "https://github.com/Augety-silence/sjtu-learning-assistant/blob/b09c39e3560cfe70b0142aab93d7b1c2411bd173/tests/test_desktop_learning_service.py#L91-L98",
+      "path": "tests/test_desktop_learning_service.py",
+      "start_line": 91,
+      "end_line": 98
+    }
+  ],
+  "agent_contract": {
+    "entrypoint": "README.md",
+    "current_log": "2026-10-17.md",
+    "user_requirement": "assignments-default-all.md",
+    "default_next_task": "REQ-ASG-ALL",
+    "implementation_status": "pending",
+    "graph_is_execution_authorization": false,
+    "publication_policy_this_task": "update existing main only; do not create a branch",
+    "local_state_warning": "Do not infer clean/latest source from a local directory name or stale origin/main; preserve existing rebase/conflicts and user edits."
+  }
+}

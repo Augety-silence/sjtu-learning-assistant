@@ -177,4 +177,6 @@ GitHub 上的版本均按 **正式 Release** 发布并标记为 Latest，不使�
 - `scripts/`：测试、检查和发布脚本。
 - `tests/`：自动化回归测试。
 
-参与开发前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和 [AGENT.md](AGENT.md)。许可证及第三方依赖声明见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+参与开发前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和 [AGENT.md](AGENT.md)。
+
+Agent接续与改进规划：[改进图谱与日志](docs/improvement-map/README.md) · [作业默认全部实施规格（待实现）](docs/improvement-map/assignments-default-all.md)。图谱区分已验证事实、用户明确需求、工程建议与实验假设。许可证及第三方依赖声明见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
