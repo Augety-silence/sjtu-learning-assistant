@@ -7,8 +7,10 @@ accepts the observed submission or reports an uncertain result to the caller.
 from __future__ import annotations
 
 import html
+import os
 import re
 import sys
+import tempfile
 import webbrowser
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -24,6 +26,20 @@ from sjtu_learning_assistant.repository import record_submission
 NATIVE_TYPES = frozenset({"online_upload", "online_text_entry", "online_url"})
 _SUBMITTED_STATES = frozenset({"submitted", "pending_review", "graded"})
 _WHITESPACE = re.compile(r"\s+")
+_UNSAFE_FILENAME = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
+_WINDOWS_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.IGNORECASE)
+
+
+def _upload_filename(remote_id: Any, fallback: str) -> str:
+    """Original cloud basename, made safe for a local temp file on Windows and POSIX."""
+    raw = remote_id.replace("\\", "/").rsplit("/", 1)[-1] if isinstance(remote_id, str) else ""
+    name = _UNSAFE_FILENAME.sub("_", raw).strip().rstrip(" .")
+    if len(name) > 200:
+        suffix = Path(name).suffix[:20]
+        name = name[: 200 - len(suffix)] + suffix
+    if not name or _WINDOWS_RESERVED.match(name):
+        return fallback
+    return name
 
 
 class _VisibleTextParser(HTMLParser):
@@ -204,10 +220,20 @@ class AssignmentService:
         body: str | None = None,
         url: str | None = None,
         file_ids: list[int | str] | tuple[int | str, ...] | None = None,
+        after_attempt: int | None = None,
     ) -> dict[str, Any] | None:
         """Return the matching server submission, or ``None`` on any mismatch."""
         submission = self.status(course_id, assignment_id)
         if submission.get("workflow_state") not in _SUBMITTED_STATES:
+            return None
+        attempt = submission.get("attempt")
+        if (
+            after_attempt is not None
+            and isinstance(attempt, int)
+            and not isinstance(attempt, bool)
+            and attempt <= after_attempt
+        ):
+            # An older identical submission must not "verify" an uncertain new POST.
             return None
         observed_type = submission.get("submission_type")
         if observed_type != submission_type:
@@ -244,18 +270,23 @@ class AssignmentService:
     ) -> None:
         if self.engine is None:
             return
-        record_submission(
-            self.engine,
-            canvas_course_id=course_id,
-            canvas_assignment_id=assignment_id,
-            submission_type=submission_type,
-            status=status,
-            canvas_submission_id=submission.get("id") if submission else None,
-            cloud_file_id=cloud_file_id,
-            local_filename=local_filename,
-            raw_data=dict(submission or {}),
-            error=error,
-        )
+        try:
+            record_submission(
+                self.engine,
+                canvas_course_id=course_id,
+                canvas_assignment_id=assignment_id,
+                submission_type=submission_type,
+                status=status,
+                canvas_submission_id=submission.get("id") if submission else None,
+                cloud_file_id=cloud_file_id,
+                local_filename=local_filename,
+                raw_data=dict(submission or {}),
+                error=error,
+            )
+        except Exception:
+            # Local audit is best-effort: a SQLite lock must never turn a verified
+            # Canvas submission into an error that invites a duplicate resubmission.
+            return
 
     def _submit_and_verify(
         self,
@@ -270,6 +301,14 @@ class AssignmentService:
         local_filename: str | None = None,
         cloud_file_id: int | None = None,
     ) -> SubmissionResult:
+        previous_attempt: int | None = None
+        try:
+            previous = self.status(course_id, assignment_id)
+            candidate = previous.get("attempt") if isinstance(previous, Mapping) else None
+            if isinstance(candidate, int) and not isinstance(candidate, bool):
+                previous_attempt = candidate
+        except CanvasError:
+            previous_attempt = None
         try:
             self.canvas.submit_assignment(
                 course_id,
@@ -288,7 +327,8 @@ class AssignmentService:
                 raise
             try:
                 observed = self.verify(
-                    course_id, assignment_id, submission_type, body=body, url=url, file_ids=file_ids
+                    course_id, assignment_id, submission_type, body=body, url=url,
+                    file_ids=file_ids, after_attempt=previous_attempt,
                 )
             except CanvasError as verify_exc:
                 self._audit(
@@ -315,7 +355,8 @@ class AssignmentService:
             return SubmissionResult("verified", submission_type, observed, assignment)
 
         observed = self.verify(
-            course_id, assignment_id, submission_type, body=body, url=url, file_ids=file_ids
+            course_id, assignment_id, submission_type, body=body, url=url,
+            file_ids=file_ids, after_attempt=previous_attempt,
         )
         if observed is None:
             self._audit(
@@ -323,7 +364,10 @@ class AssignmentService:
                 local_filename=local_filename, cloud_file_id=cloud_file_id,
                 error="Canvas POST 成功但 GET self 验证不匹配",
             )
-            raise SubmissionVerificationError("Canvas 返回提交成功，但 GET self 严格验证失败。")
+            raise SubmissionVerificationError(
+                "Canvas 已受理提交请求，但回读到的提交内容与本次不一致；"
+                "请先在 Canvas 作业页面核对，确认前不要重复提交。"
+            )
         self._audit(
             course_id, assignment_id, submission_type, "verified",
             submission=observed, local_filename=local_filename, cloud_file_id=cloud_file_id,
@@ -409,6 +453,7 @@ class AssignmentService:
         if external:
             return external
         temporary: Path | None = None
+        staging_dir: Path | None = None
         download_owner: Any = None
         owner_entered = False
         try:
@@ -424,6 +469,12 @@ class AssignmentService:
                 temporary = Path(download_owner)
             if not temporary.is_file():
                 raise AssignmentServiceError("云盘 Provider 未生成可上传的临时文件。")
+            upload_name = _upload_filename(remote_id, temporary.name)
+            if upload_name != temporary.name:
+                staging_dir = Path(tempfile.mkdtemp(prefix="sjtu-submit-", dir=temporary.parent))
+                staged = staging_dir / upload_name
+                os.replace(temporary, staged)
+                temporary = staged
             upload = self.canvas.request_submission_file_upload(course_id, assignment_id, temporary)
             uploaded = self.canvas.upload_file(upload, temporary)
             file_id = self._uploaded_file_id(uploaded)
@@ -448,6 +499,11 @@ class AssignmentService:
                 except OSError:
                     # Cleanup is best-effort only after submission outcome has been preserved.
                     pass
+            if staging_dir is not None:
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
 
     cloud_file = submit_cloud_file
 
@@ -456,6 +512,14 @@ class AssignmentService:
         target = assignment.get("html_url")
         if not target:
             raise AssignmentServiceError("Canvas 作业没有可打开的外部页面。")
+        parsed_target = urlsplit(str(target).strip())
+        if (
+            parsed_target.scheme != "https"
+            or not parsed_target.hostname
+            or parsed_target.username
+            or parsed_target.password
+        ):
+            raise AssignmentServiceError("Canvas 作业页面地址不安全，已拒绝打开。")
         webbrowser.open(str(target))
         available = self._submission_types(assignment)
         external_type = next((item for item in available if item not in NATIVE_TYPES), None)
