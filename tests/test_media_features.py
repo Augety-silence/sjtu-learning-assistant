@@ -26,7 +26,14 @@ def make_zip(entries: dict[str, bytes]) -> bytes:
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in entries.items():
             archive.writestr(name, content)
-    return output.getvalue()
+    payload = output.getvalue()
+    for name in entries:
+        if "\\" not in name:
+            continue
+        normalized = name.replace("\\", "/").encode("utf-8")
+        raw = name.encode("utf-8")
+        payload = payload.replace(normalized, raw)
+    return payload
 
 
 class FileTypeTests(unittest.TestCase):

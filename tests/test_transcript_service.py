@@ -93,9 +93,10 @@ class TranscriptServiceTests(unittest.TestCase):
         manifest = json.loads(next(self.root.glob("videos/*/manifest.json")).read_text(encoding="utf-8"))
         self.assertNotIn("api_key", json.dumps(manifest))
         self.assertNotIn(str(self.root), json.dumps(manifest))
-        self.assertEqual(0o700, os.stat(self.root.parent).st_mode & 0o777)
-        self.assertEqual(0o700, os.stat(self.root).st_mode & 0o777)
-        self.assertEqual(0o600, os.stat(next(self.root.glob("videos/*/raw.vtt"))).st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o700, os.stat(self.root.parent).st_mode & 0o777)
+            self.assertEqual(0o700, os.stat(self.root).st_mode & 0o777)
+            self.assertEqual(0o600, os.stat(next(self.root.glob("videos/*/raw.vtt"))).st_mode & 0o777)
         second = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
         service.run_pending()
         self.assertEqual(1, self.fetches)
@@ -203,7 +204,8 @@ class TranscriptServiceTests(unittest.TestCase):
         record = manifest["chunks"]["0"]
         self.assertEqual("chunks/0000.json", record["path"])
         chunk_path = video_dir / "chunks" / "0000.json"
-        self.assertEqual(0o600, os.stat(chunk_path).st_mode & 0o777)
+        if os.name != "nt":
+            self.assertEqual(0o600, os.stat(chunk_path).st_mode & 0o777)
         self.assertEqual(hashlib.sha256(chunk_path.read_bytes()).hexdigest(), record["sha256"])
 
 
@@ -292,7 +294,8 @@ class TranscriptServiceTests(unittest.TestCase):
             record = manifest.get("artifacts").get(kind)
             self.assertEqual(name, record.get("path"))
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), record.get("sha256"))
-            self.assertEqual(0o600, os.stat(path).st_mode & 0o777)
+            if os.name != "nt":
+                self.assertEqual(0o600, os.stat(path).st_mode & 0o777)
         summary = json.loads((video_dir / "summary.json").read_text(encoding="utf-8"))
         evidence = next(iter(next(iter(summary.get("emphasized_points"))).get("evidence")))
         self.assertEqual("cue-000001", evidence.get("cue_id"))
