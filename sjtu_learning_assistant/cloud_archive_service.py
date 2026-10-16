@@ -37,7 +37,15 @@ _SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret"
 
 def redact_public_text(value: str) -> str:
     home = str(Path.home())
-    redacted = value.replace(home, "~") if home else value
+    redacted = value
+    if home and home.strip("\\/"):
+        variants = sorted({home, home.replace("\\", "/")}, key=len, reverse=True)
+        redacted = re.sub(
+            "(?:" + "|".join(re.escape(item) for item in variants) + r")(?![\w-])",
+            "~",
+            redacted,
+            flags=re.IGNORECASE if os.name == "nt" else 0,
+        )
     redacted = re.sub(
         r"(?i)\b(token|cookie|authorization|set-cookie|password|secret)\b"
         r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
@@ -77,6 +85,14 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def iso_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
 def normalize_source(value: str | Path) -> Path:
     raw = os.fspath(value)
     if not raw or "\x00" in raw or len(raw) > 4096:
@@ -107,17 +123,22 @@ def path_identity(path: Path, volume: str | None = None) -> str:
 
 
 def hash_local_file(path: Path, chunk_size: int = 1048576) -> tuple[int, int, str]:
-    before = path.stat()
-    digest = hashlib.sha256()
-    count = 0
-    with path.open("rb") as source:
-        while True:
-            chunk = source.read(chunk_size)
-            if not chunk:
-                break
-            count += len(chunk)
-            digest.update(chunk)
-    after = path.stat()
+    try:
+        before = path.stat()
+        digest = hashlib.sha256()
+        count = 0
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(chunk_size)
+                if not chunk:
+                    break
+                count += len(chunk)
+                digest.update(chunk)
+        after = path.stat()
+    except PermissionError as exc:
+        raise CloudArchiveError("文件正被其他程序占用或没有读取权限，请关闭相关程序后重试。") from exc
+    except OSError as exc:
+        raise CloudArchiveError("读取文件失败，请确认文件仍然存在后重试。") from exc
     before_key = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
     after_key = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     if before_key != after_key or count != after.st_size:
@@ -187,6 +208,7 @@ def add_event(
             details=redact_public_value(details or {}),
             bytes_done=job.bytes_done,
             bytes_total=job.bytes_total,
+            created_at=utcnow(),
         )
     )
 
@@ -198,7 +220,7 @@ def version_data(version: ArchiveVersion) -> dict[str, Any]:
         "size": version.size,
         "file_type": version.file_type,
         "mtime_ns": version.mtime_ns,
-        "archived_at": version.archived_at.isoformat() if version.archived_at else None,
+        "archived_at": iso_utc(version.archived_at),
         "sha256": version.sha256,
         "cloud_remote_id": version.cloud_remote_id,
         "cloud_remote_path": list(decode_remote_path(version.cloud_remote_path)) if version.cloud_remote_path else None,
@@ -221,8 +243,8 @@ def entry_data(entry: ArchiveEntry, detailed: bool = False) -> dict[str, Any]:
         "status": entry.status,
         "last_error": redact_public_text(entry.last_error) if entry.last_error else None,
         "retry_count": entry.retry_count,
-        "created_at": entry.created_at.isoformat() if entry.created_at else None,
-        "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+        "created_at": iso_utc(entry.created_at),
+        "updated_at": iso_utc(entry.updated_at),
     }
     if detailed:
         result["versions"] = [version_data(item) for item in entry.versions]
@@ -266,9 +288,9 @@ def job_data(job: ArchiveJob) -> dict[str, Any]:
         "conflict_policy": job.conflict_policy,
         "last_error": redact_public_text(job.last_error) if job.last_error else None,
         "attempt_count": job.attempt_count,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "created_at": iso_utc(job.created_at),
+        "started_at": iso_utc(job.started_at),
+        "finished_at": iso_utc(job.finished_at),
         "retryable": job_retryable(job),
     }
 
@@ -669,22 +691,29 @@ class CloudArchiveService:
             return
 
     def _mark_reconcile(
-        self, job_id: str, message: str, bytes_done: int | None = None
+        self,
+        job_id: str,
+        message: str,
+        bytes_done: int | None = None,
+        event_type: str = "db_update_failed",
     ) -> None:
-        with Session(self.engine) as session:
-            job = session.get(ArchiveJob, job_id)
-            if job is None:
-                return
-            version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
-            job.status = "needs_reconcile"
-            if bytes_done is not None:
-                job.bytes_done = min(job.bytes_total, max(job.bytes_done, bytes_done))
-            job.last_error = message
-            if version is not None:
-                version.status = "needs_reconcile"
-                version.last_error = message
-            add_event(session, job, "db_update_failed", "needs_reconcile", message)
-            session.commit()
+        try:
+            with Session(self.engine) as session:
+                job = session.get(ArchiveJob, job_id)
+                if job is None:
+                    return
+                version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
+                job.status = "needs_reconcile"
+                if bytes_done is not None:
+                    job.bytes_done = min(job.bytes_total, max(job.bytes_done, bytes_done))
+                job.last_error = message
+                if version is not None:
+                    version.status = "needs_reconcile"
+                    version.last_error = message
+                add_event(session, job, event_type, "needs_reconcile", message)
+                session.commit()
+        except Exception:
+            return
 
     def retry(self, job_id: str) -> dict[str, Any]:
         with Session(self.engine) as session:
@@ -753,9 +782,14 @@ class CloudArchiveService:
                     results.append({"job_id": identifier, "status": "failed"})
                 else:
                     results.append(self._reconcile_remote(identifier, provider, remote_path))
-            except Exception as exc:
+            except CloudArchiveError as exc:
                 self._mark_failed(identifier, safe_failure("对账", exc))
                 results.append({"job_id": identifier, "status": "failed"})
+            except Exception as exc:
+                self._mark_reconcile(
+                    identifier, safe_failure("对账", exc), event_type="reconcile_failed"
+                )
+                results.append({"job_id": identifier, "status": "needs_reconcile"})
             finally:
                 close = getattr(provider, "close", None) if provider is not None else None
                 if callable(close):
@@ -794,10 +828,7 @@ class CloudArchiveService:
                 list(decode_remote_path(version.cloud_remote_path))
                 if version and version.cloud_remote_path else None
             ),
-            "archived_at": (
-                version.archived_at.isoformat()
-                if version and version.archived_at else None
-            ),
+            "archived_at": iso_utc(version.archived_at) if version else None,
             "sha256": version.sha256 if version else None,
             "status": version.status if version else entry.status,
             "current_version_id": version.id if version else None,
@@ -843,11 +874,16 @@ class CloudArchiveService:
             )
         )
         if query:
-            pattern = f"%{query.casefold()}%"
+            escaped = (
+                query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
             statement = statement.where(
                 or_(
-                    func.lower(ArchiveEntry.filename).like(pattern),
-                    func.lower(func.coalesce(ArchiveEntry.relative_path, "")).like(pattern),
+                    func.lower(ArchiveEntry.filename).like(pattern, escape="\\"),
+                    func.lower(func.coalesce(ArchiveEntry.relative_path, "")).like(
+                        pattern, escape="\\"
+                    ),
                 )
             )
         if status:
@@ -922,7 +958,7 @@ class CloudArchiveService:
                 "details": redact_public_value(row.details),
                 "bytes_done": row.bytes_done,
                 "bytes_total": row.bytes_total,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "created_at": iso_utc(row.created_at),
             } for row in rows]}
 
     def map_legacy_records(self) -> dict[str, int]:
