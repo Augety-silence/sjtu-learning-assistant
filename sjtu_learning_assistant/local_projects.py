@@ -11,7 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerService
+from sjtu_learning_assistant.knowledge_compiler import (
+    KnowledgeCompilerService,
+    _replace_with_retry,
+)
 
 
 class LocalProjectError(RuntimeError):
@@ -75,7 +78,7 @@ class LocalProjectService:
                 stream.write(content + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            _replace_with_retry(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
 

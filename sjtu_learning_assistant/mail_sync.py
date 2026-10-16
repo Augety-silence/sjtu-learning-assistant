@@ -6,15 +6,18 @@ import imaplib
 import re
 import socket
 import ssl
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from email import policy
+from email.errors import MessageError
 from email.header import decode_header, make_header
 from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
 
 from sjtu_learning_assistant.credential_store import MAIL_SERVICE as KEYCHAIN_SERVICE
+from sjtu_learning_assistant.credential_store import credential_storage_name
 
 IMAP_HOST = "mail.sjtu.edu.cn"
 IMAP_PORT = 993
@@ -83,9 +86,11 @@ def get_password(email_address: str, use_keychain: bool) -> tuple[str, bool]:
             else:
                 if stored:
                     _cached_passwords[email_address] = stored
-                    print("已从 macOS Keychain 读取邮箱密码。")
+                    print(f"已从 {credential_storage_name()} 读取邮箱密码。")
                     return stored, True
 
+    if sys.stdin is None:
+        raise MailCheckError("尚未保存邮箱密码，请在设置中配置后重试。")
     try:
         password = getpass.getpass("请输入邮箱密码（输入内容不会显示）：")
     except (EOFError, KeyboardInterrupt) as exc:
@@ -104,7 +109,7 @@ def save_password(email_address: str, password: str) -> None:
             print(f"提示：登录已成功，但密码未能保存到 Keychain（{exc}）。")
         else:
             _cached_passwords[email_address] = password
-            print("密码已安全保存到 macOS Keychain。")
+            print(f"密码已安全保存到 {credential_storage_name()}。")
 
 
 def delete_password(email_address: str) -> None:
@@ -121,15 +126,19 @@ def delete_password(email_address: str) -> None:
                 print("Keychain 中没有找到该邮箱的已保存密码。")
                 return
             raise MailCheckError(f"无法删除 Keychain 密码：{exc}") from exc
-    print("已从 macOS Keychain 删除该邮箱密码。")
+    print(f"已从 {credential_storage_name()} 删除该邮箱密码。")
 
 
 def decode_mime_text(value: str | None, fallback: str) -> str:
     if not value:
         return fallback
     try:
-        return str(make_header(decode_header(value))).strip() or fallback
-    except (LookupError, UnicodeError, ValueError):
+        parts = [
+            (chunk, "gb18030" if (charset or "").casefold() in {"gb2312", "gbk", "x-gbk", "cp936", "euc-cn"} else charset)
+            for chunk, charset in decode_header(value)
+        ]
+        return str(make_header(parts)).strip() or fallback
+    except (LookupError, UnicodeError, ValueError, MessageError):
         return value.strip() or fallback
 
 
