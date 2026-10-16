@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { ContentReveal } from "@/components/ContentReveal";
 import {
   EmptyState,
@@ -91,7 +91,6 @@ export function GradesView({
   const [view, setView] = useState<"grades" | "statistics">("grades");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const savingRef = useRef(false);
   const { showToast } = useToast();
   const scores = useMemo(() => numericScores(students), [students]);
   const totalCells = students.length * assignments.length;
@@ -109,10 +108,11 @@ export function GradesView({
     student: StudentGradeRow,
     assignment: GradeAssignment,
   ) => {
-    if (!onSaveGrade || savingRef.current) return;
     const key = gradeKey(student.studentId, assignment.id);
-    const raw =
-      drafts[key] ?? String(student.grades[assignment.id]?.score ?? "");
+    if (!onSaveGrade || savingKey === key) return;
+    const draftValue = drafts[key];
+    if (draftValue === undefined) return;
+    const raw = draftValue;
     const score = raw.trim() === "" ? null : Number(raw);
     if (
       score !== null &&
@@ -127,7 +127,6 @@ export function GradesView({
       });
       return;
     }
-    savingRef.current = true;
     setSavingKey(key);
     try {
       await onSaveGrade({
@@ -150,7 +149,6 @@ export function GradesView({
         message: reason instanceof Error ? reason.message : "成绩保存失败",
       });
     } finally {
-      savingRef.current = false;
       setSavingKey(null);
     }
   };
