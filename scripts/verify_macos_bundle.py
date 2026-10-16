@@ -32,7 +32,7 @@ PLACEHOLDER_PASSWORDS = {
     b"test",
     b"your_password",
 }
-PERSONAL_PATH_PATTERN = re.compile(rb"/Users/(?!Shared/)[^/\x00\s]+/")
+PERSONAL_PATH_PATTERN = re.compile(rb"/Users/(?!Shared/)[A-Za-z0-9._-]+/")
 TEXT_SUFFIXES = {
     ".css",
     ".html",
