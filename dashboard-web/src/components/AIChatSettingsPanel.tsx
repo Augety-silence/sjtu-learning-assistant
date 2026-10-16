@@ -78,7 +78,11 @@ function SegmentedChoice<T extends string>({
   return (
     <fieldset className="ai-preference-group" disabled={disabled}>
       <legend>{label}</legend>
-      <div className="ai-preference-options">
+      <div
+        className="ai-preference-options"
+        role="radiogroup"
+        aria-label={label}
+      >
         {choices.map((choice) => (
           <button
             key={choice.value}
@@ -134,6 +138,15 @@ export function AIChatSettingsPanel({
       document.removeEventListener("mousedown", handleOutside);
       document.removeEventListener("keydown", handleEscape);
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current
+      ?.querySelector<HTMLElement>(
+        ".ai-personalization-panel [role='radio'][aria-checked='true']",
+      )
+      ?.focus();
   }, [open]);
 
   return (

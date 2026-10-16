@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
 import { AppBrand } from "@/components/AppBrand";
@@ -142,6 +142,7 @@ export function AIChatSidebar({
   onPreferenceChange: (change: Partial<AIChatPreferences>) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerTriggerRef = useRef<HTMLButtonElement>(null);
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const allowedTools = new Set(selectedPreset?.allowed_tools ?? []);
@@ -179,10 +180,20 @@ export function AIChatSidebar({
         </Button>
       </div>
 
-      <section className="ai-current-agent">
+      <section
+        className="ai-current-agent"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || !pickerOpen) return;
+          event.preventDefault();
+          setPickerOpen(false);
+          pickerTriggerRef.current?.focus();
+        }}
+      >
         <button
+          ref={pickerTriggerRef}
           type="button"
           className="ai-current-agent-trigger"
+          aria-haspopup="listbox"
           aria-label={`当前 Agent：${selectedPreset?.name ?? "未选择"}`}
           aria-expanded={pickerOpen}
           aria-controls="ai-sidebar-agent-list"
@@ -210,6 +221,7 @@ export function AIChatSidebar({
                   onClick={() => {
                     onSelectPreset(preset.id);
                     setPickerOpen(false);
+                    pickerTriggerRef.current?.focus();
                   }}
                 >
                   <img src={aiAgentLogo} alt="" aria-hidden="true" />
@@ -260,6 +272,9 @@ export function AIChatSidebar({
                   <button
                     type="button"
                     title={session.title}
+                    aria-current={
+                      session.id === activeSessionId ? "true" : undefined
+                    }
                     onClick={() => onOpenSession(session.id)}
                   >
                     <strong>{session.title}</strong>
