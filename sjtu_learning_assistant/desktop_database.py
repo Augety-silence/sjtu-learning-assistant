@@ -39,6 +39,7 @@ from sjtu_learning_assistant.database import (
 )
 from sjtu_learning_assistant.models import Base
 from sjtu_learning_assistant.sqlite_recovery import (
+    SQLiteRecoveryError,
     maintain_sqlite_database,
     restore_latest_sqlite_backup,
     sqlite_migration_guard,
@@ -199,23 +200,6 @@ def _adopt_legacy_sqlite_schema(engine: Engine) -> str:
                     connection.exec_driver_sql(
                         "ALTER TABLE " + table_name + " ADD COLUMN " + name + " " + sql_type
                     )
-        download_constraints = {
-            str(constraint.get("name")): str(constraint.get("sqltext") or "")
-            for constraint in inspect(connection).get_check_constraints("course_files")
-        }
-        old_download_constraint = download_constraints.get(
-            "ck_course_files_download_status"
-        )
-        if old_download_constraint is not None and "cloud_only" not in old_download_constraint:
-            operations = Operations(MigrationContext.configure(connection))
-            with operations.batch_alter_table("course_files") as batch:
-                batch.drop_constraint(
-                    "ck_course_files_download_status", type_="check"
-                )
-                batch.create_check_constraint(
-                    "ck_course_files_download_status",
-                    "download_status IN ('pending', 'downloaded', 'failed', 'cloud_only')",
-                )
         existing = connection.scalar(select(schema_version.c.id).where(schema_version.c.id == 1))
         if existing is None:
             connection.execute(
@@ -232,7 +216,44 @@ def _adopt_legacy_sqlite_schema(engine: Engine) -> str:
                 .where(schema_version.c.id == 1)
                 .values(version=LEGACY_SQLITE_BASELINE)
             )
+    _widen_legacy_download_constraint(engine)
     return LEGACY_SQLITE_BASELINE
+
+
+def _widen_legacy_download_constraint(engine: Engine) -> None:
+    """Add 'cloud_only' to the legacy CHECK without cascading child deletes."""
+    with engine.connect() as connection:
+        download_constraints = {
+            str(constraint.get("name")): str(constraint.get("sqltext") or "")
+            for constraint in inspect(connection).get_check_constraints("course_files")
+        }
+        old_download_constraint = download_constraints.get(
+            "ck_course_files_download_status"
+        )
+        if old_download_constraint is None or "cloud_only" in old_download_constraint:
+            return
+        # Batch mode drops and recreates course_files. With foreign_keys=ON SQLite
+        # turns that DROP into an implicit DELETE that cascades to items and
+        # course_module_items, so the rebuild must run with enforcement disabled.
+        connection.rollback()
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            if connection.exec_driver_sql("PRAGMA foreign_keys").scalar():
+                raise DesktopDatabaseError("无法安全重建 course_files 约束，已停止升级。")
+            operations = Operations(MigrationContext.configure(connection))
+            with operations.batch_alter_table("course_files") as batch:
+                batch.drop_constraint(
+                    "ck_course_files_download_status", type_="check"
+                )
+                batch.create_check_constraint(
+                    "ck_course_files_download_status",
+                    "download_status IN ('pending', 'downloaded', 'failed', 'cloud_only')",
+                )
+            connection.commit()
+        finally:
+            connection.rollback()
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
 
 
 def _migration_root() -> Path:
@@ -244,7 +265,9 @@ def _migration_root() -> Path:
 
 def _alembic_config(engine: Engine) -> Config:
     config = Config()
-    config.set_main_option("script_location", str(_migration_root()))
+    config.set_main_option(
+        "script_location", str(_migration_root()).replace("%", "%%")
+    )
     config.set_main_option("sqlalchemy.url", str(engine.url).replace("%", "%%"))
     return config
 
@@ -330,21 +353,39 @@ def bootstrap_sqlite(engine: Engine) -> str:
         if database_path is None:
             return _upgrade_sqlite_with_alembic(engine)
         with sqlite_migration_guard(database_path) as create_backup:
-            if _current_alembic_revision(engine) != SCHEMA_VERSION:
+            current_revision = _current_alembic_revision(engine)
+            if (
+                current_revision is not None
+                and current_revision not in _known_sqlite_revisions(engine)
+            ):
+                raise DesktopDatabaseError(
+                    f"无法识别 SQLite Alembic 版本 {current_revision}，已停止自动升级。"
+                )
+            if current_revision != SCHEMA_VERSION:
                 snapshot_created = create_backup()
             return _upgrade_sqlite_with_alembic(engine)
     except Exception as exc:
         engine.dispose()
-        if (
-            snapshot_created
-            and database_path is not None
-            and restore_latest_sqlite_backup(database_path) is not None
-        ):
-            raise DesktopDatabaseError(
-                "本地数据库升级失败，已自动恢复迁移前快照；请更新应用后重试。"
-            ) from exc
+        if snapshot_created and database_path is not None:
+            try:
+                restored = restore_latest_sqlite_backup(database_path)
+            except (OSError, SQLiteRecoveryError) as restore_error:
+                raise DesktopDatabaseError(
+                    "本地数据库升级失败，且未能自动恢复迁移前快照；"
+                    "请关闭其他学习助手进程后重启应用。"
+                ) from restore_error
+            if restored is not None:
+                raise DesktopDatabaseError(
+                    "本地数据库升级失败，已自动恢复迁移前快照；请更新应用后重试。"
+                ) from exc
         if isinstance(exc, DesktopDatabaseError):
             raise
+        if isinstance(exc, SQLiteRecoveryError):
+            raise DesktopDatabaseError(str(exc)) from exc
+        if isinstance(exc, OSError):
+            raise DesktopDatabaseError(
+                "本地数据库正被其他进程使用或无法访问，请稍后重试。"
+            ) from exc
         raise DesktopDatabaseError("本地数据库升级失败，请更新应用后重试。") from exc
 
 
@@ -478,7 +519,14 @@ def initialize_desktop_database(
     database_path = sqlite_database_path(str(engine.url))
     version = bootstrap_sqlite(engine)
     if database_path is not None:
-        maintain_sqlite_database(database_path)
+        try:
+            maintain_sqlite_database(database_path)
+        except SQLiteRecoveryError as exc:
+            raise DesktopDatabaseError(str(exc)) from exc
+        except OSError as exc:
+            raise DesktopDatabaseError(
+                "无法创建本地数据库例行快照，请检查磁盘空间和目录权限。"
+            ) from exc
     if skip_import:
         return DesktopInitialization(schema_version=version)
 
