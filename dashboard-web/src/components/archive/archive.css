@@ -246,13 +246,13 @@
 .archive-version-list dt { color: var(--text-secondary); }
 .archive-version-list dd { margin: 0; overflow-wrap: anywhere; }
 .archive-version-list code,
-.archive-compare-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.archive-compare-table code { font-family: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
 .archive-recent-list { display: grid; gap: 8px; }
 .archive-recent-list li { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle); }
 .archive-recent-list time { color: var(--text-secondary); font-size: 12px; }
 
 .archive-dialog-layer { align-items: center; justify-content: center; padding: 24px; }
-.archive-restore-dialog { width: min(720px, 100%); max-height: min(780px, calc(100vh - 48px)); padding: 24px; border-radius: 10px; box-shadow: 0 16px 50px var(--shadow-overlay); }
+.archive-restore-dialog { width: min(720px, 100%); max-height: min(780px, calc(100vh - 48px)); padding: 24px; }
 .archive-choice-group,
 .archive-conflict-options { margin: 20px 0 0; padding: 0; border: 0; }
 .archive-choice-group legend,
@@ -267,7 +267,8 @@
 .archive-conflict-options label + label { margin-top: -1px; }
 .archive-choice-group label.is-selected,
 .archive-conflict-options label.is-selected { position: relative; z-index: 1; border-color: var(--action-primary); background: var(--surface-info); }
-.archive-choice-group label:has(input:disabled) { cursor: not-allowed; opacity: 0.58; }
+.archive-choice-group label:has(input:disabled),
+.archive-conflict-options label:has(input:disabled) { cursor: not-allowed; opacity: 0.58; }
 .archive-choice-group input,
 .archive-conflict-options input { margin-top: 3px; accent-color: var(--action-primary); }
 .archive-choice-group span,
@@ -308,7 +309,7 @@
   .archive-job-main { align-items: flex-start; flex-wrap: wrap; }
   .archive-job-main .archive-status { margin-left: auto; }
   .archive-dialog-layer { align-items: flex-end; padding: 0; }
-  .archive-restore-dialog { width: 100%; max-height: 92vh; border-radius: 12px 12px 0 0; }
+  .archive-dialog-layer .archive-restore-dialog { width: 100%; max-height: 92vh; border-radius: var(--aura-radius-overlay) var(--aura-radius-overlay) 0 0; }
   .archive-detail-meta > div,
   .archive-plan-summary > div,
   .archive-version-list dl > div { grid-template-columns: 1fr; gap: 2px; }
