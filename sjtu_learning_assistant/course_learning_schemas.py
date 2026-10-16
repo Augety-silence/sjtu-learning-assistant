@@ -225,7 +225,7 @@ class StrictSchema:
                 object_pairs_hook=pairs_hook,
                 parse_constant=reject_constant,
             )
-        except (json.JSONDecodeError, UnicodeError) as exc:
+        except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
             raise SchemaValidationError("$: invalid JSON") from exc
         return cls.from_dict(parsed)  # type: ignore[attr-defined,no-any-return]
 
