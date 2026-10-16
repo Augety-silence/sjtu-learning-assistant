@@ -289,6 +289,60 @@ class AgentRuntimeTests(unittest.TestCase):
             deltas,
         )
 
+    def test_real_sse_client_streams_two_turn_tool_exchange_to_final_delta(self) -> None:
+        requests = []
+        first_response = "".join(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1",',
+                '"type":"function","function":{"name":"list_courses","arguments":"{\\"limit\\":2}"}}]},',
+                '"finish_reason":"tool_calls"}]}' + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        final_response = "".join(
+            [
+                'data: {"choices":[{"delta":{"content":"共有"},"finish_reason":null}]}\n\n',
+                'data: {"choices":[{"delta":{"content":"一门课程。"},"finish_reason":"stop"}]}\n\n',
+                "data: [DONE]\n\n",
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            body = first_response if len(requests) == 1 else final_response
+            return httpx.Response(
+                200,
+                text=body,
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+
+        client = OpenAIClassificationClient(
+            api_key="fake", model="qwen", transport=httpx.MockTransport(handler), limiter=lambda: None
+        )
+        deltas = []
+        try:
+            result = AgentLoop(client, self.registry, preset("list_courses")).run(
+                [{"role": "user", "content": "你好"}],
+                user_text="你好",
+                max_tokens=500,
+                temperature=0,
+                event_callback=lambda kind, payload: deltas.append((kind, payload)),
+            )
+        finally:
+            client.close()
+
+        self.assertEqual("completed", result.status)
+        self.assertEqual("共有一门课程。", result.content)
+        self.assertEqual(2, len(requests))
+        self.assertEqual("assistant", requests[1]["messages"][-2]["role"])
+        self.assertEqual("call-1", requests[1]["messages"][-2]["tool_calls"][0]["id"])
+        self.assertEqual("tool", requests[1]["messages"][-1]["role"])
+        self.assertEqual("call-1", requests[1]["messages"][-1]["tool_call_id"])
+        self.assertEqual("list_courses", requests[1]["messages"][-1]["name"])
+        self.assertIn(("content_delta", {"delta": "共有"}), deltas)
+        self.assertIn(("content_delta", {"delta": "一门课程。"}), deltas)
+
     def test_unauthorized_tool_is_rejected(self) -> None:
         client = ScriptedClient(
             [
