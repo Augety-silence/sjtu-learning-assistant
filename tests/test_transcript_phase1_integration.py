@@ -18,6 +18,7 @@ from sjtu_learning_assistant.course_learning_schemas import (
     QualityReport,
     SubtitleChunk,
 )
+from sjtu_learning_assistant.course_memory import CourseMemoryStore
 from sjtu_learning_assistant.transcript_pipeline import MAP_FALLBACK_WARNING, normalize_cues, parse_vtt
 from sjtu_learning_assistant.transcript_service import (
     AIContext,
@@ -183,7 +184,7 @@ class FakeOrchestrator:
             warnings=(),
             corrected_transcript=corrected,
             uncertain=(),
-            memory_version=None,
+            memory_version=memory_repo.current_version,
             events=(event,),
             status="completed_with_warnings" if self.uncertain else "completed",
             raw_hash=hashlib.sha256(raw_vtt.encode("utf-8")).hexdigest(),
@@ -573,6 +574,50 @@ class TranscriptPhase1IntegrationTests(unittest.TestCase):
         self.assertEqual(2, len(service._all_batches()))
         self.assertEqual(1, len(orchestrator.calls))
         self.assertEqual(2, len(pipeline.calls))
+        service.close()
+
+    def test_scheduled_v1_recovery_reruns_phase1_when_same_course_memory_version_changes(self):
+        now = [datetime(2026, 10, 15, tzinfo=timezone.utc)]
+        orchestrator = FakeOrchestrator(uncertain=True)
+        pipeline = FallbackOnceV1Pipeline()
+        service = self.playback_service(orchestrator, pipeline, now)
+        service.prepare_for_playback(course_id="12", course_name="课程12", video=self.video())
+        service.run_pending()
+
+        initial = self.latest_job(service)
+        initial_manifest = service._read_json(service._video_dir(initial["source_id"]) / "v2" / "manifest.json")
+        self.assertEqual(1, len(orchestrator.calls))
+        self.assertTrue(initial["auto_retryable"])
+        self.assertIsNone(initial_manifest["course_memory_version"])
+
+        # Commit a user-confirmed update for the same course while the V1-only
+        # recovery is waiting. Its new version must invalidate the Phase1 cache.
+        memory = CourseMemoryStore(self.memory_root, "12")
+        proposal = memory.propose([{
+            "operation": "upsert",
+            "section": "course_profile",
+            "key": "known_topics",
+            "value": ["成本分析"],
+            "source": "user_confirmed",
+            "confidence": 0.99,
+            "verification": "VERIFIED",
+            "timestamp": "2026-10-15T00:00:00Z",
+            "evidence": ["synthetic integration test"],
+        }])
+        committed = memory.commit(proposal)
+        self.assertNotEqual(initial_manifest["course_memory_version"], committed.version)
+
+        now[0] += timedelta(seconds=3)
+        service.run_pending()
+
+        latest = self.latest_job(service)
+        latest_manifest = service._read_json(service._video_dir(latest["source_id"]) / "v2" / "manifest.json")
+        self.assertEqual(2, len(orchestrator.calls))
+        self.assertFalse(latest["phase1_reused"])
+        self.assertEqual(committed.version, latest_manifest["course_memory_version"])
+        self.assertEqual(2, len(pipeline.calls))
+        self.assertEqual(set(), pipeline.calls[1])
+        self.assertEqual(1, self.fetches)
         service.close()
 
     def test_phase1_cache_reused_for_same_endpoint_but_not_changed_endpoint(self):

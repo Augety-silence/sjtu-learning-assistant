@@ -591,6 +591,42 @@ def _provable_question_source_errors(guide: object, cues: Sequence[Cue]) -> froz
     return frozenset(allowed)
 
 
+def _has_unprovable_classroom_source_claim(guide: object, cues: Sequence[Cue] | None) -> bool:
+    """Detect classroom-source claims that a repair must not silently rewrite or legitimize."""
+    if type(guide) is not dict or type(guide.get("questions")) is not list:
+        return False
+    for raw in guide["questions"]:
+        if type(raw) is not dict:
+            continue
+        prompt = _clean_learning_text(raw.get("prompt"))
+        if _clean_learning_text(raw.get("source")) != CLASSROOM_SOURCE:
+            continue
+        if not prompt or not cues or not _question_prompt_in_cues(prompt, cues):
+            return True
+    return False
+
+
+def _guide_question_baseline_is_safe(guide: object) -> bool:
+    """Require enough typed question identity to preserve it across any repair."""
+    if type(guide) is not dict or type(guide.get("questions")) is not list:
+        return False
+    if not 5 <= len(guide["questions"]) <= 8:
+        return False
+    return all(
+        type(question) is dict
+        and set(question) == {"type", "prompt", "answer", "source"}
+        and type(question.get("type")) is str
+        and question["type"] in {"recall", "application"}
+        and type(question.get("prompt")) is str
+        and bool(_clean_learning_text(question["prompt"]))
+        and type(question.get("answer")) is str
+        and bool(_clean_learning_text(question["answer"]))
+        and type(question.get("source")) is str
+        and question["source"] in SOURCE_TYPES
+        for question in guide["questions"]
+    )
+
+
 def _json_equal(before: object, after: object) -> bool:
     """Type-strict deep equality for parsed JSON (1, 1.0 and True differ; key sets must match)."""
     if type(before) is not type(after):
@@ -670,8 +706,20 @@ def _source_only_repair_guard(
     else:
         return None
     first_guide = _guide_root(first_value)
+    if not _guide_question_baseline_is_safe(first_guide):
+        return None
     allowed = _provable_question_source_errors(first_guide, cues)
     if not allowed or int(match.group(1)) not in allowed:
+        return None
+    source_repaired_value = json.loads(json.dumps(first_value, ensure_ascii=False))
+    source_repaired_guide = _guide_root(source_repaired_value)
+    for index in allowed:
+        source_repaired_guide["questions"][index]["source"] = "根据课堂内容归纳"
+    try:
+        validator(source_repaired_value)
+    except (SchemaValidationError, TypeError, ValueError):
+        # The candidate must become fully valid after only the proven source
+        # substitutions; otherwise a source repair would be asked to fix more.
         return None
     return lambda value: _check_source_only_guide_repair(first_guide, value, allowed)
 
@@ -727,6 +775,25 @@ def _json_content(
         preservation_guard = _source_only_repair_guard(
             fragment, safe_mismatch, validator, guide_source_cues
         )
+        guide_fragment = None
+        if guide_source_repair and fragment:
+            try:
+                guide_fragment = _guide_root(json.loads(fragment))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if (
+            guide_source_repair
+            and preservation_guard is None
+            and (
+                not _guide_question_baseline_is_safe(guide_fragment)
+                or _has_unprovable_classroom_source_claim(guide_fragment, guide_source_cues)
+            )
+        ):
+            # An earlier schema error can mask an unsupported classroom-source
+            # claim, or the question identity may be too malformed to preserve.
+            # Without a source-only baseline guard, generic repair could rewrite
+            # the question to make that claim pass or reconstruct it wholesale.
+            raise first_error
         if (
             guide_source_repair
             and _QUESTION_SOURCE_PATH.fullmatch(str(safe_mismatch.get("path", "")))

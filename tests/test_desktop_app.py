@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -655,26 +654,39 @@ class DesktopBackgroundSyncTests(unittest.TestCase):
 
 class DesktopSchedulerTests(unittest.TestCase):
     def test_scheduler_repeats_survives_task_error_and_stops(self):
-        called = threading.Event()
-        count = 0
+        first_call_failed = threading.Event()
+        second_call_completed = threading.Event()
+        calls = []
 
         def task():
-            nonlocal count
-            count += 1
-            called.set()
-            if count == 1:
+            calls.append("called")
+            if len(calls) == 1:
+                first_call_failed.set()
                 raise RuntimeError("ignored")
+            second_call_completed.set()
 
         scheduler = DesktopScheduler(task, interval_seconds=0.01)
-        scheduler.start()
-        scheduler.start()
-        self.assertTrue(called.wait(0.3))
-        time.sleep(0.04)
-        scheduler.stop()
-        stopped_count = count
-        time.sleep(0.03)
-        self.assertGreaterEqual(stopped_count, 2)
-        self.assertEqual(stopped_count, count)
+        worker = None
+        first_observed = False
+        second_observed = False
+        try:
+            scheduler.start()
+            worker = scheduler._thread
+            scheduler.start()
+            self.assertIs(scheduler._thread, worker)
+            first_observed = first_call_failed.wait(timeout=5)
+            second_observed = second_call_completed.wait(timeout=5)
+        finally:
+            scheduler.stop()
+            worker = scheduler._thread if worker is None else worker
+            if worker is not None:
+                worker.join(timeout=5)
+
+        self.assertTrue(first_observed, "first task call did not fail within the watchdog")
+        self.assertTrue(second_observed, "scheduler did not retry after the first task failure")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertIsNotNone(worker)
+        self.assertFalse(worker.is_alive(), "scheduler worker remained alive after stop and join")
 
 
 if __name__ == "__main__":

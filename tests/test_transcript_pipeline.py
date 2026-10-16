@@ -1239,6 +1239,108 @@ class TranscriptPipelineTests(unittest.TestCase):
             self._run_source_repair(first, partially_repaired)
         self.assertEqual("questions[2].source", raised.exception.diagnostics["schema_mismatch"]["path"])
 
+    def test_guide_repair_fails_closed_when_earlier_schema_error_masks_source_mismatch(self):
+        cues = self._source_repair_cues()
+        first = self._source_repair_guide()
+        first["course_map"] = first["course_map"][:2]
+
+        repairs = {}
+        rewrite_prompt = json.loads(json.dumps(first, ensure_ascii=False))
+        rewrite_prompt["course_map"] = ["地图甲", "地图乙", "地图丙", "地图丁"]
+        rewrite_prompt["questions"][0]["prompt"] = cues[0].text
+        repairs["rewrite prompt to make classroom claim pass"] = (first, rewrite_prompt, "course_map")
+
+        change_answer = json.loads(json.dumps(first, ensure_ascii=False))
+        change_answer["course_map"] = ["地图甲", "地图乙", "地图丙", "地图丁"]
+        change_answer["questions"][0]["source"] = "根据课堂内容归纳"
+        change_answer["questions"][0]["answer"] = "改写后的答案。"
+        repairs["change answer while downgrading source"] = (first, change_answer, "course_map")
+
+        change_topic = json.loads(json.dumps(first, ensure_ascii=False))
+        change_topic["course_map"] = ["地图甲", "地图乙", "地图丙", "地图丁"]
+        change_topic["questions"][0]["source"] = "根据课堂内容归纳"
+        change_topic["themes"][0]["title"] = "改写主题"
+        repairs["change topic while downgrading source"] = (first, change_topic, "course_map")
+
+        bad_type = json.loads(json.dumps(self._source_repair_guide(), ensure_ascii=False))
+        bad_type["questions"][0]["type"] = "unsupported"
+        fix_type_and_prompt = json.loads(json.dumps(bad_type, ensure_ascii=False))
+        fix_type_and_prompt["questions"][0]["type"] = "recall"
+        fix_type_and_prompt["questions"][0]["prompt"] = cues[0].text
+        repairs["question type masks same question source"] = (bad_type, fix_type_and_prompt, "questions[0].type")
+
+        bad_answer = json.loads(json.dumps(self._source_repair_guide(), ensure_ascii=False))
+        bad_answer["questions"][0]["answer"] = ""
+        fix_answer_and_prompt = json.loads(json.dumps(bad_answer, ensure_ascii=False))
+        fix_answer_and_prompt["questions"][0]["answer"] = "改写后的答案。"
+        fix_answer_and_prompt["questions"][0]["prompt"] = cues[0].text
+        repairs["answer failure masks source mismatch"] = (bad_answer, fix_answer_and_prompt, "questions[0].source")
+
+        late_schema_error = json.loads(json.dumps(self._source_repair_guide(), ensure_ascii=False))
+        late_schema_error["extensions"] = []
+        source_and_extensions_fixed = json.loads(json.dumps(late_schema_error, ensure_ascii=False))
+        source_and_extensions_fixed["questions"][0]["source"] = "根据课堂内容归纳"
+        source_and_extensions_fixed["extensions"] = ["延伸一？", "延伸二？"]
+        repairs["later schema error is not part of source repair"] = (
+            late_schema_error, source_and_extensions_fixed, "questions[0].source"
+        )
+
+        nested_first = {"study_guide": first}
+        nested_repair = json.loads(json.dumps(nested_first, ensure_ascii=False))
+        nested_repair["study_guide"]["course_map"] = ["地图甲", "地图乙", "地图丙", "地图丁"]
+        nested_repair["study_guide"]["questions"][0]["source"] = "根据课堂内容归纳"
+        nested_repair["study_guide"]["themes"][0]["title"] = "改写嵌套主题"
+        repairs["nested study_guide envelope"] = (nested_first, nested_repair, "course_map")
+
+        invalid_questions = json.loads(json.dumps(first, ensure_ascii=False))
+        invalid_questions["questions"] = "无法确认的问题基线"
+        reconstructed = json.loads(json.dumps(self._source_repair_guide(), ensure_ascii=False))
+        reconstructed["course_map"] = ["地图甲", "地图乙", "地图丙", "地图丁"]
+        reconstructed["questions"][0]["source"] = "根据课堂内容归纳"
+        repairs["non-list questions baseline"] = (invalid_questions, reconstructed, "questions")
+
+        empty_questions = json.loads(json.dumps(first, ensure_ascii=False))
+        empty_questions["questions"] = []
+        repairs["empty questions baseline"] = (empty_questions, reconstructed, "course_map")
+
+        too_few_questions = json.loads(json.dumps(first, ensure_ascii=False))
+        too_few_questions["questions"][0]["source"] = "根据课堂内容归纳"
+        too_few_questions["questions"] = too_few_questions["questions"][:4]
+        repairs["fewer than five questions baseline"] = (too_few_questions, reconstructed, "course_map")
+
+        too_many_questions = json.loads(json.dumps(first, ensure_ascii=False))
+        too_many_questions["questions"][0]["source"] = "根据课堂内容归纳"
+        too_many_questions["questions"].extend(
+            dict(type="recall", prompt=f"额外问题{i}", answer=f"额外答案{i}", source="自编练习或例子")
+            for i in range(3)
+        )
+        repairs["more than eight questions baseline"] = (too_many_questions, reconstructed, "course_map")
+
+        invalid_question_item = json.loads(json.dumps(first, ensure_ascii=False))
+        invalid_question_item["questions"][0] = "无法确认的题目对象"
+        rebuilt_item = json.loads(json.dumps(reconstructed, ensure_ascii=False))
+        repairs["non-object question baseline"] = (invalid_question_item, rebuilt_item, "course_map")
+
+        def unwrap(value):
+            return value.get("study_guide") if type(value) is dict and "study_guide" in value else value
+
+        for name, (initial, repaired, expected_path) in repairs.items():
+            with self.subTest(name=name):
+                _normalize_study_guide(unwrap(repaired), cues)
+                ai = self._scripted_ai(
+                    json.dumps(initial, ensure_ascii=False),
+                    json.dumps(repaired, ensure_ascii=False),
+                )
+                with self.assertRaises(TranscriptAIFormatError) as raised:
+                    _json_content(
+                        ai, "guide request", lambda value: _normalize_study_guide(unwrap(value), cues),
+                        schema_hint="source-only repair",
+                        repair_context={"stage": "study_guide_generation"},
+                        guide_source_cues=cues,
+                    )
+                self.assertEqual(1, len(ai.prompts), "unsafe baseline must not trigger a repair call")
+                self.assertEqual(expected_path, raised.exception.diagnostics["schema_mismatch"]["path"])
+
     def test_guide_source_only_guard_not_enabled_for_unprovable_first_responses(self):
         cues = self._source_repair_cues()
         first = self._source_repair_guide()

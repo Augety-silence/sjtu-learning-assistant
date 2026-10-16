@@ -1,5 +1,7 @@
 # 云端交付报告（实测填写，未执行项如实标注）
 
+> 本文保留原云端交付时的历史状态。PR #23 已合并；2026-10-16 的后续 issue 核对、来源修复和新增回归见 [ISSUE_REGRESSION_REVIEW.md](ISSUE_REGRESSION_REVIEW.md)。最终提交、CI、构建产物及 issue 关闭记录以该后续 PR 为准。
+
 - PR URL：https://github.com/Augety-silence/sjtu-learning-assistant/pull/23（保持 Draft，未 merge / auto-merge / undraft / tag / Release）
 - 源码基线：d167f82a7e4117a4c024bf28d60f911e66c8f46c（编排文档 06f4de1）
 - 测试时 SHA：c390403（C1–C4 已提交）+ 本 C5 工作区改动（tests/test_transcript_playback_bridge.py）
