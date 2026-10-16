@@ -416,8 +416,10 @@ class DashboardService:
             .where(
                 Assignment.is_active.is_(True),
                 Assignment.due_at.is_not(None),
-                Assignment.due_at >= range_start,
-                Assignment.due_at < range_end,
+                # SQLite 的 DateTime 以去掉时区的 UTC 文本存储并按字符串比较，
+                # 绑定上海时区的边界会整体偏移 8 小时，必须先换算为 UTC。
+                Assignment.due_at >= range_start.astimezone(timezone.utc),
+                Assignment.due_at < range_end.astimezone(timezone.utc),
             )
             .order_by(Assignment.due_at.asc(), Assignment.id.asc())
         )
@@ -621,7 +623,12 @@ class DashboardService:
                 raise DashboardError("云端文件读取失败，请检查网络后重试。") from None
         else:
             try:
-                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                descriptor = os.open(
+                    path,
+                    os.O_RDONLY
+                    | getattr(os, "O_BINARY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
                 try:
                     info = os.fstat(descriptor)
                     if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
@@ -657,7 +664,7 @@ class DashboardService:
         if not isinstance(pdf, bytes):
             raise DashboardError("视频截图 PDF 结果无效。")
         stem = re.sub(
-            r"[^0-9A-Za-z._ -]+",
+            r"[^0-9A-Za-z\u4e00-\u9fff._ -]+",
             "-",
             Path(record.display_name or record.filename or "video").stem,
         ).strip(" .-")[:120] or "video"
@@ -672,6 +679,9 @@ class DashboardService:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
+        except PermissionError:
+            temporary.unlink(missing_ok=True)
+            raise DashboardError("同名导出文件正被其他程序占用，请关闭后重试。") from None
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
@@ -1005,6 +1015,9 @@ class DashboardService:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
+        except PermissionError:
+            temporary.unlink(missing_ok=True)
+            raise DashboardError("同名导出文件正被其他程序占用，请关闭后重试。") from None
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
