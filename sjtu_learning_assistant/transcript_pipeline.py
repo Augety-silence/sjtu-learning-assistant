@@ -2135,7 +2135,7 @@ def _protected_audit_merge(
         if key not in known_theme_keys and _evidence_in_chunk(candidate.get("evidence", ()), chunk):
             themes.append(candidate)
             known_theme_keys.add(key)
-    merged["themes"] = themes
+    merged["themes"] = themes[:12]
 
     current_questions = list(current.get("questions", ()))
     revised_questions = {
