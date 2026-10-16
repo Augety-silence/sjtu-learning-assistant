@@ -140,7 +140,9 @@ class SyncRunner:
         if child is not None and child.poll() is None:
             try:
                 child.send_signal(signum)
-            except ProcessLookupError:
+            except (OSError, ValueError):
+                # Windows 只支持 SIGTERM/CTRL_*_EVENT，SIGINT 会抛 ValueError；
+                # 同一控制台的子进程已直接收到 Ctrl+C。
                 pass
 
     def _install_signal_handlers(self) -> dict[int, object]:
@@ -161,7 +163,10 @@ class SyncRunner:
         try:
             self._child = self.popen_factory(self.command)
             if self._received_signal is not None and self._child.poll() is None:
-                self._child.send_signal(self._received_signal)
+                try:
+                    self._child.send_signal(self._received_signal)
+                except (OSError, ValueError):
+                    pass
             return_code = self._child.wait()
             if return_code < 0:
                 return 128 + abs(return_code)
@@ -253,7 +258,11 @@ class SyncRunner:
 
 def build_sync_command(sync_arguments: Sequence[str]) -> list[str]:
     project_root = Path(__file__).resolve().parent
-    venv_python = project_root / ".venv" / "bin" / "python"
+    venv_python = (
+        project_root / ".venv" / "Scripts" / "python.exe"
+        if sys.platform == "win32"
+        else project_root / ".venv" / "bin" / "python"
+    )
     python = venv_python if venv_python.is_file() else Path(sys.executable)
     return [str(python), str(project_root / "sync_data_to_db.py"), *sync_arguments]
 
