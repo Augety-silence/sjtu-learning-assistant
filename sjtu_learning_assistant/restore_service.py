@@ -144,6 +144,24 @@ def _existing_details(path: Path) -> dict[str, Any] | None:
     return {"kind": "file", "size": size, "mtime_ns": mtime_ns, "sha256": digest}
 
 
+def _fingerprint(details: Any) -> tuple[Any, ...] | None:
+    if not isinstance(details, dict):
+        return None
+    return (details.get("kind"), details.get("size"), details.get("sha256"))
+
+
+def _identity(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        state = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RestoreError("无法检查现有目标文件。") from exc
+    if _is_link(state) or not stat.S_ISREG(state.st_mode):
+        raise RestoreError("目标已存在且不是普通文件。")
+    return (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
+
+
 def _missing_directories(root: Path, parent: Path) -> list[str]:
     missing = []
     current = parent
@@ -420,6 +438,10 @@ class RestoreService:
                 raise RestoreError("创建父目录前必须由用户确认。")
             self._check_writable(root, target.parent)
             existing = _existing_details(target)
+            planned = job.plan_data.get("existing") if isinstance(job.plan_data, dict) else None
+            if conflict_policy == "overwrite" and _fingerprint(existing) != _fingerprint(planned):
+                # 用户依据计划里的指纹确认覆盖；目标此后被修改/新建时不能静默销毁新内容。
+                raise RestoreError("目标文件在制定计划后已变化，请重新检查后再覆盖。")
             job.conflict_policy = conflict_policy
             if existing is not None and conflict_policy == "skip":
                 job.status = "skipped"
@@ -445,6 +467,9 @@ class RestoreService:
                 raise RestoreError("目标已存在且不是普通文件。")
             self._create_directories(root, target.parent)
             reservation_inode = None
+            overwrite_identity = None
+            if conflict_policy == "overwrite" and existing is not None:
+                overwrite_identity = _identity(target)
             if conflict_policy != "overwrite":
                 try:
                     descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -473,6 +498,7 @@ class RestoreService:
             expected_size,
             expected_hash,
             reservation_inode,
+            overwrite_identity,
         )
 
     def _record_progress(self, job_id: str, count: int) -> None:
@@ -524,6 +550,7 @@ class RestoreService:
         expected_size: int,
         expected_hash: str,
         reservation_inode: int | None,
+        overwrite_identity: tuple[int, int, int, int] | None = None,
     ) -> dict[str, Any]:
         provider = None
         temporary: Path | None = None
@@ -562,6 +589,8 @@ class RestoreService:
                 raise RestoreError("下载文件完整性校验失败。")
             _reject_symlink_chain(target)
             if reservation_inode is not None and target.lstat().st_ino != reservation_inode:
+                raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
+            if overwrite_identity is not None and _identity(target) != overwrite_identity:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
             _replace_with_retry(temporary, target)
             temporary = None
