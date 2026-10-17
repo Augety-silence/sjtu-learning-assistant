@@ -51,8 +51,7 @@ export function ArchiveJobsPanel({
     } catch (reason) {
       setEventErrors((current) => ({
         ...current,
-        [jobId]:
-          reason instanceof Error ? reason.message : "任务事件读取失败",
+        [jobId]: reason instanceof Error ? reason.message : "任务事件读取失败",
       }));
     } finally {
       setLoadingEvents((current) => {

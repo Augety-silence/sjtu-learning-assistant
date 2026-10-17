@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CourseVideoItem, VideosView } from "@/components/VideosView";
 import { TranscriptTimedContent } from "@/components/TranscriptPhase1Panels";
+import { type CourseVideoItem, VideosView } from "@/components/VideosView";
 import type { TranscriptJob } from "@/lib/types";
 import {
   act,
@@ -65,7 +65,9 @@ describe("video action capabilities and isolation", () => {
     const seek = vi.fn();
     render(
       <TranscriptTimedContent
-        content={"普通 0:05-0:10，代码 `0:15-0:20`，[已有 0:25-0:30](https://example.test)"}
+        content={
+          "普通 0:05-0:10，代码 `0:15-0:20`，[已有 0:25-0:30](https://example.test)"
+        }
         onSeek={seek}
       />,
     );

@@ -2119,10 +2119,7 @@ export function VideosView({
         event.preventDefault();
         stepTemporaryPlaybackRate(key === "arrowup" ? 1 : -1);
       } else if (
-        (key === " " ||
-          key === "space" ||
-          key === "spacebar" ||
-          key === "k") &&
+        (key === " " || key === "space" || key === "spacebar" || key === "k") &&
         // Holding the key must not fire repeated play/pause toggles.
         !event.repeat
       ) {

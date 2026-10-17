@@ -273,11 +273,7 @@ export function VideoSynchronizedLearning({
               : "当前时间尚无已准备内容。")}
       </p>
       {error && (
-        <button
-          type="button"
-          className="aura-button-link"
-          onClick={refresh}
-        >
+        <button type="button" className="aura-button-link" onClick={refresh}>
           重新检查
         </button>
       )}
