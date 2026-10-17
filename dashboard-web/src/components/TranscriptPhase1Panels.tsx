@@ -40,6 +40,59 @@ type LearningSummary = {
   practiceLabel: string;
 };
 
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownNode[];
+};
+
+const TIMED_RANGE_PATTERN =
+  /\b(\d{1,3}):([0-5]\d)\s?[–-]\s?(\d{1,3}):([0-5]\d)\b/g;
+
+function timedRangeNodes(value: string): MarkdownNode[] {
+  const nodes: MarkdownNode[] = [];
+  let offset = 0;
+  for (const match of value.matchAll(TIMED_RANGE_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > offset) {
+      nodes.push({ type: "text", value: value.slice(offset, index) });
+    }
+    const label = match[0].replace(/\s/g, "").replace("-", "–");
+    const seconds = Number(match[1]) * 60 + Number(match[2]);
+    nodes.push({
+      type: "link",
+      url: `#video-time=${seconds}`,
+      children: [{ type: "text", value: label }],
+    });
+    offset = index + match[0].length;
+  }
+  if (offset < value.length) {
+    nodes.push({ type: "text", value: value.slice(offset) });
+  }
+  return nodes.length ? nodes : [{ type: "text", value }];
+}
+
+function transformTimedRanges(node: MarkdownNode): void {
+  if (!node.children || ["code", "inlineCode", "link"].includes(node.type)) {
+    return;
+  }
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index];
+    if (child.type === "text" && child.value) {
+      const replacement = timedRangeNodes(child.value);
+      node.children.splice(index, 1, ...replacement);
+      index += replacement.length - 1;
+    } else {
+      transformTimedRanges(child);
+    }
+  }
+}
+
+function remarkTimedRanges() {
+  return (tree: MarkdownNode) => transformTimedRanges(tree);
+}
+
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as UnknownRecord)
@@ -271,16 +324,10 @@ export function TranscriptTimedContent({
   content: string;
   onSeek?: (seconds: number) => void;
 }) {
-  const linked = onSeek
-    ? content.replace(
-        /\b(\d{1,3}):([0-5]\d)\s?[–-]\s?(\d{1,3}):([0-5]\d)\b/g,
-        (range, startMinutes, startSeconds) =>
-          `[${range.replace(/\s/g, "").replace("-", "–")}](#video-time=${Number(startMinutes) * 60 + Number(startSeconds)})`,
-      )
-    : content;
+  const plugins = onSeek ? [remarkGfm, remarkTimedRanges] : [remarkGfm];
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={plugins}
       rehypePlugins={[rehypeSanitize]}
       components={{
         a: ({ href, children }) => {
@@ -300,7 +347,7 @@ export function TranscriptTimedContent({
         },
       }}
     >
-      {linked}
+      {content}
     </ReactMarkdown>
   );
 }

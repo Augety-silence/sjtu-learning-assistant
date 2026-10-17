@@ -3117,8 +3117,9 @@ class TranscriptService:
             subprocess.run((open_command, "-R", "--", target), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
         opener = shutil.which("xdg-open")
-        if opener:
-            subprocess.run((opener, str(path.parent)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not opener:
+            raise TranscriptError("当前系统未安装可用的文件管理器打开工具。")
+        subprocess.run((opener, str(path.parent)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def close(self) -> None:
         self._stop.set()

@@ -18,7 +18,7 @@ from sjtu_learning_assistant.cloud_archive_service import (
     add_event,
     decode_remote_path,
     get_volume_identity,
-    hash_local_file,
+    hash_local_file_snapshot,
     job_data,
     ProgressThrottle,
     utcnow,
@@ -129,6 +129,13 @@ def _contained(root: Path, target: Path) -> bool:
 
 
 def _existing_details(path: Path) -> dict[str, Any] | None:
+    details, _identity = _existing_snapshot(path)
+    return details
+
+
+def _existing_snapshot(
+    path: Path,
+) -> tuple[dict[str, Any] | None, tuple[int, int, int, int] | None]:
     try:
         state = path.lstat()
     except FileNotFoundError:
@@ -139,9 +146,9 @@ def _existing_details(path: Path) -> dict[str, Any] | None:
     if _is_link(state):
         raise RestoreError("目标文件是符号链接，已拒绝恢复。")
     if not stat.S_ISREG(mode):
-        return {"kind": "other", "size": None, "mtime_ns": None, "sha256": None}
-    size, mtime_ns, digest = hash_local_file(path)
-    return {"kind": "file", "size": size, "mtime_ns": mtime_ns, "sha256": digest}
+        return ({"kind": "other", "size": None, "mtime_ns": None, "sha256": None}, None)
+    size, mtime_ns, digest, identity = hash_local_file_snapshot(path)
+    return ({"kind": "file", "size": size, "mtime_ns": mtime_ns, "sha256": digest}, identity)
 
 
 def _fingerprint(details: Any) -> tuple[Any, ...] | None:
@@ -437,7 +444,7 @@ class RestoreService:
             if missing and not confirm_create_dirs:
                 raise RestoreError("创建父目录前必须由用户确认。")
             self._check_writable(root, target.parent)
-            existing = _existing_details(target)
+            existing, existing_identity = _existing_snapshot(target)
             planned = job.plan_data.get("existing") if isinstance(job.plan_data, dict) else None
             if conflict_policy == "overwrite" and _fingerprint(existing) != _fingerprint(planned):
                 # 用户依据计划里的指纹确认覆盖；目标此后被修改/新建时不能静默销毁新内容。
@@ -467,9 +474,7 @@ class RestoreService:
                 raise RestoreError("目标已存在且不是普通文件。")
             self._create_directories(root, target.parent)
             reservation_inode = None
-            overwrite_identity = None
-            if conflict_policy == "overwrite" and existing is not None:
-                overwrite_identity = _identity(target)
+            overwrite_identity = existing_identity if conflict_policy == "overwrite" else None
             if conflict_policy != "overwrite":
                 try:
                     descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -499,6 +504,7 @@ class RestoreService:
             expected_hash,
             reservation_inode,
             overwrite_identity,
+            conflict_policy == "overwrite",
         )
 
     def _record_progress(self, job_id: str, count: int) -> None:
@@ -551,6 +557,7 @@ class RestoreService:
         expected_hash: str,
         reservation_inode: int | None,
         overwrite_identity: tuple[int, int, int, int] | None = None,
+        verify_overwrite_identity: bool = False,
     ) -> dict[str, Any]:
         provider = None
         temporary: Path | None = None
@@ -590,7 +597,7 @@ class RestoreService:
             _reject_symlink_chain(target)
             if reservation_inode is not None and target.lstat().st_ino != reservation_inode:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
-            if overwrite_identity is not None and _identity(target) != overwrite_identity:
+            if verify_overwrite_identity and _identity(target) != overwrite_identity:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
             _replace_with_retry(temporary, target)
             temporary = None

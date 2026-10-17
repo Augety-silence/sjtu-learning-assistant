@@ -575,7 +575,9 @@ class ArchiveService:
             item for item in peers if item.source_id == target_context.source_id
         )
         planned = self._planned_paths(peers)
-        return self._download_one(target_context, planned[target_context.source_id])
+        return self._download_with_terminal_status(
+            target_context, planned[target_context.source_id]
+        )
 
     def _load_contexts(
         self,
@@ -1457,25 +1459,33 @@ class ArchiveService:
         planned = self._planned_paths(values)
         results: list[DownloadResult] = []
         for context in values:
+            results.append(
+                self._download_with_terminal_status(
+                    context, planned[context.source_id]
+                )
+            )
+        return results
+
+    def _download_with_terminal_status(
+        self, context: ArchiveFileContext, target: Path
+    ) -> DownloadResult:
+        try:
+            return self._download_one(context, target)
+        except Exception as exc:  # 单文件失败必须与其他文件隔离。
+            message = _safe_error(exc)
             try:
-                result = self._download_one(context, planned[context.source_id])
-            except Exception as exc:  # 单文件失败必须与其他文件隔离。
-                message = _safe_error(exc)
-                try:
-                    self._write_status(
-                        context.source_id,
-                        status="failed",
-                        error=message,
-                    )
-                except Exception as status_exc:
-                    message = f"{message}；状态写回失败：{_safe_error(status_exc)}"
-                result = DownloadResult(
-                    source_id=context.source_id,
+                self._write_status(
+                    context.source_id,
                     status="failed",
                     error=message,
                 )
-            results.append(result)
-        return results
+            except Exception as status_exc:
+                message = f"{message}；状态写回失败：{_safe_error(status_exc)}"
+            return DownloadResult(
+                source_id=context.source_id,
+                status="failed",
+                error=message,
+            )
 
     def _download_one(
         self, context: ArchiveFileContext, target: Path

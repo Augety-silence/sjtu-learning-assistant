@@ -164,6 +164,7 @@ def safe_path_component(
     # a restored copy named e.g. NUL.pdf cannot be opened or deleted on Windows.
     if _WINDOWS_RESERVED_NAME.match(cleaned):
         cleaned = f"_{cleaned}"
+        cleaned = cleaned[:limit].rstrip(" .") or fallback
     return cleaned
 
 

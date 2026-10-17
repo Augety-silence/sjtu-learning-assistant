@@ -516,6 +516,19 @@ class ArchiveDownloadTests(unittest.TestCase):
             result = service.download_file_by_source_id("41")
         self.assertEqual("41", result.source_id)
 
+        with patch.object(service, "_planned_paths", return_value={"41": self.root / "old.pdf"}), patch.object(
+            service,
+            "_download_one",
+            side_effect=ArchiveError("目标路径已存在且不是普通文件。"),
+        ), patch.object(service, "_write_status") as write_status:
+            failed = service.download_file_by_source_id("41")
+        self.assertEqual("failed", failed.status)
+        write_status.assert_called_once_with(
+            "41",
+            status="failed",
+            error="目标路径已存在且不是普通文件。",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

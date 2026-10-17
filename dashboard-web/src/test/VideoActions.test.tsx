@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CourseVideoItem, VideosView } from "@/components/VideosView";
+import { TranscriptTimedContent } from "@/components/TranscriptPhase1Panels";
 import type { TranscriptJob } from "@/lib/types";
 import {
   act,
@@ -60,6 +61,21 @@ afterEach(() => {
 });
 
 describe("video action capabilities and isolation", () => {
+  it("links time ranges only in ordinary Markdown text", () => {
+    const seek = vi.fn();
+    render(
+      <TranscriptTimedContent
+        content={"普通 0:05-0:10，代码 `0:15-0:20`，[已有 0:25-0:30](https://example.test)"}
+        onSeek={seek}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "跳转到 0:05–0:10" }));
+    expect(seek).toHaveBeenCalledWith(5);
+    expect(screen.getByText("0:15-0:20").tagName).toBe("CODE");
+    expect(screen.getByRole("link", { name: "已有 0:25-0:30" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /0:15|0:25/ })).toBeNull();
+  });
+
   it("does not start automatic AI if obtaining the playback address fails", async () => {
     const prepare = vi.fn(async () => undefined);
     render(
