@@ -199,7 +199,10 @@ class DesktopLearningService:
                 self._local_assignment_data(assignment, course)
                 for assignment, course in rows
             ]
-        items = [item for item in items if category in item["categories"]]
+        if category != "all":
+            items = [
+                item for item in items if category in item["categories"]
+            ]
         items.sort(
             key=lambda item: (
                 item.get("due_at") is None,
@@ -224,7 +227,7 @@ class DesktopLearningService:
             self._courses[str(course_id)] = course_name
             for assignment in service.canvas.assignments(course_id):
                 item = self._assignment_data(course_id, course_name, assignment)
-                if category in item["categories"]:
+                if category == "all" or category in item["categories"]:
                     items.append(item)
         items.sort(key=lambda item: (item.get("due_at") is None, item.get("due_at") or "", item["course_name"], item["name"]))
         return {"category": category, "items": items}
