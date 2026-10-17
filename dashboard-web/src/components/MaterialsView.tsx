@@ -53,6 +53,11 @@ const structuredPreviewExtensions = new Set([
   "zip",
 ]);
 
+function fileManagerName() {
+  const platform = navigator.platform || navigator.userAgent;
+  return /Win/i.test(platform) ? "资源管理器" : "Finder";
+}
+
 function records(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value)
     ? value.filter(
@@ -349,7 +354,7 @@ export function MaterialsView() {
           action === "download"
             ? `“${file.name}”下载完成`
             : action === "reveal"
-              ? `已在 Finder 中显示“${file.name}”`
+              ? `已在 ${fileManagerName()} 中显示“${file.name}”`
               : `已打开“${file.name}”`,
       });
       if (action === "download") await load();
@@ -951,7 +956,7 @@ export function MaterialsView() {
                             disabled={Boolean(active)}
                             onClick={() => void act(file, "reveal")}
                           >
-                            Reveal
+                            在{fileManagerName()}中显示
                           </Button>
                         )}
                         {!file.can_open && (

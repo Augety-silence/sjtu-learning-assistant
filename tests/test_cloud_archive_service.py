@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,6 +144,32 @@ def test_network_failure_then_retry(archive_env):
     provider.fail_upload = False
     result = service.retry(job_id)
     assert result["status"] == "completed"
+
+
+def test_same_metadata_path_replacement_before_upload_is_rejected(archive_env):
+    root, engine, provider, service = archive_env
+    path = root / "replace.txt"
+    path.write_bytes(b"first")
+    original = path.stat()
+    replacement = root / "replacement.txt"
+    replacement.write_bytes(b"other")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    replaced = False
+
+    def replace_before_upload(_path):
+        nonlocal replaced
+        if not replaced:
+            os.replace(replacement, path)
+            replaced = True
+
+    provider.ensure_directory = replace_before_upload
+    with pytest.raises(CloudArchiveError, match="上传期间发生变化"):
+        service.archive_file(path)
+    assert provider.uploads == 0
+    assert path.read_bytes() == b"other"
+    with Session(engine) as session:
+        assert session.scalar(select(ArchiveJob)).status == "failed"
 
 
 def test_uploaded_but_db_update_failed_can_reconcile(archive_env):

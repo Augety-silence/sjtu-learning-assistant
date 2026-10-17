@@ -102,6 +102,13 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual(1, self.fetches)
         self.assertTrue(service.get_batch(second["id"])["jobs"][0]["reused"])
 
+    def test_reveal_reports_missing_linux_file_manager(self):
+        with patch("sjtu_learning_assistant.transcript_service.sys.platform", "linux"), patch(
+            "sjtu_learning_assistant.transcript_service.shutil.which", return_value=None
+        ):
+            with self.assertRaisesRegex(TranscriptError, "文件管理器"):
+                TranscriptService._default_reveal(self.root / "artifact.md")
+
     def test_two_live_service_instances_do_not_interrupt_or_steal_batch(self):
         owner = self.service()
         batch = owner.start_batch(course_id="12", course_name="管理会计", videos=list((VIDEO,)))

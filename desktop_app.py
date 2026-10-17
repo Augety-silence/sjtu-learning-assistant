@@ -956,8 +956,8 @@ class DesktopBridge:
 
     def _assignments_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"category"})
-        category = payload.get("category", "today")
-        categories = {"today", "upcoming", "overdue", "missing", "unsubmitted", "submitted", "pending_review", "graded"}
+        category = payload.get("category", "all")
+        categories = {"all", "today", "upcoming", "overdue", "missing", "unsubmitted", "submitted", "pending_review", "graded"}
         if type(category) is not str or category not in categories:
             raise DashboardError("作业分类不正确。")
         return self._learning().assignments_list(category)

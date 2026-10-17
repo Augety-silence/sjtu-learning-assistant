@@ -419,6 +419,7 @@ export interface ArchiveActionResult {
 }
 
 export type AssignmentCategory =
+  | "all"
   | "today"
   | "upcoming"
   | "overdue"

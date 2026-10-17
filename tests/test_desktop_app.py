@@ -352,6 +352,7 @@ class DesktopBridgeTests(unittest.TestCase):
 
     def test_assignment_actions_validate_payloads_and_keep_fake_compatibility(self):
         bridge = DesktopBridge(FakeService(), FakeLearningService())
+        self.assertEqual("all", bridge.invoke("assignments_list", {})["data"]["category"])
         self.assertEqual("today", bridge.invoke("assignments_list", {"category": "today"})["data"]["category"])
         self.assertTrue(bridge.invoke("submit_text", {"course_id": 1, "assignment_id": 2, "text": "答案"})["data"]["verified"])
         self.assertEqual("operation_failed", bridge.invoke("submit_text", {"course_id": "1", "assignment_id": 2, "text": "答案"})["error"]["code"])

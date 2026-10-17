@@ -129,6 +129,11 @@ function isMailAttachment(
   return "id" in attachment;
 }
 
+function fileManagerName() {
+  const platform = navigator.platform || navigator.userAgent;
+  return /Win/i.test(platform) ? "资源管理器" : "Finder";
+}
+
 function messageError(reason: unknown, fallback: string) {
   return reason instanceof Error ? reason.message : fallback;
 }
@@ -465,7 +470,7 @@ export function MessageDetailContent({
         message:
           action === "open"
             ? `已打开附件“${attachment.name}”。`
-            : `已在 Finder 中显示附件“${attachment.name}”。`,
+            : `已在 ${fileManagerName()} 中显示附件“${attachment.name}”。`,
       });
     } catch (reason) {
       showToast({
@@ -543,7 +548,7 @@ export function MessageDetailContent({
                           >
                             {busyAttachment === `${attachment.id}:reveal`
                               ? "处理中…"
-                              : "在 Finder 显示"}
+                              : `在 ${fileManagerName()} 显示`}
                           </Button>
                         </>
                       ) : (

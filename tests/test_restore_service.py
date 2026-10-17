@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sjtu_learning_assistant.cloud_archive_service import CloudArchiveService, encode_remote_path
 from sjtu_learning_assistant.cloud_storage.models import CloudItem
 from sjtu_learning_assistant.models import ArchiveEntry, ArchiveJob, ArchiveVersion, Base
+import sjtu_learning_assistant.restore_service as restore_module
 from sjtu_learning_assistant.restore_service import RestoreError, RestoreService
 
 
@@ -170,6 +171,54 @@ def test_download_interruption_and_hash_failure_leave_no_target_or_temp(restore_
         restore.execute(plan["job"]["id"], "overwrite")
     assert not (target_root / "文 件.txt").exists()
     assert not list(target_root.glob(".sjtu-restore-*"))
+
+
+def test_overwrite_rejects_target_created_during_download(restore_env):
+    root, _engine, provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="created-during-download.txt")
+    target_root = root / "target-race"
+    target_root.mkdir()
+    authorized = restore.authorize_root(target_root)
+    target = target_root / "created-during-download.txt"
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_download = provider.download_stream
+
+    def create_target_during_download(*args, **kwargs):
+        yield from original_download(*args, **kwargs)
+        target.write_bytes(b"new-user-content")
+
+    provider.download_stream = create_target_during_download
+    with pytest.raises(RestoreError, match="下载期间发生变化"):
+        restore.execute(plan["job"]["id"], "overwrite")
+    assert target.read_bytes() == b"new-user-content"
+
+
+def test_overwrite_uses_identity_from_the_validated_snapshot(restore_env, monkeypatch):
+    root, _engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="snapshot-race.txt")
+    target_root = root / "snapshot-target"
+    target_root.mkdir()
+    target = target_root / "snapshot-race.txt"
+    target.write_bytes(b"planned-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_snapshot = restore_module._existing_snapshot
+    replaced = False
+
+    def replace_after_snapshot(path):
+        nonlocal replaced
+        details, identity = original_snapshot(path)
+        if path == target and not replaced:
+            replacement = target.with_suffix(".replacement")
+            replacement.write_bytes(b"new-user-content")
+            os.replace(replacement, target)
+            replaced = True
+        return details, identity
+
+    monkeypatch.setattr(restore_module, "_existing_snapshot", replace_after_snapshot)
+    with pytest.raises(RestoreError, match="下载期间发生变化"):
+        restore.execute(plan["job"]["id"], "overwrite")
+    assert target.read_bytes() == b"new-user-content"
 
 
 def test_missing_parents_require_confirmation(restore_env):

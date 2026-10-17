@@ -86,7 +86,12 @@ export function ScheduleView({
       }
     } catch (reason) {
       if (requestId !== loadRequestRef.current) return;
-      const cached = localStorage.getItem(CACHE_KEY);
+      let cached: string | null = null;
+      try {
+        cached = localStorage.getItem(CACHE_KEY);
+      } catch {
+        cached = null;
+      }
       if (cached) {
         try {
           const parsed = JSON.parse(cached) as {

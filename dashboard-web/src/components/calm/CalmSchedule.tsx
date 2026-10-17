@@ -253,22 +253,23 @@ export function CalmSchedule({
     }).length;
   }, [events, now]);
 
-  const focusTasks = useMemo(
-    () =>
-      events
-        .filter(
-          (event) =>
-            isAssignment(event) &&
-            event.status !== "submitted" &&
-            event.status !== "graded",
-        )
-        .sort(
-          (left, right) =>
-            toDate(left.startAt).getTime() - toDate(right.startAt).getTime(),
-        )
-        .slice(0, 5),
-    [events],
-  );
+  const focusTasks = useMemo(() => {
+    const horizon = startOfDay(now);
+    horizon.setDate(horizon.getDate() + 31);
+    return events
+      .filter((event) => {
+        if (!isAssignment(event)) return false;
+        if (event.status === "submitted" || event.status === "graded") {
+          return false;
+        }
+        return toDate(event.startAt).getTime() < horizon.getTime();
+      })
+      .sort(
+        (left, right) =>
+          toDate(left.startAt).getTime() - toDate(right.startAt).getTime(),
+      )
+      .slice(0, 5);
+  }, [events, now]);
 
   const selectedDate =
     dates.find((date) => dateKey(date) === selectedKey) ?? startOfDay(now);

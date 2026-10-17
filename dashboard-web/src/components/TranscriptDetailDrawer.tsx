@@ -61,6 +61,17 @@ function messageFrom(reason: unknown, fallback: string) {
   return reason instanceof Error ? reason.message : fallback;
 }
 
+// Windows builds cannot "reveal in Finder"; match the host shell instead of
+// printing a macOS-only label (same detection pattern as MessagesView).
+function revealInFilesLabel() {
+  const platform = navigator.platform || navigator.userAgent;
+  return /Mac|iPhone|iPad/i.test(platform)
+    ? "在 Finder 中显示"
+    : /Win/i.test(platform)
+      ? "在资源管理器中显示"
+      : "在文件管理器中显示";
+}
+
 export function TranscriptDetailDrawer({
   job,
   initialTab = "summary",
@@ -539,7 +550,8 @@ export function TranscriptDetailDrawer({
                     )
                   }
                 >
-                  <ExternalLink aria-hidden="true" />在 Finder 中显示
+                  <ExternalLink aria-hidden="true" />
+                  {revealInFilesLabel()}
                 </Button>
               )}
             </div>

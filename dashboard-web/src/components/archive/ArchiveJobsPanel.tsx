@@ -28,7 +28,8 @@ export function ArchiveJobsPanel({
 }) {
   const [openJob, setOpenJob] = useState<string | null>(null);
   const [events, setEvents] = useState<Record<string, ArchiveJobEvent[]>>({});
-  const [eventError, setEventError] = useState("");
+  const [eventErrors, setEventErrors] = useState<Record<string, string>>({});
+  const [loadingEvents, setLoadingEvents] = useState<Set<string>>(new Set());
   const [retrying, setRetrying] = useState<string | null>(null);
 
   const toggleEvents = async (jobId: string) => {
@@ -37,15 +38,27 @@ export function ArchiveJobsPanel({
       return;
     }
     setOpenJob(jobId);
-    if (events[jobId]) return;
-    setEventError("");
+    if (events[jobId] || loadingEvents.has(jobId)) return;
+    setEventErrors((current) => {
+      const next = { ...current };
+      delete next[jobId];
+      return next;
+    });
+    setLoadingEvents((current) => new Set(current).add(jobId));
     try {
       const result = await getArchiveJobEvents(jobId);
       setEvents((current) => ({ ...current, [jobId]: result.items }));
     } catch (reason) {
-      setEventError(
-        reason instanceof Error ? reason.message : "任务事件读取失败",
-      );
+      setEventErrors((current) => ({
+        ...current,
+        [jobId]: reason instanceof Error ? reason.message : "任务事件读取失败",
+      }));
+    } finally {
+      setLoadingEvents((current) => {
+        const next = new Set(current);
+        next.delete(jobId);
+        return next;
+      });
     }
   };
 
@@ -152,9 +165,11 @@ export function ArchiveJobsPanel({
                     className="archive-events"
                     id={"archive-events-" + job.id}
                   >
-                    {eventError && <p role="alert">{eventError}</p>}
+                    {eventErrors[job.id] && (
+                      <p role="alert">{eventErrors[job.id]}</p>
+                    )}
                     {!events[job.id] ? (
-                      eventError ? null : (
+                      eventErrors[job.id] ? null : (
                         <p role="status">正在读取事件…</p>
                       )
                     ) : events[job.id].length ? (

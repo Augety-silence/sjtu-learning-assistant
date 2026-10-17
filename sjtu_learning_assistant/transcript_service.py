@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -260,7 +261,7 @@ def _parse_time(value: object) -> datetime | None:
 
 def _safe_error(value: object) -> str:
     text = " ".join(str(value).split())
-    text = re.sub(r"/Users/\S+", "[已隐藏]", text)
+    text = re.sub(r"(?i)(?:/Users|/home)/\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/]\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[=:]\s*\S+", r"\1=[已隐藏]", text)
     return text[:400] or "字幕任务失败，请稍后重试。"
@@ -3100,11 +3101,25 @@ class TranscriptService:
 
     @staticmethod
     def _default_reveal(path: Path) -> None:
+        target = str(path)
         if sys.platform == "win32":
+            # explorer parses "/select," itself, so the object must carry its
+            # own quotation marks when the path contains spaces or symbols;
+            # a sequence argument would be quoted as one token by Windows
+            # command-line rules, which explorer rejects. Windows file names
+            # cannot contain literal double quotes.
+            command = f'explorer.exe /select,"{target}"'
             # explorer.exe returns exit code 1 even on success; ignore it.
-            subprocess.run(["explorer.exe", f"/select,{path}"], check=False)
+            subprocess.run(command, check=False)
             return
-        subprocess.run(("/usr/bin/open", "-R", "--", str(path)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == "darwin":
+            open_command = shutil.which("open") or "/usr/bin/open"
+            subprocess.run((open_command, "-R", "--", target), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        opener = shutil.which("xdg-open")
+        if not opener:
+            raise TranscriptError("当前系统未安装可用的文件管理器打开工具。")
+        subprocess.run((opener, str(path.parent)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def close(self) -> None:
         self._stop.set()

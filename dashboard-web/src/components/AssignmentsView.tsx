@@ -55,6 +55,7 @@ interface AssignmentsViewProps {
 }
 
 const filters: Array<{ value: AssignmentCategory; label: string }> = [
+  { value: "all", label: "全部" },
   { value: "today", label: "今天" },
   { value: "upcoming", label: "即将截止" },
   { value: "overdue", label: "已逾期" },
@@ -279,7 +280,7 @@ export function AssignmentsView({
   onInitialTargetHandled,
 }: AssignmentsViewProps = {}) {
   const [category, setCategory] = useState<AssignmentCategory>(
-    initialTarget ? "upcoming" : "today",
+    initialTarget ? "upcoming" : "all",
   );
   const [items, setItems] = useState<AssignmentItem[] | null>(null);
   const [selected, setSelected] = useState<AssignmentItem | null>(null);
@@ -534,7 +535,7 @@ export function AssignmentsView({
                   key={`${item.course_id}:${item.id}`}
                   type="button"
                   className={
-                    selected?.id === item.id
+                    selected && sameAssignment(selected, item)
                       ? "assignment-card assignment-card-active"
                       : "assignment-card"
                   }

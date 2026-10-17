@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 from sjtu_learning_assistant import __version__
 
 ROOT = Path(SPECPATH).parent
@@ -16,10 +18,16 @@ datas = [
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),
     (str(ROOT / "agent_presets"), "agent_presets"),
+    # Keep Windows parity with packaging/desktop.spec: imageio_ffmpeg ships the
+    # ffmpeg binary as package data, otherwise video_screenshot_pdf silently
+    # degrades on machines without a system ffmpeg on PATH.
+    *collect_data_files("imageio_ffmpeg"),
 ]
 
 hiddenimports = [
     "logging.config",
+    "imageio_ffmpeg",
+    "imageio_ffmpeg.binaries",
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.Windows",

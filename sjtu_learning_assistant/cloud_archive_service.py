@@ -32,6 +32,7 @@ from sjtu_learning_assistant.models import (
 REMOTE_ROOT = ("SJTU Learning Assistant", "Archive")
 ACTIVE_STATES = ("running", "uploading", "verifying", "downloading")
 PROGRESS_MIN_BYTES = 5 * 1024 * 1024
+SOURCE_CHANGED_DURING_UPLOAD = "文件在上传期间发生变化，云端副本需要重新校验；请在文件保存完成后重新归档。"
 _SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret")
 
 
@@ -122,28 +123,49 @@ def path_identity(path: Path, volume: str | None = None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def hash_local_file(path: Path, chunk_size: int = 1048576) -> tuple[int, int, str]:
+FileIdentity = tuple[int, int, int, int]
+
+
+def _stat_identity(state: os.stat_result) -> FileIdentity:
+    return (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
+
+
+def hash_local_file_snapshot(
+    path: Path, chunk_size: int = 1048576
+) -> tuple[int, int, str, FileIdentity]:
     try:
         before = path.stat()
         digest = hashlib.sha256()
         count = 0
         with path.open("rb") as source:
+            opened = os.fstat(source.fileno())
             while True:
                 chunk = source.read(chunk_size)
                 if not chunk:
                     break
                 count += len(chunk)
                 digest.update(chunk)
+            read_after = os.fstat(source.fileno())
         after = path.stat()
     except PermissionError as exc:
         raise CloudArchiveError("文件正被其他程序占用或没有读取权限，请关闭相关程序后重试。") from exc
     except OSError as exc:
         raise CloudArchiveError("读取文件失败，请确认文件仍然存在后重试。") from exc
-    before_key = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-    after_key = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    if before_key != after_key or count != after.st_size:
+    before_key = _stat_identity(before)
+    opened_key = _stat_identity(opened)
+    read_after_key = _stat_identity(read_after)
+    after_key = _stat_identity(after)
+    if (
+        not (before_key == opened_key == read_after_key == after_key)
+        or count != after.st_size
+    ):
         raise CloudArchiveError("文件在归档读取期间发生变化，请重试。")
-    return count, after.st_mtime_ns, digest.hexdigest()
+    return count, after.st_mtime_ns, digest.hexdigest(), after_key
+
+
+def hash_local_file(path: Path, chunk_size: int = 1048576) -> tuple[int, int, str]:
+    size, mtime_ns, digest, _identity = hash_local_file_snapshot(path, chunk_size)
+    return size, mtime_ns, digest
 
 
 def safe_filename(value: str) -> str:
@@ -517,6 +539,7 @@ class CloudArchiveService:
     def _upload(self, job_id: str, path: Path) -> dict[str, Any]:
         provider = None
         uploaded = False
+        source_changed = False
         progress: ProgressThrottle | None = None
         try:
             with Session(self.engine) as session:
@@ -524,7 +547,12 @@ class CloudArchiveService:
                 version = session.get(ArchiveVersion, job.version_id) if job else None
                 if job is None or version is None:
                     raise CloudArchiveError("归档任务记录不完整。")
-                actual_size, _actual_mtime, actual_hash = hash_local_file(path)
+                (
+                    actual_size,
+                    actual_mtime,
+                    actual_hash,
+                    actual_identity,
+                ) = hash_local_file_snapshot(path)
                 if actual_size != version.size or actual_hash != version.sha256:
                     raise CloudArchiveError("本地文件内容已变化，请创建新的归档版本。")
                 remote_path = decode_remote_path(version.cloud_remote_path)
@@ -542,12 +570,22 @@ class CloudArchiveService:
                 return self._reconcile_remote(job_id, provider, remote_path)
             progress = ProgressThrottle(expected_size, lambda count: self._record_progress(job_id, count))
             with path.open("rb") as source:
+                if _stat_identity(os.fstat(source.fileno())) != actual_identity:
+                    source_changed = True
+                    raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
                 tracked = UploadProgressReader(source, progress.update)
-                if path.stat().st_size >= self.multipart_threshold:
+                if actual_size >= self.multipart_threshold:
                     item = provider.multipart_upload(remote_path, tracked, overwrite=False)
                 else:
                     item = provider.simple_upload(remote_path, tracked, overwrite=False)
+                if _stat_identity(os.fstat(source.fileno())) != actual_identity:
+                    source_changed = True
+                    raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
             uploaded = True
+            if self._source_changed(path, actual_size, actual_mtime, actual_identity):
+                # 上传读取的是哈希之后的文件内容；期间被改写会让云端对象与记录的 SHA-256 不一致。
+                source_changed = True
+                raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is None:
@@ -561,6 +599,10 @@ class CloudArchiveService:
                 return result
         except Exception as exc:
             bytes_done = progress.position if progress is not None else None
+            if source_changed:
+                # 记为 failed：retry 会重新哈希并提示“归档源已变化”，引导创建新版本而非对账死循环。
+                self._mark_failed(job_id, SOURCE_CHANGED_DURING_UPLOAD, bytes_done)
+                raise
             if uploaded:
                 self._mark_reconcile(job_id, safe_failure("保存上传状态", exc), bytes_done)
                 raise CloudArchiveError("文件已上传，但本地状态保存失败；请执行 reconcile。") from exc
@@ -575,6 +617,21 @@ class CloudArchiveService:
                     close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _source_changed(
+        path: Path,
+        size: int,
+        mtime_ns: int,
+        identity: FileIdentity | None = None,
+    ) -> bool:
+        try:
+            state = path.stat()
+        except OSError:
+            return True
+        if identity is not None and _stat_identity(state) != identity:
+            return True
+        return (state.st_size, state.st_mtime_ns) != (size, mtime_ns)
 
     def _record_progress(self, job_id: str, count: int) -> None:
         with Session(self.engine) as session:

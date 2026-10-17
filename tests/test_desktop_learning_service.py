@@ -89,6 +89,8 @@ class DesktopLearningServiceTests(unittest.TestCase):
         )
 
     def test_categories_use_submission_state_and_dates(self):
+        all_items = self.service.assignments_list("all")["items"]
+        self.assertEqual(["已评分作业", "项目报告"], [item["name"] for item in all_items])
         today = self.service.assignments_list("today")["items"]
         self.assertEqual(["项目报告"], [item["name"] for item in today])
         missing = self.service.assignments_list("missing")["items"]

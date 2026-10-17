@@ -575,7 +575,9 @@ class ArchiveService:
             item for item in peers if item.source_id == target_context.source_id
         )
         planned = self._planned_paths(peers)
-        return self._download_one(target_context, planned[target_context.source_id])
+        return self._download_with_terminal_status(
+            target_context, planned[target_context.source_id]
+        )
 
     def _load_contexts(
         self,
@@ -1457,25 +1459,33 @@ class ArchiveService:
         planned = self._planned_paths(values)
         results: list[DownloadResult] = []
         for context in values:
+            results.append(
+                self._download_with_terminal_status(
+                    context, planned[context.source_id]
+                )
+            )
+        return results
+
+    def _download_with_terminal_status(
+        self, context: ArchiveFileContext, target: Path
+    ) -> DownloadResult:
+        try:
+            return self._download_one(context, target)
+        except Exception as exc:  # 单文件失败必须与其他文件隔离。
+            message = _safe_error(exc)
             try:
-                result = self._download_one(context, planned[context.source_id])
-            except Exception as exc:  # 单文件失败必须与其他文件隔离。
-                message = _safe_error(exc)
-                try:
-                    self._write_status(
-                        context.source_id,
-                        status="failed",
-                        error=message,
-                    )
-                except Exception as status_exc:
-                    message = f"{message}；状态写回失败：{_safe_error(status_exc)}"
-                result = DownloadResult(
-                    source_id=context.source_id,
+                self._write_status(
+                    context.source_id,
                     status="failed",
                     error=message,
                 )
-            results.append(result)
-        return results
+            except Exception as status_exc:
+                message = f"{message}；状态写回失败：{_safe_error(status_exc)}"
+            return DownloadResult(
+                source_id=context.source_id,
+                status="failed",
+                error=message,
+            )
 
     def _download_one(
         self, context: ArchiveFileContext, target: Path
@@ -1505,65 +1515,78 @@ class ArchiveService:
             raise ArchiveError("目标路径已存在且不是普通文件。")
         last_error: Exception | None = None
         downloaded: tuple[Path, int, str] | None = None
-        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-            temporary_path: Path | None = None
-            try:
-                self._record_attempt(context.source_id)
-                download_url = self._fetch_download_url(context.source_id)
-                temporary_path, size, digest = self._stream_to_temporary(
-                    download_url, target.parent
-                )
-                if context.expected_size is not None and size != context.expected_size:
-                    raise ArchiveError(
-                        f"下载大小不一致：期望 {context.expected_size}，实际 {size}。"
-                    )
-                downloaded = (temporary_path, size, digest)
-                break
-            except Exception as exc:
-                last_error = exc
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-                if attempt < DOWNLOAD_ATTEMPTS:
-                    self.sleeper(RETRY_DELAYS_SECONDS[attempt - 1])
-        if downloaded is None:
-            assert last_error is not None
-            raise ArchiveError(
-                f"下载重试 {DOWNLOAD_ATTEMPTS} 次后失败：{_safe_error(last_error)}"
-            )
-
-        temporary_path, size, digest = downloaded
         try:
-            previous_path = target
-            if context.local_path:
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                temporary_path: Path | None = None
                 try:
-                    previous_path = ensure_within_root(
-                        self.archive_root, Path(context.local_path)
+                    self._record_attempt(context.source_id)
+                    download_url = self._fetch_download_url(context.source_id)
+                    temporary_path, size, digest = self._stream_to_temporary(
+                        download_url, target.parent
                     )
-                except ArchiveError:
-                    # 归档根变化时绝不读取、移动或删除旧 root 之外的路径。
-                    previous_path = target
-            _remove_target_symlink(target)
-            if _path_mode(target) is not None and not _is_regular_file(target):
-                raise ArchiveError("目标路径已存在且不是普通文件。")
-            if previous_path != target and _path_mode(previous_path) is not None:
-                _ensure_safe_directory(self.archive_root, previous_path.parent)
-            if _is_regular_file(previous_path):
-                self._preserve_old_version(previous_path, context.source_id)
-            elif _path_mode(previous_path) is not None:
-                if previous_path.is_symlink():
-                    previous_path.unlink()
-                else:
-                    raise ArchiveError("旧归档路径不是普通文件，已拒绝处理。")
-            _replace_with_regular_file(self.archive_root, temporary_path, target)
-            if previous_path != target and _is_regular_file(previous_path):
-                try:
-                    previous_path.unlink()
-                except OSError:
-                    # 新文件已就位、旧内容已存入 .versions；Windows 上旧文件被占用时
-                    # 不能让本次下载判失败（否则每轮重复下载并膨胀 .versions）。
-                    pass
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
+                    if context.expected_size is not None and size != context.expected_size:
+                        raise ArchiveError(
+                            f"下载大小不一致：期望 {context.expected_size}，实际 {size}。"
+                        )
+                    downloaded = (temporary_path, size, digest)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if temporary_path is not None:
+                        temporary_path.unlink(missing_ok=True)
+                    if attempt < DOWNLOAD_ATTEMPTS:
+                        self.sleeper(RETRY_DELAYS_SECONDS[attempt - 1])
+            if downloaded is None:
+                assert last_error is not None
+                raise ArchiveError(
+                    f"下载重试 {DOWNLOAD_ATTEMPTS} 次后失败：{_safe_error(last_error)}"
+                )
+
+            temporary_path, size, digest = downloaded
+            try:
+                previous_path = target
+                if context.local_path:
+                    try:
+                        previous_path = ensure_within_root(
+                            self.archive_root, Path(context.local_path)
+                        )
+                    except ArchiveError:
+                        # 归档根变化时绝不读取、移动或删除旧 root 之外的路径。
+                        previous_path = target
+                _remove_target_symlink(target)
+                if _path_mode(target) is not None and not _is_regular_file(target):
+                    raise ArchiveError("目标路径已存在且不是普通文件。")
+                if previous_path != target and _path_mode(previous_path) is not None:
+                    _ensure_safe_directory(self.archive_root, previous_path.parent)
+                if _is_regular_file(previous_path):
+                    self._preserve_old_version(previous_path, context.source_id)
+                elif _path_mode(previous_path) is not None:
+                    if previous_path.is_symlink():
+                        previous_path.unlink()
+                    else:
+                        raise ArchiveError("旧归档路径不是普通文件，已拒绝处理。")
+                _replace_with_regular_file(self.archive_root, temporary_path, target)
+                if previous_path != target and _is_regular_file(previous_path):
+                    try:
+                        previous_path.unlink()
+                    except OSError:
+                        # 新文件已就位、旧内容已存入 .versions；Windows 上旧文件被占用时
+                        # 不能让本次下载判失败（否则每轮重复下载并膨胀 .versions）。
+                        pass
+            except Exception:
+                temporary_path.unlink(missing_ok=True)
+                raise
+        except Exception as exc:
+            # 单文件入口（UI 显式下载）没有批量包装器写终态；否则记录会永远停留在
+            # pending，前端刷新后仍显示“等待处理”，无法据此重试。
+            try:
+                self._write_status(
+                    context.source_id,
+                    status="failed",
+                    error=_safe_error(exc),
+                )
+            except Exception:
+                pass
             raise
 
         self._write_status(

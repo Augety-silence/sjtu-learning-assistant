@@ -7,6 +7,7 @@ import {
   FolderTree,
   GraduationCap,
   Mail,
+  Paperclip,
   Plus,
   Trash2,
   X,
@@ -39,6 +40,11 @@ const capabilities = [
     icon: Mail,
   },
   { label: "资料树", tools: ["get_material_tree"], icon: FolderTree },
+  {
+    label: "附件",
+    tools: ["search_ai_attachments", "read_ai_attachment_text"],
+    icon: Paperclip,
+  },
 ];
 
 interface SessionGroup {

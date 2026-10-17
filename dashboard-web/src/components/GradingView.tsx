@@ -94,6 +94,7 @@ function formatDateTime(value?: string | null) {
     : new Intl.DateTimeFormat("zh-CN", {
         dateStyle: "medium",
         timeStyle: "short",
+        timeZone: "Asia/Shanghai",
       }).format(date);
 }
 
@@ -462,9 +463,11 @@ export function GradingView({
                               <span>
                                 {attachment.downloadStatus === "failed"
                                   ? "下载失败"
-                                  : attachment.downloadStatus === "downloaded"
-                                    ? "已下载"
-                                    : "提交文件"}
+                                  : attachment.downloadStatus === "downloading"
+                                    ? "下载中…"
+                                    : attachment.downloadStatus === "downloaded"
+                                      ? "已下载"
+                                      : "提交文件"}
                               </span>
                             </div>
                             <div className="finder-actions">

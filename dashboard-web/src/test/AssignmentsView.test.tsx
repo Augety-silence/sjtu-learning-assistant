@@ -67,7 +67,7 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.getAssignments).mockResolvedValue({
-    category: "today",
+    category: "all",
     items: [assignment],
   });
   vi.mocked(api.getAssignmentDetail).mockResolvedValue(assignment);
@@ -76,7 +76,7 @@ beforeEach(() => {
 describe("AssignmentsView", () => {
   it("等待后显现作业正文，同时保持分类按钮和原根节点", async () => {
     let finish:
-      | ((value: { category: "today"; items: AssignmentItem[] }) => void)
+      | ((value: { category: "all"; items: AssignmentItem[] }) => void)
       | undefined;
     vi.mocked(api.getAssignments).mockReturnValueOnce(
       new Promise((resolve) => {
@@ -86,8 +86,12 @@ describe("AssignmentsView", () => {
     const { container } = render(<AssignmentsView />);
     const root = container.querySelector(".assignments-page") as HTMLElement;
     expect(root.getAttribute("data-content-reveal")).toBe("loading");
+    await waitFor(() => expect(api.getAssignments).toHaveBeenCalledWith("all"));
+    expect(
+      screen.getByRole("tab", { name: "全部" }).getAttribute("aria-selected"),
+    ).toBe("true");
     expect(screen.getByRole("tab", { name: "今天" })).toBeTruthy();
-    finish?.({ category: "today", items: [assignment] });
+    finish?.({ category: "all", items: [assignment] });
     await screen.findByText("项目报告");
     expect(container.querySelector(".assignments-page")).toBe(root);
     expect(root.getAttribute("data-content-reveal")).toBe("ready");
@@ -96,9 +100,10 @@ describe("AssignmentsView", () => {
     );
   });
 
-  it("offers all eight classifications and reloads the selected category", async () => {
+  it("offers all nine classifications and reloads the selected category", async () => {
     render(<AssignmentsView />);
     for (const label of [
+      "全部",
       "今天",
       "即将截止",
       "已逾期",

@@ -53,6 +53,12 @@ const technicalStates = new Set<TranscriptProcessingState>([
   "failed",
 ]);
 
+function prefersReducedMotion() {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
+}
+
 /**
  * Effective state: the explicit `processingState` when valid, otherwise a
  * conservative mapping of the legacy flags (null keeps the legacy copy).
@@ -221,7 +227,7 @@ export function VideoSynchronizedLearning({
   useEffect(() => {
     activeRef.current?.scrollIntoView?.({
       block: "nearest",
-      behavior: "smooth",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
     });
   }, [active?.id]);
   const ranges = (
@@ -267,7 +273,7 @@ export function VideoSynchronizedLearning({
               : "当前时间尚无已准备内容。")}
       </p>
       {error && (
-        <button type="button" onClick={refresh}>
+        <button type="button" className="aura-button-link" onClick={refresh}>
           重新检查
         </button>
       )}
@@ -311,7 +317,11 @@ export function VideoSynchronizedLearning({
           </p>
         )}
       {visible?.retryable && onRetry && (
-        <button type="button" onClick={() => void onRetry()}>
+        <button
+          type="button"
+          className="aura-button-link"
+          onClick={() => void onRetry()}
+        >
           {state === "finished_needs_review" ||
           visible.errorCode === "content_uncertain" ||
           visible.stage === "needs_review"

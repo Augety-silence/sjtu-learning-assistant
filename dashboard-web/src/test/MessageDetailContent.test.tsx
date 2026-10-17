@@ -314,7 +314,12 @@ describe("MessageDetailContent", () => {
     await waitFor(() =>
       expect(openMailAttachment).toHaveBeenCalledWith("mail-1", "attachment-1"),
     );
-    fireEvent.click(screen.getByRole("button", { name: "在 Finder 显示" }));
+    const fileManager = /Win/i.test(navigator.platform || navigator.userAgent)
+      ? "资源管理器"
+      : "Finder";
+    fireEvent.click(
+      screen.getByRole("button", { name: `在 ${fileManager} 显示` }),
+    );
     await waitFor(() =>
       expect(revealMailAttachment).toHaveBeenCalledWith(
         "mail-1",

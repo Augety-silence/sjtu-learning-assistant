@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import stat
 import threading
 import unicodedata
@@ -56,6 +57,9 @@ MAX_FAILURE_DETAILS = 100
 MAX_TRANSCRIPT_MANIFEST_SIZE = 2 * 1024 * 1024
 TRANSCRIPT_DIRECTORY = "Transcripts"
 _HEX_DIGITS = frozenset("0123456789abcdef")
+_WINDOWS_RESERVED_NAME = re.compile(
+    r"^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$", re.IGNORECASE
+)
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -156,6 +160,11 @@ def safe_path_component(
     cleaned = cleaned[:limit].rstrip(" .") or fallback
     if cleaned in {".", ".."}:
         cleaned = fallback
+    # Windows treats these device names (with or without extension) as devices;
+    # a restored copy named e.g. NUL.pdf cannot be opened or deleted on Windows.
+    if _WINDOWS_RESERVED_NAME.match(cleaned):
+        cleaned = f"_{cleaned}"
+        cleaned = cleaned[:limit].rstrip(" .") or fallback
     return cleaned
 
 

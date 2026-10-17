@@ -1627,8 +1627,11 @@ export function VideosView({
   }, [playbackRate, speedMenuOpen]);
   useEffect(() => {
     if (window.pywebview?.api) return;
-    const updateFullscreen = () =>
-      setPlayerFullscreen(Boolean(document.fullscreenElement));
+    const updateFullscreen = () => {
+      const active = Boolean(document.fullscreenElement);
+      setPlayerFullscreen(active);
+      if (!active) setPortalFullscreen(false);
+    };
     const media = videoRef.current as WebkitFullscreenVideo | null;
     const onWebkitFullscreen = () => {
       const active = Boolean(media?.webkitDisplayingFullscreen);
@@ -2116,10 +2119,9 @@ export function VideosView({
         event.preventDefault();
         stepTemporaryPlaybackRate(key === "arrowup" ? 1 : -1);
       } else if (
-        key === " " ||
-        key === "space" ||
-        key === "spacebar" ||
-        key === "k"
+        (key === " " || key === "space" || key === "spacebar" || key === "k") &&
+        // Holding the key must not fire repeated play/pause toggles.
+        !event.repeat
       ) {
         event.preventDefault();
         togglePlayback();
@@ -3046,6 +3048,8 @@ export function VideosView({
           onPause={() => setPreservedAcrossSource(false)}
           onEnded={() => setPreservedAcrossSource(false)}
           onError={(event) => {
+            // Code 1 is MEDIA_ERR_ABORTED: switching videos / unmounting is not
+            // a playback failure and must not tear down the new playback URL.
             if (event.currentTarget.error?.code === 1) return;
             failMediaLoad();
           }}
@@ -3112,7 +3116,17 @@ export function VideosView({
             }
           }}
         >
-          <source src={playbackUrl} onError={failMediaLoad} />
+          <source
+            src={playbackUrl}
+            onError={(event) => {
+              // Ignore aborts from switching sources; real network/decode
+              // failures surface on the <video> element with a concrete code.
+              const mediaError = event.currentTarget
+                .parentElement as HTMLVideoElement | null;
+              if ((mediaError?.error?.code ?? 2) === 1) return;
+              failMediaLoad();
+            }}
+          />
           {subtitleUrl && (
             <track
               kind="subtitles"
@@ -3796,6 +3810,7 @@ export function VideosView({
                         aria-label={`选择 ${video.title}`}
                         checked={selectedIds.has(video.id)}
                         onChange={() => toggleVideo(video.id)}
+                        onClick={(event) => event.stopPropagation()}
                       />
                     )}
                     <div className="video-recording-copy">

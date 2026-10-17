@@ -723,7 +723,7 @@ function fixtureData(action: string, payload: Record<string, unknown> = {}) {
       };
     case "assignments_list":
       return {
-        category: String(payload.category ?? "today"),
+        category: String(payload.category ?? "all"),
         items: [assignment],
       };
     case "detail":

@@ -546,7 +546,9 @@ describe("AIChatView", () => {
     expect(
       screen.getByRole("dialog", { name: "AI 助手个性化设置" }),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("radio", { name: "⌘ + Enter 发送" }));
+    fireEvent.click(
+      screen.getByRole("radio", { name: /(?:⌘|Ctrl) \+ Enter 发送/ }),
+    );
 
     await screen.findByText("已保存");
     expect(updateSettings).toHaveBeenCalledWith({
