@@ -32,6 +32,7 @@ from sjtu_learning_assistant.models import (
 REMOTE_ROOT = ("SJTU Learning Assistant", "Archive")
 ACTIVE_STATES = ("running", "uploading", "verifying", "downloading")
 PROGRESS_MIN_BYTES = 5 * 1024 * 1024
+SOURCE_CHANGED_DURING_UPLOAD = "文件在上传期间发生变化，云端副本需要重新校验；请在文件保存完成后重新归档。"
 _SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret")
 
 
@@ -517,6 +518,7 @@ class CloudArchiveService:
     def _upload(self, job_id: str, path: Path) -> dict[str, Any]:
         provider = None
         uploaded = False
+        source_changed = False
         progress: ProgressThrottle | None = None
         try:
             with Session(self.engine) as session:
@@ -524,7 +526,7 @@ class CloudArchiveService:
                 version = session.get(ArchiveVersion, job.version_id) if job else None
                 if job is None or version is None:
                     raise CloudArchiveError("归档任务记录不完整。")
-                actual_size, _actual_mtime, actual_hash = hash_local_file(path)
+                actual_size, actual_mtime, actual_hash = hash_local_file(path)
                 if actual_size != version.size or actual_hash != version.sha256:
                     raise CloudArchiveError("本地文件内容已变化，请创建新的归档版本。")
                 remote_path = decode_remote_path(version.cloud_remote_path)
@@ -548,6 +550,10 @@ class CloudArchiveService:
                 else:
                     item = provider.simple_upload(remote_path, tracked, overwrite=False)
             uploaded = True
+            if self._source_changed(path, actual_size, actual_mtime):
+                # 上传读取的是哈希之后的文件内容；期间被改写会让云端对象与记录的 SHA-256 不一致。
+                source_changed = True
+                raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is None:
@@ -561,6 +567,10 @@ class CloudArchiveService:
                 return result
         except Exception as exc:
             bytes_done = progress.position if progress is not None else None
+            if source_changed:
+                # 记为 failed：retry 会重新哈希并提示“归档源已变化”，引导创建新版本而非对账死循环。
+                self._mark_failed(job_id, SOURCE_CHANGED_DURING_UPLOAD, bytes_done)
+                raise
             if uploaded:
                 self._mark_reconcile(job_id, safe_failure("保存上传状态", exc), bytes_done)
                 raise CloudArchiveError("文件已上传，但本地状态保存失败；请执行 reconcile。") from exc
@@ -575,6 +585,14 @@ class CloudArchiveService:
                     close()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _source_changed(path: Path, size: int, mtime_ns: int) -> bool:
+        try:
+            state = path.stat()
+        except OSError:
+            return True
+        return (state.st_size, state.st_mtime_ns) != (size, mtime_ns)
 
     def _record_progress(self, job_id: str, count: int) -> None:
         with Session(self.engine) as session:
