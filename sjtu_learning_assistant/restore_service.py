@@ -139,7 +139,7 @@ def _existing_snapshot(
     try:
         state = path.lstat()
     except FileNotFoundError:
-        return None
+        return (None, None)
     except OSError as exc:
         raise RestoreError("无法检查现有目标文件。") from exc
     mode = state.st_mode
