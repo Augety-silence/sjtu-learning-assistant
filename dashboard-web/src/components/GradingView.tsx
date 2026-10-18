@@ -163,8 +163,11 @@ export function GradingView({
         ? ""
         : String(selected.score),
     );
-    setCommentDraft("");
   }, [selected?.id, selected?.score]);
+  // A score save or background refresh changes selected.score; only switching submissions may discard an unsent comment.
+  useEffect(() => {
+    setCommentDraft("");
+  }, [selected?.id]);
 
   const saveScore = async () => {
     if (!selected || !onSaveScore || busy) return;
