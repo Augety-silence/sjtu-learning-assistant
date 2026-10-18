@@ -238,11 +238,15 @@ class AssignmentService:
         observed_type = submission.get("submission_type")
         if observed_type != submission_type:
             return None
-        if (
-            submission_type == "online_text_entry"
-            and _normalized_body(submission.get("body")) != _normalized_body(body)
-        ):
-            return None
+        if submission_type == "online_text_entry":
+            observed_body = _normalized_body(submission.get("body"))
+            # 纯文本中的 "<" 会被 Canvas 转义为 &lt;；同时接受按 HTML 与按纯文本两种解读，
+            # 避免 "1<2" 之类的答案被误判为回读不一致。
+            if observed_body not in {
+                _normalized_body(body),
+                _normalized_body(html.escape(body, quote=False)) if isinstance(body, str) else None,
+            }:
+                return None
         if (
             submission_type == "online_url"
             and _normalized_url(submission.get("url")) != _normalized_url(url)
