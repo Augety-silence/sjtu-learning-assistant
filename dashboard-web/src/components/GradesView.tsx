@@ -312,7 +312,8 @@ export function GradesView({
                                 aria-label={`${student.studentName}，${assignment.name}，分数`}
                                 inputMode="decimal"
                                 value={drafts[key] ?? String(cell?.score ?? "")}
-                                disabled={savingKey !== null}
+                                readOnly={savingKey !== null}
+                                aria-busy={savingKey === key || undefined}
                                 onChange={(event) =>
                                   setDrafts((current) => ({
                                     ...current,
