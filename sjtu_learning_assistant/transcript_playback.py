@@ -123,7 +123,12 @@ def cues_to_vtt(cues):
         minutes, seconds = divmod(seconds, 60)
         hours, minutes = divmod(minutes, 60)
         return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
+
+    def payload(value):
+        # WebVTT cue identifiers/payloads must not contain "-->" or line breaks;
+        # model replacements could otherwise end a cue early or forge timings.
+        return " ".join(str(value).split()).replace("-->", "→")
     return "WEBVTT\n\n" + "\n\n".join(
-        f"{cue.cue_id}\n{timestamp(cue.start_ms)} --> {timestamp(cue.end_ms)}\n{cue.text}"
+        f"{payload(cue.cue_id)}\n{timestamp(cue.start_ms)} --> {timestamp(cue.end_ms)}\n{payload(cue.text)}"
         for cue in _cue_map(cues).values()
     ) + "\n"
