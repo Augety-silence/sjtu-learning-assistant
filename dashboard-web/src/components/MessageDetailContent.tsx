@@ -96,6 +96,7 @@ function copySafeNode(node: Node, output: Document): Node | null {
   if (tag === "a") {
     const href = node.getAttribute("href");
     if (href && isHttpsUrl(href)) safeElement.setAttribute("href", href);
+    else if (href) safeElement.setAttribute("data-link-blocked", "true");
   } else if (tag === "img") {
     const resourceId = node.getAttribute("data-resource-id");
     const alt = node.getAttribute("alt");
@@ -435,7 +436,14 @@ export function MessageDetailContent({
     event.preventDefault();
     event.stopPropagation();
     const href = anchor.getAttribute("href");
-    if (href && isHttpsUrl(href)) void openLink(href);
+    if (href && isHttpsUrl(href)) {
+      void openLink(href);
+    } else if (anchor.hasAttribute("data-link-blocked")) {
+      showToast({
+        kind: "info",
+        message: "出于安全考虑，仅支持在浏览器打开 HTTPS 链接，此链接已拦截。",
+      });
+    }
   };
 
   const handleBodyKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
