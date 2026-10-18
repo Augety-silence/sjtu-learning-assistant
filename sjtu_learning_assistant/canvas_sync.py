@@ -33,6 +33,11 @@ _cached_token: str | None = None
 class CanvasCheckError(RuntimeError):
     """A user-facing error raised during Canvas synchronization."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        # HTTP status (401/403/429/5xx) so callers can tell re-auth, skip and retry apart.
+        self.status_code = status_code
+
 
 @dataclass(frozen=True)
 class CourseSummary:
@@ -134,10 +139,10 @@ def get_token(use_keychain: bool) -> tuple[str, bool]:
         try:
             stored = get_saved_token()
         except CanvasCheckError as exc:
-            print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
+            print(f"提示：暂时无法读取 {credential_storage_name()}，将改为安全输入（{exc}）。")
         else:
             if stored:
-                print("已从 macOS Keychain 读取 Canvas Access Token。")
+                print(f"已从 {credential_storage_name()} 读取 Canvas Access Token。")
                 return stored, True
 
     if sys.stdin is None:
@@ -158,10 +163,10 @@ def save_token(token: str) -> None:
         try:
             keyring.set_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, token)
         except KeyringError as exc:
-            print(f"提示：API 验证已成功，但 Token 未能保存到 Keychain（{exc}）。")
+            print(f"提示：API 验证已成功，但 Token 未能保存到 {credential_storage_name()}（{exc}）。")
         else:
             _cached_token = token
-            print("Canvas Access Token 已安全保存到 macOS Keychain。")
+            print(f"Canvas Access Token 已安全保存到 {credential_storage_name()}。")
 
 
 def delete_token() -> None:
@@ -176,10 +181,10 @@ def delete_token() -> None:
                 getattr(keyring, "errors", None), "PasswordDeleteError", None
             )
             if isinstance(missing_error, type) and isinstance(exc, missing_error):
-                print("Keychain 中没有找到已保存的 Canvas Token。")
+                print(f"{credential_storage_name()} 中没有找到已保存的 Canvas Token。")
                 return
-            raise CanvasCheckError(f"无法删除 Keychain 中的 Canvas Token：{exc}") from exc
-    print("已从 macOS Keychain 删除 Canvas Token。")
+            raise CanvasCheckError(f"无法删除 {credential_storage_name()} 中的 Canvas Token：{exc}") from exc
+    print(f"已从 {credential_storage_name()} 删除 Canvas Token。")
 
 
 def ensure_same_origin(client: httpx.Client, url: str) -> None:
@@ -193,6 +198,26 @@ def ensure_same_origin(client: httpx.Client, url: str) -> None:
         or target_port != base_port
     ):
         raise CanvasCheckError("Canvas 分页链接指向了其他站点，已停止以保护 Token。")
+
+
+def raise_for_canvas_auth(response: httpx.Response) -> None:
+    """Map 401/403/429 to distinguishable, user-actionable errors."""
+    status = response.status_code
+    if status == 401:
+        raise CanvasCheckError(
+            "Canvas Access Token 无效或已过期（HTTP 401）。", status_code=401
+        )
+    if status == 429 or (
+        status == 403 and "rate limit exceeded" in response.text.lower()
+    ):
+        # Canvas throttling has historically used both 403 and 429.
+        raise CanvasCheckError(
+            f"Canvas 请求过于频繁（HTTP {status}），请稍后重试。", status_code=429
+        )
+    if status == 403:
+        raise CanvasCheckError(
+            "当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。", status_code=403
+        )
 
 
 def request_json(
@@ -211,14 +236,14 @@ def request_json(
     except httpx.HTTPError as exc:
         raise CanvasCheckError(f"Canvas API 请求失败：{exc}") from exc
 
-    if response.status_code == 401:
-        raise CanvasCheckError("Canvas Access Token 无效或已过期（HTTP 401）。")
-    if response.status_code == 403:
-        raise CanvasCheckError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。")
+    raise_for_canvas_auth(response)
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise CanvasCheckError(f"Canvas API 返回 HTTP {response.status_code}。") from exc
+        raise CanvasCheckError(
+            f"Canvas API 返回 HTTP {response.status_code}。",
+            status_code=response.status_code,
+        ) from exc
 
     try:
         payload = response.json()
@@ -279,15 +304,15 @@ def fetch_paginated_with_etag(
 
     if response.status_code == 304:
         return CollectionFetchResult(records=[], etag=etag, not_modified=True)
-    if response.status_code == 401:
-        raise CanvasCheckError("Canvas Access Token 无效或已过期（HTTP 401）。")
-    if response.status_code == 403:
-        raise CanvasCheckError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。")
+    raise_for_canvas_auth(response)
     try:
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPStatusError as exc:
-        raise CanvasCheckError(f"Canvas API 返回 HTTP {response.status_code}。") from exc
+        raise CanvasCheckError(
+            f"Canvas API 返回 HTTP {response.status_code}。",
+            status_code=response.status_code,
+        ) from exc
     except ValueError as exc:
         raise CanvasCheckError("Canvas API 返回的不是有效 JSON。") from exc
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
@@ -497,6 +522,11 @@ def summarize_assignment(assignment: dict[str, Any]) -> AssignmentSummary:
 
 
 def build_http_client(base_url: str, token: str, timeout: float) -> httpx.Client:
+    if not token.isascii() or not token.isprintable():
+        # httpx would raise UnicodeEncodeError (e.g. a copied zero-width space).
+        raise CanvasCheckError(
+            "Canvas Access Token 含有无效字符，请在 Canvas 重新复制后再保存。"
+        )
     return httpx.Client(
         base_url=base_url,
         headers={
