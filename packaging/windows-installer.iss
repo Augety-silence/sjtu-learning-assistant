@@ -56,8 +56,8 @@ var
   Version: String;
 begin
   Result := False;
-  { 64 位安装器默认只读 HKLM32；Evergreen Runtime 的 64 位注册项位于 64 位视图，
-    必须额外查询 HKLM64，否则在仅有机器级安装时会误报缺失并弹下载提示。 }
+  { 微软文档给出的检测位置：64 位系统机器级安装在 HKLM\SOFTWARE\WOW6432Node\...（即 Inno 的 HKLM32 视图），
+    用户级安装在 HKCU。HKLM64 不是文档位置，仅作无害的兜底查询。 }
   if RegQueryStringValue(HKLM64, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
     Result := True
   else if RegQueryStringValue(HKLM32, WebView2ClientKey, 'pv', Version) and WebView2VersionValid(Version) then
