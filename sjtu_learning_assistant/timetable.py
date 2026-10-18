@@ -30,6 +30,21 @@ from sjtu_learning_assistant.models import (
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 PREVIEW_TTL_SECONDS = 10 * 60
+# Outlook / Windows calendars emit Windows zone IDs as TZID (CLDR windowsZones, territory 001).
+WINDOWS_TZID_TO_IANA = {
+    "China Standard Time": "Asia/Shanghai",
+    "Taipei Standard Time": "Asia/Taipei",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Singapore Standard Time": "Asia/Singapore",
+    "UTC": "Etc/UTC",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Romance Standard Time": "Europe/Paris",
+    "Eastern Standard Time": "America/New_York",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+}
 
 
 class TimetableError(RuntimeError):
@@ -197,6 +212,21 @@ def parse_sjtu_lessons(
                     f"课程 {name} 的第 {session_index} 个上课安排结束时间"
                     "必须晚于开始时间。"
                 )
+            week = _integer(occurrence.get("week"))
+            day = _integer(occurrence.get("day") or occurrence.get("weekday"))
+            period = _integer(occurrence.get("period"))
+            duration = _integer(occurrence.get("duration"))
+            for label, value, upper in (
+                ("周次", week, 9999),
+                ("星期（1=周一，7=周日）", day, 7),
+                ("节次", period, 9999),
+                ("持续时长", duration, 9999),
+            ):
+                if value is not None and not 1 <= value <= upper:
+                    raise TimetableError(
+                        f"课程 {name} 的第 {session_index} 个上课安排{label}"
+                        f"超出范围（应为 1-{upper}），请检查导出文件。"
+                    )
             stable = _text(occurrence.get("id") or occurrence.get("sourceId"), 512)
             if not stable:
                 identity = "|".join(
@@ -212,10 +242,10 @@ def parse_sjtu_lessons(
             parsed_session = ParsedSession(
                 source_id,
                 stable,
-                _integer(occurrence.get("week")),
-                _integer(occurrence.get("day") or occurrence.get("weekday")),
-                _integer(occurrence.get("period")),
-                _integer(occurrence.get("duration")),
+                week,
+                day,
+                period,
+                duration,
                 start_at,
                 finish_at,
                 _text(occurrence.get("classroom") or occurrence.get("location")),
@@ -248,6 +278,8 @@ def _ics_datetime(value: str, tzid: str | None = None) -> datetime:
     if utc and tzid:
         raise TimetableError("ICS UTC 时间不能同时声明 TZID。")
     raw = value[:-1] if utc else value
+    if tzid:
+        tzid = WINDOWS_TZID_TO_IANA.get(tzid, tzid)
     try:
         source_timezone = timezone.utc if utc else ZoneInfo(tzid) if tzid else SHANGHAI
     except (ZoneInfoNotFoundError, ValueError) as exc:
