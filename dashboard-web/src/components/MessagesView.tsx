@@ -181,12 +181,16 @@ export function MessagesView() {
       message: "正在将当前筛选标记为已读…",
       duration: 0,
     });
+    const listRequest = loadRequestRef.current;
     try {
       const result = await markMessagesRead({ kind, all: true });
-      setItems(
-        (current) =>
-          current?.map((item) => ({ ...item, is_unread: false })) ?? null,
-      );
+      // Only the list loaded for this filter may be cleared; a tab switch mid-request loads another filter.
+      if (listRequest === loadRequestRef.current) {
+        setItems(
+          (current) =>
+            current?.map((item) => ({ ...item, is_unread: false })) ?? null,
+        );
+      }
       if (detailItem && (kind === "all" || detailItem.kind === kind)) {
         setDetailItem((current) =>
           current ? { ...current, is_unread: false } : null,
