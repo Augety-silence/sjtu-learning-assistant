@@ -130,6 +130,17 @@ def _stat_identity(state: os.stat_result) -> FileIdentity:
     return (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
 
 
+def _same_file_identity(left: FileIdentity, right: FileIdentity) -> bool:
+    if left == right:
+        return True
+    # Windows 上 path.stat()（按名，可能走 GetFileInformationByName / FindFirstFileW）与
+    # os.fstat()（按句柄）取 st_dev/st_ino 的来源不同；FAT32/exFAT 等无 128 位 FileId 的卷
+    # 会让一侧 st_ino 为 0。此时退化为只比较 size/mtime_ns，POSIX 行为保持不变。
+    if os.name == "nt" and (left[1] == 0 or right[1] == 0):
+        return left[2:] == right[2:]
+    return False
+
+
 def hash_local_file_snapshot(
     path: Path, chunk_size: int = 1048576
 ) -> tuple[int, int, str, FileIdentity]:
@@ -156,7 +167,12 @@ def hash_local_file_snapshot(
     read_after_key = _stat_identity(read_after)
     after_key = _stat_identity(after)
     if (
-        not (before_key == opened_key == read_after_key == after_key)
+        not (
+            _same_file_identity(before_key, opened_key)
+            and _same_file_identity(opened_key, read_after_key)
+            and _same_file_identity(read_after_key, after_key)
+            and _same_file_identity(before_key, after_key)
+        )
         or count != after.st_size
     ):
         raise CloudArchiveError("文件在归档读取期间发生变化，请重试。")
@@ -570,7 +586,7 @@ class CloudArchiveService:
                 return self._reconcile_remote(job_id, provider, remote_path)
             progress = ProgressThrottle(expected_size, lambda count: self._record_progress(job_id, count))
             with path.open("rb") as source:
-                if _stat_identity(os.fstat(source.fileno())) != actual_identity:
+                if not _same_file_identity(_stat_identity(os.fstat(source.fileno())), actual_identity):
                     source_changed = True
                     raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
                 tracked = UploadProgressReader(source, progress.update)
@@ -578,7 +594,7 @@ class CloudArchiveService:
                     item = provider.multipart_upload(remote_path, tracked, overwrite=False)
                 else:
                     item = provider.simple_upload(remote_path, tracked, overwrite=False)
-                if _stat_identity(os.fstat(source.fileno())) != actual_identity:
+                if not _same_file_identity(_stat_identity(os.fstat(source.fileno())), actual_identity):
                     source_changed = True
                     raise CloudArchiveError(SOURCE_CHANGED_DURING_UPLOAD)
             uploaded = True
@@ -629,7 +645,7 @@ class CloudArchiveService:
             state = path.stat()
         except OSError:
             return True
-        if identity is not None and _stat_identity(state) != identity:
+        if identity is not None and not _same_file_identity(_stat_identity(state), identity):
             return True
         return (state.st_size, state.st_mtime_ns) != (size, mtime_ns)
 
