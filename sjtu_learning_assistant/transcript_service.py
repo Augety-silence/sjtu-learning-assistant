@@ -238,6 +238,7 @@ def _process_start_marker(pid: int) -> str | None:
             check=False,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=2,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -261,8 +262,17 @@ def _parse_time(value: object) -> datetime | None:
 
 def _safe_error(value: object) -> str:
     text = " ".join(str(value).split())
+    try:
+        home = str(Path.home())
+    except (OSError, RuntimeError):
+        home = ""
+    if len(home) > 3:
+        for variant in {home, home.replace("\\", "\\\\"), home.replace("\\", "/")}:
+            # Whole path component only (no "/home/mira" inside "/home/miranda");
+            # case-insensitive because Windows paths are.
+            text = re.sub(re.escape(variant) + r"(?=$|[\\/\s'\"])", "[已隐藏]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\s'\"]+", "[已隐藏]", text)
     text = re.sub(r"(?i)(?:/Users|/home)/\S+", "[已隐藏]", text)
-    text = re.sub(r"(?i)\b[A-Z]:[\\/]Users[\\/]\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[=:]\s*\S+", r"\1=[已隐藏]", text)
     return text[:400] or "字幕任务失败，请稍后重试。"
 
