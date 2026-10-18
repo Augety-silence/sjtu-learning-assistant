@@ -106,8 +106,10 @@ export function BackupView() {
   const [watching, setWatching] = useState(false);
   const [removeLocal, setRemoveLocal] = useState(false);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
+  // 轮询走静默刷新，避免刷新按钮每秒在禁用/旋转/文案之间闪烁；手动刷新与重试仍显示进行中状态。
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setRefreshing(true);
     setLoadError("");
     try {
       const next = await getBackupStatus();
@@ -118,7 +120,7 @@ export function BackupView() {
         reason instanceof Error ? reason.message : "备份状态读取失败",
       );
     } finally {
-      setRefreshing(false);
+      if (!silent) setRefreshing(false);
     }
   }, []);
 
@@ -128,7 +130,10 @@ export function BackupView() {
 
   useEffect(() => {
     if (!watching && backup?.status !== "running") return;
-    const timer = window.setInterval(() => void load(), POLL_INTERVAL_MS);
+    const timer = window.setInterval(
+      () => void load({ silent: true }),
+      POLL_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
   }, [backup?.status, load, watching]);
 
