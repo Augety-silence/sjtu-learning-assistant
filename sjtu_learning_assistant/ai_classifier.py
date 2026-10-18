@@ -694,17 +694,28 @@ class OpenAIClassificationClient:
                 ) from None
             if status_code in (401, 403):
                 message, category = "AI 认证或访问权限失败，请检查 API key。", "authentication"
+            elif status_code == 404:
+                message, category = "AI 接口路径或模型不存在，请检查 Base URL 与模型。", "endpoint_or_model"
             elif status_code == 429:
                 message, category = "AI 请求受限或配额不足，请稍后重试。", "rate_limit_or_quota"
             elif status_code >= 500:
                 message, category = "AI 服务暂时不可用，请稍后重试。", "upstream_service"
             else:
                 message, category = "AI 流式请求不被上游接口接受。", "request_parameters"
-            raise AIClassificationError(message, category=category, status_code=status_code) from None
-        except httpx.TimeoutException:
-            raise AIClassificationError("AI 流式请求超时，请稍后重试。", category="timeout") from None
-        except httpx.RequestError:
-            raise AIClassificationError("无法连接 AI 服务，请检查网络与 Base URL。", category="network") from None
+            raise AIClassificationError(
+                message, category=category, status_code=status_code,
+                error_code=f"http_{status_code}", exception_type=type(exc).__name__,
+            ) from None
+        except httpx.TimeoutException as exc:
+            raise AIClassificationError(
+                "AI 流式请求超时，请稍后重试。", category="timeout",
+                error_code="request_timeout", exception_type=type(exc).__name__,
+            ) from None
+        except httpx.RequestError as exc:
+            raise AIClassificationError(
+                "无法连接 AI 服务，请检查网络与 Base URL。", category="network",
+                error_code=type(exc).__name__.lower(), exception_type=type(exc).__name__,
+            ) from None
         except (json.JSONDecodeError, TypeError, ValueError):
             raise AIClassificationError("AI 流式响应格式不兼容。", category="response_format") from None
 
