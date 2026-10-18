@@ -545,7 +545,25 @@ class RestoreService:
             add_event(session, job, "retry_planned", "planned")
             policy = job.conflict_policy
             session.commit()
-        return self.execute(job_id, policy, confirm_create_dirs=True)
+        try:
+            return self.execute(job_id, policy, confirm_create_dirs=True)
+        except Exception as exc:
+            # execute 在下载前的复核（覆盖指纹、占位冲突、可写性等）失败时不会改状态；
+            # 不回写的话任务会永久停在 planned，任务面板丢失错误与重试入口。
+            self._mark_retry_rejected(job_id, exc)
+            raise
+
+    def _mark_retry_rejected(self, job_id: str, exc: Exception) -> None:
+        message = str(exc) if isinstance(exc, CloudArchiveError) else f"恢复失败（{type(exc).__name__}）。"
+        with Session(self.engine) as session:
+            job = session.get(ArchiveJob, job_id)
+            if job is None or job.status != "planned":
+                return
+            job.status = "failed"
+            job.finished_at = utcnow()
+            job.last_error = message[:500]
+            add_event(session, job, "retry_rejected", "failed", job.last_error)
+            session.commit()
 
     def _download(
         self,
