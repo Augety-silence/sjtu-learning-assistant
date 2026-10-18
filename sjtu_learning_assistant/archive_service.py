@@ -54,6 +54,7 @@ WINDOWS_RESERVED_NAME = re.compile(
     r"^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$", re.IGNORECASE
 )
 SPACE_RUN = re.compile(r"\s+")
+URL_QUERY = re.compile(r"(https?://[^\s?#'\"<>]+)[?#][^\s'\"<>]*", re.IGNORECASE)
 PATH_SEPARATOR_RUN = re.compile(r"[\s\-_—–·•/\\:：.()\[\]（）【】]+")
 BRACKETED_TEXT = re.compile(r"[（(\[【].*?[）)\]】]")
 
@@ -278,6 +279,25 @@ def _is_regular_file(path: Path) -> bool:
     return mode is not None and stat.S_ISREG(mode)
 
 
+def _same_physical_file(first: Path, second: Path) -> bool:
+    """大小写不敏感文件系统上不同写法的路径可能指向同一文件；用 lstat 身份判断。"""
+    try:
+        first_stat = first.lstat()
+        second_stat = second.lstat()
+    except OSError:
+        return False
+    if not first_stat.st_ino or not second_stat.st_ino:
+        # FAT/exFAT 等可能不提供稳定文件号：退回大小写无关的路径比较。误判为
+        # “同一文件”只会跳过移动/删除（安全方向），绝不误删唯一副本。
+        return os.path.normcase(os.path.abspath(first)).casefold() == (
+            os.path.normcase(os.path.abspath(second)).casefold()
+        )
+    return (first_stat.st_dev, first_stat.st_ino) == (
+        second_stat.st_dev,
+        second_stat.st_ino,
+    )
+
+
 def _ensure_safe_directory(root: Path, directory: Path) -> Path:
     """创建 root 内目录，拒绝任何现存 symlink 或非目录组件。"""
     lexical_root = root.expanduser().absolute()
@@ -382,10 +402,15 @@ def _replace_with_regular_file(root: Path, source: Path, target: Path) -> None:
 
 def _safe_error(exc: Exception) -> str:
     text = SPACE_RUN.sub(" ", str(exc)).strip()
+    # httpx 错误文本含完整 URL；预签名下载地址的 query 是一次性凭据，不能落库/写日志。
+    text = URL_QUERY.sub(r"\1?[已隐藏]", text)
     home = str(Path.home())
     if len(home) > 3:
         # OSError 文本含本机绝对路径（含用户名），写入 download_error/展示前脱敏用户目录。
-        text = text.replace(home, "~")
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        variants = {home, home.replace("\\", "/"), home.replace("/", "\\")}
+        for variant in sorted(variants, key=len, reverse=True):
+            text = re.sub(re.escape(variant), "~", text, flags=flags)
     return text[:1000] or exc.__class__.__name__
 
 
@@ -1355,7 +1380,9 @@ class ArchiveService:
         source = self._safe_source(source_path)
         source_root = self._source_archive_root(context, source)
         size, digest = self._verified_content(context, source)
-        if source == target:
+        if source == target or _same_physical_file(source, target):
+            # 旧版未 casefold 的目录（如 "Week 1"）在 NTFS/APFS 上与新目标
+            # "week 1" 是同一文件；绝不能走下方“重复文件”分支删除唯一副本。
             self._persist_organized_path(context, target, manual_state, cloud_path)
             return DownloadResult(
                 context.source_id, "unchanged", str(target), size, digest
@@ -1365,6 +1392,13 @@ class ArchiveService:
         while _path_mode(final_target) is not None:
             if not _is_regular_file(final_target):
                 raise ArchiveError("目标路径已存在且不是普通文件。")
+            if _same_physical_file(source, final_target):
+                self._persist_organized_path(
+                    context, final_target, manual_state, cloud_path
+                )
+                return DownloadResult(
+                    context.source_id, "unchanged", str(final_target), size, digest
+                )
             target_size, target_digest = self._file_digest(final_target)
             if target_size == size and target_digest == digest:
                 self._persist_organized_path(
