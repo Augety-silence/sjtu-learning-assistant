@@ -19,9 +19,20 @@ export interface BridgeError {
 const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
 
 function redactLocalPaths(text: string) {
+  // Windows: drive paths with single or repr-doubled separators (C:\\Users\\x),
+  // forward slashes and \\?\ prefixes; `\Users\x` / `\home\x` segments inside
+  // UNC/WSL paths (also when followed by `/`). The UNC rule then collapses the
+  // `\\server\share` (or `\\?\UNC\server\share`) root, which may itself name the
+  // user (\\fs01\alice$). `\\?\C:` and `\\.\` device prefixes are left alone.
+  // `m` lets `$` stop at CR/LF.
   return text
-    .replace(/\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n]+(?=[\\/]|$)/gi, "~")
-    .replace(/\/(?:Users|home)\/[^/\r\n]+(?=\/|$)/g, "~");
+    .replace(/\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\r\n]+(?=[\\/]|$)/gim, "~")
+    .replace(/\\+(?:Users|home)\\+[^\\/\r\n]+(?=[\\/]|$)/gim, "~")
+    .replace(
+      /(^|[\s'"(\[=,，：（“‘「【])\\{2,}(?:[?.]\\+UNC\\+)?(?![?.]\\)[^\\/\s'"<>|?*:)\]）】”’」，]+\\+[^\\/\s'"<>|?*:)\]）】”’」，]+(?=[\\/\s'"<>|?*:)\]）】”’」，]|$)/gim,
+      "$1~",
+    )
+    .replace(/\/(?:Users|home)\/[^/\r\n]+(?=\/|$)/gm, "~");
 }
 
 export class BridgeInvocationError extends Error {
