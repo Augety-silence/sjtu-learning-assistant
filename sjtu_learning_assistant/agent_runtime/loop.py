@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from sjtu_learning_assistant.agent_runtime.presets import AgentPreset, default_resource_root
-from sjtu_learning_assistant.agent_runtime.tools import AgentToolError, ReadOnlyToolRegistry
+from sjtu_learning_assistant.agent_runtime.tools import LOCAL_TIMEZONE, AgentToolError, ReadOnlyToolRegistry
 from sjtu_learning_assistant.ai_classifier import AIToolsUnsupportedError
 
 MAX_STEPS = 6
@@ -106,6 +107,24 @@ class AgentLoop:
             )
         return messages, runs
 
+    def _time_hint(self) -> str:
+        # 仅作“今天/剩余时间”的参照；具体日期与截止时间仍以工具结果为准。
+        provider = getattr(self.tools, "now_provider", None)
+        try:
+            now = provider() if callable(provider) else datetime.now(timezone.utc)
+            if not isinstance(now, datetime):
+                return ""
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            local = now.astimezone(LOCAL_TIMEZONE)
+        except Exception:
+            return ""
+        weekday = "一二三四五六日"[local.weekday()]
+        return (
+            f"当前本地参考时间：{local:%Y-%m-%d %H:%M}（Asia/Shanghai，星期{weekday}）。"
+            "仅用于判断“今天”和剩余时间；具体日期与截止时间以工具结果为准并原样保留。"
+        )
+
     @staticmethod
     def _parse_arguments(value: object) -> dict[str, Any]:
         if type(value) is dict:
@@ -132,8 +151,9 @@ class AgentLoop:
     ) -> AgentResult:
         started = self.clock()
         prefetch_messages, runs = self._prefetch(user_text, attachment_ids)
+        time_hint = self._time_hint()
         conversation: list[dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": f"{self.system_prompt}\n\n{time_hint}" if time_hint else self.system_prompt},
             *prefetch_messages,
             *messages,
         ]
