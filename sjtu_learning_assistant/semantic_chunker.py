@@ -213,7 +213,9 @@ def clean_subtitle_text(value: str) -> str:
         raise ValueError("subtitle text must be a string")
     text = unicodedata.normalize("NFC", value)
     text = " ".join(text.replace("\u200b", "").replace("\ufeff", "").split())
-    text = _CJK_SPACE.sub("", text)
+    # Do not delete spaces between CJK characters: downstream correction
+    # anchoring (unique_text_span / corrected_source_cues) requires each source
+    # cue text to appear verbatim in current_text.
     return text.strip()
 
 
@@ -279,7 +281,7 @@ def preprocess_cues(
 def _is_obvious_duplicate(previous: PreprocessedCue, current: PreprocessedCue) -> bool:
     return (
         previous.chapter_id == current.chapter_id
-        and previous.cleaned_text == current.cleaned_text
+        and _CJK_SPACE.sub("", previous.cleaned_text) == _CJK_SPACE.sub("", current.cleaned_text)
         and current.start_ms <= previous.end_ms + 500
     )
 
