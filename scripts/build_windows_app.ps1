@@ -57,6 +57,12 @@ foreach ($SeedGlossary in $ExpectedSeedGlossaries) {
     }
 }
 
+$FfmpegDir = Join-Path $AppDir "_internal\imageio_ffmpeg\binaries"
+$BundledFfmpeg = Get-ChildItem -LiteralPath $FfmpegDir -Filter "ffmpeg*.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $BundledFfmpeg) {
+    throw "Windows bundle 缺少 imageio_ffmpeg 自带的 ffmpeg：$FfmpegDir"
+}
+
 $Zip = Join-Path $Root "dist\SJTU-Learning-Assistant-$Version-Windows-x64-portable.zip"
 Get-ChildItem -LiteralPath $AppDir -Force | Compress-Archive -DestinationPath $Zip -CompressionLevel Optimal -Force
 $ZipHash = (Get-FileHash $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
