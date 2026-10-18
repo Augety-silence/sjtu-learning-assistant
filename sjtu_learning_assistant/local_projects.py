@@ -101,9 +101,15 @@ class LocalProjectService:
         source = Path(project["source_root"])
         target = Path(project["target_root"])
         issue = None
-        if not source.is_dir():
+        try:
+            source_available = source.is_dir()
+            target_available = source_available and target.is_dir()
+        except (OSError, ValueError):
+            # 单个项目所在磁盘/网络位置无权限或离线时，不应拖垮整个项目列表。
+            source_available = target_available = False
+        if not source_available:
             issue = "素材目录已移动或不可访问"
-        elif not target.is_dir():
+        elif not target_available:
             issue = "输出目录已移动或不可访问"
         status: dict[str, Any] = {
             "status": "idle",
