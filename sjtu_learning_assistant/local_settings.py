@@ -262,26 +262,28 @@ def _replace_with_retry(source: Path, target: Path, *, platform: str | None = No
 def _salvage_settings(payload: object, mail_account: str) -> dict[str, Any]:
     """Keep each individually valid field instead of bricking startup."""
     values = LocalSettings(mail_account=mail_account).to_dict()
-    if not isinstance(payload, dict):
-        return values
-    archive_invalid = False
-    for key in ALLOWED_KEYS & set(payload):
-        try:
-            values.update(_validate_mapping({key: payload[key]}, partial=True))
-        except SettingsError:
-            archive_invalid = archive_invalid or key == "archive_root"
-    if archive_invalid:
-        # Never start bulk downloads into a silently substituted default root.
+    archive_valid = False
+    if isinstance(payload, dict):
+        for key in ALLOWED_KEYS & set(payload):
+            try:
+                values.update(_validate_mapping({key: payload[key]}, partial=True))
+            except SettingsError:
+                continue
+            archive_valid = archive_valid or key == "archive_root"
+    if not archive_valid:
+        # Missing or invalid archive_root means the default root was silently
+        # substituted: never start bulk downloads into it.
         values["auto_download_current_term"] = False
     return values
 
 
-def _quarantine_corrupt_settings(path: Path) -> None:
+def _quarantine_corrupt_settings(path: Path) -> bool:
     """Best-effort: keep an unreadable file for diagnosis, then use defaults."""
     try:
-        os.replace(path, path.with_name(f"{path.name}.corrupt"))
+        _replace_with_retry(path, path.with_name(f"{path.name}.corrupt"))
     except OSError:
-        pass
+        return False
+    return True
 
 
 class SettingsStore:
@@ -297,8 +299,18 @@ class SettingsStore:
             with self.path.open("r", encoding="utf-8-sig") as stream:
                 payload = json.load(stream)
         except (UnicodeError, json.JSONDecodeError):
-            _quarantine_corrupt_settings(self.path)
-            return LocalSettings(mail_account=initial_mail_account)
+            # The user's archive_root is unknown now; persist a fallback with
+            # auto download off so later loads do not see a "fresh install".
+            fallback = LocalSettings(
+                mail_account=initial_mail_account, auto_download_current_term=False
+            )
+            with _UPDATE_LOCK:
+                if _quarantine_corrupt_settings(self.path):
+                    try:
+                        self.save(fallback)
+                    except (OSError, SettingsError):
+                        pass
+            return fallback
         except OSError as exc:
             raise SettingsError("本地设置文件无法读取。") from exc
         if isinstance(payload, dict) and set(payload) == LEGACY_KEYS:
