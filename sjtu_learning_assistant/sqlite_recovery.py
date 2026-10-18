@@ -347,11 +347,23 @@ def restore_latest_sqlite_backup(
 
 def _quarantine_database_family(database_path: Path) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    for path in (database_path, *_database_sidecars(database_path)):
-        if path.exists():
-            quarantined = path.with_name(f"{path.name}.corrupt.{timestamp}")
-            _replace_file(path, quarantined)
-            os.chmod(quarantined, 0o600)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for path in (database_path, *_database_sidecars(database_path)):
+            if path.exists():
+                quarantined = path.with_name(f"{path.name}.corrupt.{timestamp}")
+                _replace_file(path, quarantined)
+                moved.append((path, quarantined))
+                os.chmod(quarantined, 0o600)
+    except OSError:
+        # A locked -wal (Windows) must not split the family: an orphan WAL is
+        # discarded on the next open and committed pages would be lost.
+        for original, quarantined in reversed(moved):
+            try:
+                _replace_file(quarantined, original)
+            except OSError:
+                pass
+        raise
 
 
 def prepare_sqlite_database(database_path: Path) -> SQLiteRecoveryResult:
