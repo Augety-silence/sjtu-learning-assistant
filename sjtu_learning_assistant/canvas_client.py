@@ -21,6 +21,11 @@ MAX_PAGES = 100
 class CanvasError(RuntimeError):
     """Base error for Canvas operations."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        # HTTP status (401/403/429/5xx) so callers can tell re-auth, skip and retry apart.
+        self.status_code = status_code
+
 
 class CanvasNetworkError(CanvasError):
     """A transport failure; ``operation_uncertain`` means the server may have acted."""
@@ -78,6 +83,9 @@ class CanvasClient:
         timeout: float = 20.0,
         client: httpx.Client | None = None,
     ) -> None:
+        if token and (not token.isascii() or not token.isprintable()):
+            # httpx would raise UnicodeEncodeError (e.g. a copied zero-width space).
+            raise CanvasProtocolError("Canvas Access Token 含有无效字符，请在 Canvas 重新复制后再保存。")
         resolved_base_url = base_url or (str(client.base_url) if client is not None else DEFAULT_BASE_URL)
         self.base_url = normalize_base_url(resolved_base_url)
         self._owns_client = client is None
@@ -140,14 +148,17 @@ class CanvasClient:
             raise CanvasNetworkError(
                 "Canvas API 请求失败。", operation_uncertain=uncertain_on_error
             ) from exc
-        if response.status_code == 401:
-            raise CanvasError("Canvas Access Token 无效或已过期（HTTP 401）。")
-        if response.status_code == 403:
-            raise CanvasError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。")
+        status = response.status_code
+        if status == 401:
+            raise CanvasError("Canvas Access Token 无效或已过期（HTTP 401）。", status_code=401)
+        if status == 429 or (status == 403 and "rate limit exceeded" in response.text.lower()):
+            raise CanvasError(f"Canvas 请求过于频繁（HTTP {status}），请稍后重试。", status_code=429)
+        if status == 403:
+            raise CanvasError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。", status_code=403)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise CanvasError(f"Canvas API 返回 HTTP {response.status_code}。") from exc
+            raise CanvasError(f"Canvas API 返回 HTTP {status}。", status_code=status) from exc
         return response
 
     @staticmethod
