@@ -119,6 +119,8 @@ const baseViews: ViewName[] = [
   "ai-chat",
   "settings",
 ];
+// 含未提交草稿的视图：后台同步完成后不自动用 key 重挂。
+const draftViews: ViewName[] = ["assignments", "grades", "grading"];
 
 const pageAILabels: Record<ViewName, string> = {
   overview: "概览",
@@ -1382,8 +1384,22 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  useEffect(() => {
+    // 离开作业中心时丢弃未消费的日历定向目标，保证下次普通进入仍默认“全部”。
+    if (view !== "assignments") setAssignmentTarget(null);
+  }, [view]);
+  // 必须保持引用稳定：AssignmentsView 的定向 effect 依赖它，变化会丢弃进行中的详情请求。
+  const clearAssignmentTarget = useCallback(
+    () => setAssignmentTarget(null),
+    [],
+  );
+
   const statusRequestPending = useRef(false);
   const syncAccepted = useRef(false);
+  const currentView = useRef(view);
+  useEffect(() => {
+    currentView.current = view;
+  }, [view]);
   const loadStatus = useCallback(async () => {
     if (statusRequestPending.current) return;
     statusRequestPending.current = true;
@@ -1396,15 +1412,27 @@ export default function App() {
       if (syncRequested && accepted && next.status === "idle") {
         syncAccepted.current = false;
         setSyncRequested(false);
+        // 作业/评分页可能有未提交草稿，key 重挂会清空；改为由用户点击刷新。
+        const keepDrafts = draftViews.includes(currentView.current);
         showToast({
           id: "sync-operation",
           kind: next.last_run_status === "success" ? "success" : "error",
-          message:
+          message: `${
             next.last_run_status === "success"
               ? "同步完成，数据已更新。"
-              : "同步失败，请查看最近运行状态。",
+              : "同步失败，请查看最近运行状态。"
+          }${keepDrafts ? "为保留未提交内容，当前页面未自动刷新。" : ""}`,
+          ...(keepDrafts
+            ? {
+                duration: 0,
+                action: {
+                  label: "刷新当前页",
+                  onClick: () => setDataVersion((value) => value + 1),
+                },
+              }
+            : {}),
         });
-        setDataVersion((value) => value + 1);
+        if (!keepDrafts) setDataVersion((value) => value + 1);
       }
     } catch {
       setSyncStatus(null);
@@ -1520,7 +1548,7 @@ export default function App() {
               <AssignmentsView
                 key={dataVersion}
                 initialTarget={assignmentTarget}
-                onInitialTargetHandled={() => setAssignmentTarget(null)}
+                onInitialTargetHandled={clearAssignmentTarget}
               />
             )}
             {view === "materials" && <MaterialsView key={dataVersion} />}
