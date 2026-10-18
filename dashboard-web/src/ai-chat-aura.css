@@ -465,8 +465,8 @@
   padding: 0 10px;
   border: 1px solid color-mix(in srgb, var(--aura-border) 72%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--aura-glass-card) 72%, transparent);
-  color: var(--aura-text-muted);
+  background: color-mix(in srgb, var(--aura-panel-strong) 72%, transparent);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
