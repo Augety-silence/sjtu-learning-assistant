@@ -297,7 +297,9 @@ export function AssignmentsView({
   const handledTargetRef = useRef("");
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const onInitialTargetHandledRef = useRef(onInitialTargetHandled);
   categoryRef.current = category;
+  onInitialTargetHandledRef.current = onInitialTargetHandled;
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
@@ -321,6 +323,7 @@ export function AssignmentsView({
     if (handledTargetRef.current === targetKey) return;
     handledTargetRef.current = targetKey;
     let active = true;
+    let settled = false;
     setError("");
     setResult(null);
     void getAssignmentDetail(initialTarget.courseId, initialTarget.assignmentId)
@@ -351,12 +354,18 @@ export function AssignmentsView({
         }
       })
       .finally(() => {
-        if (active) onInitialTargetHandled?.();
+        settled = true;
+        if (active) onInitialTargetHandledRef.current?.();
       });
     return () => {
       active = false;
+      // Cancelled before the detail arrived (StrictMode replay or a parent re-render):
+      // release the key so the next run fetches again instead of silently dropping the target.
+      if (!settled && handledTargetRef.current === targetKey) {
+        handledTargetRef.current = "";
+      }
     };
-  }, [initialTarget, onInitialTargetHandled]);
+  }, [initialTarget]);
 
   const selectAssignment = async (item: AssignmentItem) => {
     const request = ++detailRequestRef.current;
@@ -522,8 +531,12 @@ export function AssignmentsView({
         <LoadingState />
       ) : items.length === 0 && !selected ? (
         <EmptyState
-          title="此分类暂无作业"
-          description="Canvas 没有返回符合条件的作业。"
+          title={category === "all" ? "暂无作业" : "此分类暂无作业"}
+          description={
+            category === "all"
+              ? "当前已同步的范围内没有作业；如刚完成登录，可先同步数据后再查看。"
+              : "Canvas 没有返回符合条件的作业。"
+          }
         />
       ) : (
         <div className="assignment-layout">
