@@ -114,8 +114,12 @@ export function ScheduleView({
           setCourseEvents(parsed.events);
           setOffline(true);
         } catch {
-          localStorage.removeItem(CACHE_KEY);
           setLoadError(messageFrom(reason, "课表加载失败"));
+          try {
+            localStorage.removeItem(CACHE_KEY);
+          } catch {
+            // Storage blocked: the error state above is already shown; an unusable cache is rejected again on the next read.
+          }
         }
       } else {
         setLoadError(messageFrom(reason, "课表加载失败"));
