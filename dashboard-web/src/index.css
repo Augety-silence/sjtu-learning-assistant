@@ -11161,12 +11161,23 @@ body {
 }
 
 .video-slide-pane-drag:hover,
-.video-slide-pane-close:hover,
-.video-slide-pane-drag:focus-visible,
-.video-slide-pane-close:focus-visible {
-  outline: none;
+.video-slide-pane-close:hover {
   color: var(--text-primary);
   background: var(--surface-hover);
+}
+
+.video-slide-pane-drag:focus-visible,
+.video-slide-pane-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.video-player-fullscreen-exit:focus-visible,
+.video-slide-pane-resize:focus-visible {
+  outline: 2px solid var(--text-video-player);
+  outline-offset: 2px;
 }
 
 .video-slide-pane-title {
@@ -11275,6 +11286,50 @@ body {
   .video-slide-pane-header,
   .video-slide-pane-footer {
     background: var(--surface-page);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* Surfaces that declare literal blur values bypass the token-level
+   reduced-transparency mapping; give them an opaque, readable fallback. */
+@media (prefers-reduced-transparency: reduce) {
+  .aura-button-outline,
+  .aura-tabs-list,
+  .toast,
+  .overview-panel {
+    background: var(--aura-backdrop-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  :where(
+    .list-surface,
+    .table-surface,
+    .filter-bar,
+    .configuration-section,
+    .settings-panel,
+    .configuration-card,
+    .finder,
+    .assignment-layout,
+    .backup-status-card,
+    .knowledge-config,
+    .knowledge-run-card,
+    .knowledge-path-card,
+    .local-project-form,
+    .local-project-card,
+    .local-projects-summary,
+    .local-project-path,
+    .state-box,
+    .ai-chat
+  ) {
+    background: var(--aura-backdrop-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .ai-composer-box {
+    background: var(--aura-backdrop-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
