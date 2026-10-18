@@ -33,7 +33,18 @@ export function compactJson(value: unknown) {
 }
 
 export function toolResultLabel(run: AIToolRun) {
-  if (run.status === "rejected") return "调用被安全策略拒绝";
+  if (run.status === "rejected") {
+    // 后端对参数错误、数据源不可用和 preset 授权拒绝都标为 rejected，
+    // 这里展示其已脱敏的 error（≤240 字），避免一律误标为"安全策略拒绝"。
+    const summary = run.result_summary;
+    const error =
+      summary && typeof summary === "object"
+        ? (summary as Record<string, unknown>).error
+        : null;
+    return typeof error === "string" && error.trim()
+      ? `未执行：${error.trim()}`
+      : "调用被拒绝";
+  }
   if (run.result_summary && typeof run.result_summary === "object") {
     const summary = run.result_summary as Record<string, unknown>;
     if (typeof summary.count === "number") return `命中 ${summary.count} 项`;
