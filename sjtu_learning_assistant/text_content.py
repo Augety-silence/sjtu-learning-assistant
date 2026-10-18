@@ -30,6 +30,10 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HIDDEN_TAGS = _SUPPRESSED_TAGS | {"head"}
+# 允许出现在 <head> 内的元素；遇到其他元素或可见文本时按 HTML 解析规则隐式结束 head。
+_HEAD_CONTENT_TAGS = frozenset(
+    {"base", "link", "meta", "title", "style", "script", "noscript", "template"}
+)
 _HTML_TAG = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
 _CANVAS_FILE_API_PATH = re.compile(
     r"/api/v1/courses/[0-9]+/files/[0-9]+"
@@ -216,11 +220,22 @@ class _TextExtractor(HTMLParser):
         self.hidden_depth = 0
         self.head_open = False
 
+    def _close_implicit_head(self) -> None:
+        self.head_open = False
+        self.hidden_depth = max(0, self.hidden_depth - 1)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized = tag.casefold()
         if normalized == "body" and self.head_open:
-            self.head_open = False
-            self.hidden_depth = max(0, self.hidden_depth - 1)
+            self._close_implicit_head()
+        elif (
+            self.head_open
+            and self.hidden_depth == 1
+            and normalized not in _HEAD_CONTENT_TAGS
+            and normalized not in {"head", "html"}
+        ):
+            # 缺少 </head> 与 <body> 的邮件 HTML 不应把整封正文当作隐藏内容。
+            self._close_implicit_head()
         if normalized == "head" and self.head_open:
             return
         if normalized in _HIDDEN_TAGS:
@@ -246,6 +261,8 @@ class _TextExtractor(HTMLParser):
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
+        if self.head_open and self.hidden_depth == 1 and data.strip():
+            self._close_implicit_head()
         if not self.hidden_depth:
             self.parts.append(data)
 
