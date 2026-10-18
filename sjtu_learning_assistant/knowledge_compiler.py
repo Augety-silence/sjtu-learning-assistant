@@ -474,7 +474,16 @@ class KnowledgeCompilerService:
             self._set_progress(index, len(files), path.name)
 
     def _phase_concepts(self, source: Path, target: Path, files: list[Path]) -> None:
-        lectures = sorted((target / "01_Courses").rglob("Lecture-*.md"))
+        # 只取本次素材对应的 Lecture；已删除/改名素材遗留的旧 Lecture 不能再进入概念与证据链。
+        lectures = sorted(
+            lecture
+            for lecture in {
+                target / "01_Courses" / self._course_for(source, path)
+                / self._lecture_name(source, path)
+                for path in files
+            }
+            if lecture.is_file()
+        )
         purpose = ("提取 3—8 个值得跨 Lecture 引用的原子概念。每个概念用二级标题 `## 概念：名称` 开始，"
                    "随后包含一句话定义、直觉、正式定义、示例、反例（如适用）、为什么重要、前置知识、"
                    "相关概念、容易混淆、来源。不要创建意义弱的碎片概念。")
