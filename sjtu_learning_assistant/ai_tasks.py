@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from sqlalchemy import Engine, func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.ai_capabilities import ai_task_catalog
@@ -16,6 +18,21 @@ from sjtu_learning_assistant.models import AITask, AITaskEvent, AIUsageRecord
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 PAGE_CONTEXT_KEYS = frozenset({"page_id", "source", "title", "entity_ids", "selection"})
+# Event sequence = max()+1 inside a deferred transaction: a concurrent writer (worker
+# deltas vs. UI cancel) can make SQLite WAL return SQLITE_BUSY_SNAPSHOT or PostgreSQL
+# violate uq_ai_task_events_sequence. Re-running the whole transaction is safe.
+_WRITE_RETRY_DELAYS = (0.05, 0.1, 0.2)
+
+
+def _retry_write(operation: Callable[[], Any]) -> Any:
+    for delay in (*_WRITE_RETRY_DELAYS, None):
+        try:
+            return operation()
+        except (OperationalError, IntegrityError):
+            if delay is None:
+                raise
+            time.sleep(delay)
+    return None
 
 
 class AITaskError(RuntimeError):
@@ -160,12 +177,16 @@ class AITaskLedger:
     def append_event(self, task_id: str, kind: str, payload: Mapping[str, Any]) -> int:
         if type(kind) is not str or not kind or len(kind) > 32:
             raise AITaskError("AI 任务事件无效。")
-        with Session(self.engine) as session, session.begin():
-            if session.get(AITask, task_id) is None:
-                raise AITaskError("AI 任务不存在。")
-            event = self._event(session, task_id, kind, payload)
-            session.flush()
-            return event.sequence
+
+        def write() -> int:
+            with Session(self.engine) as session, session.begin():
+                if session.get(AITask, task_id) is None:
+                    raise AITaskError("AI 任务不存在。")
+                event = self._event(session, task_id, kind, payload)
+                session.flush()
+                return event.sequence
+
+        return int(_retry_write(write))
 
     def reserve_call(self, task_id: str, requested_output_tokens: int) -> tuple[int, int]:
         requested = max(1, int(requested_output_tokens))
@@ -208,6 +229,23 @@ class AITaskLedger:
             else "unknown"
         )
         charged = int(usage.get("completion_tokens", requested_output_tokens))
+        _retry_write(
+            lambda: self._record_call_once(
+                task_id, call_index, model, usage, status, finish_reason, charged
+            )
+        )
+        return usage
+
+    def _record_call_once(
+        self,
+        task_id: str,
+        call_index: int,
+        model: str,
+        usage: Mapping[str, int],
+        status: str,
+        finish_reason: object,
+        charged: int,
+    ) -> None:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None:
@@ -254,9 +292,11 @@ class AITaskLedger:
                     "charged_output_tokens": charged,
                 },
             )
-        return usage
 
     def complete(self, task_id: str, result: Mapping[str, Any]) -> None:
+        _retry_write(lambda: self._complete_once(task_id, result))
+
+    def _complete_once(self, task_id: str, result: Mapping[str, Any]) -> None:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None:
@@ -288,6 +328,9 @@ class AITaskLedger:
             "category": safe_category,
             "retryable": bool(retryable),
         }
+        _retry_write(lambda: self._fail_once(task_id, safe, failure))
+
+    def _fail_once(self, task_id: str, safe: str, failure: dict[str, Any]) -> None:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None or row.status in TERMINAL_STATUSES:
@@ -304,20 +347,26 @@ class AITaskLedger:
             self._event(session, task_id, "failed", failure)
 
     def cancel(self, task_id: str) -> dict[str, Any]:
-        with Session(self.engine) as session, session.begin():
-            row = session.get(AITask, task_id)
-            if row is None:
-                raise AITaskError("AI 任务不存在。")
-            row.cancel_requested = True
-            if row.status == "queued":
-                row.status = "cancelled"
-                row.finished_at = self.now()
-                self._event(session, task_id, "cancelled", {})
-            elif row.status == "running":
-                self._event(session, task_id, "cancel_requested", {})
+        def write() -> None:
+            with Session(self.engine) as session, session.begin():
+                row = session.get(AITask, task_id)
+                if row is None:
+                    raise AITaskError("AI 任务不存在。")
+                row.cancel_requested = True
+                if row.status == "queued":
+                    row.status = "cancelled"
+                    row.finished_at = self.now()
+                    self._event(session, task_id, "cancelled", {})
+                elif row.status == "running":
+                    self._event(session, task_id, "cancel_requested", {})
+
+        _retry_write(write)
         return self.get(task_id)
 
     def finish_cancelled(self, task_id: str) -> None:
+        _retry_write(lambda: self._finish_cancelled_once(task_id))
+
+    def _finish_cancelled_once(self, task_id: str) -> None:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None or row.status in TERMINAL_STATUSES:
