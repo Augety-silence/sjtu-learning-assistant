@@ -450,6 +450,7 @@ export function SettingsView({
             return (
               <label
                 key={mode}
+                data-selection-layout-id={themeIndicatorId}
                 className={
                   selected
                     ? "theme-option selection-host selection-active is-selected"

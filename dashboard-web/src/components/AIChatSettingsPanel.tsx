@@ -97,6 +97,7 @@ function SegmentedChoice<T extends string>({
           <button
             key={choice.value}
             type="button"
+            data-selection-layout-id={indicatorId}
             role="radio"
             aria-checked={choice.value === value}
             className={

@@ -521,6 +521,7 @@ export function AssignmentsView({
           <button
             key={filter.value}
             type="button"
+            data-selection-layout-id={filterIndicatorId}
             role="tab"
             aria-selected={category === filter.value}
             className={

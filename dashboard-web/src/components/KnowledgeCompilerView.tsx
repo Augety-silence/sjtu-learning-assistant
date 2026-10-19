@@ -370,6 +370,7 @@ export function KnowledgeCompilerView() {
           {phaseLabels.map((label, index) => (
             <li
               key={label}
+              data-selection-layout-id={phaseIndicatorId}
               className={
                 (task?.phase_index ?? 0) > index + 1
                   ? "selection-host knowledge-phase-done"

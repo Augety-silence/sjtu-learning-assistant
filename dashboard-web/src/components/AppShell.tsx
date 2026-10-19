@@ -21,7 +21,6 @@ import {
   AnimatePresence,
   LayoutGroup,
   motion,
-  type Transition,
   useIsPresent,
 } from "motion/react";
 import {
@@ -33,6 +32,7 @@ import {
 } from "react";
 import { AppBrand } from "@/components/AppBrand";
 import { Button } from "@/components/ui/Button";
+import { useDistanceAwareIndicatorTransition } from "@/components/ui/SelectionIndicator";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { SyncStatus, ViewName } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
@@ -54,19 +54,22 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
-/**
- * One shared full-row highlight rectangle glides between nav items (Motion
- * shared layout via `layoutId`). Reduced-motion users get an instant jump
- * because `MotionConfig reducedMotion="user"` is set at the app root.
- */
-const navIndicatorTransition: Transition = {
-  type: "spring",
-  bounce: 0.04,
-  duration: 0.15,
-};
-
 const primaryNavigation = navigation.filter((item) => item.id !== "settings");
 const utilityNavigation = navigation.filter((item) => item.id === "settings");
+
+function NavIndicator({ layoutId }: { layoutId: string }) {
+  const { ref, transition } = useDistanceAwareIndicatorTransition(layoutId);
+  return (
+    <motion.span
+      ref={ref}
+      layoutId={layoutId}
+      className="nav-indicator"
+      data-nav-indicator
+      aria-hidden="true"
+      transition={transition}
+    />
+  );
+}
 
 interface AppShellProps {
   view: ViewName;
@@ -111,17 +114,10 @@ function NavItems({
             aria-label={item.label}
             title={item.label}
             aria-current={selected ? "page" : undefined}
+            data-selection-layout-id={indicatorId}
             onClick={() => select(item.id)}
           >
-            {selected && (
-              <motion.span
-                layoutId={indicatorId}
-                className="nav-indicator"
-                data-nav-indicator
-                aria-hidden="true"
-                transition={navIndicatorTransition}
-              />
-            )}
+            {selected && <NavIndicator layoutId={indicatorId} />}
             <Icon aria-hidden="true" />
             <span>{item.label}</span>
           </button>
@@ -204,7 +200,7 @@ function MobileDrawer({
               view={view}
               select={select}
               currentItemRef={currentItemRef}
-              indicatorId="nav-indicator"
+              indicatorId="drawer-nav-indicator"
             />
           </motion.div>
           <div className="sidebar-lower">
@@ -214,7 +210,7 @@ function MobileDrawer({
               view={view}
               select={select}
               currentItemRef={currentItemRef}
-              indicatorId="nav-indicator"
+              indicatorId="drawer-nav-indicator"
             />
             <Button variant="ghost" className="drawer-close" onClick={close}>
               关闭
@@ -307,7 +303,7 @@ export function AppShell({
               label="主导航"
               view={view}
               select={select}
-              indicatorId="nav-indicator"
+              indicatorId="sidebar-nav-indicator"
             />
           </motion.div>
           <div className="sidebar-lower">
@@ -316,7 +312,7 @@ export function AppShell({
               label="辅助导航"
               view={view}
               select={select}
-              indicatorId="nav-indicator"
+              indicatorId="sidebar-nav-indicator"
             />
             <div className="sidebar-footer" aria-live="polite">
               <span

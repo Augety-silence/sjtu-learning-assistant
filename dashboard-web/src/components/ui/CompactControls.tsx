@@ -68,6 +68,7 @@ export function FilterChip({
   return (
     <button
       type={type}
+      data-selection-layout-id={indicatorId}
       className={cn(
         "aura-filter-chip",
         indicatorId && "selection-host",

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
+import { selectionIndicatorDuration } from "@/components/ui/SelectionIndicator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { cleanup, fireEvent, render, screen } from "./render";
 
@@ -31,6 +32,16 @@ const indicators = () =>
   Array.from(document.querySelectorAll("[data-selection-indicator]"));
 
 describe("Tabs sliding indicator", () => {
+  it("按实际移动距离缩放时长，并限制在 120 到 280 毫秒", () => {
+    expect(selectionIndicatorDuration(0)).toBe(0.12);
+    expect(selectionIndicatorDuration(48)).toBeCloseTo(0.14);
+    expect(selectionIndicatorDuration(72)).toBeCloseTo(0.15);
+    expect(selectionIndicatorDuration(336)).toBeCloseTo(0.26);
+    expect(selectionIndicatorDuration(384)).toBe(0.28);
+    expect(selectionIndicatorDuration(1_000)).toBe(0.28);
+    expect(selectionIndicatorDuration(Number.NaN)).toBe(0.12);
+  });
+
   it("默认不渲染指示器（成绩、批改详情等保持原样）", () => {
     render(<Harness indicator={false} />);
     expect(indicators()).toHaveLength(0);
