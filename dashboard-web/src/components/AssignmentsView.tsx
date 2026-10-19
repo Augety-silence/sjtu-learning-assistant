@@ -22,6 +22,10 @@ import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { MetaTag } from "@/components/ui/CompactControls";
 import {
+  SelectionIndicator,
+  useSelectionIndicatorId,
+} from "@/components/ui/SelectionIndicator";
+import {
   getAssignmentDetail,
   getAssignments,
   openExternalAssignment,
@@ -293,6 +297,7 @@ export function AssignmentsView({
   const [submitting, setSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState("");
   const [result, setResult] = useState<SubmissionResult | null>(null);
+  const filterIndicatorId = useSelectionIndicatorId("assignment-filter");
   const categoryRef = useRef(category);
   const handledTargetRef = useRef("");
   const listRequestRef = useRef(0);
@@ -506,7 +511,12 @@ export function AssignmentsView({
           <p>阅读要求、准备答案，并在本机完成提交与 Canvas 回读验证。</p>
         </div>
       </div>
-      <div className="assignment-filters" role="tablist" aria-label="作业分类">
+      <motion.div
+        layoutScroll
+        className="assignment-filters"
+        role="tablist"
+        aria-label="作业分类"
+      >
         {filters.map((filter) => (
           <button
             key={filter.value}
@@ -514,17 +524,26 @@ export function AssignmentsView({
             role="tab"
             aria-selected={category === filter.value}
             className={
-              category === filter.value ? "assignment-filter-active" : ""
+              category === filter.value
+                ? "selection-host selection-active assignment-filter-active"
+                : "selection-host"
             }
             onClick={() => {
               setSelected(null);
               setCategory(filter.value);
             }}
           >
-            {filter.label}
+            {category === filter.value && (
+              <SelectionIndicator
+                layoutId={filterIndicatorId}
+                radius={9}
+                className="assignment-filter-indicator"
+              />
+            )}
+            <span className="selection-label">{filter.label}</span>
           </button>
         ))}
-      </div>
+      </motion.div>
       {error ? (
         <ErrorState message={error} retry={() => void load()} />
       ) : items === null ? (

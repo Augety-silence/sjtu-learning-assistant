@@ -568,7 +568,7 @@ export function TranscriptDetailDrawer({
         )}
 
         <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)}>
-          <TabsList aria-label="字幕结果">
+          <TabsList indicator aria-label="字幕结果">
             {(Object.keys(v1TabLabels) as V1DetailTab[]).map((value) => (
               <TabsTrigger key={value} value={value}>
                 {v1TabLabels[value]}
@@ -639,7 +639,11 @@ export function TranscriptDetailDrawer({
                     setPhase1Tab(value as Phase1DetailTab)
                   }
                 >
-                  <TabsList className="phase1-tabs" aria-label="AI 校对结果">
+                  <TabsList
+                    indicator
+                    className="phase1-tabs"
+                    aria-label="AI 校对结果"
+                  >
                     {phase1Tabs.map((value) => (
                       <TabsTrigger
                         key={value}

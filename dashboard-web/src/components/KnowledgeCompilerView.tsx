@@ -13,6 +13,10 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import {
+  SelectionIndicator,
+  useSelectionIndicatorId,
+} from "@/components/ui/SelectionIndicator";
+import {
   cancelKnowledgeCompiler,
   getKnowledgeCompilerStatus,
   getSettings,
@@ -105,6 +109,7 @@ export function KnowledgeCompilerView() {
     () => window.localStorage.getItem(TARGET_KEY) ?? "",
   );
   const [mode, setMode] = useState<KnowledgeCompilerMode>("full");
+  const phaseIndicatorId = useSelectionIndicatorId("knowledge-phase");
   const [inspection, setInspection] =
     useState<KnowledgeCompilerInspection | null>(null);
   const [task, setTask] = useState<KnowledgeCompilerTask | null>(null);
@@ -367,14 +372,21 @@ export function KnowledgeCompilerView() {
               key={label}
               className={
                 (task?.phase_index ?? 0) > index + 1
-                  ? "knowledge-phase-done"
+                  ? "selection-host knowledge-phase-done"
                   : (task?.phase_index ?? 0) === index + 1
-                    ? "knowledge-phase-active"
-                    : ""
+                    ? "selection-host selection-active knowledge-phase-active"
+                    : "selection-host"
               }
             >
+              {(task?.phase_index ?? 0) === index + 1 && (
+                <SelectionIndicator
+                  layoutId={phaseIndicatorId}
+                  radius={8}
+                  className="knowledge-phase-indicator"
+                />
+              )}
               <span>{index + 1}</span>
-              {label}
+              <span className="selection-label">{label}</span>
             </li>
           ))}
         </ol>

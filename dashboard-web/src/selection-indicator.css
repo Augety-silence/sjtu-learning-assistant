@@ -1,0 +1,172 @@
+/*
+ * Shared sliding selection rectangle (see ui/SelectionIndicator.tsx).
+ *
+ * Each group renders ONE `.selection-indicator` inside its selected option and
+ * Motion glides it between options through a shared layoutId. The option keeps
+ * its text colour / weight, but its static selected background, border and
+ * shadow move onto the indicator so the old and new highlight never flash
+ * together.
+ *
+ * Stacking: hosts are positioned but do NOT create their own stacking context.
+ * The indicator (z 1) therefore paints above every sibling's background while
+ * it travels, and every label (z 2) stays above the indicator. Each group
+ * container isolates, so those z-indexes never leak out of the component.
+ */
+:where(
+    .aura-tabs-list,
+    .assignment-filters,
+    .ai-preference-options,
+    .theme-options,
+    .video-status-filters,
+    .knowledge-phase-strip
+  ) {
+  isolation: isolate;
+}
+
+.selection-host {
+  position: relative;
+}
+
+.selection-host > :not(.selection-indicator):not(input) {
+  position: relative;
+  z-index: 2;
+}
+
+.selection-indicator {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* No press-scale on hosts: Motion measures the indicator box at click time,
+ * and a scaled ancestor would skew the target size. */
+.selection-host.selection-host:not(:disabled):active,
+.theme-option.selection-host:active {
+  transform: none;
+}
+
+/* ---------- Tabs (ui/Tabs.tsx with `indicator`) ---------- */
+:root .aura-tabs-trigger.selection-host.selection-active[data-state="active"],
+:root .aura-tabs-trigger.selection-host.selection-active[data-state="active"]:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.tabs-indicator {
+  background: var(--aura-panel-strong);
+  box-shadow: 0 3px 10px rgba(35, 65, 105, 0.1);
+}
+
+:where(.calm-horizon-trigger, .calm-seg-trigger) .tabs-indicator {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.09);
+}
+
+:root[data-theme="dark"] :where(.calm-horizon-trigger, .calm-seg-trigger) .tabs-indicator {
+  background: var(--aura-panel-strong);
+  box-shadow: none;
+}
+
+/* ---------- Assignment category filters ---------- */
+.assignment-filters .selection-host.selection-active.selection-active,
+.assignment-filters .selection-host.selection-active.selection-active:hover {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.assignment-filter-indicator {
+  inset: -1px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-selected);
+}
+
+.assignments-page .assignment-filter-indicator {
+  inset: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--aura-panel-strong) 92%, transparent);
+  box-shadow: inset 0 1px 0 var(--aura-border-highlight),
+    var(--aura-shadow-soft);
+}
+
+/* ---------- AI chat preference segmented choices ---------- */
+.ai-preference-options .selection-host.selection-active,
+.ai-preference-options .selection-host.selection-active:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.ai-preference-indicator {
+  inset: -1px;
+  border: 1px solid var(--border-ai-preference-selected);
+  background: var(--ai-blue-soft);
+}
+
+/* ---------- Settings theme cards ---------- */
+.theme-option.selection-host.selection-active,
+.theme-option.selection-host.selection-active:hover {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.theme-option-indicator {
+  inset: -1px;
+  border: 1px solid var(--action-primary);
+  background: var(--surface-accent-soft);
+  box-shadow: var(--shadow-focus);
+}
+
+/* ---------- Filter chips (video organisation status) ---------- */
+.aura-filter-chip.selection-host.selection-active[aria-pressed],
+.aura-filter-chip.selection-host.selection-active[aria-pressed]:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.filter-chip-indicator {
+  inset: -1px;
+  border: 1px solid
+    color-mix(in srgb, var(--action-primary) 26%, var(--border-subtle));
+  background: var(--surface-accent-soft);
+}
+
+/* ---------- Knowledge compiler phase strip ---------- */
+.knowledge-phase-strip .selection-host.selection-active {
+  background: transparent;
+}
+
+/* `li > span` styles the round step number; keep the rectangle and label out of it. */
+.knowledge-phase-strip li > span.knowledge-phase-indicator {
+  width: auto;
+  height: auto;
+  display: block;
+  background: var(--surface-accent-soft);
+}
+
+.knowledge-phase-strip li > span.selection-label {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  display: block;
+  flex: 0 1 auto;
+  border-radius: 0;
+  color: inherit;
+  background: none;
+  font-size: inherit;
+}
+
+@media (forced-colors: active) {
+  .selection-indicator {
+    border: 1px solid Highlight;
+    background: Highlight;
+    box-shadow: none;
+  }
+
+  .selection-active {
+    color: HighlightText;
+  }
+}

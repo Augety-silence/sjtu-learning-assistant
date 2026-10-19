@@ -34,6 +34,10 @@ import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
+  SelectionIndicator,
+  useSelectionIndicatorId,
+} from "@/components/ui/SelectionIndicator";
+import {
   checkForUpdates,
   deleteCredential,
   exportDebugBundle,
@@ -111,6 +115,7 @@ export function SettingsView({
   onThemeModeChange?: (mode: ThemeMode) => void;
 }) {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
+  const themeIndicatorId = useSelectionIndicatorId("theme-option");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState<ConfigKind | null>(null);
@@ -446,9 +451,18 @@ export function SettingsView({
               <label
                 key={mode}
                 className={
-                  selected ? "theme-option is-selected" : "theme-option"
+                  selected
+                    ? "theme-option selection-host selection-active is-selected"
+                    : "theme-option selection-host"
                 }
               >
+                {selected && (
+                  <SelectionIndicator
+                    layoutId={themeIndicatorId}
+                    radius={10}
+                    className="theme-option-indicator"
+                  />
+                )}
                 <input
                   className="sr-only"
                   type="radio"

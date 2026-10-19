@@ -84,6 +84,34 @@ afterEach(() => {
   });
 });
 
+describe("AppShell 侧栏滑动指示器", () => {
+  it("只渲染一个指示矩形，并随选中项移动到新按钮内", () => {
+    emitViewport(1024);
+    render(<Harness />);
+    const sidebar = document.querySelector(".sidebar") as HTMLElement;
+    const indicators = () => sidebar.querySelectorAll("[data-nav-indicator]");
+
+    expect(indicators()).toHaveLength(1);
+    expect(
+      within(sidebar)
+        .getByRole("button", { name: "概览" })
+        .contains(indicators()[0]),
+    ).toBe(true);
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "课程资料" }));
+    expect(indicators()).toHaveLength(1);
+    expect(
+      within(sidebar)
+        .getByRole("button", { name: "课程资料" })
+        .contains(indicators()[0]),
+    ).toBe(true);
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "设置" }));
+    expect(indicators()).toHaveLength(1);
+    expect(indicators()[0].getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
 describe("AppShell 移动导航", () => {
   it("保留全高壳体结构，并将设置放在侧栏底部辅助分组", () => {
     render(<Harness />);

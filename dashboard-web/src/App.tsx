@@ -1308,7 +1308,12 @@ export default function App() {
           value={scheduleMode}
           onValueChange={(value) => setScheduleMode(value as ScheduleMode)}
         >
-          <TabsList className="calm-seg-list" aria-label="日程视图">
+          <TabsList
+            indicator
+            indicatorRadius={15}
+            className="calm-seg-list"
+            aria-label="日程视图"
+          >
             <TabsTrigger className="calm-seg-trigger" value="calendar">
               月历
             </TabsTrigger>

@@ -1,6 +1,10 @@
 import { Check, Settings2, X } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useEffect, useRef, useState } from "react";
+import {
+  SelectionIndicator,
+  useSelectionIndicatorId,
+} from "@/components/ui/SelectionIndicator";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAttachmentContextBudget,
@@ -80,6 +84,7 @@ function SegmentedChoice<T extends string>({
   disabled: boolean;
   onChange: (value: T) => void;
 }) {
+  const indicatorId = useSelectionIndicatorId("ai-preference");
   return (
     <fieldset className="ai-preference-group" disabled={disabled}>
       <legend>{label}</legend>
@@ -94,9 +99,21 @@ function SegmentedChoice<T extends string>({
             type="button"
             role="radio"
             aria-checked={choice.value === value}
+            className={
+              choice.value === value
+                ? "selection-host selection-active"
+                : "selection-host"
+            }
             title={choice.detail}
             onClick={() => onChange(choice.value)}
           >
+            {choice.value === value && (
+              <SelectionIndicator
+                layoutId={indicatorId}
+                radius={7}
+                className="ai-preference-indicator"
+              />
+            )}
             <span>{choice.label}</span>
             {choice.value === value && <Check aria-hidden="true" />}
           </button>

@@ -55,6 +55,7 @@ import {
   FilterChip,
   MetaTag,
 } from "@/components/ui/CompactControls";
+import { useSelectionIndicatorId } from "@/components/ui/SelectionIndicator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { createBoundedReadPool } from "@/lib/boundedReadPool";
 import type { TranscriptArtifact, TranscriptJob } from "@/lib/types";
@@ -981,6 +982,7 @@ export function VideosView({
   onRevealTranscript,
   aiReadiness,
 }: VideosViewProps) {
+  const statusIndicatorId = useSelectionIndicatorId("video-status");
   const [source, setSource] = useState<"all" | VideoSource>("all");
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -3300,7 +3302,7 @@ export function VideosView({
           value={source}
           onValueChange={(value) => changeSource(value as "all" | VideoSource)}
         >
-          <TabsList aria-label="视频来源">
+          <TabsList indicator aria-label="视频来源">
             <TabsTrigger value="all">全部</TabsTrigger>
             <TabsTrigger value="canvas">Canvas</TabsTrigger>
             <TabsTrigger value="video_space">视频空间</TabsTrigger>
@@ -3512,7 +3514,11 @@ export function VideosView({
             value={learningTab}
             onValueChange={(value) => setLearningTab(value as LearningTab)}
           >
-            <TabsList className="video-learning-tabs" aria-label="学习工具">
+            <TabsList
+              indicator
+              className="video-learning-tabs"
+              aria-label="学习工具"
+            >
               <TabsTrigger value="summary">讲义</TabsTrigger>
               <TabsTrigger value="transcript">字幕</TabsTrigger>
               <TabsTrigger value="notes">主动练习</TabsTrigger>
@@ -3627,6 +3633,7 @@ export function VideosView({
                 key={value}
                 className={count === 0 ? "is-zero" : undefined}
                 pressed={organizationFilter === value}
+                indicatorId={statusIndicatorId}
                 count={count}
                 aria-label={`${label} ${count}`}
                 onClick={() => setOrganizationFilter(value)}

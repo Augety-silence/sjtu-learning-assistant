@@ -10,6 +10,8 @@ import "./app-brand.css";
 import "./performance.css";
 import "./workspace-motion.css";
 import "./page-motion.css";
+import "./nav-indicator.css";
+import "./selection-indicator.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

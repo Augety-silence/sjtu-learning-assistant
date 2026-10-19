@@ -291,7 +291,7 @@ export function MessagesView() {
             value={kind}
             onValueChange={(value) => setKind(value as MessageFilter)}
           >
-            <TabsList aria-label="消息类型">
+            <TabsList indicator aria-label="消息类型">
               {kinds.map((item) => (
                 <TabsTrigger key={item.value} value={item.value}>
                   {item.label}

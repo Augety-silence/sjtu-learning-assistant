@@ -17,7 +17,13 @@ import {
   Users,
   Video,
 } from "lucide-react";
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import {
+  AnimatePresence,
+  LayoutGroup,
+  motion,
+  type Transition,
+  useIsPresent,
+} from "motion/react";
 import {
   type ReactNode,
   type RefObject,
@@ -48,6 +54,17 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+/**
+ * One shared full-row highlight rectangle glides between nav items (Motion
+ * shared layout via `layoutId`). Reduced-motion users get an instant jump
+ * because `MotionConfig reducedMotion="user"` is set at the app root.
+ */
+const navIndicatorTransition: Transition = {
+  type: "spring",
+  bounce: 0.04,
+  duration: 0.15,
+};
+
 const primaryNavigation = navigation.filter((item) => item.id !== "settings");
 const utilityNavigation = navigation.filter((item) => item.id === "settings");
 
@@ -70,28 +87,41 @@ function NavItems({
   view,
   select,
   currentItemRef,
+  indicatorId,
 }: {
   items: typeof navigation;
   label: string;
   view: ViewName;
   select: (view: ViewName) => void;
   currentItemRef?: RefObject<HTMLButtonElement | null>;
+  /** Shared across groups of one surface so the rectangle can travel between them. */
+  indicatorId: string;
 }) {
   return (
     <nav aria-label={label} data-nav-group={label}>
       {items.map((item) => {
         const Icon = item.icon;
+        const selected = view === item.id;
         return (
           <button
             key={item.id}
             ref={view === item.id ? currentItemRef : undefined}
             type="button"
-            className={`nav-item ${view === item.id ? "nav-selected" : ""}`}
+            className={`nav-item ${selected ? "nav-selected" : ""}`}
             aria-label={item.label}
             title={item.label}
-            aria-current={view === item.id ? "page" : undefined}
+            aria-current={selected ? "page" : undefined}
             onClick={() => select(item.id)}
           >
+            {selected && (
+              <motion.span
+                layoutId={indicatorId}
+                className="nav-indicator"
+                data-nav-indicator
+                aria-hidden="true"
+                transition={navIndicatorTransition}
+              />
+            )}
             <Icon aria-hidden="true" />
             <span>{item.label}</span>
           </button>
@@ -166,27 +196,31 @@ function MobileDrawer({
         }}
       >
         <AppBrand />
-        <div className="sidebar-scroll">
-          <NavItems
-            items={items}
-            label="主导航"
-            view={view}
-            select={select}
-            currentItemRef={currentItemRef}
-          />
-        </div>
-        <div className="sidebar-lower">
-          <NavItems
-            items={utilityNavigation}
-            label="辅助导航"
-            view={view}
-            select={select}
-            currentItemRef={currentItemRef}
-          />
-          <Button variant="ghost" className="drawer-close" onClick={close}>
-            关闭
-          </Button>
-        </div>
+        <LayoutGroup id="drawer-nav">
+          <motion.div layoutScroll className="sidebar-scroll">
+            <NavItems
+              items={items}
+              label="主导航"
+              view={view}
+              select={select}
+              currentItemRef={currentItemRef}
+              indicatorId="nav-indicator"
+            />
+          </motion.div>
+          <div className="sidebar-lower">
+            <NavItems
+              items={utilityNavigation}
+              label="辅助导航"
+              view={view}
+              select={select}
+              currentItemRef={currentItemRef}
+              indicatorId="nav-indicator"
+            />
+            <Button variant="ghost" className="drawer-close" onClick={close}>
+              关闭
+            </Button>
+          </div>
+        </LayoutGroup>
       </motion.aside>
     </motion.div>
   );
@@ -266,29 +300,33 @@ export function AppShell({
     <div className="app-shell" data-aura-shell>
       <aside className="sidebar" data-aura-surface="navigation">
         <AppBrand />
-        <div className="sidebar-scroll">
-          <NavItems
-            items={visiblePrimaryNavigation}
-            label="主导航"
-            view={view}
-            select={select}
-          />
-        </div>
-        <div className="sidebar-lower">
-          <NavItems
-            items={utilityNavigation}
-            label="辅助导航"
-            view={view}
-            select={select}
-          />
-          <div className="sidebar-footer" aria-live="polite">
-            <span
-              className={`status-dot ${syncing ? "status-running" : ""}`}
-              aria-hidden="true"
+        <LayoutGroup id="sidebar-nav">
+          <motion.div layoutScroll className="sidebar-scroll">
+            <NavItems
+              items={visiblePrimaryNavigation}
+              label="主导航"
+              view={view}
+              select={select}
+              indicatorId="nav-indicator"
             />
-            <span>{syncing ? "正在同步" : "本地运行"}</span>
+          </motion.div>
+          <div className="sidebar-lower">
+            <NavItems
+              items={utilityNavigation}
+              label="辅助导航"
+              view={view}
+              select={select}
+              indicatorId="nav-indicator"
+            />
+            <div className="sidebar-footer" aria-live="polite">
+              <span
+                className={`status-dot ${syncing ? "status-running" : ""}`}
+                aria-hidden="true"
+              />
+              <span>{syncing ? "正在同步" : "本地运行"}</span>
+            </div>
           </div>
-        </div>
+        </LayoutGroup>
       </aside>
       <AnimatePresence initial={false}>
         {drawerOpen && isMobile && (

@@ -150,7 +150,12 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
           <p>查看所选时间范围内任务的发布、开放与截止时间。</p>
         </div>
         <Tabs value={windowValue} onValueChange={setWindowValue}>
-          <TabsList className="calm-horizon-list" aria-label="截止时间范围">
+          <TabsList
+            indicator
+            indicatorRadius={15}
+            className="calm-horizon-list"
+            aria-label="截止时间范围"
+          >
             {windows.map((item) => (
               <TabsTrigger
                 className="calm-horizon-trigger"
