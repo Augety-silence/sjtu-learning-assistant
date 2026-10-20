@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { frameSteps } from "motion/react";
-import { Profiler } from "react";
+import { MotionConfig } from "motion/react";
+import { Profiler, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { getAICapabilities } from "@/lib/aiCapabilities";
@@ -39,10 +39,14 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as renderWithProviders,
   screen,
   waitFor,
 } from "@/test/render";
+
+function render(ui: ReactElement) {
+  return renderWithProviders(<MotionConfig isStatic>{ui}</MotionConfig>);
+}
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -314,22 +318,8 @@ beforeEach(() => {
   });
 });
 
-async function flushMotionAfterCleanup() {
-  // Shared-layout projection schedules one final measurement after unmount.
-  // Drain that queued pre-render work while jsdom still owns `document`.
-  await Promise.resolve();
-  const frameState = {
-    delta: 1000 / 60,
-    timestamp: performance.now(),
-    isProcessing: false,
-  };
-  frameSteps.preRender.process(frameState);
-  frameSteps.preRender.process(frameState);
-}
-
-afterEach(async () => {
+afterEach(() => {
   cleanup();
-  await flushMotionAfterCleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
