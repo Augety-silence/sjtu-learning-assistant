@@ -26,6 +26,9 @@ from sjtu_learning_assistant.models import (
 OSASCRIPT_PATH = "/usr/bin/osascript"
 MAX_NOTIFICATIONS_PER_CATEGORY = 3
 MAX_TEXT_LENGTH = 512
+# 单条 SQL 的批量上限：SQLite 默认最多 32766 个绑定参数，每行事件约占 9 个，
+# 首次基线可能一次抑制上千个历史文件/公告，必须分块写入。
+EVENT_WRITE_CHUNK_SIZE = 500
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 COMPLETED_SUBMISSION_STATES = frozenset(
     {"submitted", "graded", "pending_review", "complete"}
@@ -67,6 +70,11 @@ CATEGORY_LABELS = {
     "new_file": "新文件",
     "assignment_due_24h": "24 小时内截止作业",
 }
+
+
+def _chunks(values: list, size: int = EVENT_WRITE_CHUNK_SIZE) -> Iterable[list]:
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 class NotificationError(RuntimeError):
@@ -280,15 +288,17 @@ class SqlNotificationEventStore:
         if not suppressed:
             # Phase 3A 的单实例锁负责避免重复发送。这里不提前插入 pending，
             # 因而发送失败后不会留下阻止下次重试的永久占位。
+            recorded_keys: set[str] = set()
             with Session(self.engine) as session:
-                recorded_keys = set(
-                    session.scalars(
-                        select(NotificationEvent.event_key).where(
-                            NotificationEvent.event_key.in_(tuple(unique)),
-                            NotificationEvent.status.in_(("sent", "suppressed")),
-                        )
-                    ).all()
-                )
+                for keys in _chunks(list(unique)):
+                    recorded_keys.update(
+                        session.scalars(
+                            select(NotificationEvent.event_key).where(
+                                NotificationEvent.event_key.in_(keys),
+                                NotificationEvent.status.in_(("sent", "suppressed")),
+                            )
+                        ).all()
+                    )
             return [
                 candidate
                 for event_key, candidate in unique.items()
@@ -296,28 +306,30 @@ class SqlNotificationEventStore:
             ]
 
         now = datetime.now(timezone.utc)
+        recorded_keys = set()
         with Session(self.engine) as session, session.begin():
-            statement = _dialect_insert(session, NotificationEvent).values(
-                self._event_rows(unique.values(), status="suppressed", now=now)
-            )
-            # 兼容旧实现遗留的 pending/failed 占位：新通知基线应将它们抑制；
-            # 已经 sent/suppressed 的记录保持原样。并发唯一键冲突不会抛错。
-            statement = statement.on_conflict_do_update(
-                index_elements=[NotificationEvent.event_key],
-                set_={
-                    "event_type": statement.excluded.event_type,
-                    "item_id": statement.excluded.item_id,
-                    "title": statement.excluded.title,
-                    "body": statement.excluded.body,
-                    "status": "suppressed",
-                    "attempted_at": now,
-                    "sent_at": None,
-                    "last_error": None,
-                    "updated_at": now,
-                },
-                where=NotificationEvent.status.in_(("pending", "failed")),
-            ).returning(NotificationEvent.event_key)
-            recorded_keys = set(session.scalars(statement).all())
+            for chunk in _chunks(list(unique.values())):
+                statement = _dialect_insert(session, NotificationEvent).values(
+                    self._event_rows(chunk, status="suppressed", now=now)
+                )
+                # 兼容旧实现遗留的 pending/failed 占位：新通知基线应将它们抑制；
+                # 已经 sent/suppressed 的记录保持原样。并发唯一键冲突不会抛错。
+                statement = statement.on_conflict_do_update(
+                    index_elements=[NotificationEvent.event_key],
+                    set_={
+                        "event_type": statement.excluded.event_type,
+                        "item_id": statement.excluded.item_id,
+                        "title": statement.excluded.title,
+                        "body": statement.excluded.body,
+                        "status": "suppressed",
+                        "attempted_at": now,
+                        "sent_at": None,
+                        "last_error": None,
+                        "updated_at": now,
+                    },
+                    where=NotificationEvent.status.in_(("pending", "failed")),
+                ).returning(NotificationEvent.event_key)
+                recorded_keys.update(session.scalars(statement).all())
         return [
             candidate
             for event_key, candidate in unique.items()
@@ -330,27 +342,28 @@ class SqlNotificationEventStore:
             return
         now = datetime.now(timezone.utc)
         with Session(self.engine) as session, session.begin():
-            statement = _dialect_insert(session, NotificationEvent).values(
-                self._event_rows(unique.values(), status="sent", now=now)
-            )
-            # 正常路径为成功发送后的 INSERT。若与并发写入或旧版失败占位冲突，
-            # 只把 pending/failed 修正为 sent；既有 sent/suppressed 保持不变。
-            statement = statement.on_conflict_do_update(
-                index_elements=[NotificationEvent.event_key],
-                set_={
-                    "event_type": statement.excluded.event_type,
-                    "item_id": statement.excluded.item_id,
-                    "title": statement.excluded.title,
-                    "body": statement.excluded.body,
-                    "status": "sent",
-                    "attempted_at": now,
-                    "sent_at": now,
-                    "last_error": None,
-                    "updated_at": now,
-                },
-                where=NotificationEvent.status.in_(("pending", "failed")),
-            )
-            session.execute(statement)
+            for chunk in _chunks(list(unique.values())):
+                statement = _dialect_insert(session, NotificationEvent).values(
+                    self._event_rows(chunk, status="sent", now=now)
+                )
+                # 正常路径为成功发送后的 INSERT。若与并发写入或旧版失败占位冲突，
+                # 只把 pending/failed 修正为 sent；既有 sent/suppressed 保持不变。
+                statement = statement.on_conflict_do_update(
+                    index_elements=[NotificationEvent.event_key],
+                    set_={
+                        "event_type": statement.excluded.event_type,
+                        "item_id": statement.excluded.item_id,
+                        "title": statement.excluded.title,
+                        "body": statement.excluded.body,
+                        "status": "sent",
+                        "attempted_at": now,
+                        "sent_at": now,
+                        "last_error": None,
+                        "updated_at": now,
+                    },
+                    where=NotificationEvent.status.in_(("pending", "failed")),
+                )
+                session.execute(statement)
 
     def load_canvas_cursor(self) -> int | None:
         with Session(self.engine) as session:

@@ -275,14 +275,47 @@ class DesktopLearningService:
             "workflow_state": submission.get("workflow_state") if submission else None,
         }
 
+    def _remember_verified(self, course_id: int, assignment_id: int, result: SubmissionResult) -> SubmissionResult:
+        """Mirror a verified Canvas submission into the synced row read by list/detail.
+
+        Without this, the UI refresh right after submitting reads the pre-submit
+        snapshot and flips back to "unsubmitted/missing" until the next Canvas sync.
+        Best-effort: a local DB error must never turn a verified submission into a failure.
+        """
+        if self._engine is None or not result.verified or not isinstance(result.submission, Mapping):
+            return result
+        try:
+            with Session(self._engine) as session, session.begin():
+                assignment = session.scalar(
+                    select(Assignment)
+                    .join(Course, Course.id == Assignment.course_id)
+                    .where(Course.source_id == str(course_id), Assignment.source_id == str(assignment_id))
+                )
+                if assignment is not None:
+                    raw = dict(assignment.raw_data or {})
+                    raw["submission"] = dict(result.submission)
+                    assignment.raw_data = raw  # reassign so the JSON column is flushed
+                    state = result.submission.get("workflow_state")
+                    if isinstance(state, str) and state:
+                        assignment.submission_state = state[:64]
+        except Exception:
+            pass
+        return result
+
     def submit_text(self, course_id: int, assignment_id: int, text: str) -> dict[str, Any]:
-        return self._result(self._assignment_service().submit_text(course_id, assignment_id, text))
+        return self._result(self._remember_verified(
+            course_id, assignment_id, self._assignment_service().submit_text(course_id, assignment_id, text)
+        ))
 
     def submit_url(self, course_id: int, assignment_id: int, url: str) -> dict[str, Any]:
-        return self._result(self._assignment_service().submit_url(course_id, assignment_id, url))
+        return self._result(self._remember_verified(
+            course_id, assignment_id, self._assignment_service().submit_url(course_id, assignment_id, url)
+        ))
 
     def submit_local_file(self, course_id: int, assignment_id: int, path: str) -> dict[str, Any]:
-        return self._result(self._assignment_service().submit_local_file(course_id, assignment_id, path))
+        return self._result(self._remember_verified(
+            course_id, assignment_id, self._assignment_service().submit_local_file(course_id, assignment_id, path)
+        ))
 
     def pan_list(self, remote_path: str, page: int, page_size: int) -> dict[str, Any]:
         result = self._pan_provider().list_directory(remote_path, page=page, page_size=page_size)
@@ -308,7 +341,7 @@ class DesktopLearningService:
         result = self._assignment_service().submit_cloud_file(
             course_id, assignment_id, self._pan_provider(), remote_path
         )
-        return self._result(result)
+        return self._result(self._remember_verified(course_id, assignment_id, result))
 
     def open_external_assignment(self, course_id: int, assignment_id: int) -> dict[str, Any]:
         return self._result(self._assignment_service().open_external(course_id, assignment_id))

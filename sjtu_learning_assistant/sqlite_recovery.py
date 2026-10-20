@@ -366,30 +366,56 @@ def _quarantine_database_family(database_path: Path) -> None:
         raise
 
 
+def _restore_after_quarantine_locked(path: Path) -> SQLiteRecoveryResult:
+    """Restore the newest usable snapshot; keep the marker if restore errored."""
+    for index, backup_path in enumerate(sqlite_backup_paths(path), start=1):
+        try:
+            restored = _restore_from_backup_locked(path, backup_path)
+        except (OSError, SQLiteRecoveryError) as exc:
+            # Stop here (do not fall back to an older snapshot) and keep the
+            # marker so the next launch retries instead of treating the missing
+            # file as a fresh install and later rotating empty snapshots over
+            # the only good backups.
+            raise SQLiteRecoveryError(
+                "已隔离损坏的本地数据库，但暂时无法从快照恢复；请关闭占用文件的程序后重启应用。"
+            ) from exc
+        if restored:
+            _clear_integrity_failure_marker(path)
+            return SQLiteRecoveryResult(status="restored", backup_index=index)
+    _clear_integrity_failure_marker(path)
+    return SQLiteRecoveryResult(status="rebuilt")
+
+
 def prepare_sqlite_database(database_path: Path) -> SQLiteRecoveryResult:
     """Validate a SQLite file before SQLAlchemy opens it and recover if needed."""
     path = database_path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     with sqlite_maintenance_lock(path):
+        marker = _integrity_failure_marker(path)
         if not path.exists() or path.stat().st_size == 0:
-            _clear_integrity_failure_marker(path)
-            return SQLiteRecoveryResult(status="new")
+            if not marker.exists():
+                return SQLiteRecoveryResult(status="new")
+            # A previous recovery quarantined the database but did not finish
+            # restoring; move any leftover sidecars aside and retry.
+            try:
+                _quarantine_database_family(path)
+            except OSError as exc:
+                raise SQLiteRecoveryError("无法隔离损坏的本地数据库。") from exc
+            return _restore_after_quarantine_locked(path)
         # quick_check skips index/UNIQUE checks; after a failed daily full check
         # the next launch must run the same full check or it never recovers.
-        full = _integrity_failure_marker(path).exists()
+        full = marker.exists()
         if check_sqlite_integrity(path, full=full):
             _clear_integrity_failure_marker(path)
             return SQLiteRecoveryResult(status="healthy")
         try:
+            # Persist "recovery pending" before the family is moved away.
+            marker.touch()
             _quarantine_database_family(path)
         except OSError as exc:
             raise SQLiteRecoveryError("无法隔离损坏的本地数据库。") from exc
-        _clear_integrity_failure_marker(path)
-        for index, backup_path in enumerate(sqlite_backup_paths(path), start=1):
-            if _restore_from_backup_locked(path, backup_path):
-                return SQLiteRecoveryResult(status="restored", backup_index=index)
-        return SQLiteRecoveryResult(status="rebuilt")
+        return _restore_after_quarantine_locked(path)
 
 
 def maintain_sqlite_database(database_path: Path) -> Path | None:

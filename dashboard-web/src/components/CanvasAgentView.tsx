@@ -64,6 +64,10 @@ const defaultSuggestions = [
   "帮我查找课程文件和最近公告",
 ];
 const defaultOptions: CanvasAgentOptions = { maxTurns: 6, maxTokens: 1400 };
+const optionRanges: Record<keyof CanvasAgentOptions, [number, number]> = {
+  maxTurns: [1, 6],
+  maxTokens: [256, 3000],
+};
 const toolStatusLabels: Record<CanvasToolStatus, string> = {
   queued: "等待调用",
   running: "调用中",
@@ -94,6 +98,9 @@ export function CanvasAgentView({
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [optionDrafts, setOptionDrafts] = useState<
+    Partial<Record<keyof CanvasAgentOptions, string>>
+  >({});
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { showToast } = useToast();
@@ -124,16 +131,27 @@ export function CanvasAgentView({
     }
   };
 
+  // 输入过程中只保留草稿，合法时才同步；失焦再夹取，避免每次按键都被夹成下限导致无法键入。
   const updateOption = (field: keyof CanvasAgentOptions, value: string) => {
+    setOptionDrafts((current) => ({ ...current, [field]: value }));
     const parsed = Number.parseInt(value, 10);
-    const next = {
-      ...options,
-      [field]:
-        field === "maxTurns"
-          ? clamp(parsed, 1, 6, defaultOptions.maxTurns)
-          : clamp(parsed, 256, 3000, defaultOptions.maxTokens),
-    };
-    onOptionsChange?.(next);
+    const [min, max] = optionRanges[field];
+    if (Number.isFinite(parsed) && parsed >= min && parsed <= max)
+      onOptionsChange?.({ ...options, [field]: parsed });
+  };
+
+  const commitOption = (field: keyof CanvasAgentOptions) => {
+    const value = optionDrafts[field];
+    if (value === undefined) return;
+    setOptionDrafts((current) => {
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+    const [min, max] = optionRanges[field];
+    const next = clamp(Number.parseInt(value, 10), min, max, options[field]);
+    if (next !== options[field])
+      onOptionsChange?.({ ...options, [field]: next });
   };
 
   if (permissionDenied)
@@ -197,11 +215,12 @@ export function CanvasAgentView({
                 type="number"
                 min={1}
                 max={6}
-                value={options.maxTurns}
+                value={optionDrafts.maxTurns ?? options.maxTurns}
                 disabled={busy || !onOptionsChange}
                 onChange={(event) =>
                   updateOption("maxTurns", event.target.value)
                 }
+                onBlur={() => commitOption("maxTurns")}
               />
             </label>
             <label className="settings-row settings-account-row">
@@ -216,11 +235,12 @@ export function CanvasAgentView({
                 min={256}
                 max={3000}
                 step={256}
-                value={options.maxTokens}
+                value={optionDrafts.maxTokens ?? options.maxTokens}
                 disabled={busy || !onOptionsChange}
                 onChange={(event) =>
                   updateOption("maxTokens", event.target.value)
                 }
+                onBlur={() => commitOption("maxTokens")}
               />
             </label>
           </div>

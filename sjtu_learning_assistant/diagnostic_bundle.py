@@ -277,7 +277,15 @@ class DiagnosticBundleService:
                 _, separator, payload = payload.partition(b"\n")
                 if not separator:
                     payload = b""
-            return sanitize_text(payload.decode("utf-8", errors="replace"))
+            # 先完整脱敏读取窗口，再保留“最新”的尾部；sanitize_text 的 limit
+            # 从头部截断，直接套用会丢掉最近的日志行。
+            sanitized = sanitize_text(
+                payload.decode("utf-8", errors="replace"),
+                limit=MAX_ENTRY_BYTES * 4,
+            ).encode("utf-8")
+            if len(sanitized) > MAX_ENTRY_BYTES:
+                _, _, sanitized = sanitized[-MAX_ENTRY_BYTES:].partition(b"\n")
+            return sanitized.decode("utf-8", errors="ignore")
         except OSError:
             return None
 

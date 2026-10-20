@@ -34,7 +34,12 @@ function backgroundSiblings(container: HTMLElement): BackgroundState[] {
     current.parentElement !== document.documentElement
   ) {
     for (const sibling of current.parentElement.children) {
-      if (sibling !== current && sibling instanceof HTMLElement) {
+      if (
+        sibling !== current &&
+        sibling instanceof HTMLElement &&
+        // Live regions such as the toast viewport opt out of being inerted.
+        !sibling.hasAttribute("data-modal-exempt")
+      ) {
         siblings.add(sibling);
       }
     }

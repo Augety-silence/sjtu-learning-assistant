@@ -329,6 +329,7 @@ class DashboardService:
         self._ai_client: OpenAIClassificationClient | None = None
         self._ai_client_config: tuple[str, str] | None = None
         self._closed = False
+        self._last_sync_failed_at: datetime | None = None
 
     def now(self) -> datetime:
         value = self.now_provider()
@@ -541,9 +542,11 @@ class DashboardService:
             raise NotFoundError("导出文件不存在或已过期。") from None
         if path.parent != root or not path.is_file() or path.is_symlink():
             raise DashboardError("导出文件标识不安全。")
-        completed = self.command_runner(_desktop_open_command(path, reveal=True), check=False)
-        if completed.returncode != 0:
-            raise DashboardError("无法在 Finder 中显示导出文件。")
+        command = _desktop_open_command(path, reveal=True)
+        completed = self.command_runner(command, check=False)
+        # explorer.exe /select, returns exit code 1 even on success.
+        if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
+            raise DashboardError("无法在文件管理器中显示导出文件。")
         return {"status": "revealed", "filename": token}
 
     def gradebook_export(self, course_id: int | str) -> dict[str, Any]:
@@ -1621,11 +1624,21 @@ class DashboardService:
                     from sjtu_learning_assistant.canvas_sync import (
                         DEFAULT_BASE_URL,
                         DEFAULT_TIMEOUT_SECONDS,
+                        CanvasCheckError,
                         build_http_client,
-                        get_token,
+                        get_saved_token,
                     )
 
-                    token, _ = get_token(use_keychain=True)
+                    # Desktop bridge must never fall back to an interactive getpass prompt.
+                    try:
+                        token = get_saved_token()
+                    except CanvasCheckError as exc:
+                        raise DashboardError(str(exc)) from None
+                    if not token:
+                        raise DashboardError(
+                            "尚未保存 Canvas Access Token，请在设置中配置后重试。",
+                            retryable=False,
+                        )
                     self._canvas_client = build_http_client(
                         DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
                     )
@@ -3161,6 +3174,8 @@ class DashboardService:
                 with self._client_lock:
                     client = self._canvas_client
                     self._canvas_client = None
+                    if isinstance(self._academic_service, AcademicFeatureService):
+                        self._academic_service = None
                 self._close_client(client)
             elif kind == "mail":
                 save_mail_password(account, value)
@@ -3183,6 +3198,8 @@ class DashboardService:
                 with self._client_lock:
                     client = self._canvas_client
                     self._canvas_client = None
+                    if isinstance(self._academic_service, AcademicFeatureService):
+                        self._academic_service = None
                 self._close_client(client)
             elif kind == "mail":
                 delete_mail_password(account)
@@ -3310,7 +3327,12 @@ class DashboardService:
         try:
             waiter = getattr(process, "wait", None)
             if waiter is not None:
-                waiter()
+                exit_code = waiter()
+                # SyncRun rows are only written on success; remember in-app failures.
+                if isinstance(exit_code, int) and exit_code != 0:
+                    self._last_sync_failed_at = self.now()
+                elif exit_code == 0:
+                    self._last_sync_failed_at = None
         finally:
             self._sync_lock.release()
 
@@ -3391,10 +3413,19 @@ class DashboardService:
             latest_run = session.scalars(
                 select(SyncRun).order_by(SyncRun.started_at.desc()).limit(1)
             ).first()
+        last_run_status = getattr(latest_run, "status", None)
+        last_run_at = getattr(latest_run, "started_at", None)
+        failed_at = getattr(self, "_last_sync_failed_at", None)
+        if failed_at is not None:
+            run_at = last_run_at
+            if run_at is not None and run_at.tzinfo is None:
+                run_at = run_at.replace(tzinfo=timezone.utc)
+            if run_at is None or run_at < failed_at:
+                last_run_status, last_run_at = "failed", failed_at
         return {
             "status": "syncing" if running else "idle",
             "last_success_at": to_shanghai(last_success),
             "last_canvas_success_at": to_shanghai(last_canvas_success),
-            "last_run_status": getattr(latest_run, "status", None),
-            "last_run_at": to_shanghai(getattr(latest_run, "started_at", None)),
+            "last_run_status": last_run_status,
+            "last_run_at": to_shanghai(last_run_at),
         }

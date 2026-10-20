@@ -195,7 +195,9 @@ export function RestoreDialog({
             variant="outline"
             loading={busy}
             loadingLabel="正在检查…"
-            onClick={() => void createPlan()}
+            onClick={() =>
+              void createPlan(mode, mode === "choose_location" ? null : root)
+            }
           >
             {mode === "choose_location" && <FolderOpen aria-hidden="true" />}
             {mode === "choose_location"

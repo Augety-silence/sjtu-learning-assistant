@@ -211,9 +211,25 @@ def _content_disposition(part: Message) -> str:
 
 def _filename(part: Message) -> str | None:
     try:
-        return part.get_filename()
+        value = part.get_filename()
     except Exception:
-        return None
+        value = None
+    if value and "\ufffd" not in value:
+        return value
+    # Raw 8-bit GBK filenames decode to U+FFFD; reuse the header GB18030 fallback.
+    for header in ("Content-Disposition", "Content-Type"):
+        raw = _header_text(part, header)
+        if not raw:
+            continue
+        probe = Message()
+        probe[header] = raw
+        try:
+            recovered = probe.get_filename()
+        except Exception:
+            continue
+        if recovered and "\ufffd" not in recovered:
+            return recovered
+    return value
 
 
 def _decode_part_payload(part: Message) -> bytes:
@@ -508,7 +524,8 @@ def fetch_incremental_mail(
                 for value in search_data[0].split()
                 if value.isdigit() and int(value) >= search_start
             )
-            highest_uid = all_uids[-1] if all_uids else previous_uid
+            # A UID from an old UIDVALIDITY must never seed the new cursor.
+            highest_uid = all_uids[-1] if all_uids else (previous_uid if is_incremental else 0)
             bootstrap_truncated = not is_incremental and len(all_uids) > initial_limit
             selected_uids = all_uids if is_incremental else all_uids[-initial_limit:]
 

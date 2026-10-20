@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { motionDuration, motionEase } from "@/lib/motion";
 
 export type ToastKind = "success" | "error" | "info";
@@ -235,24 +236,30 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div
-        className="toast-viewport"
-        aria-label="操作通知"
-        aria-live="polite"
-        aria-atomic="false"
-      >
-        <AnimatePresence initial={false}>
-          {toasts.map((toast) => (
-            <ToastCard
-              key={toast.id}
-              toast={toast}
-              dismiss={() => dismissToast(toast.id)}
-              pause={() => pauseToast(toast.id)}
-              resume={() => resumeToast(toast.id)}
-            />
-          ))}
-        </AnimatePresence>
-      </div>
+      {/* Portaled to body and exempt from useModalFocus so toasts raised while
+          a modal is open remain announced, hoverable and dismissible. */}
+      {createPortal(
+        <div
+          className="toast-viewport"
+          data-modal-exempt=""
+          aria-label="操作通知"
+          aria-live="polite"
+          aria-atomic="false"
+        >
+          <AnimatePresence initial={false}>
+            {toasts.map((toast) => (
+              <ToastCard
+                key={toast.id}
+                toast={toast}
+                dismiss={() => dismissToast(toast.id)}
+                pause={() => pauseToast(toast.id)}
+                resume={() => resumeToast(toast.id)}
+              />
+            ))}
+          </AnimatePresence>
+        </div>,
+        document.body,
+      )}
     </ToastContext.Provider>
   );
 }

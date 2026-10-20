@@ -93,6 +93,12 @@ interface PendingChatRequest {
   presetId: string;
 }
 
+interface FailedChatRequest {
+  request: PendingChatRequest;
+  message: string;
+  retryable: boolean;
+}
+
 function chatPreferences(settings: AIChatPreferences): AIChatPreferences {
   return {
     ai_chat_send_shortcut: settings.ai_chat_send_shortcut,
@@ -128,6 +134,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() => false);
   const pendingQueueRef = useRef<PendingChatRequest[]>([]);
+  // Failed requests whose session was no longer active; restored on reopen.
+  const failedRequestsRef = useRef(new Map<string, FailedChatRequest[]>());
+  const deletedSessionIdsRef = useRef(new Set<string>());
+  const activeSessionIdRef = useRef<string | null>(null);
+  activeSessionIdRef.current = active?.id ?? null;
   const pendingMessageCounterRef = useRef(0);
   const restoreComposerFocusRef = useRef(false);
   const isPresent = useIsPresent();
@@ -242,15 +253,47 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     return result.items;
   }, []);
 
-  const applySession = useCallback((session: AIChatSession) => {
-    setMotionMessageIds([]);
-    stickToBottomRef.current = true;
-    setActive(session);
-    setModel((session.model as AIModel) || "auto");
-    setDepth(session.thinking_depth);
-    setSelectedPresetId(session.preset_id);
-    setAttachments([]);
+  const restoreFailedRequest = useCallback((failed: FailedChatRequest) => {
+    const { request } = failed;
+    setDraft((current) =>
+      !current.trim()
+        ? request.text
+        : current.includes(request.text)
+          ? current
+          : `${current}\n\n${request.text}`,
+    );
+    setAttachments((current) => {
+      const restored = [...current];
+      for (const attachment of request.attachments) {
+        if (!restored.some((item) => item.id === attachment.id)) {
+          restored.push(attachment);
+        }
+      }
+      return restored;
+    });
+    setCanRetry(failed.retryable);
+    setError(failed.message);
   }, []);
+
+  const applySession = useCallback(
+    (session: AIChatSession) => {
+      setMotionMessageIds([]);
+      stickToBottomRef.current = true;
+      activeSessionIdRef.current = session.id;
+      setActive(session);
+      setModel((session.model as AIModel) || "auto");
+      setDepth(session.thinking_depth);
+      setSelectedPresetId(session.preset_id);
+      setAttachments([]);
+      setCanRetry(false);
+      const failed = failedRequestsRef.current.get(session.id);
+      if (failed) {
+        failedRequestsRef.current.delete(session.id);
+        for (const item of failed) restoreFailedRequest(item);
+      }
+    },
+    [restoreFailedRequest],
+  );
 
   const openSession = useCallback(
     async (sessionId: string) => {
@@ -576,31 +619,31 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             }
           : current,
       );
-      setDraft((current) =>
-        !current.trim()
-          ? request.text
-          : current.includes(request.text)
-            ? current
-            : `${current}\n\n${request.text}`,
-      );
-      setAttachments((current) => {
-        const restored = [...current];
-        for (const attachment of request.attachments) {
-          if (!restored.some((item) => item.id === attachment.id)) {
-            restored.push(attachment);
-          }
-        }
-        return restored;
-      });
-      setCanRetry(
-        !(reason instanceof Error) ||
+      const failed: FailedChatRequest = {
+        request,
+        message:
+          reason instanceof Error
+            ? reason.message
+            : "Agent 暂时无法完成检索，请稍后重试。",
+        retryable:
+          !(reason instanceof Error) ||
           (reason as Error & { retryable?: boolean }).retryable !== false,
-      );
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Agent 暂时无法完成检索，请稍后重试。",
-      );
+      };
+      if (activeSessionIdRef.current === request.sessionId) {
+        restoreFailedRequest(failed);
+      } else if (deletedSessionIdsRef.current.has(request.sessionId)) {
+        // The original conversation was deleted: nothing to restore into.
+        setError(failed.message);
+      } else {
+        // The user switched conversations meanwhile: keep the draft and
+        // attachments with their own session instead of the visible composer,
+        // so "重试本次" can never send them to the wrong conversation.
+        const stash = failedRequestsRef.current.get(request.sessionId) ?? [];
+        failedRequestsRef.current.set(request.sessionId, [...stash, failed]);
+        setError(
+          `另一段对话的消息发送失败（${failed.message}），草稿已保留在原对话中，切回后可重试。`,
+        );
+      }
     } finally {
       const next = pendingQueueRef.current.shift();
       if (next) {
@@ -686,6 +729,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (!window.confirm("确定删除这段历史对话？")) return;
     try {
       await deleteAiChatSession(sessionId);
+      deletedSessionIdsRef.current.add(sessionId);
+      failedRequestsRef.current.delete(sessionId);
       const remaining = await refreshSessions();
       if (sessionId !== active?.id) return;
       if (remaining[0]) await openSession(remaining[0].id);

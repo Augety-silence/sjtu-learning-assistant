@@ -43,6 +43,7 @@ from sjtu_learning_assistant.repository import (
     persist_canvas_data,
     persist_email_body_backfill,
     persist_emails,
+    record_sync_failure,
 )
 from sjtu_learning_assistant.canvas_sync import (
     CanvasCheckError,
@@ -182,28 +183,46 @@ def sync_canvas(
                 source_id,
                 etag=assignment_state.cursor if assignment_state else None,
             )
-            file_result = fetch_course_files_incremental(
-                client,
-                source_id,
-                etag=file_state.cursor if file_state else None,
-            )
-            folders = fetch_course_folders(client, source_id)
-            modules = fetch_course_modules(client, source_id)
-            module_items = []
-            for module in modules:
-                module_id = module.get("id")
-                if module_id is None:
-                    continue
-                module_items.extend(
-                    fetch_course_module_items(client, source_id, module_id)
+            # 教师可对学生隐藏“文件/模块”栏目，Canvas 会对该课程返回 401/403；
+            # 只跳过该课程的对应资源（不推进游标、不触发失活），不中止整轮同步。
+            try:
+                file_result = fetch_course_files_incremental(
+                    client,
+                    source_id,
+                    etag=file_state.cursor if file_state else None,
+                )
+                folders = fetch_course_folders(client, source_id)
+            except CanvasCheckError as exc:
+                file_result = None
+                print(
+                    f"警告：课程 {source_id} 的文件列表暂不可读，已跳过：{exc}",
+                    file=sys.stderr,
+                )
+            try:
+                modules = fetch_course_modules(client, source_id)
+                module_items = []
+                for module in modules:
+                    module_id = module.get("id")
+                    if module_id is None:
+                        continue
+                    module_items.extend(
+                        fetch_course_module_items(client, source_id, module_id)
+                    )
+            except CanvasCheckError as exc:
+                modules = None
+                print(
+                    f"警告：课程 {source_id} 的模块暂不可读，已跳过：{exc}",
+                    file=sys.stderr,
                 )
 
             announcement_cursors[source_id] = announcement_result.etag
             assignment_cursors[source_id] = assignment_result.etag
-            file_cursors[source_id] = file_result.etag
-            folders_by_course[source_id] = folders
-            modules_by_course[source_id] = modules
-            module_items_by_course[source_id] = module_items
+            if file_result is not None:
+                file_cursors[source_id] = file_result.etag
+                folders_by_course[source_id] = folders
+            if modules is not None:
+                modules_by_course[source_id] = modules
+                module_items_by_course[source_id] = module_items
             if announcement_result.not_modified:
                 unchanged_announcements += 1
             else:
@@ -212,7 +231,9 @@ def sync_canvas(
                 unchanged_assignments += 1
             else:
                 assignments_by_course[source_id] = assignment_result.records
-            if file_result.not_modified:
+            if file_result is None:
+                pass
+            elif file_result.not_modified:
                 unchanged_files += 1
             else:
                 files_by_course[source_id] = file_result.records
@@ -340,14 +361,24 @@ def sync_mail(
         )
 
 
+def _record_failure(engine, stage: str | None, message: str) -> None:
+    # 数据事务已回滚；另起事务登记失败，让 sync_status 不再显示上一次的“成功”。
+    # 数据库尚未就绪（stage 为 None）时无处可写，直接跳过。
+    if engine is None or stage is None:
+        return
+    record_sync_failure(engine, source=stage, resource="run", error=message)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     engine = None
+    stage: str | None = None
     try:
         engine = create_database_engine()
         if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
             initialize_desktop_database(engine, skip_import=args.skip_import)
         health = check_database(engine)
+        stage = "sync"
         print(
             f"已连接数据库：{health.database} "
             f"（server {health.server_version}）"
@@ -382,6 +413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if settings.ai_enabled:
                 sync_options["ai_client"] = ai_client
                 sync_options["ai_enabled"] = True
+            stage = "canvas"
             try:
                 sync_canvas(
                     engine,
@@ -395,6 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if ai_client is not None:
                     ai_client.close()
         if not args.canvas_only:
+            stage = "email"
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()
             )
@@ -409,13 +442,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         SettingsError,
     ) as exc:
         print(f"同步失败：{exc}", file=sys.stderr)
+        _record_failure(engine, stage, f"同步失败：{exc}")
         return 1
     except SQLAlchemyError:
         print("数据库事务失败，未推进对应同步游标。", file=sys.stderr)
+        _record_failure(engine, stage, "数据库事务失败，未推进对应同步游标。")
         return 1
     except KeyboardInterrupt:
         print("\n已取消。", file=sys.stderr)
         return 130
+    except Exception as exc:
+        _record_failure(engine, stage, f"同步异常终止：{type(exc).__name__}")
+        raise
     finally:
         if engine is not None:
             engine.dispose()

@@ -228,6 +228,11 @@ def connect_and_fetch(
         raise MailCheckError(
             "IMAP 登录或读取失败。请检查邮箱地址、jAccount 密码，以及邮箱是否允许 IMAP 登录。"
         ) from exc
+    except UnicodeEncodeError as exc:
+        # imaplib 以 ASCII 编码 LOGIN 参数；输入法误带的全角字符会在此抛出。
+        raise MailCheckError(
+            "邮箱地址或密码包含无法用于 IMAP 登录的字符（如全角符号），请检查后重试。"
+        ) from exc
     except (socket.timeout, TimeoutError) as exc:
         raise MailCheckError(
             f"连接超时：{IMAP_HOST}:{IMAP_PORT}，请检查网络后重试。"

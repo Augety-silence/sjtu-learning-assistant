@@ -348,6 +348,10 @@ class RestoreService:
             key_data = f"restore\x00{version.id}\x00{target}"
             idempotency_key = "restore:" + hashlib.sha256(key_data.encode("utf-8")).hexdigest()
             job = session.scalar(select(ArchiveJob).where(ArchiveJob.idempotency_key == idempotency_key))
+            if job is not None and job.status in ("running", "downloading", "verifying"):
+                # 不能改写进行中任务的 plan_data/target：会丢掉 reservation_inode（崩溃后
+                # 无法清理 0 字节占位），并让任务面板显示的目标与实际写入位置不一致。
+                raise RestoreError("该文件正在恢复到同一位置，请等待当前任务完成后再制定计划。")
             plan_data = {
                 "mode": mode,
                 "root_path_hash": root.path_hash,

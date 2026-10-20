@@ -459,10 +459,6 @@ export function AssignmentsView({
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "提交失败";
       setSubmissionError(message);
-      showToast({
-        kind: "error",
-        message,
-      });
     } finally {
       setSubmitting(false);
     }

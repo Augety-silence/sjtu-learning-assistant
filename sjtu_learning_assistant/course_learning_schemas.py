@@ -21,6 +21,11 @@ class SchemaValidationError(ValueError):
 
 T = TypeVar("T", bound="StrictSchema")
 
+# A full lecture transcript is far longer than one chunk field: a two-hour
+# Chinese lecture already exceeds 100k characters.  Keep a generous bound so
+# long videos are not rejected after every agent call has been paid for.
+CORRECTED_TRANSCRIPT_LIMIT = 4_000_000
+
 
 def _fail(path: str, message: str) -> None:
     raise SchemaValidationError(f"{path}: {message}")
@@ -639,7 +644,10 @@ class OrchestratorResult(StrictSchema):
         self.quality.validate()
         self.memory_delta.validate()
         _string_tuple(self.warnings, "$.warnings")
-        _string(self.corrected_transcript, "$.corrected_transcript", empty=True)
+        _string(
+            self.corrected_transcript, "$.corrected_transcript", empty=True,
+            limit=CORRECTED_TRANSCRIPT_LIMIT,
+        )
         _optional_string(self.memory_version, "$.memory_version", limit=256)
         events = _object_tuple(self.events, "$.events")
         expected_event_fields = {
@@ -714,7 +722,8 @@ class OrchestratorResult(StrictSchema):
             memory_delta=MemoryDelta.from_dict(source["memory_delta"]),
             warnings=_string_tuple(source["warnings"], "$.warnings"),
             corrected_transcript=_string(
-                source["corrected_transcript"], "$.corrected_transcript", empty=True
+                source["corrected_transcript"], "$.corrected_transcript", empty=True,
+                limit=CORRECTED_TRANSCRIPT_LIMIT,
             ),
             uncertain=tuple(UncertainSpan.from_dict(item) for item in source["uncertain"]),
             memory_version=_optional_string(source["memory_version"], "$.memory_version", limit=256),

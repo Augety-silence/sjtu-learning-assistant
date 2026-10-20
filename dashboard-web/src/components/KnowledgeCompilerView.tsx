@@ -454,6 +454,13 @@ export function KnowledgeCompilerView() {
             {error}
           </p>
         )}
+        {!error &&
+          task?.error &&
+          (task.status === "failed" || task.status === "interrupted") && (
+            <p className="knowledge-error" role="alert">
+              {task.error}
+            </p>
+          )}
         {(running || terminal) && task && (
           <>
             <dl className="knowledge-metrics">

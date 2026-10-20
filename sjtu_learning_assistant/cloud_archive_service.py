@@ -947,8 +947,15 @@ class CloudArchiveService:
             )
         )
         if query:
+            # SQLite 内置 lower() 只转换 ASCII；Python 侧同样只降 ASCII，避免
+            # casefold() 把 "Ü"/全角字母降为小写后与库内原样大写永远不匹配。
+            # 文件名入库时已做 NFC，这里同样 NFC，兼容 macOS 输入法给出的 NFD。
+            normalized = "".join(
+                ch.lower() if "A" <= ch <= "Z" else ch
+                for ch in unicodedata.normalize("NFC", query)
+            )
             escaped = (
-                query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             )
             pattern = f"%{escaped}%"
             statement = statement.where(
@@ -994,6 +1001,7 @@ class CloudArchiveService:
                 "limit": limit,
                 "offset": offset,
                 "total": int(total),
+                "has_more": next_offset < total,
                 "next_cursor": (
                     self._encode_cursor(next_offset) if next_offset < total else None
                 ),

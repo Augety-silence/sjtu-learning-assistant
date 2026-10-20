@@ -26,6 +26,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+from xml.parsers import expat
 
 
 class MediaFeatureError(RuntimeError):
@@ -406,10 +407,23 @@ def _read_entry(archive: zipfile.ZipFile, name: str, limit: int) -> bytes:
     return content
 
 
+def _reject_doctype(*_args: object) -> None:
+    raise MediaFeatureError("XML 包含 DTD/实体声明，已拒绝解析。")
+
+
 def _xml_root(content: bytes, limits: PreviewLimits) -> ElementTree.Element:
     upper = content.upper()
     if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
         raise MediaFeatureError("XML 包含 DTD/实体声明，已拒绝解析。")
+    # 字节级检查对 UTF-16 编码的 XML 无效；让 expat 按真实编码识别 DOCTYPE，
+    # 在任何实体展开之前拒绝。
+    probe = expat.ParserCreate()
+    probe.StartDoctypeDeclHandler = _reject_doctype
+    probe.EntityDeclHandler = _reject_doctype
+    try:
+        probe.Parse(content, True)
+    except expat.ExpatError as exc:
+        raise MediaFeatureError("Office XML 结构无效。") from exc
     count = 0
     depth = 0
     root: ElementTree.Element | None = None
@@ -526,6 +540,9 @@ def _column_number(reference: str) -> int:
     result = 0
     for character in match.group(1).upper():
         result = result * 26 + ord(character) - 64
+        if result > 16_384:
+            # Excel 最大列为 XFD(16384)；超长引用提前返回，避免大整数运算按平方耗时。
+            return result
     return result
 
 
@@ -1139,7 +1156,11 @@ def video_screenshots_pdf(
         raise MediaFeatureError("视频内容为空。")
     from PIL import Image, UnidentifiedImageError
 
-    with tempfile.TemporaryDirectory(prefix="sjtu-media-") as directory:
+    # Windows 上杀毒软件/索引器可能短暂占用新写入的截图；清理失败不应把已生成的 PDF
+    # 或原有的 MediaFeatureError 替换成 PermissionError（Python 3.10+）。
+    with tempfile.TemporaryDirectory(
+        prefix="sjtu-media-", ignore_cleanup_errors=True
+    ) as directory:
         root = Path(directory)
         pattern = root / "frame-%04d.jpg"
         command = [
@@ -1187,17 +1208,16 @@ def video_screenshots_pdf(
             for path in frame_paths:
                 if path.stat().st_size > 16 * 1024 * 1024:
                     raise MediaFeatureError("单张视频截图超过大小限制。")
-                image = Image.open(path)
-                if (
-                    image.width <= 0
-                    or image.height <= 0
-                    or image.width * image.height > 40_000_000
-                ):
-                    image.close()
-                    raise MediaFeatureError("视频截图尺寸无效或过大。")
-                image.load()
-                images.append(image.convert("RGB"))
-                image.close()
+                # 上下文管理器保证 load() 失败时也释放文件句柄，避免 Windows 删除临时目录失败。
+                with Image.open(path) as image:
+                    if (
+                        image.width <= 0
+                        or image.height <= 0
+                        or image.width * image.height > 40_000_000
+                    ):
+                        raise MediaFeatureError("视频截图尺寸无效或过大。")
+                    image.load()
+                    images.append(image.convert("RGB"))
             output = io.BytesIO()
             images[0].save(
                 output, "PDF", save_all=True, append_images=images[1:], resolution=100.0

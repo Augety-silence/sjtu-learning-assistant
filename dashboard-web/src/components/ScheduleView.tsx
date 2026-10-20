@@ -187,7 +187,12 @@ export function ScheduleView({
             <button
               type="button"
               className="calm-utility-retry"
-              onClick={() => void (calendarError ? onRetryCanvas?.() : load())}
+              onClick={() => {
+                // Both sources can fail together: retry each failed one, so the shown
+                // timetable error is never stuck behind a Canvas-only retry.
+                if (loadError) void load();
+                if (calendarError) void onRetryCanvas?.();
+              }}
             >
               重试
             </button>

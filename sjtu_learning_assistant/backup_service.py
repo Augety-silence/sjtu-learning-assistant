@@ -734,6 +734,7 @@ class BackupService:
                         record_id=file.id,
                         cloud_path=file.cloud_path,
                         cloud_size=file.cloud_size,
+                        sha256=file.download_sha256,
                     )
                 )
 
@@ -764,6 +765,7 @@ class BackupService:
                         record_id=attachment.id,
                         cloud_path=attachment.cloud_path,
                         cloud_size=attachment.cloud_size,
+                        sha256=attachment.sha256,
                     )
                 )
 
@@ -966,6 +968,26 @@ class BackupService:
                                     if (
                                         remote_size == size
                                         and remote_sha256 == candidate.sha256
+                                    ):
+                                        result["skipped_existing"] += 1
+                                    else:
+                                        overwrite = True
+                                elif (
+                                    remove_local
+                                    and candidate.source in ("canvas", "mail")
+                                    and _valid_sha256(candidate.sha256)
+                                ):
+                                    # Same size is not proof of same content. Before a
+                                    # skip may lead to unlinking the local copy, compare
+                                    # the actual local bytes with the remote bytes.
+                                    local_digest = hashlib.sha256()
+                                    while chunk := source.read(1024 * 1024):
+                                        local_digest.update(chunk)
+                                    source.seek(0)
+                                    remote_sha256, remote_size = self._remote_digest(candidate)
+                                    if (
+                                        remote_size == size
+                                        and remote_sha256 == local_digest.hexdigest()
                                     ):
                                         result["skipped_existing"] += 1
                                     else:

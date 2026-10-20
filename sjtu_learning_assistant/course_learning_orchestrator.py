@@ -39,7 +39,12 @@ from .course_learning_schemas import (
     stable_json_dumps,
     unique_text_span,
 )
-from .course_memory import SINGLE_AI_SOURCES, CourseMemoryStore, MemoryValidationError
+from .course_memory import (
+    SINGLE_AI_SOURCES,
+    CourseMemoryStore,
+    MemoryValidationError,
+    source_priority,
+)
 from .seed_glossary import (
     GlossaryPack,
     SeedGlossaryValidationError,
@@ -837,6 +842,63 @@ def _training_updates(
     return updates
 
 
+def _drop_non_overwritable(
+    updates: Sequence[Mapping[str, object]], state: Mapping[str, Any],
+) -> tuple[list[dict[str, object]], dict[str, int]]:
+    """Pre-drop upserts that CourseMemoryStore.validate_proposal would reject as
+    overwrite conflicts (duplicate target, lower priority, equal-priority confidence
+    regression, single-AI overwrite) so one stale item cannot void the whole proposal.
+
+    Mirrors course_memory.validate_proposal; anything it cannot evaluate is kept so the
+    repository still fails closed on it.  Callers must surface the skipped counts.
+    """
+    kept: list[dict[str, object]] = []
+    seen: set[tuple[object, object]] = set()
+    skipped = {"skipped_duplicate": 0, "skipped_existing": 0}
+    for update in updates:
+        identity = (update.get("section"), update.get("key"))
+        if identity in seen:
+            skipped["skipped_duplicate"] += 1
+            continue
+        seen.add(identity)
+        existing: object = None
+        try:
+            section, key = identity
+            if update.get("operation") == "upsert" and type(section) is str and type(key) is str:
+                if section == "course_profile":
+                    existing = state["course_profile"]["provenance"].get(key)
+                else:
+                    existing = state.get(section, {}).get(key)
+            if isinstance(existing, Mapping):
+                source = update.get("source")
+                confidence = update.get("confidence")
+                old_priority = int(existing["source_priority"])
+                new_priority = source_priority(source)  # type: ignore[arg-type]
+                if (
+                    new_priority < old_priority
+                    or source in SINGLE_AI_SOURCES
+                    or (
+                        new_priority == old_priority
+                        and type(confidence) in (int, float)
+                        and float(confidence) < float(existing["confidence"])  # type: ignore[arg-type]
+                    )
+                ):
+                    skipped["skipped_existing"] += 1
+                    continue
+        except (AttributeError, KeyError, TypeError, ValueError, MemoryValidationError):
+            pass  # leave it for the repository's fail-closed validation
+        kept.append(dict(update))
+    return kept, skipped
+
+
+def _breaker_diagnostics() -> dict[str, object]:
+    """Schema-complete diagnostics for program-side breaker events (no model response)."""
+    return {
+        "category": "error", "schema_path": None, "content_length": None,
+        "finish_reason": None, "status_code": None,
+    }
+
+
 class CourseLearningOrchestrator:
     """Coordinates semantic agents while retaining deterministic authority."""
 
@@ -1012,15 +1074,20 @@ class CourseLearningOrchestrator:
         video_id: str, chapter_id: str | None, index: int, memory_version: str | None,
         correction: CorrectionResult, critic: CriticResult, numeric_count: int,
         endpoint_fingerprint: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Persist a resumable chunk checkpoint; returns False on a best-effort write failure.
+
+        A checkpoint is an optimisation: an OSError (Windows sharing violation from AV /
+        indexers on os.replace, MAX_PATH, disk full) must not abort a run whose paid AI
+        results are already in memory.
+        """
         if critic.decision is not CriticDecision.PASS or correction.uncertain:
-            return
+            return True
         path = self._checkpoint_path(
             repo, key, video_id=video_id, chapter_id=chapter_id, index=index
         )
         if path is None:
-            return
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            return True
         row = {
             "checkpoint_version": 1, "raw_hash": raw_hash,
             "chunk_id": chunk.chunk_id,
@@ -1032,12 +1099,21 @@ class CourseLearningOrchestrator:
         if endpoint_fingerprint is not None:
             row["endpoint_fingerprint"] = endpoint_fingerprint
         temporary = path.with_name(path.name + ".tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(row, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(row, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+        return True
 
     def _load_cache(
         self, repo: object, key: str, *, course_id: str, video_id: str,
@@ -1096,7 +1172,7 @@ class CourseLearningOrchestrator:
         if role in self._run_open_circuits:
             events.append(_event(
                 role, agent=role, model=self.model, prompt_version=self.prompt_version,
-                status="circuit_open", diagnostics={"category": "error", "breaker": "open"},
+                status="circuit_open", diagnostics=_breaker_diagnostics(),
             ))
             raise _AgentCircuitOpen(f"{role} circuit is open")
         if self._run_call_count >= self._run_max_calls or (
@@ -1104,7 +1180,7 @@ class CourseLearningOrchestrator:
         ):
             events.append(_event(
                 role, agent=role, model=self.model, prompt_version=self.prompt_version,
-                status="budget_exhausted", diagnostics={"category": "error", "breaker": "budget"},
+                status="budget_exhausted", diagnostics=_breaker_diagnostics(),
             ))
             raise _AgentBudgetExceeded("semantic agent budget exhausted")
         method = getattr(self.agent, role)
@@ -1138,9 +1214,9 @@ class CourseLearningOrchestrator:
             else:
                 self._run_last_failure = failure
                 self._run_failure_streak = 1
-            if self._run_failure_streak >= self._run_failure_limit:
+            circuit_opened = self._run_failure_streak >= self._run_failure_limit
+            if circuit_opened:
                 self._run_open_circuits.add(role)
-                diagnostics["breaker"] = "open_after_repeated_failure"
             events.append(_event(
                 role + ("_schema_repair" if is_repair else ""), agent=role, model=self.model, prompt_version=self.prompt_version,
                 usage=usage,
@@ -1148,6 +1224,14 @@ class CourseLearningOrchestrator:
                 status=category,
                 diagnostics=diagnostics,
             ))
+            if circuit_opened:
+                # Separate program event: OrchestratorResult diagnostics allow no extra keys.
+                events.append(_event(
+                    role + "_circuit", model=self.pipeline_version,
+                    prompt_version=self.prompt_version,
+                    usage={"failure_streak": self._run_failure_streak},
+                    status="open_after_repeated_failure",
+                ))
             if isinstance(exc, SchemaValidationError) and not is_repair:
                 payload = _agent_output(response).payload
                 retry_messages = _repair_messages(messages, payload)
@@ -1209,6 +1293,7 @@ class CourseLearningOrchestrator:
 
         events: list[dict[str, Any]] = []
         warnings: list[str] = []
+        checkpoint_write_failures = 0
         parsed_cues = _to_cues(raw_vtt, cues)
         chunks = tuple(self.chunker.chunk(
             parsed_cues, course_id=course_id, video_id=video_id, chapter_id=chapter_id
@@ -1409,18 +1494,27 @@ class CourseLearningOrchestrator:
                     final_correction = _empty_correction(chunk, uncertain=True)
                     final_critic = _fallback_critic("revision loop limit reached")
             assert final_correction is not None and final_critic is not None
-            self._store_checkpoint(
+            if not self._store_checkpoint(
                 memory_repo, key=initial_key, raw_hash=raw_hash, chunk=chunk,
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,
                 memory_version=memory_version, correction=final_correction,
                 critic=final_critic, numeric_count=numeric,
                 endpoint_fingerprint=endpoint_fingerprint,
-            )
+            ):
+                checkpoint_write_failures += 1
             corrections.append(final_correction)
             critics.append(final_critic)
             if progress_callback is not None:
                 progress_callback(chunk_index, len(chunks), "reviewing")
 
+        if checkpoint_write_failures:
+            # Best-effort cache only: result quality is unaffected, but resume will redo these chunks.
+            events.append(_event(
+                "checkpoint_store", model=self.pipeline_version,
+                prompt_version=self.prompt_version,
+                usage={"write_failures": checkpoint_write_failures},
+                status="degraded",
+            ))
         events.append(_event(
             "seed_glossary_retrieval",
             model=self.pipeline_version,
@@ -1500,6 +1594,14 @@ class CourseLearningOrchestrator:
                 )
                 updates = _memory_updates(memory_delta)
                 updates.extend(_training_updates(chunks, corrections, critics))
+                skipped_counts = {"skipped_duplicate": 0, "skipped_existing": 0}
+                if updates and checked_policy.commit_memory:
+                    # Fresh state: another chapter may have committed since the run started.
+                    updates, skipped_counts = _drop_non_overwritable(updates, memory_repo.load())
+                skip_usage = {
+                    "submitted": len(updates),
+                    **{name: count for name, count in skipped_counts.items() if count},
+                }
                 if updates and checked_policy.commit_memory:
                     proposal = memory_repo.propose(updates)
                     validated_proposal = memory_repo.validate_proposal(proposal)
@@ -1508,6 +1610,14 @@ class CourseLearningOrchestrator:
                     events.append(_event(
                         "memory_commit", model=self.pipeline_version,
                         prompt_version=self.prompt_version, confidence=1.0,
+                        usage=skip_usage,
+                        status="ok" if len(skip_usage) == 1 else "committed_with_skips",
+                    ))
+                elif checked_policy.commit_memory and len(skip_usage) > 1:
+                    events.append(_event(
+                        "memory_commit", model=self.pipeline_version,
+                        prompt_version=self.prompt_version, confidence=1.0,
+                        usage=skip_usage, status="skipped_existing",
                     ))
                 elif updates:
                     events.append(_event(

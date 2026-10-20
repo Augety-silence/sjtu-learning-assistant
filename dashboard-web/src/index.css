@@ -20,8 +20,8 @@
   --aura-content-gap: 20px;
   --aura-panel-padding: 20px;
   --aura-video-list-width: 340px;
-  font-family: LarkCircular, -apple-system, BlinkMacSystemFont, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: LarkCircular, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   color: var(--text-primary);
   background: var(--surface-page);
   font-synthesis: none;
@@ -138,7 +138,7 @@
   --text-ai-control: #596273;
   --text-ai-count: #5f6877;
   --text-ai-label: #697386;
-  --text-ai-muted: #7b8492;
+  --text-ai-muted: #5f6a79;
   --text-ai-code-line: #8791a1;
   --text-ai-code-inverse: #eef3fb;
   --text-ai-drop: #173b77;
@@ -696,6 +696,7 @@ a {
   gap: 24px;
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--surface-page) 96%, transparent);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
 
@@ -2657,6 +2658,14 @@ a {
   }
 }
 
+@media (prefers-reduced-transparency: reduce) {
+  .page-header {
+    background: var(--surface-page);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -4321,7 +4330,7 @@ a {
 
 .ai-chat-empty h1 {
   margin: 8px 0 0;
-  font-family: Georgia, "Songti SC", serif;
+  font-family: Georgia, "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
   font-size: clamp(26px, 3vw, 38px);
   font-weight: 500;
   letter-spacing: -0.03em;
@@ -4704,6 +4713,11 @@ a {
   outline: none;
   color: var(--text-primary);
   background: var(--surface-hover);
+}
+
+.ai-chat-controls select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .ai-chat-controls label > svg {
@@ -9850,8 +9864,9 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   animation: video-status-spin 1.2s linear infinite;
 }
 
+/* 0.7 keeps the idle icon >= 3:1 (WCAG 1.4.11) on light list surfaces. */
 .video-more {
-  opacity: 0.62;
+  opacity: 0.7;
   transition: color var(--motion-control) var(--ease-motion-out),
     background-color var(--motion-control) var(--ease-motion-out),
     opacity var(--motion-control) var(--ease-motion-out);
@@ -9859,7 +9874,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 @media (hover: hover) {
   .video-more {
-    opacity: 0.62;
+    opacity: 0.7;
   }
 
   .video-recording-list > li:hover .video-more,

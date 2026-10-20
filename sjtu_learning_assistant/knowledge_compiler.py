@@ -473,9 +473,9 @@ class KnowledgeCompilerService:
             self._state["counts"]["processed_files"] = index
             self._set_progress(index, len(files), path.name)
 
-    def _phase_concepts(self, source: Path, target: Path, files: list[Path]) -> None:
+    def _current_lectures(self, source: Path, target: Path, files: list[Path]) -> list[Path]:
         # 只取本次素材对应的 Lecture；已删除/改名素材遗留的旧 Lecture 不能再进入概念与证据链。
-        lectures = sorted(
+        return sorted(
             lecture
             for lecture in {
                 target / "01_Courses" / self._course_for(source, path)
@@ -484,6 +484,9 @@ class KnowledgeCompilerService:
             }
             if lecture.is_file()
         )
+
+    def _phase_concepts(self, source: Path, target: Path, files: list[Path]) -> None:
+        lectures = self._current_lectures(source, target, files)
         purpose = ("提取 3—8 个值得跨 Lecture 引用的原子概念。每个概念用二级标题 `## 概念：名称` 开始，"
                    "随后包含一句话定义、直觉、正式定义、示例、反例（如适用）、为什么重要、前置知识、"
                    "相关概念、容易混淆、来源。不要创建意义弱的碎片概念。")
@@ -572,23 +575,24 @@ class KnowledgeCompilerService:
         _atomic_write(target / "99_System" / "Fact-Check.md", "\n".join(rows))
         self._generated()
 
-    def _courses(self, target: Path) -> list[Path]:
-        return sorted(path for path in (target / "01_Courses").iterdir() if path.is_dir())
+    def _courses(self, lectures: list[Path]) -> list[Path]:
+        return sorted({lecture.parent for lecture in lectures})
 
-    def _course_snapshot(self, course: Path) -> str:
+    def _course_snapshot(self, course: Path, lectures: list[Path]) -> str:
         parts = []
-        for note in sorted(course.glob("*.md")):
+        for note in (lecture for lecture in lectures if lecture.parent == course):
             parts.append(f"## {note.stem}\n{_read_utf8(note)[:2200]}")
             if sum(map(len, parts)) > 10_000:
                 break
         return "\n\n".join(parts)
 
     def _phase_moc(self, source: Path, target: Path, files: list[Path]) -> None:
-        courses = self._courses(target)
+        lectures = self._current_lectures(source, target, files)
+        courses = self._courses(lectures)
         for index, course in enumerate(courses, start=1):
             self._system_note(target, f"00_MOC/MOC-{_safe_name(course.name)}.md", f"{course.name} MOC",
                 "重建表达知识结构而非文件目录的 MOC。按主题组织并用箭头表达依赖，链接 Lecture 与 Concept。",
-                self._course_snapshot(course))
+                self._course_snapshot(course, lectures))
             self._set_progress(index, len(courses), course.name)
 
     def _phase_problems(self, source: Path, target: Path, files: list[Path]) -> None:
@@ -608,14 +612,15 @@ class KnowledgeCompilerService:
         self._generated()
 
     def _phase_review(self, source: Path, target: Path, files: list[Path]) -> None:
-        courses = self._courses(target)
+        lectures = self._current_lectures(source, target, files)
+        courses = self._courses(lectures)
         levels = (("Review-10min", "最高价值概念与知识路径"),
                   ("Review-30min", "核心概念、核心公式和易错点"),
                   ("Review-2h", "完整知识框架、关键例子和复习问题"),
                   ("Review-Final", "考试前完整复习路线，说明重要度依据，不预测考题"))
         done, total = 0, max(len(courses) * len(levels), 1)
         for course in courses:
-            snapshot = self._course_snapshot(course)
+            snapshot = self._course_snapshot(course, lectures)
             for filename, instruction in levels:
                 body = self._ask("deepseek-reasoner", f"为 {course.name} 生成复习材料：{instruction}。", snapshot)
                 destination = target / "06_Review" / course.name / f"{filename}.md"

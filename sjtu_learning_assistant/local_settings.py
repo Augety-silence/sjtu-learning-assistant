@@ -106,6 +106,11 @@ def validate_archive_root(value: object) -> str:
             mode = current.lstat().st_mode
         except FileNotFoundError:
             break
+        except OSError:
+            # Unplugged card reader (Windows ERROR_NOT_READY -> EACCES), macOS
+            # privacy denial, offline share: like a missing component, keep the
+            # user's root instead of crashing every load() at startup.
+            break
         if stat.S_ISLNK(mode):
             # tempfile returns /var/... on macOS although /var is a fixed system
             # alias for /private/var. Keep that one platform alias test-friendly;

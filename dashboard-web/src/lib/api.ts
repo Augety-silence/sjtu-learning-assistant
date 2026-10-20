@@ -24,10 +24,11 @@ function redactLocalPaths(text: string) {
   // UNC/WSL paths (also when followed by `/`). The UNC rule then collapses the
   // `\\server\share` (or `\\?\UNC\server\share`) root, which may itself name the
   // user (\\fs01\alice$). `\\?\C:` and `\\.\` device prefixes are left alone.
-  // `m` lets `$` stop at CR/LF.
+  // `m` lets `$` stop at CR/LF. The unanchored `\Users` run is bounded
+  // ({1,8}) so a long backslash run cannot trigger quadratic backtracking.
   return text
     .replace(/\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\r\n]+(?=[\\/]|$)/gim, "~")
-    .replace(/\\+(?:Users|home)\\+[^\\/\r\n]+(?=[\\/]|$)/gim, "~")
+    .replace(/\\{1,8}(?:Users|home)\\{1,8}[^\\/\r\n]+(?=[\\/]|$)/gim, "~")
     .replace(
       /(^|[\s'"(\[=,，：（“‘「【])\\{2,}(?:[?.]\\+UNC\\+)?(?![?.]\\)[^\\/\s'"<>|?*:)\]）】”’」，]+\\+[^\\/\s'"<>|?*:)\]）】”’」，]+(?=[\\/\s'"<>|?*:)\]）】”’」，]|$)/gim,
       "$1~",

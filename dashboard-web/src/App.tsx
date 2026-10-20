@@ -1217,7 +1217,7 @@ export default function App() {
   const [capabilitiesInitialized, setCapabilitiesInitialized] = useState(false);
   const [capabilitiesFailed, setCapabilitiesFailed] = useState(false);
   const [capabilitiesError, setCapabilitiesError] = useState("");
-  const { showToast } = useToast();
+  const { showToast, dismissToast } = useToast();
   const availableViews = useMemo(
     () => availableViewsFor(capabilities),
     [capabilities],
@@ -1308,12 +1308,7 @@ export default function App() {
           value={scheduleMode}
           onValueChange={(value) => setScheduleMode(value as ScheduleMode)}
         >
-          <TabsList
-            indicator
-            indicatorRadius={15}
-            className="calm-seg-list"
-            aria-label="日程视图"
-          >
+          <TabsList className="calm-seg-list" aria-label="日程视图">
             <TabsTrigger className="calm-seg-trigger" value="calendar">
               月历
             </TabsTrigger>
@@ -1402,9 +1397,23 @@ export default function App() {
   const statusRequestPending = useRef(false);
   const syncAccepted = useRef(false);
   const currentView = useRef(view);
-  useEffect(() => {
+  // 草稿页上推迟的同步刷新：离开草稿页时补上，避免 capabilities 等停留在同步前。
+  const [syncRefreshDeferred, setSyncRefreshDeferred] = useState(false);
+  const deferredRefreshToast = useRef(false);
+  if (syncRefreshDeferred && !draftViews.includes(view)) {
+    // 渲染期调整状态（幂等写法）：新视图直接以新 key 挂载，不会先挂旧 key 再重挂。
+    setSyncRefreshDeferred(false);
+    setDataVersion(dataVersion + 1);
+  }
+  // layout effect 在提交阶段同步执行，异步的 sync_status 回调不会读到旧视图。
+  useLayoutEffect(() => {
     currentView.current = view;
-  }, [view]);
+    if (deferredRefreshToast.current && !draftViews.includes(view)) {
+      // 已随离开自动刷新，“刷新当前页”不再适用，收起该常驻提示。
+      deferredRefreshToast.current = false;
+      dismissToast("sync-operation");
+    }
+  }, [dismissToast, view]);
   const loadStatus = useCallback(async () => {
     if (statusRequestPending.current) return;
     statusRequestPending.current = true;
@@ -1419,24 +1428,33 @@ export default function App() {
         setSyncRequested(false);
         // 作业/评分页可能有未提交草稿，key 重挂会清空；改为由用户点击刷新。
         const keepDrafts = draftViews.includes(currentView.current);
+        const succeeded = next.last_run_status === "success";
+        // 失败时只报错不提供刷新按钮；推迟的刷新仍会在离开草稿页时补上。
+        const offerRefresh = keepDrafts && succeeded;
+        deferredRefreshToast.current = offerRefresh;
         showToast({
           id: "sync-operation",
-          kind: next.last_run_status === "success" ? "success" : "error",
+          kind: succeeded ? "success" : "error",
           message: `${
-            next.last_run_status === "success"
+            succeeded
               ? "同步完成，数据已更新。"
               : "同步失败，请查看最近运行状态。"
-          }${keepDrafts ? "为保留未提交内容，当前页面未自动刷新。" : ""}`,
-          ...(keepDrafts
+          }${offerRefresh ? "为保留未提交内容，当前页面未自动刷新。" : ""}`,
+          ...(offerRefresh
             ? {
                 duration: 0,
                 action: {
                   label: "刷新当前页",
-                  onClick: () => setDataVersion((value) => value + 1),
+                  onClick: () => {
+                    deferredRefreshToast.current = false;
+                    setSyncRefreshDeferred(false);
+                    setDataVersion((value) => value + 1);
+                  },
                 },
               }
             : {}),
         });
+        setSyncRefreshDeferred(keepDrafts);
         if (!keepDrafts) setDataVersion((value) => value + 1);
       }
     } catch {
@@ -1473,6 +1491,8 @@ export default function App() {
 
   const triggerSync = async () => {
     syncAccepted.current = false;
+    // 新同步会原位替换 sync-operation 提示，旧的“刷新当前页”状态随之失效。
+    deferredRefreshToast.current = false;
     setSyncRequested(true);
     showToast({
       id: "sync-operation",
@@ -1634,7 +1654,12 @@ export default function App() {
             {view === "knowledge" && <KnowledgeCompilerView />}
             {view === "settings" && (
               <SettingsView
-                onArchiveChanged={() => setDataVersion((value) => value + 1)}
+                onArchiveChanged={() => {
+                  // 整理可能在用户已切到作业/评分页后才完成，同样不能重挂清空草稿。
+                  if (draftViews.includes(currentView.current))
+                    setSyncRefreshDeferred(true);
+                  else setDataVersion((value) => value + 1);
+                }}
                 onThemeModeChange={setThemeMode}
               />
             )}

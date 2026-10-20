@@ -151,6 +151,12 @@ export function MaterialsView() {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [dragSource, setDragSource] = useState<MaterialDragSource | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  // Keyboard changes on a closed <select> (Windows arrows) stay pending until Enter (WCAG 3.2.2).
+  const [archiveDraft, setArchiveDraft] = useState<{
+    fileId: string;
+    category: string;
+  } | null>(null);
+  const archiveKeyChangeRef = useRef(false);
   const itemRefs = useRef(new Map<string, HTMLElement>());
   const contentHeadingRef = useRef<HTMLHeadingElement>(null);
   const compact = useCompactViewport();
@@ -578,6 +584,9 @@ export function MaterialsView() {
       <p id="material-drop-help" className="sr-only">
         仅可将文件移动到同一课程的四个分类或其现有 Canvas 子文件夹。
       </p>
+      <p id="material-archive-help" className="sr-only">
+        用方向键选择分类后按 Enter 确认归档，按 Esc 取消。
+      </p>
       <div className="finder-toolbar" role="search">
         <label className="search-control">
           <Search aria-hidden="true" />
@@ -887,11 +896,60 @@ export function MaterialsView() {
                             </span>
                             <select
                               aria-label={`归档“${file.name}”到分类`}
+                              aria-describedby="material-archive-help"
                               tabIndex={selectedContentId === file.id ? 0 : -1}
-                              value=""
+                              value={
+                                archiveDraft?.fileId === file.id
+                                  ? archiveDraft.category
+                                  : ""
+                              }
                               disabled={Boolean(active)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape" && archiveDraft) {
+                                  event.preventDefault();
+                                  setArchiveDraft(null);
+                                  return;
+                                }
+                                if (event.key !== "Enter") {
+                                  // A closed select changes value in this same task; popup picks arrive later.
+                                  archiveKeyChangeRef.current = true;
+                                  window.setTimeout(() => {
+                                    archiveKeyChangeRef.current = false;
+                                  }, 0);
+                                  return;
+                                }
+                                if (archiveDraft?.fileId !== file.id) return;
+                                event.preventDefault();
+                                const targetPath = tree
+                                  ? findNodePath(
+                                      tree.root,
+                                      `category:${file.course_id}:${archiveDraft.category}`,
+                                    )
+                                  : null;
+                                const target =
+                                  targetPath?.[targetPath.length - 1];
+                                setArchiveDraft(null);
+                                if (target) void move(file, target);
+                              }}
+                              onBlur={() => {
+                                setArchiveDraft((current) =>
+                                  current?.fileId === file.id ? null : current,
+                                );
+                              }}
                               onChange={(event) => {
                                 const selectedCategory = event.target.value;
+                                if (archiveKeyChangeRef.current) {
+                                  setArchiveDraft(
+                                    selectedCategory
+                                      ? {
+                                          fileId: file.id,
+                                          category: selectedCategory,
+                                        }
+                                      : null,
+                                  );
+                                  return;
+                                }
+                                setArchiveDraft(null);
                                 if (!selectedCategory || !tree) return;
                                 const targetPath = findNodePath(
                                   tree.root,

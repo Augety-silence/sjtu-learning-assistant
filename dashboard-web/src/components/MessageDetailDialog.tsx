@@ -44,6 +44,9 @@ export function MessageDetailDialog({
   const [requestVersion, setRequestVersion] = useState(0);
   const [markingRead, setMarkingRead] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const markReadButtonRef = useRef<HTMLButtonElement>(null);
+  const retryButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<"mark" | "load" | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
@@ -73,9 +76,32 @@ export function MessageDetailDialog({
     };
   }, [item.kind, item.source_id, requestVersion]);
 
+  // The focused "标为已读" / "重试" button is disabled or unmounted by its own
+  // action; keep keyboard focus inside the dialog instead of dropping to body.
+  useEffect(() => {
+    const reason = restoreFocusRef.current;
+    if (!reason || markingRead || (detail === null && !detailError)) return;
+    restoreFocusRef.current = null;
+    if (!isPresent) return;
+    const dialog = dialogRef.current;
+    const active = document.activeElement;
+    if (
+      !dialog ||
+      (active instanceof Node &&
+        active !== document.body &&
+        dialog.contains(active))
+    ) {
+      return;
+    }
+    const target =
+      reason === "mark" ? markReadButtonRef.current : retryButtonRef.current;
+    (target ?? closeButtonRef.current)?.focus();
+  }, [detail, detailError, isPresent, markingRead]);
+
   const markRead = useCallback(async () => {
     if (markingRead) return;
     const toastId = `message-read:${item.kind}:${item.source_id}`;
+    restoreFocusRef.current = "mark";
     setMarkingRead(true);
     showToast({
       id: toastId,
@@ -187,11 +213,15 @@ export function MessageDetailDialog({
           <div className="message-detail-state" role="alert">
             <p>{detailError}</p>
             <Button
+              ref={retryButtonRef}
               type="button"
               variant="outline"
               size="sm"
               aria-label="重试加载消息详情"
-              onClick={() => setRequestVersion((value) => value + 1)}
+              onClick={() => {
+                restoreFocusRef.current = "load";
+                setRequestVersion((value) => value + 1);
+              }}
             >
               重试
             </Button>
@@ -222,6 +252,7 @@ export function MessageDetailDialog({
             <footer className="message-dialog-actions">
               {detail.is_unread && (
                 <Button
+                  ref={markReadButtonRef}
                   type="button"
                   variant="outline"
                   aria-label={`将“${detail.title}”标记为已读`}

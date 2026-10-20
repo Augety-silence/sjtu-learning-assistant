@@ -366,7 +366,13 @@ def parse_release_metadata(payload: object) -> ReleaseMetadata:
     published = payload.get("published_at")
     if published is not None:
         published = _bounded_string(published, "published_at", limit=64, required=False) or None
-    notes = _bounded_string(payload.get("body", ""), "body", limit=50_000, required=False)
+    # GitHub 的 body 可为 null，且上限高于本地展示上限；说明文字不应让整次更新检查失败。
+    raw_notes = payload.get("body")
+    if raw_notes is None:
+        raw_notes = ""
+    elif type(raw_notes) is str:
+        raw_notes = raw_notes[:50_000]
+    notes = _bounded_string(raw_notes, "body", limit=50_000, required=False)
     return ReleaseMetadata(
         version=version,
         tag_name=tag,

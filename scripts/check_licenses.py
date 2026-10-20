@@ -15,7 +15,12 @@ RUNTIME_FILE = ROOT / "requirements.txt"
 OPTIONAL_FILE = ROOT / "requirements-postgres.txt"
 DEV_FILE = ROOT / "requirements-dev.txt"
 WINDOWS_FILE = ROOT / "requirements-windows.txt"
-STRONG_COPYLEFT = re.compile(r"(?:^|[^l])a?gpl(?:[-\s v)+\d]|$)", re.IGNORECASE)
+# 第二个分支覆盖不带 "(GPLv3)" 后缀的 trove classifier 全称，例如
+# "GNU General Public License v3" / "GNU Affero General Public License v3"；LGPL 不在禁止范围内。
+STRONG_COPYLEFT = re.compile(
+    r"(?:^|[^l])a?gpl(?:[-\s v)+\d]|$)|(?<!lesser )(?<!library )general public licen[cs]e",
+    re.IGNORECASE,
+)
 PERMISSIVE_ALTERNATIVES = ("apache", "bsd", "isc", "mit")
 REVIEWED_LICENSE_OVERRIDES = {
     "clr-loader": "MIT",

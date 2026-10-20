@@ -15,6 +15,15 @@ import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { AIAgentTrace, AIChatMessage } from "@/lib/types";
 
+// 桌面端以 file:// 加载，target=_blank 链接由 pywebview 交给系统打开
+// （Windows 为 os.startfile）；只放行绝对 http(s)/mailto，相对、file、UNC 链接一律去掉 href。
+function safeMarkdownUrl(url: string, key: string) {
+  const value = url.trim();
+  if (key === "href" && /^(https?:\/\/|mailto:)/i.test(value)) return value;
+  if (key !== "href" && /^https?:\/\//i.test(value)) return value;
+  return null;
+}
+
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
   if (!isValidElement<{ children?: ReactNode; className?: string }>(child)) {
@@ -49,6 +58,7 @@ const MessageMarkdown = memo(function MessageMarkdown({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
+        urlTransform={safeMarkdownUrl}
         components={{
           a: ({ node: _node, ...props }) => (
             <a {...props} target="_blank" rel="noreferrer" />

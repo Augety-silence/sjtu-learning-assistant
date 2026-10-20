@@ -91,7 +91,7 @@ export function ErrorState({
       animate={{ opacity: 1 }}
       transition={{ duration: motionDuration.fast, ease: motionEase.out }}
     >
-      <p className="font-medium text-danger">加载失败</p>
+      <p className="font-medium text-[color:var(--status-danger)]">加载失败</p>
       <p className="text-sm text-caption">{message}</p>
       <div className="state-actions">
         {retry && (

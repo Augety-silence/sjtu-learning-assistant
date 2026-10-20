@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
+from zoneinfo import ZoneInfo
 
 from alembic import command
 from alembic.config import Config
@@ -71,6 +72,10 @@ BUSINESS_TABLES = (
     "timetable_import_runs",
     "timetable_import_audit",
 )
+# timetable.py stores and reads naive session times as Asia/Shanghai wall clock.
+_SHANGHAI_WALL_CLOCK_COLUMNS: Mapping[str, tuple[str, ...]] = {
+    "timetable_sessions": ("start_at", "finish_at"),
+}
 
 metadata = MetaData()
 schema_version = Table(
@@ -423,14 +428,21 @@ def _copy_table(
     datetime_columns = tuple(
         column.name for column in table.columns if isinstance(column.type, DateTime)
     )
+    local_wall_clock_columns = _SHANGHAI_WALL_CLOCK_COLUMNS.get(table_name, ())
     for row in rows:
         for column_name in datetime_columns:
             value = row.get(column_name)
             if isinstance(value, datetime) and value.tzinfo is not None:
                 # SQLite stores DateTime values without an offset. Normalize to UTC so
                 # callers that interpret naive database timestamps as UTC keep the instant.
+                # Timetable session times are read back as Asia/Shanghai wall clock.
+                target_zone = (
+                    ZoneInfo("Asia/Shanghai")
+                    if column_name in local_wall_clock_columns
+                    else timezone.utc
+                )
                 row.__setitem__(
-                    column_name, value.astimezone(timezone.utc).replace(tzinfo=None)
+                    column_name, value.astimezone(target_zone).replace(tzinfo=None)
                 )
     parent_links: list[tuple[int, int | None]] = []
     if table_name == "course_folders":

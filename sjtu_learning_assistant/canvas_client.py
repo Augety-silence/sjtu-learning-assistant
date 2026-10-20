@@ -135,6 +135,7 @@ class CanvasClient:
         url: str,
         *,
         uncertain_on_error: bool = False,
+        allow_redirect: bool = False,
         **kwargs: Any,
     ) -> httpx.Response:
         self._assert_same_origin(url)
@@ -155,6 +156,9 @@ class CanvasClient:
             raise CanvasError(f"Canvas 请求过于频繁（HTTP {status}），请稍后重试。", status_code=429)
         if status == 403:
             raise CanvasError("当前 Token 没有访问此 Canvas 资源的权限（HTTP 403）。", status_code=403)
+        if allow_redirect and response.is_redirect:
+            # 调用方（如文件上传确认链）自行逐跳校验同源并跟随。
+            return response
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -571,7 +575,7 @@ class CanvasClient:
             # A relative redirect on an upload host must never be reinterpreted as
             # a Canvas URL and receive the bearer token.
             self._assert_same_origin(target)
-            response = self._request("GET", target)
+            response = self._request("GET", target, allow_redirect=True)
         else:
             raise CanvasProtocolError("Canvas 文件上传重定向次数超过安全上限。")
         if response.is_redirect:

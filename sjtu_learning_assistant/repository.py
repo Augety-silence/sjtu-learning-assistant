@@ -15,6 +15,7 @@ from typing import Any, Iterable, Mapping, Protocol, TypeVar
 
 from sqlalchemy import Engine, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
@@ -382,6 +383,62 @@ def _add_sync_run(
             updated_count=result.updated,
         )
     )
+
+
+SYNC_FAILURE_ERROR_LIMIT = 500
+
+
+def record_sync_failure(
+    engine: Engine,
+    *,
+    source: str,
+    resource: str,
+    error: str,
+    started_at: datetime | None = None,
+) -> bool:
+    """Best-effort: persist a failed run so sync_status stops reporting success.
+
+    Runs in its own transaction after the data transaction rolled back. Cursors
+    and ``last_success_at`` are left untouched so the next run retries the same
+    window. Prefer an aggregate resource (for example ``"run"``) instead of
+    ``"courses"``: archive_service relies on that row staying ``success``.
+    """
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text
+
+    now = datetime.now(timezone.utc)
+    message = redact_public_text(str(error or "同步失败。"))[:SYNC_FAILURE_ERROR_LIMIT]
+    try:
+        with Session(engine) as session, session.begin():
+            statement = _dialect_insert(session, SyncState).values(
+                source=source,
+                resource=resource,
+                last_sync_at=now,
+                status="failed",
+                last_error=message,
+            )
+            statement = statement.on_conflict_do_update(
+                index_elements=[SyncState.source, SyncState.resource],
+                set_={
+                    "last_sync_at": now,
+                    "status": "failed",
+                    "last_error": message,
+                    "updated_at": now,
+                },
+            )
+            session.execute(statement)
+            session.add(
+                SyncRun(
+                    source=source,
+                    resource=resource,
+                    started_at=started_at or now,
+                    finished_at=now,
+                    status="failed",
+                    error=message,
+                )
+            )
+    except SQLAlchemyError:
+        return False
+    return True
 
 
 def _course_rows(raw_courses: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

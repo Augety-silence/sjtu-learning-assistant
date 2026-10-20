@@ -493,6 +493,10 @@ def _validated_json(
             )
             if encoded_length > MAX_VALIDATED_JSON_CHARS:
                 raise ValueError("validated JSON too long")
+            # json.loads accepts lone-surrogate escapes such as "\ud800"; the
+            # service later writes UTF-8 bytes, so reject them here (fail closed
+            # into the schema/fallback path) instead of crashing at write time.
+            json.dumps(validated, ensure_ascii=False).encode("utf-8")
             return validated
         except (TypeError, ValueError) as exc:
             last_error_type = type(exc).__name__
@@ -1311,6 +1315,10 @@ def _validate_map_insights(value, cues):
 def parse_plain_map_output(content, cues):
     if type(content) is not str or not content.strip():
         _schema_fail("$", "non-empty plain structured response", content)
+    try:
+        content.encode("utf-8")
+    except UnicodeEncodeError:
+        _schema_fail("$", "UTF-8 encodable text", content)
     lines = content.replace("\r\n", "\n").replace("\r", "\n").strip().lstrip("\ufeff").split("\n")
     if lines and lines[0].strip().startswith("```"):
         if len(lines) < 3 or lines[-1].strip() != "```":
@@ -1448,7 +1456,9 @@ def _fallback_map(chunk: TranscriptChunk) -> dict[str, Any]:
 
 
 def _markdown_text(value: object) -> str:
-    return html.escape(str(value), quote=False)
+    # Every call site is inline after a fixed prefix; collapsing newlines keeps
+    # model text from opening forged headings/list rows (e.g. "## 审校记录").
+    return html.escape(" ".join(str(value).split()), quote=False)
 
 
 def render_cleaned(chunks: Sequence[Mapping[str, Any]]) -> str:

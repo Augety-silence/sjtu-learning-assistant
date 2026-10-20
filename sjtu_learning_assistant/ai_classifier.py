@@ -204,6 +204,16 @@ class OpenAIClassificationClient:
     ) -> None:
         if not api_key:
             raise AIClassificationError("AI API key 为空。")
+        # HTTP 头按 ASCII 编码；含全角/零宽等字符的 key 会在 httpx.Client
+        # 构造时抛出未分类的 UnicodeEncodeError（异常对象携带完整头值），
+        # 这里提前转为可分类、不含凭据的错误。
+        if type(api_key) is not str or not api_key.isascii() or any(
+            ord(character) < 32 or ord(character) == 127 for character in api_key
+        ):
+            raise AIClassificationError(
+                "AI API key 含有不支持的字符，请在设置中重新粘贴。",
+                category="authentication",
+            )
         if model not in ALLOWED_AI_MODELS:
             raise AIClassificationError("AI 模型不受支持。")
         self.model = model

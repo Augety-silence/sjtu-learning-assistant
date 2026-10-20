@@ -1214,8 +1214,12 @@ class TranscriptService:
             if v2 is None or not self._v2_artifacts_valid(video_dir, v2):
                 return 0, 0
             quality = self._read_json(quality_path)
-            chunks = self._read_json(chunks_path)
-            uncertain = self._read_json(uncertain_path)
+            # semantic_chunks/uncertain are JSON *lists*; _read_json only
+            # accepts objects, which made these counts always (0, 0).
+            if chunks_path.is_symlink() or uncertain_path.is_symlink():
+                return 0, 0
+            chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+            uncertain = json.loads(uncertain_path.read_text(encoding="utf-8"))
             if type(chunks) is not list or type(uncertain) is not list:
                 return 0, 0
             total = len(chunks)
