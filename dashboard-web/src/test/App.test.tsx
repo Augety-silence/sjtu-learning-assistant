@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { frameSteps } from "motion/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
@@ -313,8 +314,22 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+async function flushMotionAfterCleanup() {
+  // Shared-layout projection schedules one final measurement after unmount.
+  // Drain that queued pre-render work while jsdom still owns `document`.
+  await Promise.resolve();
+  const frameState = {
+    delta: 1000 / 60,
+    timestamp: performance.now(),
+    isProcessing: false,
+  };
+  frameSteps.preRender.process(frameState);
+  frameSteps.preRender.process(frameState);
+}
+
+afterEach(async () => {
   cleanup();
+  await flushMotionAfterCleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
