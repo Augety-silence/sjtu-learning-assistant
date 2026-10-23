@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -14,6 +15,10 @@ from desktop_app import (
     DesktopBridge,
     DesktopScheduler,
     _enable_macos_window_material,
+    _initialize_desktop_window,
+    _install_native_file_drop_bridge,
+    _macos_dragged_file_paths,
+    _native_file_drop_paths,
     _notify_database_recovery,
     main,
     run_desktop_app,
@@ -591,6 +596,91 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         native.setTitleVisibility_.assert_called_once_with(appkit.NSWindowTitleHidden)
         native.setMovableByWindowBackground_.assert_called_once_with(False)
 
+    def test_native_drop_bridge_forwards_only_real_unique_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first.txt"
+            second = root / "second.pdf"
+            first.write_text("first", encoding="utf-8")
+            second.write_bytes(b"%PDF")
+            event = {
+                "dataTransfer": {
+                    "files": [
+                        {"name": first.name, "pywebviewFullPath": str(first)},
+                        {"name": first.name, "pywebviewFullPath": str(first)},
+                        {"name": second.name, "pywebviewFullPath": str(second)},
+                        {"name": "missing", "pywebviewFullPath": str(root / "missing")},
+                    ]
+                }
+            }
+            self.assertEqual(
+                (str(first), str(second)), _native_file_drop_paths(event)
+            )
+            event_without_joined_paths = {
+                "dataTransfer": {"files": [{"name": "download-display-name"}]}
+            }
+            self.assertEqual(
+                (str(first), str(second)),
+                _native_file_drop_paths(
+                    event_without_joined_paths,
+                    [
+                        ("download-display-name", str(first)),
+                        (second.name, str(second)),
+                    ],
+                ),
+            )
+
+            class NativeURL:
+                def __init__(self, value):
+                    self.value = value
+
+                def filePathURL(self):
+                    return self
+
+                def absoluteString(self):
+                    return "file://" + self.value.replace(" ", "%20")
+
+            pasteboard = SimpleNamespace(
+                readObjectsForClasses_options_=lambda _classes, _options: [
+                    NativeURL(str(first)),
+                    NativeURL(str(second)),
+                ]
+            )
+            sender = SimpleNamespace(
+                draggingSource=lambda: None,
+                draggingPasteboard=lambda: pasteboard,
+            )
+            self.assertEqual(
+                (str(first), str(second)),
+                _macos_dragged_file_paths(
+                    sender,
+                    url_class=object(),
+                    file_urls_only_key=object(),
+                ),
+            )
+
+            class DropEvent:
+                callback = None
+
+                def __iadd__(self, callback):
+                    self.callback = callback
+                    return self
+
+            drop = DropEvent()
+            document = SimpleNamespace(events=SimpleNamespace(drop=drop))
+            window = SimpleNamespace(
+                events=SimpleNamespace(loaded=SimpleNamespace(wait=lambda _timeout: True)),
+                dom=SimpleNamespace(document=document),
+                evaluate_js=Mock(),
+            )
+            _install_native_file_drop_bridge(window)
+            self.assertIsNotNone(drop.callback)
+            drop.callback(event)
+            script = window.evaluate_js.call_args.args[0]
+            self.assertIn("sjtu-native-file-drop", script)
+            self.assertIn(json.dumps(str(first), ensure_ascii=False), script)
+            self.assertIn(json.dumps(str(second), ensure_ascii=False), script)
+
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
         engine.dialect.name = "postgresql"
@@ -629,7 +719,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertEqual("#EAF1FB", create_window_call.kwargs["background_color"])
         self.assertTrue(create_window_call.kwargs["transparent"])
         self.assertTrue(create_window_call.kwargs["vibrancy"])
-        self.assertEqual(_enable_macos_window_material, webview.start.call_args.args[0])
+        self.assertEqual(_initialize_desktop_window, webview.start.call_args.args[0])
         self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
         start_kwargs = webview.start.call_args.kwargs
         self.assertFalse(start_kwargs["debug"])

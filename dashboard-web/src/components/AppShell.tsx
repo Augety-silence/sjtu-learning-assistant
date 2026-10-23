@@ -10,7 +10,6 @@ import {
   LibraryBig,
   type LucideIcon,
   Mail,
-  MessageCircle,
   NotebookPen,
   RefreshCw,
   Settings,
@@ -31,6 +30,10 @@ import {
   useState,
 } from "react";
 import { AppBrand } from "@/components/AppBrand";
+import {
+  type SidebarAIRequest,
+  SidebarAssistant,
+} from "@/components/SidebarAssistant";
 import { Button } from "@/components/ui/Button";
 import { useDistanceAwareIndicatorTransition } from "@/components/ui/SelectionIndicator";
 import { motionDuration, motionEase } from "@/lib/motion";
@@ -50,7 +53,6 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "backup", label: "云盘备份", icon: CloudUpload },
   { id: "local-projects", label: "本地项目", icon: FolderKanban },
   { id: "knowledge", label: "知识库编译", icon: LibraryBig },
-  { id: "ai-chat", label: "AI 助手", icon: MessageCircle },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -80,6 +82,7 @@ interface AppShellProps {
   syncStatus: SyncStatus | null;
   syncing: boolean;
   onSync: () => void;
+  onOpenAI: (request?: SidebarAIRequest) => void;
   headerActions?: ReactNode;
   children: React.ReactNode;
 }
@@ -134,6 +137,7 @@ function MobileDrawer({
   close,
   menuButtonRef,
   shouldRestoreFocus,
+  onOpenAI,
 }: {
   view: ViewName;
   items: typeof primaryNavigation;
@@ -141,6 +145,7 @@ function MobileDrawer({
   close: () => void;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
   shouldRestoreFocus: () => boolean;
+  onOpenAI: (request?: SidebarAIRequest) => void;
 }) {
   const drawerRef = useRef<HTMLElement>(null);
   const currentItemRef = useRef<HTMLButtonElement>(null);
@@ -203,6 +208,7 @@ function MobileDrawer({
               indicatorId="drawer-nav-indicator"
             />
           </motion.div>
+          <SidebarAssistant onOpen={onOpenAI} />
           <div className="sidebar-lower">
             <NavItems
               items={utilityNavigation}
@@ -237,6 +243,7 @@ export function AppShell({
   syncStatus,
   syncing,
   onSync,
+  onOpenAI,
   headerActions,
   children,
 }: AppShellProps) {
@@ -306,6 +313,7 @@ export function AppShell({
               indicatorId="sidebar-nav-indicator"
             />
           </motion.div>
+          <SidebarAssistant onOpen={onOpenAI} />
           <div className="sidebar-lower">
             <NavItems
               items={utilityNavigation}
@@ -333,6 +341,7 @@ export function AppShell({
             close={closeDrawer}
             menuButtonRef={menuButtonRef}
             shouldRestoreFocus={() => !navigatingRef.current}
+            onOpenAI={onOpenAI}
           />
         )}
       </AnimatePresence>

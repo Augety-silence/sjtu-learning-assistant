@@ -845,20 +845,6 @@
   background: transparent;
 }
 
-.ai-composer::before {
-  position: absolute;
-  inset: -18px -28px -14px;
-  z-index: -1;
-  content: "";
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    transparent 0,
-    color-mix(in srgb, var(--aura-canvas) 68%, transparent) 30%,
-    var(--aura-canvas) 70%
-  );
-}
-
 .ai-composer-box,
 .ai-conversation.is-empty .ai-composer-box {
   position: relative;
@@ -881,11 +867,15 @@
     0 0 0 3px color-mix(in srgb, var(--action-primary) 11%, transparent);
 }
 
-.ai-composer textarea {
+.ai-composer .ai-composer-input {
   min-height: 42px;
+  margin: 0;
   padding: 8px 4px 7px;
+  appearance: none;
+  -webkit-appearance: none;
   color: var(--text-primary);
   border: 0;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
   font-size: 14px;

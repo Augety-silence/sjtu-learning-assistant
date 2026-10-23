@@ -91,7 +91,7 @@ TASK_SPECS = (
     AITaskSpec("ai-chat", "learning_chat", "基于本地证据的学习问答", "implemented",
                ("ai_chat_stream_start", "ai_task_status", "ai_task_cancel", "ai_usage_summary"), "text_stream",
                ("chat_history", "readonly_local_tools", "selected_ai_attachments"), ("selected_session",),
-               12000, 3000, 6, ("retrieve_evidence", "explain", "suggest_next_step"),
+               12000, 3000, 8, ("retrieve_evidence", "explain", "suggest_next_step"),
                ("tool_selection_steps_remain_one_shot", "no_transcript_or_course_memory_tool")),
     AITaskSpec("settings", "connection_diagnostics", "AI连接配置解释", "partial", ("test_ai_connection",), "one_shot",
                ("nonsecret_ai_settings", "explicit_connection_test_result"), ("no_raw_key_in_context",),

@@ -2568,6 +2568,16 @@ class DashboardService:
         text = content.strip()
         settings = self._effective_settings()
         selected_model, selected_depth = self._chat_model(model, depth, settings.ai_model)
+        try:
+            image_parts = self.ai_files.vision_message_parts(selected_attachment_ids)
+        except AIFileError as exc:
+            raise DashboardError(str(exc), category="attachment", retryable=False) from None
+        if image_parts and selected_model != "qwen3.8-27b":
+            raise DashboardError(
+                "图片识别需要使用 Qwen 3.8 模型，请切换模型后重试。",
+                category="unsupported_multimodal_model",
+                retryable=False,
+            )
         with Session(self.engine) as session:
             chat = session.get(AIChatSession, session_id)
             if chat is None:
@@ -2613,7 +2623,13 @@ class DashboardService:
                     ),
                 }
             )
-        prompt.append({"role": "user", "content": text})
+        user_content: Any = text
+        if image_parts:
+            # Match the SJTU Campus AI vision example exactly: image parts first,
+            # followed by the text instruction. The provider rejects some
+            # OpenAI extensions that are not part of its documented contract.
+            user_content = [*image_parts, {"type": "text", "text": text}]
+        prompt.append({"role": "user", "content": user_content})
         try:
             preset = PresetLoader().get(selected_preset_id)
         except PresetError as exc:

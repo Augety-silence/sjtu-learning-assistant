@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import codecs
 import hashlib
 import json
@@ -16,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -25,6 +28,10 @@ MANAGED_DIRECTORY_NAME = ".ai_attachments"
 MAX_SOURCE_SIZE = 2 * 1024**3
 MAX_EXTRACT_BYTES = 4 * 1024**2
 MAX_EXTRACT_CHARS = 1_000_000
+MAX_VISION_IMAGES = 4
+MAX_VISION_PIXELS = 40_000_000
+MAX_VISION_EDGE = 2048
+MAX_VISION_BYTES = 4 * 1024**2
 TEXT_EXTENSIONS = frozenset(
     {
         ".txt", ".md", ".markdown", ".json", ".jsonl", ".csv", ".tsv",
@@ -36,6 +43,7 @@ TEXT_EXTENSIONS = frozenset(
         ".log", ".rst", ".tex",
     }
 )
+VISION_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 _TAG_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,8}")
 _SAFE_NAME = re.compile(r"[^\w.() -]+", re.UNICODE)
 _STOP_WORDS = {
@@ -489,6 +497,49 @@ class AIManagedFileService:
         if not row.controlled_relpath:
             raise AIFileError("附件受控副本当前不在本地。")
         return _controlled_path(self.managed_root, row.controlled_relpath)
+
+    def vision_message_parts(self, attachment_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """Return bounded, validated image parts for a multimodal chat request."""
+        ids = list(dict.fromkeys(attachment_ids))
+        if len(ids) > 20 or any(type(value) is not int or value <= 0 for value in ids):
+            raise AIFileError("附件标识列表无效。")
+        result: list[dict[str, Any]] = []
+        for attachment_id in ids:
+            row = self._get_row(attachment_id)
+            if Path(row.name).suffix.casefold() not in VISION_IMAGE_EXTENSIONS:
+                continue
+            if len(result) >= MAX_VISION_IMAGES:
+                raise AIFileError(f"单次最多识别 {MAX_VISION_IMAGES} 张图片。")
+            if row.status == "cloud_only":
+                raise AIFileError("图片附件仅在云端，请先恢复到本机后再识别。")
+            path = self.resolve_controlled_copy(attachment_id)
+            try:
+                with Image.open(path) as source:
+                    width, height = source.size
+                    if width <= 0 or height <= 0 or width * height > MAX_VISION_PIXELS:
+                        raise AIFileError("图片尺寸无效或像素过大。")
+                    source.load()
+                    image = ImageOps.exif_transpose(source).convert("RGB")
+                    image.thumbnail((MAX_VISION_EDGE, MAX_VISION_EDGE), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image.save(output, "JPEG", quality=88, optimize=True)
+                    payload = output.getvalue()
+            except AIFileError:
+                raise
+            except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+                raise AIFileError("图片附件损坏或格式不受支持。") from None
+            if not payload or len(payload) > MAX_VISION_BYTES:
+                raise AIFileError("图片处理后仍超过 4 MiB，请压缩后重试。")
+            encoded = base64.b64encode(payload).decode("ascii")
+            result.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{encoded}",
+                    },
+                }
+            )
+        return result
 
     def search(
         self,

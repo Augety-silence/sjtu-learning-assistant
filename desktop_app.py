@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -21,7 +22,7 @@ from datetime import datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -1569,6 +1570,172 @@ def _enable_macos_window_material(window: object) -> None:
     AppHelper.callAfter(apply_material)
 
 
+NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop"
+_MACOS_NATIVE_DROP_HOOK_INSTALLED = False
+
+
+def _macos_dragged_file_paths(
+    sender: object,
+    *,
+    url_class: object,
+    file_urls_only_key: object,
+    true_value: object = True,
+) -> tuple[str, ...]:
+    """Extract regular files straight from the native Finder pasteboard."""
+    try:
+        if sender.draggingSource() is not None:
+            return ()
+        pasteboard = sender.draggingPasteboard()
+        urls = pasteboard.readObjectsForClasses_options_(
+            [url_class], {file_urls_only_key: true_value}
+        ) or []
+    except (AttributeError, RuntimeError):
+        return ()
+    result: list[str] = []
+    for url in urls[:20]:
+        try:
+            absolute = str(url.filePathURL().absoluteString())
+        except (AttributeError, RuntimeError):
+            continue
+        value = unquote(absolute.removeprefix("file://"))
+        path = Path(value)
+        if path.is_file() and str(path) not in result:
+            result.append(str(path))
+    return tuple(result)
+
+
+def _install_macos_native_file_drop_hook() -> bool:
+    """Dispatch Finder paths from WKWebView before pywebview joins by filename."""
+    global _MACOS_NATIVE_DROP_HOOK_INSTALLED
+    if sys.platform != "darwin":
+        return False
+    if _MACOS_NATIVE_DROP_HOOK_INSTALLED:
+        return True
+    try:
+        import AppKit  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView  # type: ignore[import-not-found]
+
+        host_class = BrowserView.WebKitHost
+        original = host_class.performDragOperation_
+    except (ImportError, AttributeError, RuntimeError):
+        return False
+
+    def perform_drag_operation(host: object, sender: object) -> object:
+        paths = _macos_dragged_file_paths(
+            sender,
+            url_class=AppKit.NSURL,
+            file_urls_only_key=AppKit.NSPasteboardURLReadingFileURLsOnlyKey,
+            true_value=AppKit.NSNumber.numberWithBool_(True),
+        )
+        result = original(host, sender)
+        if paths:
+            event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
+            detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+            script = (
+                "window.setTimeout(function(){window.dispatchEvent(new CustomEvent("
+                f"{event_name}, {{detail: {detail}}}));}}, 0);"
+            )
+            try:
+                host.evaluateJavaScript_completionHandler_(script, None)
+            except (AttributeError, RuntimeError):
+                pass
+        return result
+
+    try:
+        host_class.performDragOperation_ = perform_drag_operation
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    _MACOS_NATIVE_DROP_HOOK_INSTALLED = True
+    return True
+
+
+def _native_file_drop_paths(
+    event: object,
+    pending_native_paths: object = (),
+) -> tuple[str, ...]:
+    """Read OS-validated paths populated by pywebview's native drop handler."""
+    result: list[str] = []
+
+    def add_path(value: object) -> None:
+        if len(result) >= 20:
+            return
+        if type(value) is not str or not value or "\x00" in value:
+            return
+        path = Path(value)
+        if not path.is_file():
+            return
+        normalized = str(path)
+        if normalized not in result:
+            result.append(normalized)
+
+    if isinstance(event, Mapping):
+        transfer = event.get("dataTransfer")
+        files = transfer.get("files") if isinstance(transfer, Mapping) else None
+        if isinstance(files, list):
+            for item in files[:20]:
+                if isinstance(item, Mapping):
+                    add_path(item.get("pywebviewFullPath"))
+
+    # Cocoa records every Finder path before serializing the DOM event. Its
+    # filename-based join can fail for downloaded files whose display name and
+    # JavaScript File.name differ, so consume the remaining native queue too.
+    if isinstance(pending_native_paths, list):
+        for item in pending_native_paths[:20]:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                add_path(item[1])
+    return tuple(result)
+
+
+def _install_native_file_drop_bridge(window: object) -> None:
+    """Forward native file paths from pywebview DOM events to the React app."""
+    try:
+        loaded = getattr(getattr(window, "events", None), "loaded", None)
+        if loaded is None or not loaded.wait(15):
+            return
+        document = window.dom.document
+    except (AttributeError, RuntimeError):
+        return
+
+    def forward_drop(event: object) -> None:
+        pending_native_paths: object = ()
+        dnd_state: dict[str, object] | None = None
+        try:
+            from webview.dom import _dnd_state  # type: ignore[import-not-found]
+
+            if isinstance(_dnd_state, dict):
+                dnd_state = _dnd_state
+                pending_native_paths = _dnd_state.get("paths", ())
+        except (ImportError, AttributeError):
+            pass
+        paths = _native_file_drop_paths(event, pending_native_paths)
+        if dnd_state is not None:
+            dnd_state["paths"] = []
+        if not paths:
+            return
+        detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+        event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
+        try:
+            window.evaluate_js(
+                f"window.dispatchEvent(new CustomEvent({event_name}, {{detail: {detail}}}))"
+            )
+        except (AttributeError, RuntimeError):
+            return
+
+    try:
+        document.events.drop += forward_drop
+        # Keep both objects alive for the lifetime of the native window.
+        setattr(window, "_sjtu_drop_document", document)
+        setattr(window, "_sjtu_drop_handler", forward_drop)
+    except (AttributeError, RuntimeError):
+        return
+
+
+def _initialize_desktop_window(window: object) -> None:
+    _enable_macos_window_material(window)
+    if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
+        _install_native_file_drop_bridge(window)
+
+
 def _report_startup_error(message: str) -> None:
     """Show a fatal startup error even in windowed builds without a console.
 
@@ -1601,6 +1768,7 @@ def run_desktop_app() -> int:
         _report_startup_error("错误：缺少 pywebview，请重新安装依赖。")
         return 2
 
+    _install_macos_native_file_drop_hook()
     engine = create_database_engine()
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None
@@ -1692,10 +1860,7 @@ def run_desktop_app() -> int:
             "private_mode": False,
             "storage_path": str(APP_SUPPORT_DIR / "webview"),
         }
-        if native_vibrancy:
-            webview.start(_enable_macos_window_material, (window,), **start_options)
-        else:
-            webview.start(**start_options)
+        webview.start(_initialize_desktop_window, (window,), **start_options)
         return 0
     finally:
         if scheduler is not None:

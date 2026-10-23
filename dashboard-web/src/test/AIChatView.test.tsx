@@ -187,6 +187,81 @@ describe("AIChatView", () => {
     ).toBeTruthy();
   });
 
+  it("opens a recent session selected from the workbench sidebar", async () => {
+    window.localStorage.setItem("ai-chat-pending-session", "session-target");
+    vi.mocked(getAiChatSessions).mockResolvedValueOnce({
+      items: [
+        {
+          id: "session-recent",
+          title: "最近对话",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+      ],
+    });
+    vi.mocked(getAiChatSession).mockResolvedValueOnce({
+      id: "session-target",
+      title: "指定对话",
+      model: "auto",
+      thinking_depth: "standard",
+      preset_id: "general",
+      messages: [],
+      traces: [],
+    });
+
+    render(<AIChatView onBack={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(getAiChatSession).toHaveBeenCalledWith("session-target"),
+    );
+    expect(window.localStorage.getItem("ai-chat-pending-session")).toBeNull();
+  });
+
+  it("creates a fresh session when requested from the sidebar", async () => {
+    window.localStorage.setItem("ai-chat-new-session", "true");
+    vi.mocked(getAiChatSessions).mockResolvedValueOnce({
+      items: [
+        {
+          id: "session-recent",
+          title: "最近对话",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+      ],
+    });
+
+    render(<AIChatView onBack={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(createAiChatSession).toHaveBeenCalledWith(
+        "auto",
+        "standard",
+        "general",
+      ),
+    );
+    expect(window.localStorage.getItem("ai-chat-new-session")).toBeNull();
+  });
+
+  it("automatically sends a prompt submitted from the workbench sidebar", async () => {
+    window.localStorage.setItem("ai-chat-pending-prompt", "帮我梳理本周作业");
+    window.localStorage.setItem("ai-chat-auto-submit", "true");
+
+    render(<AIChatView onBack={vi.fn()} />);
+
+    await waitFor(() =>
+      expect(sendAiChatMessage).toHaveBeenCalledWith(
+        "session-1",
+        "帮我梳理本周作业",
+        "auto",
+        "standard",
+        "general",
+      ),
+    );
+    expect(window.localStorage.getItem("ai-chat-auto-submit")).toBeNull();
+  });
+
   it("supports arrow navigation, Escape, and focus return in compact choices", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     const trigger = await screen.findByRole("button", { name: "模型：自动" });
@@ -528,15 +603,22 @@ describe("AIChatView", () => {
     );
   });
 
-  it("explains how to recover when a dropped file has no WebView path", async () => {
+  it("ingests native WebView drop paths without opening the file picker", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     await screen.findByRole("textbox", { name: "输入问题" });
     const file = new File(["notes"], "notes.txt", { type: "text/plain" });
     fireEvent.drop(screen.getByRole("main"), {
       dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
     });
-    expect(await screen.findByText(/请使用回形针按钮选择文件/)).toBeTruthy();
-    expect(ingestAiAttachment).not.toHaveBeenCalled();
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/tmp/拖入笔记.md"] },
+      }),
+    );
+    expect(await screen.findByText("拖入笔记.md")).toBeTruthy();
+    expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/拖入笔记.md");
+    expect(pickAiAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("persists personalization and applies the Cmd+Enter shortcut", async () => {
