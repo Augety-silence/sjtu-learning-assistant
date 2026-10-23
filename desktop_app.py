@@ -1573,35 +1573,40 @@ def _enable_macos_window_material(window: object) -> None:
 NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop"
 
 
-def _native_file_drop_paths(event: object) -> tuple[str, ...]:
-    """Read paths populated by pywebview's native drop handler.
-
-    Browser File objects intentionally omit local paths. pywebview's Cocoa and
-    WebView2 backends attach ``pywebviewFullPath`` only after resolving the
-    operating-system drop payload, so React receives paths through a dedicated
-    custom event instead of trusting browser-provided values.
-    """
-    if not isinstance(event, Mapping):
-        return ()
-    transfer = event.get("dataTransfer")
-    if not isinstance(transfer, Mapping):
-        return ()
-    files = transfer.get("files")
-    if not isinstance(files, list):
-        return ()
+def _native_file_drop_paths(
+    event: object,
+    pending_native_paths: object = (),
+) -> tuple[str, ...]:
+    """Read OS-validated paths populated by pywebview's native drop handler."""
     result: list[str] = []
-    for item in files[:20]:
-        if not isinstance(item, Mapping):
-            continue
-        value = item.get("pywebviewFullPath")
+
+    def add_path(value: object) -> None:
+        if len(result) >= 20:
+            return
         if type(value) is not str or not value or "\x00" in value:
-            continue
+            return
         path = Path(value)
         if not path.is_file():
-            continue
+            return
         normalized = str(path)
         if normalized not in result:
             result.append(normalized)
+
+    if isinstance(event, Mapping):
+        transfer = event.get("dataTransfer")
+        files = transfer.get("files") if isinstance(transfer, Mapping) else None
+        if isinstance(files, list):
+            for item in files[:20]:
+                if isinstance(item, Mapping):
+                    add_path(item.get("pywebviewFullPath"))
+
+    # Cocoa records every Finder path before serializing the DOM event. Its
+    # filename-based join can fail for downloaded files whose display name and
+    # JavaScript File.name differ, so consume the remaining native queue too.
+    if isinstance(pending_native_paths, list):
+        for item in pending_native_paths[:20]:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                add_path(item[1])
     return tuple(result)
 
 
@@ -1616,7 +1621,19 @@ def _install_native_file_drop_bridge(window: object) -> None:
         return
 
     def forward_drop(event: object) -> None:
-        paths = _native_file_drop_paths(event)
+        pending_native_paths: object = ()
+        dnd_state: dict[str, object] | None = None
+        try:
+            from webview.dom import _dnd_state  # type: ignore[import-not-found]
+
+            if isinstance(_dnd_state, dict):
+                dnd_state = _dnd_state
+                pending_native_paths = _dnd_state.get("paths", ())
+        except (ImportError, AttributeError):
+            pass
+        paths = _native_file_drop_paths(event, pending_native_paths)
+        if dnd_state is not None:
+            dnd_state["paths"] = []
         if not paths:
             return
         detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)

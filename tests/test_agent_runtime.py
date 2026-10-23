@@ -289,6 +289,56 @@ class AgentRuntimeTests(unittest.TestCase):
             deltas,
         )
 
+    def test_multimodal_attachment_uses_non_streaming_completion(self) -> None:
+        class MultimodalClient:
+            supports_streaming = True
+
+            def __init__(inner_self):
+                inner_self.requests = []
+                inner_self.stream_calls = 0
+
+            def chat_completion(inner_self, messages, **kwargs):
+                inner_self.requests.append((messages, kwargs))
+                return {
+                    "content": "图片内容已识别。",
+                    "reasoning_content": None,
+                    "tool_calls": [],
+                }
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.stream_calls += 1
+                raise AssertionError("图片请求不得使用交大接口不支持的 SSE 模式")
+
+        client = MultimodalClient()
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [
+                {"role": "system", "content": "附件摘要"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/jpeg;base64,YWJj"},
+                        },
+                        {"type": "text", "text": "描述图片"},
+                    ],
+                },
+                {"role": "system", "content": "页面上下文"},
+            ],
+            user_text="描述图片",
+            max_tokens=500,
+            temperature=0,
+            attachment_ids=[1],
+        )
+        self.assertEqual("图片内容已识别。", result.content)
+        self.assertEqual(0, client.stream_calls)
+        self.assertEqual(1, len(client.requests))
+        request_messages = client.requests[0][0]
+        self.assertEqual("system", request_messages[0]["role"])
+        self.assertEqual(1, sum(item["role"] == "system" for item in request_messages))
+        self.assertIn("附件摘要", request_messages[0]["content"])
+        self.assertIn("页面上下文", request_messages[0]["content"])
+
     def test_real_sse_client_streams_two_turn_tool_exchange_to_final_delta(self) -> None:
         requests = []
         first_response = "".join(

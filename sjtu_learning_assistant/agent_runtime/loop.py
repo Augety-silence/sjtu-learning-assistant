@@ -170,10 +170,22 @@ class AgentLoop:
         started = self.clock()
         prefetch_messages, runs = self._prefetch(user_text, attachment_ids)
         time_hint = self._time_hint()
+        system_parts = [
+            f"{self.system_prompt}\n\n{time_hint}" if time_hint else self.system_prompt
+        ]
+        conversation_tail: list[dict[str, Any]] = []
+        for message in [*prefetch_messages, *messages]:
+            if message.get("role") == "system" and isinstance(
+                message.get("content"), str
+            ):
+                system_parts.append(message["content"])
+            else:
+                conversation_tail.append(message)
+        # The SJTU OpenAI-compatible gateway accepts exactly one system message,
+        # and it must be the first item even when history precedes fresh context.
         conversation: list[dict[str, Any]] = [
-            {"role": "system", "content": f"{self.system_prompt}\n\n{time_hint}" if time_hint else self.system_prompt},
-            *prefetch_messages,
-            *messages,
+            {"role": "system", "content": "\n\n".join(system_parts)},
+            *conversation_tail,
         ]
         reasoning_parts: list[str] = []
         # 关键词命中时，本地预检索已经完成。此时直接让模型基于结果作答，
@@ -193,7 +205,8 @@ class AgentLoop:
             try:
                 stream_method = getattr(self.client, "chat_completion_stream", None)
                 if (
-                    callable(stream_method)
+                    not attachment_ids
+                    and callable(stream_method)
                     and bool(getattr(self.client, "supports_streaming", True))
                 ):
                     completion = stream_method(

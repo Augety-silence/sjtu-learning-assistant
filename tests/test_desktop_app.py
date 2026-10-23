@@ -614,6 +614,19 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertEqual(
                 (str(first), str(second)), _native_file_drop_paths(event)
             )
+            event_without_joined_paths = {
+                "dataTransfer": {"files": [{"name": "download-display-name"}]}
+            }
+            self.assertEqual(
+                (str(first), str(second)),
+                _native_file_drop_paths(
+                    event_without_joined_paths,
+                    [
+                        ("download-display-name", str(first)),
+                        (second.name, str(second)),
+                    ],
+                ),
+            )
 
             class DropEvent:
                 callback = None
