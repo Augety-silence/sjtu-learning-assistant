@@ -603,14 +603,16 @@ describe("AIChatView", () => {
     );
   });
 
-  it("explains how to recover when a dropped file has no WebView path", async () => {
+  it("falls back to the native picker when WebView drops omit file paths", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     await screen.findByRole("textbox", { name: "输入问题" });
     const file = new File(["notes"], "notes.txt", { type: "text/plain" });
     fireEvent.drop(screen.getByRole("main"), {
       dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
     });
-    expect(await screen.findByText(/请使用回形针按钮选择文件/)).toBeTruthy();
+    await waitFor(() => expect(pickAiAttachment).toHaveBeenCalledOnce());
+    expect(await screen.findByText("复习提纲.txt")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(ingestAiAttachment).not.toHaveBeenCalled();
   });
 

@@ -492,6 +492,27 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (dragDepthRef.current === 0) setDragActive(false);
   };
 
+  const pickAttachment = async () => {
+    if (attachmentBusy || attachments.length >= 20) return;
+    setAttachmentBusy(true);
+    setError(null);
+    try {
+      const result = await pickAiAttachment();
+      if (!result.cancelled && result.attachment) {
+        setAttachments((current) =>
+          current.some((item) => item.id === result.attachment?.id)
+            ? current
+            : [...current, result.attachment as AIManagedAttachment],
+        );
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "附件上传或解析失败");
+    } finally {
+      setAttachmentBusy(false);
+      window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
+    }
+  };
+
   const ingestDroppedFiles = async (files: File[]) => {
     if (attachmentBusy || files.length === 0) return;
     const availableSlots = 20 - attachments.length;
@@ -504,9 +525,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       (file) => (file as File & { path?: string }).path,
     );
     if (paths.some((path) => !path)) {
-      setError(
-        "当前 WebView 无法取得拖入文件的位置，请使用回形针按钮选择文件。",
-      );
+      await pickAttachment();
       return;
     }
 
@@ -542,27 +561,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     dragDepthRef.current = 0;
     setDragActive(false);
     void ingestDroppedFiles(Array.from(event.dataTransfer.files));
-  };
-
-  const pickAttachment = async () => {
-    if (attachmentBusy || attachments.length >= 20) return;
-    setAttachmentBusy(true);
-    setError(null);
-    try {
-      const result = await pickAiAttachment();
-      if (!result.cancelled && result.attachment) {
-        setAttachments((current) =>
-          current.some((item) => item.id === result.attachment?.id)
-            ? current
-            : [...current, result.attachment as AIManagedAttachment],
-        );
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "附件上传或解析失败");
-    } finally {
-      setAttachmentBusy(false);
-      window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
-    }
   };
 
   const revealAttachment = useCallback(async (attachmentId: number) => {

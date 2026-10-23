@@ -48,6 +48,10 @@ describe("AI Chat Aura workspace", () => {
     expect(css).toMatch(
       /\.ai-composer-box,[\s\S]*?var\(--glass-floating-surface\) padding-box[\s\S]*?backdrop-filter: var\(--glass-floating-filter\)/,
     );
+    expect(css).not.toContain(".ai-composer::before");
+    expect(css).toMatch(
+      /\.ai-composer \.ai-composer-input \{[^}]*appearance: none[^}]*-webkit-appearance: none[^}]*background: transparent[^}]*box-shadow: none/,
+    );
     expect(css).toMatch(
       /\.ai-sidebar-agent-menu,[\s\S]*?var\(--glass-floating-surface\) padding-box[\s\S]*?backdrop-filter: var\(--glass-floating-filter\)/,
     );
