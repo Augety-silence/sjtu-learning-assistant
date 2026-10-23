@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -677,8 +678,8 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             drop.callback(event)
             script = window.evaluate_js.call_args.args[0]
             self.assertIn("sjtu-native-file-drop", script)
-            self.assertIn(str(first), script)
-            self.assertIn(str(second), script)
+            self.assertIn(json.dumps(str(first), ensure_ascii=False), script)
+            self.assertIn(json.dumps(str(second), ensure_ascii=False), script)
 
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
