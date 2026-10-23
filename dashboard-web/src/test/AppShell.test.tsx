@@ -28,7 +28,17 @@ function emitViewport(width: number) {
   window.dispatchEvent(new Event("resize"));
 }
 
-function Harness({ initiallyOpen = false }: { initiallyOpen?: boolean }) {
+function Harness({
+  initiallyOpen = false,
+  onOpenAI = vi.fn(),
+}: {
+  initiallyOpen?: boolean;
+  onOpenAI?: (request?: {
+    prompt?: string;
+    sessionId?: string;
+    newSession?: boolean;
+  }) => void;
+}) {
   const [view, setView] = useState<ViewName>("overview");
   const [drawerOpen, setDrawerOpen] = useState(initiallyOpen);
   return (
@@ -40,6 +50,7 @@ function Harness({ initiallyOpen = false }: { initiallyOpen?: boolean }) {
       syncStatus={null}
       syncing={false}
       onSync={vi.fn()}
+      onOpenAI={onOpenAI}
     >
       <div>content</div>
     </AppShell>
@@ -134,7 +145,7 @@ describe("AppShell 移动导航", () => {
     expect(workspace).toBeTruthy();
     expect(workspace?.getAttribute("data-aura-surface")).toBe("workspace");
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
-    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(13);
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(12);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
     const overviewButton = within(mainNavigation).getByRole("button", {
       name: "概览",
@@ -148,7 +159,10 @@ describe("AppShell 移动导航", () => {
       within(mainNavigation).getByRole("button", { name: "日程" }),
     ).toBeTruthy();
     expect(
-      within(mainNavigation).getByRole("button", { name: "AI 助手" }),
+      within(mainNavigation).queryByRole("button", { name: "AI 助手" }),
+    ).toBeNull();
+    expect(
+      within(sidebar as HTMLElement).getByRole("region", { name: "AI 对话" }),
     ).toBeTruthy();
     expect(
       within(mainNavigation).getByRole("button", { name: "本地项目" }),
@@ -165,6 +179,23 @@ describe("AppShell 移动导航", () => {
     expect(
       sidebar?.querySelector(".sidebar-lower")?.contains(utilityNavigation),
     ).toBe(true);
+  });
+
+  it("可从侧栏直接提交 AI 问题并创建新对话", () => {
+    emitViewport(1200);
+    const onOpenAI = vi.fn();
+    render(<Harness onOpenAI={onOpenAI} />);
+
+    const input = screen.getByRole("textbox", { name: "直接询问 AI" });
+    fireEvent.change(input, { target: { value: "帮我梳理本周作业" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onOpenAI).toHaveBeenCalledWith({
+      prompt: "帮我梳理本周作业",
+      newSession: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "新建 AI 对话" }));
+    expect(onOpenAI).toHaveBeenCalledWith({ newSession: true });
   });
 
   it("在左侧与移动导航中提供独立云盘备份入口", () => {

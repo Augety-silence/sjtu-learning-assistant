@@ -151,6 +151,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const stickToBottomRef = useRef(true);
   const lastThreadScrollTopRef = useRef(0);
   const pendingComposerFocusRef = useRef(false);
+  const sidebarAutoSubmitRef = useRef<string | null>(null);
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
       !isPresentRef.current ||
@@ -184,10 +185,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     } else {
       window.localStorage.removeItem("ai-chat-active-context");
     }
+    const autoSubmit =
+      window.localStorage.getItem("ai-chat-auto-submit") === "true";
+    window.localStorage.removeItem("ai-chat-auto-submit");
     if (pendingPrompt) {
       window.localStorage.removeItem("ai-chat-pending-prompt");
       setDraft(pendingPrompt);
-      pendingComposerFocusRef.current = true;
+      if (autoSubmit) sidebarAutoSubmitRef.current = pendingPrompt;
+      else pendingComposerFocusRef.current = true;
     }
   }, []);
   useEffect(() => {
@@ -345,12 +350,33 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           presetResult.default_preset_id || presetResult.items[0]?.id || "";
         setSelectedPresetId(defaultPresetId);
         if (!defaultPresetId) throw new Error("没有可用的 Agent 预设。");
-        const session = sessionResult.items[0]
-          ? await getAiChatSession(sessionResult.items[0].id)
-          : await createAiChatSession("auto", "standard", defaultPresetId);
+        const requestedSessionId = window.localStorage.getItem(
+          "ai-chat-pending-session",
+        );
+        const forceNewSession =
+          window.localStorage.getItem("ai-chat-new-session") === "true";
+        window.localStorage.removeItem("ai-chat-pending-session");
+        window.localStorage.removeItem("ai-chat-new-session");
+        const fallbackSession = () =>
+          sessionResult.items[0]
+            ? getAiChatSession(sessionResult.items[0].id)
+            : createAiChatSession("auto", "standard", defaultPresetId);
+        let session: AIChatSession;
+        if (forceNewSession) {
+          session = await createAiChatSession(
+            "auto",
+            "standard",
+            defaultPresetId,
+          );
+        } else if (requestedSessionId) {
+          session =
+            await getAiChatSession(requestedSessionId).catch(fallbackSession);
+        } else {
+          session = await fallbackSession();
+        }
         if (cancelled) return;
         applySession(session);
-        if (!sessionResult.items[0]) await refreshSessions();
+        if (forceNewSession || !sessionResult.items[0]) await refreshSessions();
       } catch (reason) {
         if (!cancelled) {
           setError(
@@ -699,6 +725,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     }
     void runSubmission(request);
   };
+
+  useEffect(() => {
+    const prompt = sidebarAutoSubmitRef.current;
+    if (!prompt || loading || !active || !selectedPresetId) return;
+    sidebarAutoSubmitRef.current = null;
+    submit(prompt);
+  }, [active, loading, selectedPresetId, submit]);
 
   const toggleActivity = () => {
     const input = textareaRef.current;

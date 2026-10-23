@@ -45,10 +45,10 @@
 }
 
 .sidebar[data-aura-surface="navigation"] {
-  width: 218px;
+  width: 248px;
   height: auto;
   padding: 14px 11px 11px;
-  flex-basis: 218px;
+  flex-basis: 248px;
   border-radius: var(--aura-radius-window);
 }
 

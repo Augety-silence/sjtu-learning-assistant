@@ -7,6 +7,7 @@ import "./index.css";
 import "./aura-pages.css";
 import "./ai-chat-aura.css";
 import "./app-brand.css";
+import "./sidebar-assistant.css";
 import "./performance.css";
 import "./workspace-motion.css";
 import "./page-motion.css";

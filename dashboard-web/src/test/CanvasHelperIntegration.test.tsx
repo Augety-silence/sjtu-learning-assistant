@@ -163,11 +163,12 @@ afterEach(() => {
 });
 
 describe("Canvas Helper 页面集成", () => {
-  it("学生只看到合并后的日程与 AI 助手入口", async () => {
+  it("学生只看到合并后的日程与侧栏 AI 对话入口", async () => {
     render(<App />);
     expect(await screen.findByRole("button", { name: "日程" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "课程视频" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "AI 助手" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "AI 对话" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "直接询问 AI" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "截止事项" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Canvas Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "成绩" })).toBeNull();
@@ -231,7 +232,7 @@ describe("Canvas Helper 页面集成", () => {
     expect(screen.queryByRole("button", { name: "下载" })).toBeNull();
   });
 
-  it("教师可进入课程管理页面并共享同一个 AI 助手入口", async () => {
+  it("教师可进入课程管理页面并共享同一个侧栏 AI 对话入口", async () => {
     role = "teacher";
     render(<App />);
     await screen.findByRole("button", { name: "成绩" });
@@ -257,7 +258,8 @@ describe("Canvas Helper 页面集成", () => {
     ).toBeTruthy();
     expect(getCourseMedia).toHaveBeenCalledWith(12);
 
-    expect(screen.getByRole("button", { name: "AI 助手" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "AI 对话" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "直接询问 AI" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Canvas Agent" })).toBeNull();
   });
 });
