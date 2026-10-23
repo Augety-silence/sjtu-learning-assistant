@@ -668,12 +668,14 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         headers = payload["headers"]
         if not isinstance(headers, Mapping):
             raise CloudRemoteApiError("简单上传凭据响应格式错误。")
-        self._signed_put(str(payload["domain"]), str(payload["path"]), headers, self._read_source(source))
+        data = self._read_source(source)
+        self._signed_put(str(payload["domain"]), str(payload["path"]), headers, data)
         confirmed = self._api_request(
             "POST", "file", (str(payload["confirmKey"]),), operation="确认简单上传",
             params={"confirm": None, "conflict_resolution_strategy": "overwrite" if overwrite else "ask"},
         )
-        return _item(confirmed, normalized) if isinstance(confirmed, Mapping) else self.get_info(normalized)
+        item = _item(confirmed, normalized) if isinstance(confirmed, Mapping) else self.get_info(normalized)
+        return self._verify_uploaded_size(item, len(data))
 
     def init_multipart(self, path: RemotePath, *, part_numbers: Sequence[int] | None = None, overwrite: bool = False) -> UploadSession:
         normalized = _segments(path)
@@ -787,7 +789,15 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             json_body={"crc64": crc64} if crc64 is not None else None,
         )
         self._part_credentials.pop(session.upload_id, None)
-        return _item(payload, session.remote_path) if isinstance(payload, Mapping) else self.get_info(session.remote_path)
+        item = _item(payload, session.remote_path) if isinstance(payload, Mapping) else self.get_info(session.remote_path)
+        return self._verify_uploaded_size(item, session.bytes_uploaded)
+
+    @staticmethod
+    def _verify_uploaded_size(item: CloudItem, expected: int) -> CloudItem:
+        # 服务端确认后的对象大小与实际发送字节数不一致时不能当作成功（调用方可能随后删除本地副本）。
+        if item.size is not None and item.size != expected:
+            raise CloudRemoteApiError("云端确认的文件大小与上传内容不一致。")
+        return item
 
     def resume_upload(self, session: UploadSession, source: bytes | BinaryIO, *, chunk_size: int = 4 * 1024 * 1024, overwrite: bool | None = None) -> CloudItem:
         if chunk_size <= 0:

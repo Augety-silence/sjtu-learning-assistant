@@ -41,8 +41,9 @@ from sjtu_learning_assistant.database import (
 from sjtu_learning_assistant.models import Base
 from sjtu_learning_assistant.sqlite_recovery import (
     SQLiteRecoveryError,
+    _restore_from_backup_locked,
     maintain_sqlite_database,
-    restore_latest_sqlite_backup,
+    sqlite_backup_paths,
     sqlite_migration_guard,
 )
 
@@ -354,6 +355,7 @@ def bootstrap_sqlite(engine: Engine) -> str:
     _require_sqlite(engine)
     database_path = sqlite_database_path(str(engine.url))
     snapshot_created = False
+    restore_outcome: bool | BaseException | None = None
     try:
         if database_path is None:
             return _upgrade_sqlite_with_alembic(engine)
@@ -368,18 +370,30 @@ def bootstrap_sqlite(engine: Engine) -> str:
                 )
             if current_revision != SCHEMA_VERSION:
                 snapshot_created = create_backup()
-            return _upgrade_sqlite_with_alembic(engine)
+            try:
+                return _upgrade_sqlite_with_alembic(engine)
+            except Exception:
+                if snapshot_created:
+                    # Restore before releasing the lock: once released, another
+                    # process may snapshot this half-migrated file as backup-1
+                    # and a later "restore latest" would bring that back.
+                    engine.dispose()
+                    try:
+                        restore_outcome = _restore_from_backup_locked(
+                            database_path, sqlite_backup_paths(database_path)[0]
+                        )
+                    except (OSError, SQLiteRecoveryError) as restore_error:
+                        restore_outcome = restore_error
+                raise
     except Exception as exc:
         engine.dispose()
         if snapshot_created and database_path is not None:
-            try:
-                restored = restore_latest_sqlite_backup(database_path)
-            except (OSError, SQLiteRecoveryError) as restore_error:
+            if isinstance(restore_outcome, BaseException):
                 raise DesktopDatabaseError(
                     "本地数据库升级失败，且未能自动恢复迁移前快照；"
                     "请关闭其他学习助手进程后重启应用。"
-                ) from restore_error
-            if restored is not None:
+                ) from restore_outcome
+            if restore_outcome is True:
                 raise DesktopDatabaseError(
                     "本地数据库升级失败，已自动恢复迁移前快照；请更新应用后重试。"
                 ) from exc

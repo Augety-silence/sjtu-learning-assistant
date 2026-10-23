@@ -117,6 +117,41 @@ function structuredPreviewText(preview: MediaPreviewResult) {
   return "此文件暂不支持结构化预览。";
 }
 
+// Row actions disable their own button while busy; Chromium/WebView2 then
+// drops focus to <body>. Remember the row so focus can return to it.
+function activeContentRow() {
+  const active = document.activeElement;
+  return active instanceof HTMLElement
+    ? active.closest<HTMLElement>('[role="listitem"]')
+    : null;
+}
+
+function focusWasLost() {
+  const active = document.activeElement;
+  return (
+    !active ||
+    active === document.body ||
+    // motion 12.43 fires onExitComplete before the exiting (aria-hidden) layer unmounts.
+    Boolean(active.closest('[data-modal-layer][aria-hidden="true"]'))
+  );
+}
+
+function restoreRowFocus(row: HTMLElement | null) {
+  // If the row left this list (restore/move/opened folder), use the list's Tab stop.
+  const list = row?.parentElement ?? null;
+  window.setTimeout(() => {
+    if (!focusWasLost()) return;
+    const target = row?.isConnected
+      ? row
+      : list?.isConnected
+        ? list.querySelector<HTMLElement>(
+            ':scope > [role="listitem"][tabindex="0"]',
+          )
+        : null;
+    target?.focus();
+  }, 0);
+}
+
 function defaultExpandedIds(root: MaterialNode) {
   const expanded = new Set<string>();
   const visit = (node: MaterialNode) => {
@@ -158,7 +193,9 @@ export function MaterialsView() {
   } | null>(null);
   const archiveKeyChangeRef = useRef(false);
   const itemRefs = useRef(new Map<string, HTMLElement>());
+  const previewReturnRef = useRef<HTMLElement | null>(null);
   const contentHeadingRef = useRef<HTMLHeadingElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const compact = useCompactViewport();
   const { showToast } = useToast();
 
@@ -230,6 +267,14 @@ export function MaterialsView() {
   const hasFilters = Boolean(
     query.trim() || category !== "all" || status !== "all",
   );
+  // Restore/download/move can drop the selected row from this list; fall back to
+  // the first row so the content list keeps exactly one Tab stop.
+  const contentTabStopId =
+    selectedContentId &&
+    (childFolders.some((folder) => folder.id === selectedContentId) ||
+      visibleFiles.some(({ file }) => file.id === selectedContentId))
+      ? selectedContentId
+      : null;
 
   useEffect(() => {
     setSelectedContentId(null);
@@ -282,7 +327,13 @@ export function MaterialsView() {
   );
 
   useEffect(() => {
-    if (compact && mobilePane === "content") contentHeadingRef.current?.focus();
+    if (!compact || mobilePane !== "content") return;
+    // Typing/IME composition in the toolbar also switches panes; never steal its focus.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest(".finder-toolbar")) {
+      return;
+    }
+    contentHeadingRef.current?.focus();
   }, [compact, mobilePane, selectedId]);
 
   const onTreeKeyDown = useCallback(
@@ -338,6 +389,7 @@ export function MaterialsView() {
     action: "download" | "open" | "reveal",
   ) => {
     if (!file.source_id) return;
+    const returnRow = activeContentRow();
     const toastId = `material:${file.source_id}:${action}`;
     setBusy((value) => ({ ...value, [file.source_id as string]: action }));
     showToast({
@@ -376,11 +428,14 @@ export function MaterialsView() {
         delete next[file.source_id as string];
         return next;
       });
+      restoreRowFocus(returnRow);
     }
   };
 
   const previewFile = async (file: MaterialNode) => {
     if (!file.source_id) return;
+    const returnRow = activeContentRow();
+    let opened = false;
     const toastId = `material:${file.source_id}:preview`;
     setBusy((value) => ({ ...value, [file.source_id as string]: "preview" }));
     showToast({
@@ -400,6 +455,8 @@ export function MaterialsView() {
             }),
           )
         : await previewMaterial(file.source_id);
+      previewReturnRef.current = returnRow;
+      opened = true;
       setPreview(nextPreview);
       showToast({
         id: toastId,
@@ -418,6 +475,7 @@ export function MaterialsView() {
         delete next[file.source_id as string];
         return next;
       });
+      if (!opened) restoreRowFocus(returnRow);
     }
   };
 
@@ -428,9 +486,12 @@ export function MaterialsView() {
       else void act(node, node.can_open ? "open" : "download");
       return;
     }
+    // The opened folder's row unmounts; move focus to the new list's first row.
+    const returnRow = activeContentRow();
     setSelectedId(node.id);
     setActiveId(node.id);
     setSelectedContentId(null);
+    restoreRowFocus(returnRow);
   };
 
   const onContentKeyDown = (
@@ -464,6 +525,8 @@ export function MaterialsView() {
     setQuery("");
     setCategory("all");
     setStatus("all");
+    // The "清除筛选" button unmounts with the empty state; keep focus in the toolbar.
+    searchInputRef.current?.focus();
   };
 
   const move = useCallback(
@@ -483,6 +546,7 @@ export function MaterialsView() {
         });
         return;
       }
+      const returnRow = activeContentRow();
       const toastId = `material:${file.source_id}:move`;
       setBusy((value) => ({ ...value, [file.source_id as string]: "move" }));
       showToast({
@@ -512,6 +576,7 @@ export function MaterialsView() {
           delete next[file.source_id as string];
           return next;
         });
+        restoreRowFocus(returnRow);
       }
     },
     [load, showToast],
@@ -539,6 +604,7 @@ export function MaterialsView() {
 
   const restoreAuto = async (file: MaterialNode) => {
     if (!file.source_id) return;
+    const returnRow = activeContentRow();
     const toastId = `material:${file.source_id}:restore`;
     setBusy((value) => ({ ...value, [file.source_id as string]: "restore" }));
     showToast({
@@ -567,6 +633,7 @@ export function MaterialsView() {
         delete next[file.source_id as string];
         return next;
       });
+      restoreRowFocus(returnRow);
     }
   };
 
@@ -591,6 +658,7 @@ export function MaterialsView() {
         <label className="search-control">
           <Search aria-hidden="true" />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -721,7 +789,7 @@ export function MaterialsView() {
                       role="listitem"
                       tabIndex={
                         selectedContentId === folder.id ||
-                        (selectedContentId === null && folderIndex === 0)
+                        (contentTabStopId === null && folderIndex === 0)
                           ? 0
                           : -1
                       }
@@ -792,7 +860,7 @@ export function MaterialsView() {
                       role="listitem"
                       tabIndex={
                         selectedContentId === file.id ||
-                        (selectedContentId === null &&
+                        (contentTabStopId === null &&
                           childFolders.length === 0 &&
                           fileIndex === 0)
                           ? 0
@@ -1062,7 +1130,13 @@ export function MaterialsView() {
           )}
         </div>
       )}
-      <AnimatePresence initial={false}>
+      <AnimatePresence
+        initial={false}
+        onExitComplete={() => {
+          restoreRowFocus(previewReturnRef.current);
+          previewReturnRef.current = null;
+        }}
+      >
         {preview && (
           <FilePreviewDialog
             preview={preview}

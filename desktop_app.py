@@ -1524,7 +1524,8 @@ def _notify_database_recovery(engine, *, sender=None) -> None:
     if recovery is None or not recovery.requires_notice:
         return
     message = recovery.user_message()
-    print(f"警告：{message}", file=sys.stderr)
+    if sys.stderr is not None:
+        print(f"警告：{message}", file=sys.stderr)
     try:
         (sender or default_notification_sender()).send(
             "SJTU Learning Assistant",
@@ -1569,15 +1570,36 @@ def _enable_macos_window_material(window: object) -> None:
     AppHelper.callAfter(apply_material)
 
 
+def _report_startup_error(message: str) -> None:
+    """Show a fatal startup error even in windowed builds without a console.
+
+    PyInstaller windowed builds (console=False) set sys.stderr to None, so a
+    plain print would exit silently with no window on Windows.
+    """
+    if sys.stderr is not None:
+        print(message, file=sys.stderr)
+    if sys.platform == "win32" and (sys.stderr is None or getattr(sys, "frozen", False)):
+        try:
+            import ctypes
+
+            # MB_OK | MB_ICONERROR
+            ctypes.windll.user32.MessageBoxW(None, message, "SJTU 学习助手", 0x10)
+        except (AttributeError, OSError):
+            pass
+
+
 def run_desktop_app() -> int:
     """Create the native window. Tests exercise components without calling this."""
     if not STATIC_INDEX.is_file():
-        print("错误：前端尚未构建，请先运行 cd dashboard-web && npm run build。", file=sys.stderr)
+        if getattr(sys, "frozen", False):
+            _report_startup_error("错误：安装包缺少界面资源，请重新安装 SJTU 学习助手。")
+        else:
+            _report_startup_error("错误：前端尚未构建，请先运行 cd dashboard-web && npm run build。")
         return 2
     try:
         import webview  # type: ignore[import-not-found]
     except ImportError:
-        print("错误：缺少 pywebview，请重新安装依赖。", file=sys.stderr)
+        _report_startup_error("错误：缺少 pywebview，请重新安装依赖。")
         return 2
 
     engine = create_database_engine()

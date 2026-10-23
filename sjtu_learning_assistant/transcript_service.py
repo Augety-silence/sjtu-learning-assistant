@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import inspect
 import json
@@ -90,6 +91,9 @@ FINAL_STATES = frozenset(("completed", "completed_with_warnings", "partial", "fa
 # only ``recovering`` sets ``auto_retryable`` and promises ``retry_after``
 # (an active remote wait keeps its re-check time in ``retry_after``).
 # Manual ``retryable`` is independent of this state.
+_STORAGE_ERRNOS = frozenset(code for code in (errno.ENOSPC, errno.EROFS, errno.EACCES, errno.EPERM, getattr(errno, "EDQUOT", None)) if code is not None)
+_REVEAL_TIMEOUT_SECONDS = 10
+
 PROCESSING_STATES = (
     "not_started",
     "cancelled",
@@ -683,10 +687,15 @@ class TranscriptService:
         video = dict(job.get("meta") or dict())
         video.update(source_id=job["source_id"], title=job["title"])
         manifest_path = self._manifest_path(str(job["source_id"]))
-        if manifest_path.is_file() and not manifest_path.is_symlink():
-            manifest = self._read_json(manifest_path)
-            self._refresh_manifest_versions(manifest, job, self.ai_context_provider())
-            self._write_json(manifest_path, manifest)
+        ai_context = self.ai_context_provider() if manifest_path.is_file() and not manifest_path.is_symlink() else None
+        # Read-modify-write under the same locks the worker uses, so a
+        # concurrent worker manifest write is not lost. start_batch takes the
+        # (non re-entrant) file lock itself, so it must run outside it.
+        with self._lock, self._batch_lock():
+            if manifest_path.is_file() and not manifest_path.is_symlink():
+                manifest = self._read_json(manifest_path)
+                self._refresh_manifest_versions(manifest, job, ai_context)
+                self._write_json(manifest_path, manifest)
         return self.start_batch(
             course_id=str(previous_batch["course_id"]),
             course_name=str(previous_batch["course_name"]),
@@ -1375,8 +1384,10 @@ class TranscriptService:
     @staticmethod
     def _learning_error_message(job: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
         code = ((job.get("diagnostic") or {}).get("code") if type(job.get("diagnostic")) is dict else None)
-        if code in {"network", "timeout", "rate_limit", "upstream_service"}:
+        if code in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service"}:
             return "AI 服务暂时不可用；已保存原字幕，可在冷却后重试。"
+        if code == "storage":
+            return "本地数据目录无法写入（磁盘已满、只读或无权限）；请释放空间或检查目录权限后手动重试。"
         if code == "content_uncertain":
             return "校对已结束，部分内容证据不足，需要人工核对。"
         if code == "v1_map_fallback":
@@ -1403,6 +1414,19 @@ class TranscriptService:
             return category
         if isinstance(exc, TimeoutError):
             return "timeout"
+        if getattr(exc, "winerror", None) in {32, 33}:
+            # Windows sharing / lock violation (file briefly held by a reader,
+            # antivirus or backup) is transient; keep it auto-retryable.
+            return "network"
+        if isinstance(exc, PermissionError) or (
+            isinstance(exc, OSError)
+            and not isinstance(exc, ConnectionError)
+            and exc.errno in _STORAGE_ERRNOS
+        ):
+            # Disk full / read-only / permission denied on local storage is
+            # not a transient network failure: do not burn automatic retries
+            # or tell the user the AI service is unavailable.
+            return "storage"
         if isinstance(exc, (ConnectionError, socket.gaierror, OSError)):
             return "network"
         return "task_error"
@@ -1572,9 +1596,26 @@ class TranscriptService:
         now = self.now_provider()
         due = _parse_time(parent_job.get("next_retry_at")) if parent_job else None
         retry_count = int(parent_job.get("automatic_retry_count") or 0) if parent_job else 0
+        # Mirror ``_automatic_retry_pending``: a completed manual/bulk job that
+        # is reported as "recovering" (pending Phase1/V1 upgrade) is taken over
+        # too, but only while it is still the recording's latest job.
+        playback_parent = parent.get("origin") == "playback"
+        all_batches: list[dict[str, Any]] | None = None
+        if not playback_parent:
+            all_batches = self._all_batches()
+            latest_job = next((
+                job for batch in all_batches for job in batch.get("jobs", [])
+                if parent_job is not None and job.get("source_id") == parent_job.get("source_id")
+            ), None)
+            if (
+                parent_job is None
+                or parent_job.get("status") not in {"completed", "completed_with_warnings"}
+                or latest_job is None
+                or latest_job.get("id") != parent_job_id
+            ):
+                return None
         if (
-            parent.get("origin") != "playback"
-            or parent.get("prepare_key") != expected_prepare_key
+            (playback_parent and parent.get("prepare_key") != expected_prepare_key)
             or parent.get("cancel_requested")
             or parent_job is None
             or parent_job.get("cancel_requested")
@@ -1597,7 +1638,7 @@ class TranscriptService:
         next_retry_count = retry_count + 1
         child = next(
             (
-                batch for batch in self._all_batches()
+                batch for batch in (all_batches if all_batches is not None else self._all_batches())
                 if batch.get("origin") == "playback"
                 and batch.get("retry_parent_batch_id") == parent_batch_id
                 and batch.get("retry_parent_job_id") == parent_job_id
@@ -1623,7 +1664,7 @@ class TranscriptService:
             _batch_lock_held=True,
             _batch_metadata={
                 "origin": "playback",
-                "prepare_key": parent.get("prepare_key"),
+                "prepare_key": parent.get("prepare_key") if playback_parent else expected_prepare_key,
                 "retry_parent_job_id": parent_job_id,
                 "retry_parent_batch_id": parent_batch_id,
                 "retry_count": next_retry_count,
@@ -1637,13 +1678,16 @@ class TranscriptService:
     def _schedule_due_playback_retries(self) -> None:
         now = self.now_provider()
         for candidate in self._all_batches():
-            if candidate.get("origin") != "playback" or type(candidate.get("id")) is not str:
+            if type(candidate.get("id")) is not str:
                 continue
             for item in candidate.get("jobs", []):
                 due = _parse_time(item.get("next_retry_at"))
                 count = int(item.get("automatic_retry_count") or 0)
                 if (
-                    due is None or due > now or not item.get("retryable")
+                    # Non-playback batches: only the completed-job upgrades
+                    # that ``_automatic_retry_pending`` reports as recovering.
+                    (candidate.get("origin") != "playback" and item.get("status") not in {"completed", "completed_with_warnings"})
+                    or due is None or due > now or not item.get("retryable")
                     or item.get("auto_retryable") is False
                     or item.get("auto_retry_scheduled") is True
                     or item.get("status") not in FINAL_STATES
@@ -1653,11 +1697,20 @@ class TranscriptService:
                 ):
                     continue
                 try:
+                    prepare_key = candidate.get("prepare_key")
+                    if candidate.get("origin") != "playback":
+                        # Give the adopted child the key prepare_for_playback
+                        # derives, so playback keeps reconciling its lineage.
+                        try:
+                            prepare_key = self._idempotency_key(item.get("source_id"), "playback", self.ai_context_provider())
+                        except Exception:
+                            # Never let AI settings stop the queue below.
+                            continue
                     with self._lock, self._batch_lock():
                         self._create_playback_retry_locked(
                             candidate["id"],
                             str(item.get("id")),
-                            expected_prepare_key=candidate.get("prepare_key"),
+                            expected_prepare_key=prepare_key,
                         )
                 except TranscriptError:
                     continue
@@ -1847,7 +1900,7 @@ class TranscriptService:
     def _schedule_retry(self, job: dict[str, Any], exc: BaseException | None) -> None:
         code = self._diagnostic_code(exc)
         auto_retryable = code in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "response_format", "validation", "schema", "format"}
-        manual_retryable = auto_retryable or code == "task_error"
+        manual_retryable = auto_retryable or code in {"task_error", "storage"}
         job["retryable"] = manual_retryable
         job["auto_retryable"] = auto_retryable
         retry_count = int(job.get("automatic_retry_count") or 0)
@@ -3122,18 +3175,25 @@ class TranscriptService:
             # a sequence argument would be quoted as one token by Windows
             # command-line rules, which explorer rejects. Windows file names
             # cannot contain literal double quotes.
-            command = f'explorer.exe /select,"{target}"'
+            command: str | tuple[str, ...] = f'explorer.exe /select,"{target}"'
             # explorer.exe returns exit code 1 even on success; ignore it.
-            subprocess.run(command, check=False)
-            return
-        if sys.platform == "darwin":
+            kwargs: dict[str, Any] = {}
+        elif sys.platform == "darwin":
             open_command = shutil.which("open") or "/usr/bin/open"
-            subprocess.run((open_command, "-R", "--", target), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        opener = shutil.which("xdg-open")
-        if not opener:
-            raise TranscriptError("当前系统未安装可用的文件管理器打开工具。")
-        subprocess.run((opener, str(path.parent)), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            command = (open_command, "-R", "--", target)
+            kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        else:
+            opener = shutil.which("xdg-open")
+            if not opener:
+                raise TranscriptError("当前系统未安装可用的文件管理器打开工具。")
+            command = (opener, str(path.parent))
+            kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        try:
+            subprocess.run(command, check=False, timeout=_REVEAL_TIMEOUT_SECONDS, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise TranscriptError("打开文件管理器超时，请手动前往数据目录查看。") from None
+        except OSError:
+            raise TranscriptError("无法启动文件管理器，请手动前往数据目录查看。") from None
 
     def close(self) -> None:
         self._stop.set()

@@ -14,10 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from sqlalchemy import Engine, and_, func, or_, select
+from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
+from sjtu_learning_assistant.cloud_storage import CloudAuthError, CloudNetworkError, SJTUCloudPanProvider
 from sjtu_learning_assistant.models import (
     AIManagedFile,
     ArchiveAuthorizedRoot,
@@ -48,13 +48,14 @@ def redact_public_text(value: str) -> str:
             flags=re.IGNORECASE if os.name == "nt" else 0,
         )
     redacted = re.sub(
-        r"(?i)\b(token|cookie|authorization|set-cookie|password|secret)\b"
-        r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"(?i)\bbearer\s+[^\s,;\"']+", "Bearer <redacted>", redacted
+    )
+    # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名。
+    return re.sub(
+        r"(?i)\b([\w-]*(?:token|cookie|authorization|password|secret|signature|api[_-]?key))"
+        r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?[^\s,;&]+)",
         r"\1\2<redacted>",
         redacted,
-    )
-    return re.sub(
-        r"(?i)\bbearer\s+[^\s,;]+", "Bearer <redacted>", redacted
     )
 
 
@@ -400,7 +401,15 @@ class CloudArchiveService:
                 previous = job.status
                 job.status = "interrupted"
                 job.finished_at = utcnow()
-                job.last_error = "应用上次退出时任务尚未完成。"
+                if job.kind == "restore":
+                    # 桌面端 RestoreService 以 mark_interrupted=False 构造，恢复任务由此处统一中断；
+                    # 必须同时清理 O_EXCL 占位文件，否则用户目标目录残留 0 字节文件。延迟导入避免循环依赖。
+                    from sjtu_learning_assistant.restore_service import _discard_reservation
+
+                    job.last_error = "应用上次退出时恢复任务尚未完成。"
+                    _discard_reservation(job)
+                else:
+                    job.last_error = "应用上次退出时任务尚未完成。"
                 add_event(session, job, "interrupted", "interrupted", details={"previous_status": previous})
             session.commit()
             return len(jobs)
@@ -519,6 +528,11 @@ class CloudArchiveService:
             job_id = job.id
             archived = version.status == "archived"
             completed = job.status == "completed"
+            if not (archived or completed) and job.status in ACTIVE_STATES:
+                # 同一幂等键的任务仍在上传/校验：不要并发再起一次 _upload（会重复上传、互相覆盖进度与状态）。
+                in_progress = job_data(job)
+                in_progress["in_progress"] = True
+                return in_progress
         if archived or completed:
             return self._finish_duplicate(job_id)
         return self._upload(job_id, path)
@@ -558,6 +572,26 @@ class CloudArchiveService:
         source_changed = False
         progress: ProgressThrottle | None = None
         try:
+            with Session(self.engine) as session:
+                # 原子认领：并发的同幂等键 archive_file/retry 只有一个能把任务推进到 uploading，
+                # 其余直接返回 in_progress，避免重复上传；短事务提交，不在哈希期间持有 SQLite 写锁。
+                claimed = session.execute(
+                    update(ArchiveJob)
+                    .where(
+                        ArchiveJob.id == job_id,
+                        ArchiveJob.status.not_in(ACTIVE_STATES + ("completed",)),
+                    )
+                    .values(status="uploading")
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                session.commit()
+                if claimed != 1:
+                    job = session.get(ArchiveJob, job_id)
+                    if job is None:
+                        raise CloudArchiveError("归档任务不存在。")
+                    current = job_data(job)
+                    current["in_progress"] = job.status in ACTIVE_STATES
+                    return current
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 version = session.get(ArchiveVersion, job.version_id) if job else None
@@ -625,6 +659,12 @@ class CloudArchiveService:
             self._mark_failed(job_id, safe_failure("上传", exc), bytes_done)
             if isinstance(exc, CloudArchiveError):
                 raise
+            if isinstance(exc, CloudAuthError):
+                raise CloudArchiveError(
+                    "交大云盘凭据无效或已过期，请在“系统设置 → 交大云盘”更新 UserToken 后重试。"
+                ) from exc
+            if isinstance(exc, CloudNetworkError):
+                raise CloudArchiveError("无法连接交大云盘，请检查网络后重试。") from exc
             raise CloudArchiveError("归档上传失败，可稍后重试。") from exc
         finally:
             close = getattr(provider, "close", None) if provider is not None else None

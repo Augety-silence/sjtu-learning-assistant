@@ -560,6 +560,8 @@ class OpenAIClassificationClient:
         if self.model != "deepseek-reasoner":
             body["temperature"] = max(0.0, min(float(temperature), 1.5))
 
+        defined_tool_names = frozenset(item["function"]["name"] for item in tools or ())
+
         def consume(request_body: Mapping[str, object]) -> dict[str, Any]:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -603,7 +605,8 @@ class OpenAIClassificationClient:
                         if on_delta is not None:
                             on_delta("reasoning", reasoning)
                     raw_tool_calls = delta.get("tool_calls")
-                    if "tool_calls" in delta and type(raw_tool_calls) is not list:
+                    # 部分代理/网关在纯文本帧上发送 "tool_calls": null，与其它字段一致视为缺省。
+                    if raw_tool_calls is not None and type(raw_tool_calls) is not list:
                         raise ValueError("invalid streamed tool calls")
                     if isinstance(raw_tool_calls, list):
                         for raw_call in raw_tool_calls:
@@ -616,32 +619,43 @@ class OpenAIClassificationClient:
                                 index,
                                 {"id": "", "type": "function", "name": "", "arguments": ""},
                             )
-                            if "id" in raw_call:
+                            # SGLang/部分 vLLM 网关在续传块中显式发送 null 的
+                            # id/type/name/arguments，或在每个块重复完整 id/name；
+                            # 也有中转把 id/name 拆成多段增量下发。null 视为缺省；
+                            # 与已累计值完全相同的 id 视为重复跳过，否则按增量拼接；
+                            # name 仅在已累计值已是本次请求定义的完整工具名时才去重，
+                            # 避免误吞 "get_"+"get_" 这类合法分段。
+                            if raw_call.get("id") is not None:
                                 call_id = raw_call["id"]
                                 if type(call_id) is not str:
                                     raise ValueError("invalid streamed tool call id")
-                                if len(current["id"]) + len(call_id) > 128:
+                                if len(call_id) > 128:
                                     raise ValueError("streamed tool call id too long")
-                                current["id"] += call_id
-                            if "type" in raw_call:
+                                if call_id and call_id != current["id"]:
+                                    if len(current["id"]) + len(call_id) > 128:
+                                        raise ValueError("streamed tool call id too long")
+                                    current["id"] += call_id
+                            if raw_call.get("type") is not None:
                                 call_type = raw_call["type"]
                                 if type(call_type) is not str:
                                     raise ValueError("invalid streamed tool call type")
                                 if call_type != "function":
                                     raise ValueError("invalid streamed tool call type")
                                 current["type"] = call_type
-                            if "function" in raw_call:
+                            if raw_call.get("function") is not None:
                                 function = raw_call["function"]
                                 if type(function) is not dict or set(function) - {"name", "arguments"}:
                                     raise ValueError("invalid streamed tool function fields")
-                                if "name" in function:
+                                if function.get("name") is not None:
                                     name = function["name"]
                                     if type(name) is not str:
                                         raise ValueError("invalid streamed tool function name")
+                                    if name and name == current["name"] and name in defined_tool_names:
+                                        name = ""
                                     if len(current["name"]) + len(name) > 80:
                                         raise ValueError("streamed tool function name too long")
                                     current["name"] += name
-                                if "arguments" in function:
+                                if function.get("arguments") is not None:
                                     arguments = function["arguments"]
                                     if type(arguments) is not str:
                                         raise ValueError("invalid streamed tool arguments")

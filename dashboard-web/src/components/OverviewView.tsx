@@ -1,6 +1,13 @@
 import { BookOpenCheck, Clock3, Mail } from "lucide-react";
 import { AnimatePresence } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import overviewAllClearIllustration from "@/assets/empty-states/overview-all-clear.webp";
 import { ContentReveal } from "@/components/ContentReveal";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
@@ -12,6 +19,8 @@ import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { MessageItem, OverviewData, ViewName } from "@/lib/types";
 
 const messageKey = (item: MessageItem) => `${item.kind}:${item.source_id}`;
+/** Mirrors `DashboardService.overview()` which returns `deadlines(limit=5)`. */
+const OVERVIEW_DEADLINE_LIMIT = 5;
 
 export function OverviewView({
   navigate,
@@ -22,6 +31,7 @@ export function OverviewView({
   const [error, setError] = useState("");
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
   const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const messageIdPrefix = useId();
   const { showToast } = useToast();
   const load = useCallback(async () => {
     setError("");
@@ -118,6 +128,14 @@ export function OverviewView({
   if (!data) return <LoadingState label="正在汇总学习信息…" />;
   const overviewAllClear =
     data.deadlines.length === 0 && data.messages.length === 0;
+  // The overview action returns at most OVERVIEW_DEADLINE_LIMIT deadlines. When
+  // every returned item is due within 24h, more may exist: show a lower bound.
+  const urgentCountCapped =
+    data.deadlines.length >= OVERVIEW_DEADLINE_LIMIT &&
+    deadlinesWithin24Hours === data.deadlines.length;
+  const urgentCountLabel = urgentCountCapped
+    ? `${deadlinesWithin24Hours}+`
+    : String(deadlinesWithin24Hours);
 
   return (
     <ContentReveal className="section-stack overview-dashboard" afterLoad>
@@ -130,11 +148,11 @@ export function OverviewView({
           </span>
           <div className="summary-copy">
             <dt>24 小时内截止</dt>
-            <dd>{deadlinesWithin24Hours}</dd>
+            <dd>{urgentCountLabel}</dd>
             <span>
               {deadlinesWithin24Hours === 0
                 ? "24 小时内无任务"
-                : `${deadlinesWithin24Hours} 项即将截止`}
+                : `${urgentCountLabel} 项即将截止`}
             </span>
           </div>
         </div>
@@ -230,36 +248,48 @@ export function OverviewView({
                 description="同步后，邮件与课程公告会显示在这里。"
               />
             ) : (
-              prioritizedMessages.map((item) => (
-                <button
-                  type="button"
-                  className="list-row list-row-button"
-                  key={messageKey(item)}
-                  aria-label={`打开消息详情：${item.title}`}
-                  onClick={(event) => {
-                    detailTriggerRef.current = event.currentTarget;
-                    setDetailItem(item);
-                  }}
-                >
-                  <div className="min-w-0">
-                    <div className="message-title">
-                      {item.is_unread && <span className="unread-dot" />}
-                      <p className="truncate font-medium">{item.title}</p>
+              prioritizedMessages.map((item, index) => {
+                // aria-label replaces the row text, so expose unread state,
+                // source and time as the accessible description instead.
+                const metaId = `${messageIdPrefix}-meta-${index}`;
+                const timeId = `${messageIdPrefix}-time-${index}`;
+                return (
+                  <button
+                    type="button"
+                    className="list-row list-row-button"
+                    key={messageKey(item)}
+                    aria-label={`打开消息详情：${item.title}`}
+                    aria-describedby={`${metaId} ${timeId}`}
+                    onClick={(event) => {
+                      detailTriggerRef.current = event.currentTarget;
+                      setDetailItem(item);
+                    }}
+                  >
+                    <div className="min-w-0">
+                      <div className="message-title">
+                        {item.is_unread && (
+                          <span className="unread-dot" aria-hidden="true" />
+                        )}
+                        <p className="truncate font-medium">{item.title}</p>
+                      </div>
+                      <span id={metaId}>
+                        {item.is_unread && (
+                          <span className="sr-only">未读，</span>
+                        )}
+                        {item.source_label} ·{" "}
+                        {item.kind === "email"
+                          ? "邮件"
+                          : item.kind === "assignment"
+                            ? "作业"
+                            : "公告"}
+                      </span>
                     </div>
-                    <span>
-                      {item.source_label} ·{" "}
-                      {item.kind === "email"
-                        ? "邮件"
-                        : item.kind === "assignment"
-                          ? "作业"
-                          : "公告"}
+                    <span className="row-time" id={timeId}>
+                      {formatDateTime(item.occurred_at)}
                     </span>
-                  </div>
-                  <span className="row-time">
-                    {formatDateTime(item.occurred_at)}
-                  </span>
-                </button>
-              ))
+                  </button>
+                );
+              })
             )}
           </div>
         </section>

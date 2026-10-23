@@ -183,6 +183,10 @@ function SubmissionConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
+  // The backend raises these when Canvas may already hold this attempt
+  // (SubmissionOutcomeUncertain / SubmissionVerificationError); a one-click
+  // "重新提交" here would create a duplicate attempt the message warns against.
+  const outcomeUncertain = /重复提交/.test(submissionError);
 
   useModalFocus(dialogRef, onCancel, {
     initialFocusRef: cancelRef,
@@ -265,12 +269,18 @@ function SubmissionConfirmDialog({
           >
             取消
           </Button>
-          <Button type="button" disabled={submitting} onClick={onConfirm}>
+          <Button
+            type="button"
+            disabled={submitting || outcomeUncertain}
+            onClick={onConfirm}
+          >
             {submitting
               ? "提交并验证中…"
-              : submissionError
-                ? "重新提交"
-                : "确认提交"}
+              : outcomeUncertain
+                ? "请先在 Canvas 核对"
+                : submissionError
+                  ? "重新提交"
+                  : "确认提交"}
           </Button>
         </div>
       </motion.section>
@@ -512,6 +522,36 @@ export function AssignmentsView({
         className="assignment-filters"
         role="tablist"
         aria-label="作业分类"
+        onKeyDown={(event) => {
+          // Tabs keyboard pattern: one Tab stop (roving tabindex), arrows wrap, Home/End jump.
+          // Leave modified chords (Alt+← back, Ctrl+Home, …) to the browser/WebView2.
+          if (event.altKey || event.ctrlKey || event.metaKey) return;
+          const current = filters.findIndex((item) => item.value === category);
+          const last = filters.length - 1;
+          const next =
+            event.key === "ArrowRight"
+              ? current >= last
+                ? 0
+                : current + 1
+              : event.key === "ArrowLeft"
+                ? current <= 0
+                  ? last
+                  : current - 1
+                : event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? last
+                    : -1;
+          if (next < 0) return;
+          event.preventDefault();
+          if (next !== current) {
+            setSelected(null);
+            setCategory(filters[next].value);
+          }
+          event.currentTarget
+            .querySelectorAll<HTMLButtonElement>('[role="tab"]')
+            [next]?.focus();
+        }}
       >
         {filters.map((filter) => (
           <button
@@ -520,6 +560,7 @@ export function AssignmentsView({
             data-selection-layout-id={filterIndicatorId}
             role="tab"
             aria-selected={category === filter.value}
+            tabIndex={category === filter.value ? 0 : -1}
             className={
               category === filter.value
                 ? "selection-host selection-active assignment-filter-active"

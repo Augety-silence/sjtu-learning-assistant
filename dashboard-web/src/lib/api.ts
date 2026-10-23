@@ -108,9 +108,15 @@ function waitForBridge() {
       hostWindow.clearInterval(poll);
       hostWindow.removeEventListener("pywebviewready", finish);
       bridgeReady = null;
+      // 仍是 Error 子类且 message 不变；补 code/category，调用方可区分"未就绪"与其他失败。
       reject(
-        new Error(
-          "桌面 Bridge 尚未就绪，请稍后重试；若持续出现请重新打开应用。",
+        Object.assign(
+          new BridgeInvocationError("bridge_ready", {
+            code: "bridge_unavailable",
+            message:
+              "桌面 Bridge 尚未就绪，请稍后重试；若持续出现请重新打开应用。",
+          }),
+          { category: "bridge_unavailable", retryable: true },
         ),
       );
     }, BRIDGE_READY_TIMEOUT_MS);
@@ -358,6 +364,21 @@ function waitForTaskPoll(delay = 120) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
 }
 
+// 只对明确的瞬时故障（Bridge 通信抖动、SQLite 暂时锁定）做有界重试；
+// 任务不存在、能力不可用等永久错误仍立即停止。
+const TRANSIENT_TASK_POLL_CODES = new Set([
+  "bridge_failed",
+  "database_unavailable",
+]);
+const MAX_TRANSIENT_TASK_POLL_FAILURES = 2;
+
+function isTransientTaskPollError(error: unknown) {
+  return (
+    error instanceof BridgeInvocationError &&
+    TRANSIENT_TASK_POLL_CODES.has(error.code)
+  );
+}
+
 export async function sendAiChatMessage(
   sessionId: string,
   content: string,
@@ -382,8 +403,16 @@ export async function sendAiChatMessage(
   const taskId = snapshot.task.id;
   let sequence = snapshot.next_sequence;
   emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
-  const deadline = Date.now() + 180_000;
-  while (Date.now() < deadline) {
+  // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
+  // 另设绝对上限防止任务永久挂起。
+  const idleTimeoutMs = 180_000;
+  const hardDeadline = Date.now() + 600_000;
+  let deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
+  let lastStatus = snapshot.task.status;
+  let transientPollFailures = 0;
+  // 先处理最近一次快照的终态，再判断截止：截止前最后一次轮询若已 completed/failed，
+  // 不能被当作超时丢弃（否则已入库的回答会被前端回滚、用户重发造成重复）。
+  for (;;) {
     if (snapshot.task.status === "completed") {
       const result = snapshot.task.result?.chat_result;
       if (!result) throw new Error("AI 任务完成但没有返回对话结果。");
@@ -408,19 +437,34 @@ export async function sendAiChatMessage(
     if (snapshot.task.status === "cancelled") {
       throw new Error("AI 任务已取消。");
     }
+    if (Date.now() >= deadline) break;
     await waitForTaskPoll();
     try {
       snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
         "ai_task_status",
         { task_id: taskId, after_sequence: sequence },
       );
+      transientPollFailures = 0;
     } catch (error) {
+      if (
+        isTransientTaskPollError(error) &&
+        transientPollFailures < MAX_TRANSIENT_TASK_POLL_FAILURES
+      ) {
+        // 游标 sequence 未推进，重试不会丢事件；退避 250ms / 500ms。
+        transientPollFailures += 1;
+        await waitForTaskPoll(250 * transientPollFailures);
+        continue;
+      }
       await invoke("ai_task_cancel", { task_id: taskId }).catch(
         () => undefined,
       );
       throw error;
     }
     sequence = snapshot.next_sequence;
+    if (snapshot.events.length > 0 || snapshot.task.status !== lastStatus) {
+      deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
+      lastStatus = snapshot.task.status;
+    }
     for (const event of snapshot.events) {
       if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
         emitAIStream({
@@ -1056,7 +1100,7 @@ export function getTranscriptBatch(batchId: string) {
 export function getTranscriptJobs(courseId?: number) {
   return invoke<{ items: import("@/lib/types").TranscriptJob[] }>(
     "transcript_jobs",
-    courseId ? { course_id: courseId } : {},
+    courseId === undefined ? {} : { course_id: courseId },
   );
 }
 
@@ -1137,7 +1181,7 @@ export function startKnowledgeCompiler(
 export function getKnowledgeCompilerStatus(targetRoot?: string) {
   return invoke<import("@/lib/types").KnowledgeCompilerTask>(
     "knowledge_compiler_status",
-    targetRoot ? { target_root: targetRoot } : {},
+    targetRoot === undefined ? {} : { target_root: targetRoot },
   );
 }
 

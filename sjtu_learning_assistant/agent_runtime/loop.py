@@ -149,7 +149,9 @@ class AgentLoop:
             raise AgentToolError("工具参数不是有效 JSON 对象。")
         try:
             parsed = json.loads(value)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # 深度嵌套（如 8000 个 "["）会抛 RecursionError，须同样作为工具错误回传，
+            # 不能让异常逃逸终止整个智能体任务。
             raise AgentToolError("工具参数不是有效 JSON 对象。") from None
         if type(parsed) is not dict:
             raise AgentToolError("工具参数不是有效 JSON 对象。")

@@ -217,10 +217,13 @@ def _controlled_digest(
     with open_controlled_file(root, raw_path) as (stream, size):
         if maximum_size is not None and size > maximum_size:
             raise BackupError("字幕清单过大或格式无效。")
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-            if payload is not None:
-                payload.extend(chunk)
+        try:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+                if payload is not None:
+                    payload.extend(chunk)
+        except OSError:
+            raise BackupError("本地备份文件缺失或不安全。") from None
     return digest.hexdigest(), size, bytes(payload) if payload is not None else None
 
 
@@ -327,6 +330,11 @@ def open_controlled_file(root: Path, raw_path: str | None) -> Iterator[tuple[Bin
     except BackupError:
         raise
     except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
+        # Once the stream was yielded, errors come from the caller's with-body
+        # (provider upload, temp download, mid-read I/O). They must not be
+        # misreported as "local file missing" and silently counted as skipped.
+        if stream is not None:
+            raise
         raise BackupError("本地备份文件缺失或不安全。") from None
     finally:
         if stream is not None:

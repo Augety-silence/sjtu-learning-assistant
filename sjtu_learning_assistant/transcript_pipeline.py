@@ -244,7 +244,15 @@ def _timestamp_ms(value: str) -> int:
 
 
 def parse_vtt(value: str) -> list[Cue]:
-    if type(value) is not str or len(value.encode("utf-8")) > 32 * 1024 * 1024:
+    if type(value) is not str:
+        raise ValueError("字幕内容为空或超过安全限制。")
+    try:
+        encoded_size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        # Distinguish a corrupt encoding (lone surrogates) from a format error
+        # so the UI can ask for a re-exported UTF-8 subtitle file.
+        raise ValueError("字幕含无法按 UTF-8 编码的非法字符，请重新导出 UTF-8 字幕。") from None
+    if encoded_size > 32 * 1024 * 1024:
         raise ValueError("字幕内容为空或超过安全限制。")
     text = value.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
     lines = text.split("\n")
@@ -1845,8 +1853,12 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
             }
             if set(example) != {"original_question", "problem", "improvement"}:
                 _schema_fail(path + ".classroom_example", "exact original_question/problem/improvement fields", example)
-            if not all(normalized_example.values()) or not any(
-                normalized_example["original_question"] in cue.text for cue in cues
+            original_question = normalized_example["original_question"]
+            # 与 questions[].prompt 的回锚口径对齐（NFKC + casefold），避免模型把
+            # 半角“?”写成全角“？”时整份讲义 schema 失败；原有精确包含仍然接受。
+            if not all(normalized_example.values()) or not (
+                any(original_question in cue.text for cue in cues)
+                or _question_prompt_in_cues(original_question, cues)
             ):
                 _schema_fail(path + ".classroom_example", "complete example whose original question occurs in transcript", example)
         theme = {
@@ -1975,14 +1987,17 @@ def _fallback_study_guide(summary: Mapping[str, Any], cues: Sequence[Cue]) -> di
     )
 
 
-def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> str:
+def _full_guide_prompt(
+    summary: Mapping[str, Any], fallback: Mapping[str, Any], *, example_source: Mapping[str, Any] | None = None,
+) -> str:
+    example_fallback = fallback if example_source is None else example_source
     source = {
         "lesson_topic": summary.get("lesson_topic"),
         "knowledge_points": summary.get("knowledge_points", ()),
         "classroom_examples": summary.get("classroom_examples", ()),
         "emphasized_points": summary.get("emphasized_points", ()),
     }
-    fallback_themes = fallback.get("themes", ())
+    fallback_themes = example_fallback.get("themes", ())
     theme_example = None
     if type(fallback_themes) in (list, tuple) and fallback_themes and type(fallback_themes[0]) is dict:
         source_theme = fallback_themes[0]
@@ -1998,7 +2013,7 @@ def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> st
             for row in source_theme.get("evidence", ())
             if type(row) is dict and type(row.get("cue_id")) is str and type(row.get("quote")) is str
         ]
-    fallback_questions = fallback.get("questions", ())
+    fallback_questions = example_fallback.get("questions", ())
     question_example = (
         {name: fallback_questions[0].get(name) for name in ("type", "prompt", "answer", "source")}
         if type(fallback_questions) in (list, tuple) and fallback_questions and type(fallback_questions[0]) is dict
@@ -2040,6 +2055,46 @@ def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> st
         "删除空洞占位词。输入提取：" + json.dumps(source, ensure_ascii=False, separators=(",", ":"))
         + "\n确定性草稿：" + json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def _without_evidence_times(value: object) -> object:
+    """Drop derived start_ms/end_ms from evidence rows; cue_id+quote stay verbatim."""
+    if type(value) is list:
+        return [_without_evidence_times(item) for item in value]
+    if type(value) is dict:
+        result = {}
+        for key, item in value.items():
+            if key == "evidence" and type(item) is list:
+                result[key] = [
+                    {name: row[name] for name in ("cue_id", "quote") if name in row} if type(row) is dict else row
+                    for row in item
+                ]
+            else:
+                result[key] = _without_evidence_times(item)
+        return result
+    return value
+
+
+def _guide_prompt(summary: Mapping[str, Any], fallback: Mapping[str, Any]) -> str:
+    """Build the guide prompt, compacting duplicated data only when it would exceed the message limit."""
+    prompt = _full_guide_prompt(summary, fallback)
+    if len(prompt) < MAX_MESSAGE_CHARS - 200:
+        return prompt
+    # Long lectures (up to 30 knowledge points) otherwise always fail the size
+    # check and silently fall back to the deterministic guide. Evidence times
+    # are recomputed from cue_id by the validator, and the draft's themes repeat
+    # knowledge-point evidence, so both are safe to compact.
+    compact_summary = _without_evidence_times(dict(summary))
+    compact_fallback = _without_evidence_times(dict(fallback))
+    prompt = _full_guide_prompt(compact_summary, compact_fallback)
+    if len(prompt) < MAX_MESSAGE_CHARS - 200:
+        return prompt
+    draft = dict(compact_fallback)
+    draft["themes"] = [
+        {name: theme.get(name) for name in ("topic_id", "title", "conclusion")}
+        for theme in compact_fallback.get("themes", ()) if type(theme) is dict
+    ]
+    return _full_guide_prompt(compact_summary, draft, example_source=compact_fallback)
 
 
 def _evidence_in_chunk(rows: Sequence[Mapping[str, Any]], chunk: TranscriptChunk) -> bool:
@@ -2225,7 +2280,7 @@ def _audit_guide(
              "conclusion": item.get("conclusion"), "evidence": [row for row in item.get("evidence", ())
                                                                   if row.get("cue_id") in current_cue_ids]}
             )
-        available_evidence_cues = [
+        available_evidence_cues: list[dict[str, str]] = [
             {"cue_id": cue.cue_id, "text": cue.text}
             for cue in chunk.cues
         ]
@@ -2233,7 +2288,9 @@ def _audit_guide(
         local_canonical_ids = set(local_topic_bindings.values())
         example_cue = next((cue for cue in chunk.cues if len(cue.text) >= 20), chunk.cues[0])
         evidence_example = {"cue_id": example_cue.cue_id, "quote_mode": "source_cue"}
-        prompt = (
+
+        def build_prompt() -> str:
+            return (
             "阶段2：仅审校本连续时间段相关主题，并给出局部修订patch。按遗漏、错配、来源混淆、学习效果、冗余检查。"
             "返回 JSON：reviewed_cue_ids（必须逐项覆盖本段全部 cue）；coverage_confirmation 必须是 {confirmed:true,evidence:[{cue_id,quote_mode:'source_cue'}]}，"
             "evidence 至少一条；每条证据只能包含 cue_id 和 quote_mode 两个字段，quote_mode 必须为 source_cue。"
@@ -2257,6 +2314,16 @@ def _audit_guide(
             + json.dumps(available_evidence_cues, ensure_ascii=False, separators=(",", ":"))
             + "\n本段字幕：\n" + chunk.as_prompt_text()
         )
+        prompt = build_prompt()
+        if len(prompt) >= MAX_MESSAGE_CHARS - 200:
+            # Dense chunks (~6000 chars) used to exceed the message limit only
+            # because every cue text is embedded twice. Keep the IDs and let the
+            # model read the text from the "本段字幕" block, which is unchanged.
+            available_evidence_cues = [{"cue_id": cue.cue_id} for cue in chunk.cues]
+            prompt = build_prompt().replace(
+                "available_evidence_cues（本段唯一可引用的cue及原文）：",
+                "available_evidence_cues（本段唯一可引用的cue；原文见下方本段字幕同ID行）：",
+            )
         coverage_observation: dict[str, list[str]] = dict(reviewed=[], missing=[])
         def validate(value: object) -> dict[str, Any]:
             if type(value) is not dict:

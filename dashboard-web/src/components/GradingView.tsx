@@ -184,6 +184,19 @@ export function GradingView({
       });
       return;
     }
+    // Saving an empty score deletes the posted Canvas grade; require explicit confirmation (WCAG 3.3.4).
+    if (
+      score === null &&
+      (typeof selected.score === "number" || Boolean(selected.displayGrade)) &&
+      !window.confirm(
+        `确定清除 ${selected.studentName} 的评分？此操作会同步删除 Canvas 中的成绩。`,
+      )
+    ) {
+      setScoreDraft(
+        typeof selected.score === "number" ? String(selected.score) : "",
+      );
+      return;
+    }
     setBusy("score");
     try {
       await onSaveScore({

@@ -22,9 +22,14 @@ if (-not (Test-Path $Python)) {
 & $Python -m pip install -r requirements-windows.txt
 & $Python scripts/generate_windows_icon.py
 
+# Windows 上 npm 解析为 npm.ps1 脚本垫片而非原生程序，
+# $PSNativeCommandUseErrorActionPreference 不会把它的非零退出码变成错误，必须手动检查。
 npm --prefix dashboard-web ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw "npm ci 失败（退出码 $LASTEXITCODE）。" }
 npm --prefix dashboard-web run test -- --pool=forks --maxWorkers=1
+if ($LASTEXITCODE -ne 0) { throw "前端测试失败（退出码 $LASTEXITCODE）。" }
 npm --prefix dashboard-web run build
+if ($LASTEXITCODE -ne 0) { throw "前端构建失败（退出码 $LASTEXITCODE）。" }
 & $Python -m unittest `
     tests.test_dashboard_desktop_actions.DesktopActionSafetyTests.test_windows_commands_use_shell_free_system_handlers `
     tests.test_notifications.WindowsNotificationSenderTests -v
