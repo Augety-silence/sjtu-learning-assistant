@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from PIL import Image
 from sqlalchemy import create_engine
 
 from sjtu_learning_assistant.ai_attachments import (
@@ -126,6 +127,19 @@ class AIManagedFileServiceTests(unittest.TestCase):
         self.assertEqual(321, excerpt["returned_chars"])
         with self.assertRaises(AIFileError):
             self.service.read_text(item["id"], max_chars=12_001)
+
+    def test_image_attachment_is_normalized_to_a_bounded_vision_part(self) -> None:
+        source = self.root / "diagram.png"
+        Image.new("RGB", (120, 80), "navy").save(source)
+        item = self.service.ingest(source)
+
+        parts = self.service.vision_message_parts([item["id"]])
+
+        self.assertEqual(1, len(parts))
+        self.assertEqual("image_url", parts[0]["type"])
+        self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual("auto", parts[0]["image_url"]["detail"])
+        self.assertEqual("unsupported", item["text_status"])
 
     def test_cloud_only_read_verifies_hash_and_restore_then_reveal(self) -> None:
         source = self.root / "cloud.txt"

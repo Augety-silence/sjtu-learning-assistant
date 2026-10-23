@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -264,11 +265,59 @@ class OpenAIClassificationClient:
                 raise AIClassificationError("AI 工具消息格式无效。")
             if content is None and role == "assistant" and message.get("tool_calls"):
                 content = ""
-            if type(content) is not str or len(content) > 14_000:
+            clean_content: Any
+            content_length = 0
+            if type(content) is str:
+                if len(content) > 14_000 or (role in {"user", "system"} and not content.strip()):
+                    raise AIClassificationError("单条消息不能为空或超过长度限制。")
+                clean_content = content.strip()
+                content_length = len(content)
+            elif role == "user" and type(content) is list and 1 <= len(content) <= 5:
+                clean_parts: list[dict[str, Any]] = []
+                image_count = 0
+                for part in content:
+                    if type(part) is not dict or part.get("type") not in {"text", "image_url"}:
+                        raise AIClassificationError("AI 多模态消息格式无效。")
+                    if part["type"] == "text":
+                        if set(part) != {"type", "text"}:
+                            raise AIClassificationError("AI 多模态消息格式无效。")
+                        text = part.get("text")
+                        if type(text) is not str or not text.strip() or len(text) > 14_000:
+                            raise AIClassificationError("AI 多模态文字无效。")
+                        clean_parts.append({"type": "text", "text": text.strip()})
+                        content_length += len(text)
+                        continue
+                    if set(part) != {"type", "image_url"}:
+                        raise AIClassificationError("AI 多模态消息格式无效。")
+                    image_url = part.get("image_url")
+                    if type(image_url) is not dict or set(image_url) - {"url", "detail"}:
+                        raise AIClassificationError("AI 图片消息格式无效。")
+                    url = image_url.get("url")
+                    detail = image_url.get("detail", "auto")
+                    prefix = "data:image/jpeg;base64,"
+                    if type(url) is not str or not url.startswith(prefix) or detail not in {"auto", "low", "high"}:
+                        raise AIClassificationError("AI 图片消息格式无效。")
+                    encoded = url[len(prefix):]
+                    if not encoded or len(encoded) > 6 * 1024**2:
+                        raise AIClassificationError("AI 图片超过大小限制。")
+                    try:
+                        decoded = base64.b64decode(encoded, validate=True)
+                    except (ValueError, TypeError):
+                        raise AIClassificationError("AI 图片编码无效。") from None
+                    if not decoded or len(decoded) > 4 * 1024**2:
+                        raise AIClassificationError("AI 图片超过大小限制。")
+                    image_count += 1
+                    if image_count > 4:
+                        raise AIClassificationError("单次最多识别 4 张图片。")
+                    clean_parts.append(
+                        {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+                    )
+                if not any(part["type"] == "text" for part in clean_parts) or image_count == 0:
+                    raise AIClassificationError("AI 多模态消息必须同时包含问题和图片。")
+                clean_content = clean_parts
+            else:
                 raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            if role in {"user", "system"} and not content.strip():
-                raise AIClassificationError("单条消息不能为空或超过长度限制。")
-            clean: dict[str, Any] = {"role": role, "content": content.strip()}
+            clean: dict[str, Any] = {"role": role, "content": clean_content}
             if "tool_calls" in message:
                 clean["tool_calls"] = cls._parse_tool_calls(message.get("tool_calls"))
             if role == "assistant" and "name" in message:
@@ -286,7 +335,7 @@ class OpenAIClassificationClient:
                     if type(name) is not str or not name or len(name) > 80:
                         raise AIClassificationError("AI 工具消息格式无效。")
                     clean["name"] = name
-            total_length += len(content)
+            total_length += content_length
             clean_messages.append(clean)
         return clean_messages, total_length
 

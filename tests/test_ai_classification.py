@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -88,6 +89,39 @@ class AIClientTests(unittest.TestCase):
         with self.assertRaises(AIClassificationError):
             client.chat([{"role": "user", "content": "x" * 4001}])
         client.close()
+
+    def test_chat_completion_preserves_bounded_multimodal_user_content(self):
+        seen = []
+
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "图中是课程安排。"}}]},
+                request=request,
+            )
+
+        data_url = "data:image/jpeg;base64," + base64.b64encode(b"jpeg-bytes").decode("ascii")
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            model="qwen3.8-27b",
+            transport=httpx.MockTransport(handler),
+            limiter=lambda: None,
+        )
+        result = client.chat_completion(
+            [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "识别图片"},
+                    {"type": "image_url", "image_url": {"url": data_url, "detail": "auto"}},
+                ],
+            }],
+            system_prompt=False,
+        )
+        client.close()
+
+        self.assertEqual("图中是课程安排。", result["content"])
+        self.assertEqual(data_url, seen[0]["messages"][0]["content"][1]["image_url"]["url"])
 
     def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
         with patch.dict(os.environ):

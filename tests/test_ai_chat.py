@@ -5,9 +5,10 @@ import time
 import unittest
 from pathlib import Path
 
+from PIL import Image
 from sqlalchemy import create_engine
 
-from sjtu_learning_assistant.dashboard_service import DashboardService
+from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.local_settings import SettingsStore
 
@@ -94,6 +95,32 @@ class AIChatHistoryTests(unittest.TestCase):
         model_input = str(FakeAIClient.requested_messages)
         self.assertIn("课程摘要关键词", model_input)
         self.assertNotIn(hidden_tail, model_input)
+
+    def test_qwen_vision_receives_image_bytes_and_other_models_fail_early(self) -> None:
+        source = self.root / "whiteboard.png"
+        Image.new("RGB", (64, 48), "white").save(source)
+        attachment = self.service.ai_attachment_ingest(source)
+        chat = self.service.ai_chat_new("qwen3.8-27b", "standard", "general")
+
+        sent = self.service.ai_chat_send(
+            chat["id"],
+            "识别图片内容",
+            "qwen3.8-27b",
+            "standard",
+            "general",
+            [attachment["id"]],
+        )
+
+        self.assertIn("建议", sent["assistant_message"]["content"])
+        user_content = FakeAIClient.requested_messages[-1][-1]["content"]
+        self.assertIsInstance(user_content, list)
+        self.assertEqual("text", user_content[0]["type"])
+        self.assertEqual("image_url", user_content[1]["type"])
+        self.assertTrue(user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        with self.assertRaisesRegex(DashboardError, "Qwen 3.8"):
+            self.service.ai_chat_send(
+                chat["id"], "再次识别", "deepseek-chat", "standard", "general", [attachment["id"]]
+            )
 
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")
