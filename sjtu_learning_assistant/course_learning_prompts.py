@@ -24,12 +24,8 @@ _SOURCE = dict(type="string", minLength=1, maxLength=256)
 _STRINGS = _array(_SHORT_TEXT)
 _CUES = _array(_SHORT_TEXT, nonempty=True)
 _CONFIDENCE = dict(type="number", minimum=0, maximum=1)
-_OFFSET = dict(type="integer", minimum=0)
 _TERM = _object(dict(original=_TEXT, canonical=_TEXT, category=_LABEL,
                      confidence=_CONFIDENCE, source=_SOURCE, cue_ids=_CUES, evidence=_STRINGS))
-_CHANGE = _object(dict(original=_TEXT, corrected=_TEXT, type=_LABEL,
-                       confidence=_CONFIDENCE, reason=_TEXT, start=_OFFSET, end=_OFFSET,
-                       cue_ids=_CUES, evidence=_STRINGS))
 _CORRECTION_PROPOSAL = _object(dict(
     cue_id=_SHORT_TEXT, original=_TEXT, replacement=_TEXT, type=_LABEL,
     confidence=_CONFIDENCE, reason=_TEXT, evidence=_STRINGS,

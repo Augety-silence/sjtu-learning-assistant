@@ -54,23 +54,6 @@ SUMMARY_KEYS = frozenset((
     "classroom_examples",
     "practice_items",
 ))
-MAP_SCHEMA_HINT = (
-    "必须包含且仅包含字段 cleaned_transcript、topics、emphasized_points、concepts、"
-    "cases_formulas_conclusions、review_questions、knowledge_points、classroom_examples、"
-    "practice_items。cleaned_transcript 项仅含 cue_id、start_ms、end_ms、text；"
-    "知识点必须标明 kind（definition/principle/method/fact/formula/conclusion）、concept、"
-    "statement 与逐字 evidence；课堂例子必须关联 related_knowledge_points；练习仅允许"
-    " recall/application，并给 answer_key 或 rubric。evidence 项仅含 cue_id、start_ms、"
-    "end_ms、quote。宁缺毋滥，不得把字幕纠错样本当作练习。"
-)
-SUMMARY_SCHEMA_HINT = (
-    "必须包含且仅包含字段 lesson_topic、learning_objectives、emphasized_points、concepts、"
-    "cases_formulas_conclusions、review_questions、timeline、knowledge_points、"
-    "classroom_examples、practice_items。所有 evidence 和 timeline 项必须引用 cue_id；"
-    "例子必须关联知识点，练习必须包含答案要点或评估标准。"
-)
-
-
 class TranscriptAIFormatError(ValueError):
     """A bounded error which never embeds model or transcript text."""
 

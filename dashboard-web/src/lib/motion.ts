@@ -15,7 +15,3 @@ export const motionEase = {
   out: [0.22, 0.8, 0.22, 1] as const,
   in: [0.4, 0, 1, 1] as const,
 } as const;
-
-export function easeOutTransition(duration: number) {
-  return { duration, ease: motionEase.out };
-}

@@ -362,11 +362,6 @@ def _message_content(
     return body_text, body_html, tuple(attachments)
 
 
-def _message_body_text(message: Message) -> str | None:
-    """Compatibility shim returning only the preferred plain-text body."""
-    return _message_content(message)[0]
-
-
 def _parse_message(
     *,
     email_address: str,

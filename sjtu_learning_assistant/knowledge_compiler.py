@@ -329,12 +329,6 @@ class KnowledgeCompilerService:
         self._state["events"] = self._state["events"][-50:]
         self._state["updated_at"] = _now()
 
-    def _warn(self, message: str) -> None:
-        self._state.setdefault("warnings", []).append(message[:400])
-        self._state["warnings"] = self._state["warnings"][-20:]
-        self._state["counts"]["warnings"] += 1
-        self._event("warning", message)
-
     def _persist(self) -> None:
         if self._state.get("target_root"):
             _atomic_write(Path(self._state["target_root"]) / STATE_RELATIVE_PATH,
