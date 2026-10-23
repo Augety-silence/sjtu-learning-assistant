@@ -49,6 +49,8 @@ import type {
 } from "@/lib/types";
 import { useResizablePanes } from "@/lib/useResizablePanes";
 
+const NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop";
+
 const starters = [
   "列出本周所有课程的截止事项，并按紧急程度排序",
   "搜索最近的课程消息，告诉我有哪些需要处理",
@@ -513,54 +515,74 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const ingestDroppedFiles = async (files: File[]) => {
-    if (attachmentBusy || files.length === 0) return;
-    const availableSlots = 20 - attachments.length;
-    if (availableSlots <= 0) {
-      setError("一次最多添加 20 个附件，请先移除部分附件。");
-      return;
-    }
-    const selectedFiles = files.slice(0, availableSlots);
-    const paths = selectedFiles.map(
-      (file) => (file as File & { path?: string }).path,
-    );
-    if (paths.some((path) => !path)) {
-      await pickAttachment();
-      return;
-    }
-
-    setAttachmentBusy(true);
-    setError(null);
-    const ingested: AIManagedAttachment[] = [];
-    let failure: string | null = null;
-    for (const path of paths) {
-      try {
-        ingested.push(await ingestAiAttachment(path as string));
-      } catch (reason) {
-        failure = reason instanceof Error ? reason.message : "附件安全摄取失败";
+  const ingestDroppedPaths = useCallback(
+    async (paths: string[]) => {
+      if (attachmentBusy || paths.length === 0) return;
+      const availableSlots = 20 - attachments.length;
+      if (availableSlots <= 0) {
+        setError("一次最多添加 20 个附件，请先移除部分附件。");
+        return;
       }
-    }
-    if (ingested.length > 0) {
-      setAttachments((current) => {
-        const next = [...current];
-        for (const attachment of ingested) {
-          if (!next.some((item) => item.id === attachment.id))
-            next.push(attachment);
+
+      setAttachmentBusy(true);
+      setError(null);
+      const ingested: AIManagedAttachment[] = [];
+      let failure: string | null = null;
+      for (const path of paths.slice(0, availableSlots)) {
+        try {
+          ingested.push(await ingestAiAttachment(path as string));
+        } catch (reason) {
+          failure =
+            reason instanceof Error ? reason.message : "附件安全摄取失败";
         }
-        return next.slice(0, 20);
-      });
-    }
-    if (failure) setError(`部分附件未能添加：${failure}`);
-    setAttachmentBusy(false);
-    window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
-  };
+      }
+      if (ingested.length > 0) {
+        setAttachments((current) => {
+          const next = [...current];
+          for (const attachment of ingested) {
+            if (!next.some((item) => item.id === attachment.id))
+              next.push(attachment);
+          }
+          return next.slice(0, 20);
+        });
+      }
+      if (failure) setError(`部分附件未能添加：${failure}`);
+      setAttachmentBusy(false);
+      window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
+    },
+    [attachmentBusy, attachments.length, focusIfPresent],
+  );
+
+  useEffect(() => {
+    const handleNativeDrop = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (
+        typeof detail !== "object" ||
+        detail === null ||
+        !("paths" in detail) ||
+        !Array.isArray(detail.paths) ||
+        detail.paths.some((path) => typeof path !== "string")
+      )
+        return;
+      void ingestDroppedPaths(detail.paths);
+    };
+    window.addEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
+    return () =>
+      window.removeEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
+  }, [ingestDroppedPaths]);
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!isFileDrag(event)) return;
     event.preventDefault();
     dragDepthRef.current = 0;
     setDragActive(false);
-    void ingestDroppedFiles(Array.from(event.dataTransfer.files));
+    const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
+      const path = (file as File & { path?: string }).path;
+      return path ? [path] : [];
+    });
+    // Native pywebview drops omit File.path in JavaScript. Its DOM bridge emits
+    // NATIVE_FILE_DROP_EVENT with OS-validated paths immediately after this event.
+    if (paths.length > 0) void ingestDroppedPaths(paths);
   };
 
   const revealAttachment = useCallback(async (attachmentId: number) => {

@@ -114,9 +114,10 @@ class AIChatHistoryTests(unittest.TestCase):
         self.assertIn("建议", sent["assistant_message"]["content"])
         user_content = FakeAIClient.requested_messages[-1][-1]["content"]
         self.assertIsInstance(user_content, list)
-        self.assertEqual("text", user_content[0]["type"])
-        self.assertEqual("image_url", user_content[1]["type"])
-        self.assertTrue(user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual("image_url", user_content[0]["type"])
+        self.assertEqual({"url"}, set(user_content[0]["image_url"]))
+        self.assertTrue(user_content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual("text", user_content[1]["type"])
         with self.assertRaisesRegex(DashboardError, "Qwen 3.8"):
             self.service.ai_chat_send(
                 chat["id"], "再次识别", "deepseek-chat", "standard", "general", [attachment["id"]]

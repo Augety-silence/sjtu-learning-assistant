@@ -603,17 +603,22 @@ describe("AIChatView", () => {
     );
   });
 
-  it("falls back to the native picker when WebView drops omit file paths", async () => {
+  it("ingests native WebView drop paths without opening the file picker", async () => {
     render(<AIChatView onBack={vi.fn()} />);
     await screen.findByRole("textbox", { name: "输入问题" });
     const file = new File(["notes"], "notes.txt", { type: "text/plain" });
     fireEvent.drop(screen.getByRole("main"), {
       dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
     });
-    await waitFor(() => expect(pickAiAttachment).toHaveBeenCalledOnce());
-    expect(await screen.findByText("复习提纲.txt")).toBeTruthy();
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/tmp/拖入笔记.md"] },
+      }),
+    );
+    expect(await screen.findByText("拖入笔记.md")).toBeTruthy();
+    expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/拖入笔记.md");
+    expect(pickAiAttachment).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(ingestAiAttachment).not.toHaveBeenCalled();
   });
 
   it("persists personalization and applies the Cmd+Enter shortcut", async () => {

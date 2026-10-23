@@ -112,8 +112,8 @@ class AIClientTests(unittest.TestCase):
             [{
                 "role": "user",
                 "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
                     {"type": "text", "text": "识别图片"},
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "auto"}},
                 ],
             }],
             system_prompt=False,
@@ -121,7 +121,8 @@ class AIClientTests(unittest.TestCase):
         client.close()
 
         self.assertEqual("图中是课程安排。", result["content"])
-        self.assertEqual(data_url, seen[0]["messages"][0]["content"][1]["image_url"]["url"])
+        image_url = seen[0]["messages"][0]["content"][0]["image_url"]
+        self.assertEqual({"url": data_url}, image_url)
 
     def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
         with patch.dict(os.environ):

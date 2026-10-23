@@ -138,7 +138,7 @@ class AIManagedFileServiceTests(unittest.TestCase):
         self.assertEqual(1, len(parts))
         self.assertEqual("image_url", parts[0]["type"])
         self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
-        self.assertEqual("auto", parts[0]["image_url"]["detail"])
+        self.assertEqual({"url"}, set(parts[0]["image_url"]))
         self.assertEqual("unsupported", item["text_status"])
 
     def test_cloud_only_read_verifies_hash_and_restore_then_reveal(self) -> None:

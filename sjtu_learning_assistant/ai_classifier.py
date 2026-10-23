@@ -309,8 +309,11 @@ class OpenAIClassificationClient:
                     image_count += 1
                     if image_count > 4:
                         raise AIClassificationError("单次最多识别 4 张图片。")
+                    clean_image_url: dict[str, str] = {"url": url}
+                    if "detail" in image_url:
+                        clean_image_url["detail"] = detail
                     clean_parts.append(
-                        {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+                        {"type": "image_url", "image_url": clean_image_url}
                     )
                 if not any(part["type"] == "text" for part in clean_parts) or image_count == 0:
                     raise AIClassificationError("AI 多模态消息必须同时包含问题和图片。")

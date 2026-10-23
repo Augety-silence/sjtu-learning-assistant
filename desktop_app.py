@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -1569,6 +1570,78 @@ def _enable_macos_window_material(window: object) -> None:
     AppHelper.callAfter(apply_material)
 
 
+NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop"
+
+
+def _native_file_drop_paths(event: object) -> tuple[str, ...]:
+    """Read paths populated by pywebview's native drop handler.
+
+    Browser File objects intentionally omit local paths. pywebview's Cocoa and
+    WebView2 backends attach ``pywebviewFullPath`` only after resolving the
+    operating-system drop payload, so React receives paths through a dedicated
+    custom event instead of trusting browser-provided values.
+    """
+    if not isinstance(event, Mapping):
+        return ()
+    transfer = event.get("dataTransfer")
+    if not isinstance(transfer, Mapping):
+        return ()
+    files = transfer.get("files")
+    if not isinstance(files, list):
+        return ()
+    result: list[str] = []
+    for item in files[:20]:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("pywebviewFullPath")
+        if type(value) is not str or not value or "\x00" in value:
+            continue
+        path = Path(value)
+        if not path.is_file():
+            continue
+        normalized = str(path)
+        if normalized not in result:
+            result.append(normalized)
+    return tuple(result)
+
+
+def _install_native_file_drop_bridge(window: object) -> None:
+    """Forward native file paths from pywebview DOM events to the React app."""
+    try:
+        loaded = getattr(getattr(window, "events", None), "loaded", None)
+        if loaded is None or not loaded.wait(15):
+            return
+        document = window.dom.document
+    except (AttributeError, RuntimeError):
+        return
+
+    def forward_drop(event: object) -> None:
+        paths = _native_file_drop_paths(event)
+        if not paths:
+            return
+        detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+        event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
+        try:
+            window.evaluate_js(
+                f"window.dispatchEvent(new CustomEvent({event_name}, {{detail: {detail}}}))"
+            )
+        except (AttributeError, RuntimeError):
+            return
+
+    try:
+        document.events.drop += forward_drop
+        # Keep both objects alive for the lifetime of the native window.
+        setattr(window, "_sjtu_drop_document", document)
+        setattr(window, "_sjtu_drop_handler", forward_drop)
+    except (AttributeError, RuntimeError):
+        return
+
+
+def _initialize_desktop_window(window: object) -> None:
+    _enable_macos_window_material(window)
+    _install_native_file_drop_bridge(window)
+
+
 def _report_startup_error(message: str) -> None:
     """Show a fatal startup error even in windowed builds without a console.
 
@@ -1692,10 +1765,7 @@ def run_desktop_app() -> int:
             "private_mode": False,
             "storage_path": str(APP_SUPPORT_DIR / "webview"),
         }
-        if native_vibrancy:
-            webview.start(_enable_macos_window_material, (window,), **start_options)
-        else:
-            webview.start(**start_options)
+        webview.start(_initialize_desktop_window, (window,), **start_options)
         return 0
     finally:
         if scheduler is not None:

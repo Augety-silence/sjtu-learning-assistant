@@ -2625,7 +2625,10 @@ class DashboardService:
             )
         user_content: Any = text
         if image_parts:
-            user_content = [{"type": "text", "text": text}, *image_parts]
+            # Match the SJTU Campus AI vision example exactly: image parts first,
+            # followed by the text instruction. The provider rejects some
+            # OpenAI extensions that are not part of its documented contract.
+            user_content = [*image_parts, {"type": "text", "text": text}]
         prompt.append({"role": "user", "content": user_content})
         try:
             preset = PresetLoader().get(selected_preset_id)
