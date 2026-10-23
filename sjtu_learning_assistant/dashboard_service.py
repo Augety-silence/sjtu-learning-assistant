@@ -1090,12 +1090,9 @@ class DashboardService:
         }
 
     # Small semantic aliases keep the service usable outside the pywebview bridge.
-    feature_capabilities = capabilities
     calendar_overview = calendar
-    roster_members = roster
     media = course_media
     video_playback = video
-    check_update = update_check
     update = update_check
     mcp = mcp_config
 

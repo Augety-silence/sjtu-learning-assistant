@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from sqlalchemy import Engine, inspect
 from sqlalchemy.exc import SQLAlchemyError
 
 from sjtu_learning_assistant.archive_service import ArchiveError
@@ -1612,16 +1611,6 @@ def run_desktop_app() -> int:
             # Desktop startup must never migrate/import a real legacy database implicitly.
             initialize_desktop_database(engine, skip_import=True)
             _notify_database_recovery(engine)
-        # Reconciliation is a one-time application-startup operation and only
-        # expires jobs whose owner lease is missing/stale.
-        if isinstance(engine, Engine) and inspect(engine).has_table("persistent_jobs"):
-            try:
-                from sjtu_learning_assistant.persistent_jobs import PersistentJobService
-            except ImportError:
-                PersistentJobService = None  # type: ignore[assignment,misc]
-            if PersistentJobService is not None:
-                PersistentJobService(engine).reconcile_interrupted()
-
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
             if not result:

@@ -551,18 +551,6 @@ export interface BackupTokenResult {
   configured: boolean;
 }
 
-export type ArchiveStatus =
-  | "archived"
-  | "local_changed"
-  | "cloud_only"
-  | "local_only"
-  | "uploading"
-  | "downloading"
-  | "verifying"
-  | "failed"
-  | "interrupted"
-  | "needs_verification";
-
 export interface ArchiveEntry {
   id: string;
   filename: string;
@@ -1027,16 +1015,6 @@ export type TranscriptProcessingState =
   | "recovering"
   | "recovery_exhausted"
   | "failed";
-
-/** Shared, optional processing-state fields of transcript status payloads. */
-export interface TranscriptProcessingStateFields {
-  processing_state?: TranscriptProcessingState | null;
-  processing_done?: boolean;
-  phase1_processing_done?: boolean;
-  auto_retryable?: boolean;
-  retryable?: boolean;
-  retry_after?: string | null;
-}
 
 export type Phase1PipelineStatus =
   | "completed"

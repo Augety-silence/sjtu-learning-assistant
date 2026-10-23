@@ -55,15 +55,6 @@ export class CapabilityUnavailableError extends BridgeInvocationError {
   }
 }
 
-export function isCapabilityUnavailableError(
-  error: unknown,
-): error is CapabilityUnavailableError {
-  return (
-    error instanceof BridgeInvocationError &&
-    CAPABILITY_UNAVAILABLE_CODES.has(error.code)
-  );
-}
-
 export interface BridgeResponse<T> {
   ok: boolean;
   data?: T;
@@ -269,12 +260,6 @@ export function updateSettings(
     "settings_update",
     payload,
   );
-}
-
-export function importAiConnection(configJson: string) {
-  return invoke<import("@/lib/types").SettingsStatus>("settings_ai_import", {
-    config_json: configJson,
-  });
 }
 
 export function testAiConnection() {
@@ -488,25 +473,6 @@ export async function sendAiChatMessage(
   throw new Error("AI 任务等待超时，已请求停止。");
 }
 
-export function getAIUsageSummary(pageId?: import("@/lib/types").ViewName) {
-  return invoke<{
-    page_id?: string | null;
-    tasks: number;
-    model_calls: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-    unknown_usage_calls: number;
-  }>("ai_usage_summary", pageId ? { page_id: pageId } : {});
-}
-
-export function listAiAttachments(limit = 100) {
-  return invoke<{
-    items: import("@/lib/types").AIManagedAttachment[];
-    count: number;
-  }>("ai_attachment_list", { limit });
-}
-
 export function pickAiAttachment() {
   return invoke<{
     cancelled: boolean;
@@ -518,13 +484,6 @@ export function ingestAiAttachment(path: string) {
   return invoke<import("@/lib/types").AIManagedAttachment>(
     "ai_attachment_ingest",
     { path },
-  );
-}
-
-export function restoreAiAttachment(attachmentId: number) {
-  return invoke<import("@/lib/types").AIManagedAttachment>(
-    "ai_attachment_restore",
-    { attachment_id: attachmentId },
   );
 }
 
@@ -540,12 +499,6 @@ export function deleteAiChatSession(sessionId: string) {
   return invoke<{ deleted: boolean }>("ai_chat_delete", {
     session_id: sessionId,
   });
-}
-
-export function sendAiChat(
-  messages: Array<{ role: "user" | "assistant"; content: string }>,
-) {
-  return invoke<import("@/lib/types").AIChatResult>("ai_chat", { messages });
 }
 
 export function pickArchiveRoot() {
@@ -576,22 +529,6 @@ export function getAssignmentDetail(courseId: number, assignmentId: number) {
   return invoke<import("@/lib/types").AssignmentItem>("detail", {
     course_id: courseId,
     assignment_id: assignmentId,
-  });
-}
-
-export function canSubmitAssignment(
-  courseId: number,
-  assignmentId: number,
-  submissionType?: import("@/lib/types").NativeSubmissionType,
-) {
-  return invoke<{
-    can_submit: boolean;
-    requires_external_submission: boolean;
-    submission_types: string[];
-  }>("can_submit", {
-    course_id: courseId,
-    assignment_id: assignmentId,
-    ...(submissionType ? { submission_type: submissionType } : {}),
   });
 }
 
@@ -780,12 +717,6 @@ export interface RosterQuery {
   query?: string;
 }
 
-export function getCapabilities(courseId?: number) {
-  return invoke<import("@/lib/types").AppCapabilities>("capabilities", {
-    ...(courseId === undefined ? {} : { course_id: courseId }),
-  });
-}
-
 export function getCalendar(year: number, month: number, courseIds?: number[]) {
   return invoke<import("@/lib/types").CalendarResult>("calendar", {
     year,
@@ -836,12 +767,6 @@ export function importTimetableIcs() {
 
 export function getGradebook(courseId: number) {
   return invoke<import("@/lib/types").GradebookResult>("gradebook", {
-    course_id: courseId,
-  });
-}
-
-export function exportGradebook(courseId: number) {
-  return invoke<import("@/lib/types").ExportResult>("gradebook_export", {
     course_id: courseId,
   });
 }
@@ -988,10 +913,6 @@ export function exportDebugBundle() {
 
 export function checkForUpdates() {
   return invoke<import("@/lib/types").UpdateCheckResult>("update");
-}
-
-export function getMcpConfig() {
-  return invoke<import("@/lib/types").McpConfig>("mcp");
 }
 
 export function startTranscriptBatch(courseId: number, sourceIds: string[]) {
