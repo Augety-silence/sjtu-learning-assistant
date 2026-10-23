@@ -22,7 +22,7 @@ from datetime import datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -1571,6 +1571,82 @@ def _enable_macos_window_material(window: object) -> None:
 
 
 NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop"
+_MACOS_NATIVE_DROP_HOOK_INSTALLED = False
+
+
+def _macos_dragged_file_paths(
+    sender: object,
+    *,
+    url_class: object,
+    file_urls_only_key: object,
+    true_value: object = True,
+) -> tuple[str, ...]:
+    """Extract regular files straight from the native Finder pasteboard."""
+    try:
+        if sender.draggingSource() is not None:
+            return ()
+        pasteboard = sender.draggingPasteboard()
+        urls = pasteboard.readObjectsForClasses_options_(
+            [url_class], {file_urls_only_key: true_value}
+        ) or []
+    except (AttributeError, RuntimeError):
+        return ()
+    result: list[str] = []
+    for url in urls[:20]:
+        try:
+            absolute = str(url.filePathURL().absoluteString())
+        except (AttributeError, RuntimeError):
+            continue
+        value = unquote(absolute.removeprefix("file://"))
+        path = Path(value)
+        if path.is_file() and str(path) not in result:
+            result.append(str(path))
+    return tuple(result)
+
+
+def _install_macos_native_file_drop_hook() -> bool:
+    """Dispatch Finder paths from WKWebView before pywebview joins by filename."""
+    global _MACOS_NATIVE_DROP_HOOK_INSTALLED
+    if sys.platform != "darwin":
+        return False
+    if _MACOS_NATIVE_DROP_HOOK_INSTALLED:
+        return True
+    try:
+        import AppKit  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView  # type: ignore[import-not-found]
+
+        host_class = BrowserView.WebKitHost
+        original = host_class.performDragOperation_
+    except (ImportError, AttributeError, RuntimeError):
+        return False
+
+    def perform_drag_operation(host: object, sender: object) -> object:
+        paths = _macos_dragged_file_paths(
+            sender,
+            url_class=AppKit.NSURL,
+            file_urls_only_key=AppKit.NSPasteboardURLReadingFileURLsOnlyKey,
+            true_value=AppKit.NSNumber.numberWithBool_(True),
+        )
+        result = original(host, sender)
+        if paths:
+            event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
+            detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+            script = (
+                "window.setTimeout(function(){window.dispatchEvent(new CustomEvent("
+                f"{event_name}, {{detail: {detail}}}));}}, 0);"
+            )
+            try:
+                host.evaluateJavaScript_completionHandler_(script, None)
+            except (AttributeError, RuntimeError):
+                pass
+        return result
+
+    try:
+        host_class.performDragOperation_ = perform_drag_operation
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    _MACOS_NATIVE_DROP_HOOK_INSTALLED = True
+    return True
 
 
 def _native_file_drop_paths(
@@ -1656,7 +1732,8 @@ def _install_native_file_drop_bridge(window: object) -> None:
 
 def _initialize_desktop_window(window: object) -> None:
     _enable_macos_window_material(window)
-    _install_native_file_drop_bridge(window)
+    if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
+        _install_native_file_drop_bridge(window)
 
 
 def _report_startup_error(message: str) -> None:
@@ -1691,6 +1768,7 @@ def run_desktop_app() -> int:
         _report_startup_error("错误：缺少 pywebview，请重新安装依赖。")
         return 2
 
+    _install_macos_native_file_drop_hook()
     engine = create_database_engine()
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None

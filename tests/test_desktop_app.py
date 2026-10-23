@@ -16,6 +16,7 @@ from desktop_app import (
     _enable_macos_window_material,
     _initialize_desktop_window,
     _install_native_file_drop_bridge,
+    _macos_dragged_file_paths,
     _native_file_drop_paths,
     _notify_database_recovery,
     main,
@@ -625,6 +626,35 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
                         ("download-display-name", str(first)),
                         (second.name, str(second)),
                     ],
+                ),
+            )
+
+            class NativeURL:
+                def __init__(self, value):
+                    self.value = value
+
+                def filePathURL(self):
+                    return self
+
+                def absoluteString(self):
+                    return "file://" + self.value.replace(" ", "%20")
+
+            pasteboard = SimpleNamespace(
+                readObjectsForClasses_options_=lambda _classes, _options: [
+                    NativeURL(str(first)),
+                    NativeURL(str(second)),
+                ]
+            )
+            sender = SimpleNamespace(
+                draggingSource=lambda: None,
+                draggingPasteboard=lambda: pasteboard,
+            )
+            self.assertEqual(
+                (str(first), str(second)),
+                _macos_dragged_file_paths(
+                    sender,
+                    url_class=object(),
+                    file_urls_only_key=object(),
                 ),
             )
 
