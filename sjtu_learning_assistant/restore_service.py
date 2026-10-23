@@ -23,7 +23,12 @@ from sjtu_learning_assistant.cloud_archive_service import (
     ProgressThrottle,
     utcnow,
 )
-from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
+from sjtu_learning_assistant.cloud_storage import (
+    CloudAuthError,
+    CloudNetworkError,
+    CloudNotFoundError,
+    SJTUCloudPanProvider,
+)
 from sjtu_learning_assistant.models import (
     ArchiveAuthorizedRoot,
     ArchiveEntry,
@@ -642,19 +647,34 @@ class RestoreService:
                 result["target"] = str(target)
                 return result
         except Exception as exc:
+            # 任务面板只读 last_error：保留可操作的已脱敏原因，而不是只显示异常类名。
+            if isinstance(exc, CloudArchiveError):
+                public_error = str(exc)
+            elif isinstance(exc, CloudAuthError):
+                # 与归档上传一致：凭据失效需引导用户更新 UserToken，而不是笼统的“恢复失败”。
+                public_error = "交大云盘凭据无效或已过期，请在“系统设置 → 交大云盘”更新 UserToken 后重试。"
+            elif isinstance(exc, CloudNetworkError):
+                public_error = "无法连接交大云盘，请检查网络后重试。"
+            elif isinstance(exc, CloudNotFoundError):
+                # 云端归档对象已被删除/移动时重试必然失败，需明确告知而不是“可稍后重试”。
+                public_error = "云端归档文件不存在或已被移除，无法恢复该版本。"
+            elif isinstance(exc, PermissionError):
+                public_error = "目标文件正被其他程序占用或没有写入权限，请关闭相关程序后重试。"
+            else:
+                public_error = f"恢复失败（{type(exc).__name__}）。"
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is not None:
                     job.status = "failed"
                     job.bytes_done = min(job.bytes_total, max(job.bytes_done, count))
                     job.finished_at = utcnow()
-                    job.last_error = f"恢复失败（{type(exc).__name__}）。"
+                    job.last_error = public_error[:500]
                     add_event(session, job, "restore_failed", "failed", job.last_error)
                     session.commit()
             if isinstance(exc, RestoreError):
                 raise
-            if isinstance(exc, PermissionError):
-                raise RestoreError("目标文件正被其他程序占用或没有写入权限，请关闭相关程序后重试。") from exc
+            if isinstance(exc, (CloudAuthError, CloudNetworkError, CloudNotFoundError, PermissionError)):
+                raise RestoreError(public_error) from exc
             raise RestoreError("恢复下载失败，可稍后重新制定计划。") from exc
         finally:
             if temporary is not None:

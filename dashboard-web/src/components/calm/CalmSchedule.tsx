@@ -333,10 +333,23 @@ export function CalmSchedule({
     [moveToMonth, visibleMonth],
   );
 
+  // The "今天" pill unmounts and a month change re-keys the grid, so the
+  // activated button disappears and Chromium/WebView2 drops focus to <body>.
+  const focusDayIfLost = useCallback((date: Date) => {
+    const key = dateKey(startOfDay(date));
+    window.setTimeout(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body) {
+        dayRefs.current.get(key)?.focus();
+      }
+    }, 0);
+  }, []);
+
   const backToToday = useCallback(() => {
     const today = startOfDay(now);
     moveToMonth(today, today, today > visibleMonth ? 1 : -1);
-  }, [moveToMonth, now, visibleMonth]);
+    focusDayIfLost(today);
+  }, [focusDayIfLost, moveToMonth, now, visibleMonth]);
 
   const handleDayKeyDown = (
     event: ReactKeyboardEvent<HTMLButtonElement>,
@@ -492,7 +505,10 @@ export function CalmSchedule({
                     aria-current={key === todayKey ? "date" : undefined}
                     aria-pressed={key === selectedKey}
                     tabIndex={key === rovingKey ? 0 : -1}
-                    onClick={() => selectDay(date)}
+                    onClick={() => {
+                      selectDay(date);
+                      if (outside) focusDayIfLost(date);
+                    }}
                     onKeyDown={(event) => handleDayKeyDown(event, date)}
                   >
                     {date.getDate()}

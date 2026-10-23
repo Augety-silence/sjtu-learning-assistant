@@ -11,13 +11,15 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from .ai_classifier import extract_token_usage
 from .course_learning_prompts import (
     CRITIC_REVIEW_SCOPE,
+    DIAGNOSTIC_CATEGORIES,
+    DIAGNOSTIC_PATHS,
     ROLE_SCHEMAS,
     decode_semantic_json,
     role_output_contract,
@@ -449,8 +451,31 @@ def _event(
         "status": status[:64],
     }
     if diagnostics is not None:
-        result["diagnostics"] = dict(diagnostics)
+        result["diagnostics"] = _safe_diagnostics(diagnostics)
     return result
+
+
+_DIAGNOSTIC_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter"})
+
+
+def _safe_diagnostics(diagnostics: Mapping[str, object]) -> dict[str, object]:
+    """Coerce event diagnostics onto the strict OrchestratorResult contract.
+
+    A malformed diagnostic must never turn a completed run into a schema failure,
+    so unknown keys are dropped and out-of-contract values degrade to neutral ones.
+    """
+    category = diagnostics.get("category")
+    schema_path = diagnostics.get("schema_path")
+    content_length = diagnostics.get("content_length")
+    finish_reason = diagnostics.get("finish_reason")
+    status_code = diagnostics.get("status_code")
+    return {
+        "category": category if type(category) is str and category in DIAGNOSTIC_CATEGORIES else "error",
+        "schema_path": schema_path if schema_path is None or (type(schema_path) is str and schema_path in DIAGNOSTIC_PATHS) else "$",
+        "content_length": content_length if type(content_length) is int and content_length >= 0 else None,
+        "finish_reason": finish_reason if type(finish_reason) is str and finish_reason in _DIAGNOSTIC_FINISH_REASONS else None,
+        "status_code": status_code if type(status_code) is int and 100 <= status_code <= 599 else None,
+    }
 
 
 def _agent_output(value: object) -> _AgentOutput:
@@ -928,8 +953,8 @@ class CourseLearningOrchestrator:
         self._run_max_calls = 120
         self._run_deadline_seconds = 900.0
         self._run_failure_limit = 3
-        self._run_last_failure: tuple[str, str] | None = None
-        self._run_failure_streak = 0
+        # Per-role (category, streak): a success of another role must not reset it.
+        self._run_failures: dict[str, tuple[str, int]] = {}
         self._run_open_circuits: set[str] = set()
         self._raw_registry: dict[tuple[str, str, str | None], tuple[str, bytes]] = {}
         self._cache: dict[tuple[str, str, str | None, str], OrchestratorResult] = {}
@@ -1005,6 +1030,7 @@ class CourseLearningOrchestrator:
     def _cache_key(
         self, raw_hash: str, memory_version: str | None,
         endpoint_fingerprint: str | None = None,
+        policy: OrchestratorPolicy | None = None,
     ) -> str:
         identity = {
             "raw_hash": raw_hash, "course_memory_version": memory_version,
@@ -1014,6 +1040,10 @@ class CourseLearningOrchestrator:
         }
         if endpoint_fingerprint is not None:
             identity["endpoint_fingerprint"] = endpoint_fingerprint
+        if policy is not None and policy != OrchestratorPolicy():
+            # Default policy keeps the historical key so existing caches stay valid;
+            # e.g. a commit_memory=False result must not satisfy a committing run.
+            identity["policy"] = asdict(policy)
         return _sha256(_safe_json(identity).encode("utf-8"))
 
     def _cache_path(
@@ -1167,11 +1197,51 @@ class CourseLearningOrchestrator:
             except OSError:
                 pass
 
+    def _chunk_context(
+        self, base_context: Mapping[str, object], memory_state: Mapping[str, object],
+        chunk: SubtitleChunk,
+    ) -> tuple[dict[str, object], tuple[str, ...]]:
+        """Per-chunk agent context; also the evidence corpus for checkpoint re-validation."""
+        context = dict(base_context)
+        if not self._seed_packs:
+            return context, ()
+        seed_selection = retrieve_seed_glossary(
+            memory_state.get("course_profile"),
+            "\n".join((
+                chunk.previous_context,
+                chunk.current_text,
+                chunk.next_context,
+            )),
+            packs=self._seed_packs,
+            course_glossary=memory_state.get("glossary")
+            if isinstance(memory_state.get("glossary"), Mapping) else None,
+            max_domains=2,
+            max_terms=10,
+            max_chars=1400,
+            max_tokens=420,
+        )
+        seed_terms = [term for term in seed_selection.terms if term.origin == "seed"]
+        if seed_terms:
+            context["baseline_glossary"] = {
+                "trust": "low_priority_read_only_seed",
+                "domains": list(seed_selection.domains),
+                "terms": [{
+                    "id": term.id,
+                    "canonical": term.canonical,
+                    "zh_name": term.zh_name,
+                    "aliases": list(term.aliases),
+                    "definition_zh": term.definition_zh,
+                    "asr_variants": list(term.asr_variants),
+                    "source_id": term.source_id,
+                } for term in seed_terms],
+            }
+        return context, tuple(term.id for term in seed_terms)
+
     def _call(self, role: str, messages: Sequence[Mapping[str, str]], parser: Any,
               events: list[dict[str, Any]], *, repair_source: object = None, is_repair: bool = False) -> Any:
         if role in self._run_open_circuits:
             events.append(_event(
-                role, agent=role, model=self.model, prompt_version=self.prompt_version,
+                role, model=self.pipeline_version, prompt_version=self.prompt_version,
                 status="circuit_open", diagnostics=_breaker_diagnostics(),
             ))
             raise _AgentCircuitOpen(f"{role} circuit is open")
@@ -1179,7 +1249,7 @@ class CourseLearningOrchestrator:
             self._run_started and time.monotonic() - self._run_started >= self._run_deadline_seconds
         ):
             events.append(_event(
-                role, agent=role, model=self.model, prompt_version=self.prompt_version,
+                role, model=self.pipeline_version, prompt_version=self.prompt_version,
                 status="budget_exhausted", diagnostics=_breaker_diagnostics(),
             ))
             raise _AgentBudgetExceeded("semantic agent budget exhausted")
@@ -1202,19 +1272,15 @@ class CourseLearningOrchestrator:
                 latency_ms=(time.monotonic() - started) * 1000,
                 confidence=confidence, status="repaired" if is_repair else "ok", diagnostics=semantic_diagnostics(response),
             ))
-            self._run_last_failure = None
-            self._run_failure_streak = 0
+            self._run_failures.pop(role, None)
             return parsed
         except Exception as exc:
             diagnostics = semantic_diagnostics(response, exc)
             category = str(diagnostics["category"])
-            failure = (role, category)
-            if failure == self._run_last_failure:
-                self._run_failure_streak += 1
-            else:
-                self._run_last_failure = failure
-                self._run_failure_streak = 1
-            circuit_opened = self._run_failure_streak >= self._run_failure_limit
+            previous_category, previous_streak = self._run_failures.get(role, ("", 0))
+            streak = previous_streak + 1 if previous_category == category else 1
+            self._run_failures[role] = (category, streak)
+            circuit_opened = streak >= self._run_failure_limit
             if circuit_opened:
                 self._run_open_circuits.add(role)
             events.append(_event(
@@ -1229,7 +1295,7 @@ class CourseLearningOrchestrator:
                 events.append(_event(
                     role + "_circuit", model=self.pipeline_version,
                     prompt_version=self.prompt_version,
-                    usage={"failure_streak": self._run_failure_streak},
+                    usage={"failure_streak": streak},
                     status="open_after_repeated_failure",
                 ))
             if isinstance(exc, SchemaValidationError) and not is_repair:
@@ -1265,8 +1331,7 @@ class CourseLearningOrchestrator:
         self._run_max_calls = checked_policy.max_total_agent_calls
         self._run_deadline_seconds = float(checked_policy.max_elapsed_seconds)
         self._run_failure_limit = checked_policy.repeated_failure_limit
-        self._run_last_failure = None
-        self._run_failure_streak = 0
+        self._run_failures = {}
         self._run_open_circuits = set()
         if type(course_id) is not str or not course_id.strip() or type(video_id) is not str or not video_id.strip():
             raise ValueError("course_id and video_id are required")
@@ -1280,7 +1345,10 @@ class CourseLearningOrchestrator:
         raw = _input_bytes(raw_vtt, cues)
         raw_hash = _sha256(raw)
         self._save_raw(memory_repo, course_id, video_id, chapter_id, raw, raw_hash)
-        initial_key = self._cache_key(raw_hash, memory_version, endpoint_fingerprint)
+        initial_key = self._cache_key(raw_hash, memory_version, endpoint_fingerprint, checked_policy)
+        # Chunk checkpoints are re-validated under the current policy on load, so
+        # they stay policy-independent and survive a policy change.
+        checkpoint_key = self._cache_key(raw_hash, memory_version, endpoint_fingerprint)
         cached = self._load_cache(
             memory_repo, initial_key, course_id=course_id, video_id=video_id,
             chapter_id=chapter_id,
@@ -1322,12 +1390,14 @@ class CourseLearningOrchestrator:
         seed_terms_used: set[str] = set()
 
         for chunk_index, chunk in enumerate(chunks, start=1):
+            context, chunk_seed_ids = self._chunk_context(base_context, memory_state, chunk)
             checkpoint = self._load_checkpoint(
-                memory_repo, key=initial_key, raw_hash=raw_hash, chunk=chunk,
+                memory_repo, key=checkpoint_key, raw_hash=raw_hash, chunk=chunk,
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,
-                memory_version=memory_version, memory=base_context, policy=checked_policy,
+                memory_version=memory_version, memory=context, policy=checked_policy,
                 endpoint_fingerprint=endpoint_fingerprint,
             )
+            seed_terms_used.update(chunk_seed_ids)
             if checkpoint is not None:
                 correction, critic, numeric = checkpoint
                 corrections.append(correction)
@@ -1341,39 +1411,6 @@ class CourseLearningOrchestrator:
                 if progress_callback is not None:
                     progress_callback(chunk_index, len(chunks), "checkpoint_reused")
                 continue
-            context = dict(base_context)
-            if self._seed_packs:
-                seed_selection = retrieve_seed_glossary(
-                    memory_state.get("course_profile"),
-                    "\n".join((
-                        chunk.previous_context,
-                        chunk.current_text,
-                        chunk.next_context,
-                    )),
-                    packs=self._seed_packs,
-                    course_glossary=memory_state.get("glossary")
-                    if isinstance(memory_state.get("glossary"), Mapping) else None,
-                    max_domains=2,
-                    max_terms=10,
-                    max_chars=1400,
-                    max_tokens=420,
-                )
-                seed_terms = [term for term in seed_selection.terms if term.origin == "seed"]
-                if seed_terms:
-                    context["baseline_glossary"] = {
-                        "trust": "low_priority_read_only_seed",
-                        "domains": list(seed_selection.domains),
-                        "terms": [{
-                            "id": term.id,
-                            "canonical": term.canonical,
-                            "zh_name": term.zh_name,
-                            "aliases": list(term.aliases),
-                            "definition_zh": term.definition_zh,
-                            "asr_variants": list(term.asr_variants),
-                            "source_id": term.source_id,
-                        } for term in seed_terms],
-                    }
-                    seed_terms_used.update(term.id for term in seed_terms)
             common = {
                 "chunk_id": chunk.chunk_id,
                 "previous_context_read_only": chunk.previous_context,
@@ -1495,7 +1532,7 @@ class CourseLearningOrchestrator:
                     final_critic = _fallback_critic("revision loop limit reached")
             assert final_correction is not None and final_critic is not None
             if not self._store_checkpoint(
-                memory_repo, key=initial_key, raw_hash=raw_hash, chunk=chunk,
+                memory_repo, key=checkpoint_key, raw_hash=raw_hash, chunk=chunk,
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,
                 memory_version=memory_version, correction=final_correction,
                 critic=final_critic, numeric_count=numeric,
@@ -1527,6 +1564,11 @@ class CourseLearningOrchestrator:
             status=str(self._seed_glossary_status.get("status", "degraded")),
         ))
 
+        stopped = {event["status"] for event in events} & {"budget_exhausted", "circuit_open"}
+        if "budget_exhausted" in stopped:
+            warnings.append("AI 调用次数或时间预算已用尽，剩余字幕块保留原文，可稍后重试。")
+        if "circuit_open" in stopped:
+            warnings.append("AI 连续同类失败已熔断，剩余字幕块保留原文，可稍后重试。")
         uncertain = tuple(span for correction in corrections for span in correction.uncertain)
         critic_passes = sum(item.decision is CriticDecision.PASS for item in critics)
         critic_rate = critic_passes / len(chunks) if chunks else 0.0
@@ -1648,7 +1690,7 @@ class CourseLearningOrchestrator:
             ))
 
         corrected_transcript = "\n".join(item.corrected_text for item in corrections)
-        final_key = self._cache_key(raw_hash, committed_version, endpoint_fingerprint)
+        final_key = self._cache_key(raw_hash, committed_version, endpoint_fingerprint, checked_policy)
         result = OrchestratorResult(
             course_id=course_id,
             video_id=video_id,

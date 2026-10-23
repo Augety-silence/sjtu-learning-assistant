@@ -154,7 +154,9 @@ export function ScheduleView({
           candidate.id === event.id && candidate.eventType === event.eventType,
       ) === index,
   );
-  const calendarError = allEvents.length === 0 ? canvasError : null;
+  // Never let other rows hide a Canvas failure: local course sessions are no
+  // substitute for deadlines, and Canvas rows kept from a previous load are stale.
+  const calendarError = canvasError || null;
   const displayError = loadError || calendarError;
   const statusLabel = hasCourseData
     ? offline

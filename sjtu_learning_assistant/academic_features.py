@@ -489,18 +489,13 @@ class AcademicFeatureService:
             raise AcademicValidationError("日历时间必须包含时区。")
         if end <= start:
             raise AcademicValidationError("日历结束时间必须晚于开始时间。")
-        try:
-            ids = self._course_ids(course_ids)
-        except AcademicFeatureError:
-            ids = []
+        # Canvas 读取失败必须以已脱敏的 AcademicFeatureError 抛出，不能伪装成
+        # “本月无日程”；原先吞异常是为合并本地课表，课表合并移除后已无此需要。
+        ids = self._course_ids(course_ids)
         raw: list[dict[str, Any]] = []
-        if ids:
-            try:
-                for offset in range(0, len(ids), 10):
-                    contexts = [f"course_{item}" for item in ids[offset : offset + 10]]
-                    raw.extend(self._calendar_batch(contexts, start, end))
-            except AcademicFeatureError:
-                raw = []
+        for offset in range(0, len(ids), 10):
+            contexts = [f"course_{item}" for item in ids[offset : offset + 10]]
+            raw.extend(self._calendar_batch(contexts, start, end))
 
         deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
         for event in raw:

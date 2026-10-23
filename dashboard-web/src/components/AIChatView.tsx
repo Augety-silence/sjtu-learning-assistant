@@ -743,6 +743,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const hasMessages = Boolean(active?.messages.length);
+  // Streaming deltas are kept quiet by aria-live="off" on the stream bubble
+  // (AIChatMessageBubble). aria-busy on this live region is avoided on purpose:
+  // NVDA/JAWS on Chromium never announce the region after busy clears.
   const tracesById = useMemo(
     () => new Map(active?.traces.map((trace) => [trace.id, trace]) ?? []),
     [active?.traces],

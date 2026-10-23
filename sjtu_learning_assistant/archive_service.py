@@ -408,7 +408,14 @@ def _safe_error(exc: Exception) -> str:
     if len(home) > 3:
         # OSError 文本含本机绝对路径（含用户名），写入 download_error/展示前脱敏用户目录。
         flags = re.IGNORECASE if os.name == "nt" else 0
-        variants = {home, home.replace("\\", "/"), home.replace("/", "\\")}
+        # str(OSError) 用 repr() 展示文件名，Windows 路径中的反斜杠会被转义成双反斜杠
+        # （'C:\\Users\\alice\\...'），必须同时匹配该形式。
+        variants = {
+            home,
+            home.replace("\\", "/"),
+            home.replace("/", "\\"),
+            home.replace("/", "\\").replace("\\", "\\\\"),
+        }
         for variant in sorted(variants, key=len, reverse=True):
             text = re.sub(re.escape(variant), "~", text, flags=flags)
     return text[:1000] or exc.__class__.__name__
@@ -1590,17 +1597,33 @@ class ArchiveService:
                 _remove_target_symlink(target)
                 if _path_mode(target) is not None and not _is_regular_file(target):
                     raise ArchiveError("目标路径已存在且不是普通文件。")
-                if previous_path != target and _path_mode(previous_path) is not None:
+                # 大小写/Unicode 不敏感文件系统（APFS/NTFS）上旧版目录（如 "Week 1"）
+                # 与新目标（"week 1"）可能是同一文件；不能在替换后把它当旧副本删除。
+                distinct_previous = previous_path != target and not _same_physical_file(
+                    previous_path, target
+                )
+                if distinct_previous and _path_mode(previous_path) is not None:
                     _ensure_safe_directory(self.archive_root, previous_path.parent)
+                if (
+                    distinct_previous
+                    and _is_regular_file(target)
+                    and not self._has_content(target, size, digest)
+                ):
+                    # 目标处已有另一份文件（停用资料的遗留副本、分类变化后的旧文件或
+                    # 用户自己的文件）；os.replace 会静默覆盖它，必须先存入 .versions。
+                    self._preserve_old_version(target, context.source_id)
                 if _is_regular_file(previous_path):
-                    self._preserve_old_version(previous_path, context.source_id)
+                    # 内容与新下载完全相同（仅路径变化：课程改名、分类/整理开关变化，或
+                    # 上一轮替换后状态写回失败）时不再整份复制进 .versions。
+                    if not self._has_content(previous_path, size, digest):
+                        self._preserve_old_version(previous_path, context.source_id)
                 elif _path_mode(previous_path) is not None:
                     if previous_path.is_symlink():
                         previous_path.unlink()
                     else:
                         raise ArchiveError("旧归档路径不是普通文件，已拒绝处理。")
                 _replace_with_regular_file(self.archive_root, temporary_path, target)
-                if previous_path != target and _is_regular_file(previous_path):
+                if distinct_previous and _is_regular_file(previous_path):
                     try:
                         previous_path.unlink()
                     except OSError:
@@ -1738,6 +1761,10 @@ class ArchiveService:
             raise ArchiveError("旧归档对象不是普通文件，已拒绝保留版本。")
         versions_dir = ensure_within_root(self.archive_root, target.parent / ".versions")
         _ensure_safe_directory(self.archive_root, versions_dir)
+        if self._has_identical_version(target, versions_dir, source_id):
+            # 上一轮已保留同一旧内容（如 Windows 上目标被 Word/Acrobat 占用导致
+            # 替换失败、每轮同步重试）；不重复复制，避免 .versions 无限膨胀。
+            return
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         version_name = add_source_id_suffix(
             "%s (version %s)%s" % (target.stem, timestamp, target.suffix), source_id
@@ -1748,6 +1775,42 @@ class ArchiveService:
         if _path_mode(version_path) is not None:
             raise ArchiveError("版本归档目标已存在，已拒绝覆盖。")
         _copy_regular_file(target, version_path)
+
+    def _has_content(self, path: Path, size: int, digest: str) -> bool:
+        """path 的内容是否与 (size, digest) 完全一致；先比大小，读取失败按“不同”处理。"""
+        try:
+            if path.lstat().st_size != size:
+                return False
+            return self._file_digest(path) == (size, digest)
+        except (OSError, ArchiveError):
+            return False
+
+    def _has_identical_version(
+        self, target: Path, versions_dir: Path, source_id: str
+    ) -> bool:
+        safe_id = sanitize_component(source_id, fallback="unknown", max_length=48)
+        prefix = f"{target.stem} (version "
+        marker = f" [{safe_id}]{target.suffix}"
+        try:
+            candidates = [
+                child
+                for child in versions_dir.iterdir()
+                if child.name.startswith(prefix)
+                and child.name.endswith(marker)
+                and _is_regular_file(child)
+            ]
+            if not candidates:
+                return False
+            expected = self._file_digest(target)
+            for candidate in candidates:
+                if candidate.lstat().st_size != expected[0]:
+                    continue
+                if self._file_digest(candidate) == expected:
+                    return True
+        except (OSError, ArchiveError):
+            # 判重失败时按原逻辑复制，宁可多保留一份也不丢旧内容。
+            return False
+        return False
 
     def _record_attempt(self, source_id: str) -> None:
         """每次实际下载尝试前累计计数；成功后保留历史累计值。"""

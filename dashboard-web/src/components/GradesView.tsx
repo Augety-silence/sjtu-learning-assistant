@@ -127,6 +127,23 @@ export function GradesView({
       });
       return;
     }
+    // Clearing a cell deletes the posted Canvas grade; require explicit confirmation (WCAG 3.3.4).
+    const existing = student.grades[assignment.id];
+    if (
+      score === null &&
+      (typeof existing?.score === "number" ||
+        Boolean(existing?.displayGrade)) &&
+      !window.confirm(
+        `确定清除 ${student.studentName} 的“${assignment.name}”成绩？此操作会同步删除 Canvas 中的成绩。`,
+      )
+    ) {
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
     setSavingKey(key);
     try {
       await onSaveGrade({
@@ -327,6 +344,8 @@ export function GradesView({
                                   }
                                 }}
                                 onBlur={() => {
+                                  // Alt+Tab / window deactivation also blurs; keep the draft instead of posting a half-typed score.
+                                  if (!document.hasFocus()) return;
                                   if (key in drafts)
                                     void save(student, assignment);
                                 }}

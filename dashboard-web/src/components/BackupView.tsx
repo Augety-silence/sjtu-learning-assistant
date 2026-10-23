@@ -1,5 +1,5 @@
 import { CloudUpload, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import backupFinishedIllustration from "@/assets/empty-states/backup-finished.webp";
 import { ArchiveManager } from "@/components/archive/ArchiveManager";
 import { ContentReveal } from "@/components/ContentReveal";
@@ -105,22 +105,36 @@ export function BackupView() {
   const [starting, setStarting] = useState(false);
   const [watching, setWatching] = useState(false);
   const [removeLocal, setRemoveLocal] = useState(false);
+  const requestSeq = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // 轮询走静默刷新，避免刷新按钮每秒在禁用/旋转/文案之间闪烁；手动刷新与重试仍显示进行中状态。
+  // 1s 轮询与手动刷新可能并发（status() 在空闲时会做完整 preview），只采纳最新一次请求的结果，
+  // 防止旧的 "running" 响应覆盖新的 "finished" 状态，并避免卸载后写状态。
   const load = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent === true;
+    const seq = ++requestSeq.current;
     if (!silent) setRefreshing(true);
-    setLoadError("");
     try {
       const next = await getBackupStatus();
+      if (!mounted.current || seq !== requestSeq.current) return;
+      setLoadError("");
       setBackup(next);
       setWatching(next.status === "running");
     } catch (reason) {
+      if (!mounted.current || seq !== requestSeq.current) return;
       setLoadError(
         reason instanceof Error ? reason.message : "备份状态读取失败",
       );
     } finally {
-      if (!silent) setRefreshing(false);
+      if (!silent && mounted.current) setRefreshing(false);
     }
   }, []);
 

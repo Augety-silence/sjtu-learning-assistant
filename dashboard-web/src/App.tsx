@@ -121,6 +121,8 @@ const baseViews: ViewName[] = [
 ];
 // 含未提交草稿的视图：后台同步完成后不自动用 key 重挂。
 const draftViews: ViewName[] = ["assignments", "grades", "grading"];
+// 同步进行中 sync_status 按 1.2s 轮询；连续失败约 10 次（≥12s）视为状态不可读。
+const SYNC_STATUS_FAILURE_LIMIT = 10;
 
 const pageAILabels: Record<ViewName, string> = {
   overview: "概览",
@@ -1396,6 +1398,10 @@ export default function App() {
 
   const statusRequestPending = useRef(false);
   const syncAccepted = useRef(false);
+  // 已受理的同步期间 sync_status 连续失败次数；达到上限即结束“同步中”，避免按钮永久禁用。
+  const statusFailures = useRef(0);
+  // 因状态不可读而提前结束“同步中”后，状态恢复时仍补报结果并刷新数据。
+  const statusLost = useRef(false);
   const currentView = useRef(view);
   // 草稿页上推迟的同步刷新：离开草稿页时补上，避免 capabilities 等停留在同步前。
   const [syncRefreshDeferred, setSyncRefreshDeferred] = useState(false);
@@ -1420,10 +1426,17 @@ export default function App() {
     try {
       const accepted = syncAccepted.current;
       const next = await invoke<SyncStatus>("sync_status");
+      statusFailures.current = 0;
       setSyncStatus((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
       );
-      if (syncRequested && accepted && next.status === "idle") {
+      // 读 await 之后的 ref 当前值；期间若已发起新同步，triggerSync 会清除该标记。
+      const recovering = statusLost.current;
+      if (
+        ((syncRequested && accepted) || recovering) &&
+        next.status === "idle"
+      ) {
+        statusLost.current = false;
         syncAccepted.current = false;
         setSyncRequested(false);
         // 作业/评分页可能有未提交草稿，key 重挂会清空；改为由用户点击刷新。
@@ -1459,6 +1472,22 @@ export default function App() {
       }
     } catch {
       setSyncStatus(null);
+      if (syncRequested && syncAccepted.current) {
+        statusFailures.current += 1;
+        if (statusFailures.current >= SYNC_STATUS_FAILURE_LIMIT) {
+          statusFailures.current = 0;
+          syncAccepted.current = false;
+          statusLost.current = true;
+          deferredRefreshToast.current = false;
+          setSyncRequested(false);
+          showToast({
+            id: "sync-operation",
+            kind: "error",
+            message:
+              "暂时无法读取同步状态，后台可能仍在运行；状态恢复后会自动提示结果，也可稍后重新同步。",
+          });
+        }
+      }
     } finally {
       statusRequestPending.current = false;
     }
@@ -1491,6 +1520,8 @@ export default function App() {
 
   const triggerSync = async () => {
     syncAccepted.current = false;
+    statusFailures.current = 0;
+    statusLost.current = false;
     // 新同步会原位替换 sync-operation 提示，旧的“刷新当前页”状态随之失效。
     deferredRefreshToast.current = false;
     setSyncRequested(true);

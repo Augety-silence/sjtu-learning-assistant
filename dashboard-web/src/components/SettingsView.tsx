@@ -153,6 +153,31 @@ export function SettingsView({
     void load();
   }, [load]);
 
+  // 操作进行中会禁用整组控件；Chromium/WebView2 会把已聚焦的禁用控件的焦点
+  // 移到 <body>。记录发起操作时的焦点，结束后若焦点仍落在 body 上则归还。
+  const busyFocusRef = useRef<HTMLElement | null>(null);
+  const startBusy = (action: string) => {
+    const active = document.activeElement;
+    busyFocusRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+    setBusy(action);
+  };
+  useEffect(() => {
+    if (busy) return;
+    const target = busyFocusRef.current;
+    busyFocusRef.current = null;
+    const current = document.activeElement;
+    if (
+      !target?.isConnected ||
+      (current && current !== document.body) ||
+      target.matches(":disabled") ||
+      target.closest('[inert], [aria-hidden="true"]')
+    ) {
+      return;
+    }
+    target.focus({ preventScroll: true });
+  }, [busy]);
+
   const update = async (
     changes: Partial<
       Pick<
@@ -167,7 +192,7 @@ export function SettingsView({
       >
     >,
   ) => {
-    setBusy("update");
+    startBusy("update");
     try {
       applyStatus(await updateSettings(changes));
       showToast({
@@ -189,11 +214,14 @@ export function SettingsView({
   const saveConfig = async (event: FormEvent) => {
     event.preventDefault();
     if (!editing) return;
-    setBusy(`save-${editing}`);
+    startBusy(`save-${editing}`);
+    // 非敏感字段已写入但随后凭据保存失败时，仍需同步界面状态，避免显示旧值。
+    let partial: SettingsStatus | null = null;
     try {
       let next = status as SettingsStatus;
       if (editing === "mail") {
         next = await updateSettings({ mail_account: mailAccount.trim() });
+        partial = next;
         if (secret.trim()) {
           next = await saveCredential("mail", secret, mailAccount.trim());
         }
@@ -202,6 +230,7 @@ export function SettingsView({
           ai_base_url: aiBaseUrl.trim(),
           ai_model: aiModel,
         });
+        partial = next;
         if (secret.trim()) next = await saveCredential("ai", secret);
       } else if (secret.trim()) {
         next = await saveCredential(editing, secret);
@@ -215,6 +244,7 @@ export function SettingsView({
         message: `${configMeta[editing].title} 配置已保存。敏感信息仅存入 ${next.credential_storage_name}。`,
       });
     } catch (reason) {
+      if (partial) applyStatus(partial);
       showToast({
         id: "settings-credential",
         kind: "error",
@@ -231,7 +261,7 @@ export function SettingsView({
       !window.confirm(`确定删除${configMeta[editing].secretLabel}？`)
     )
       return;
-    setBusy(`delete-${editing}`);
+    startBusy(`delete-${editing}`);
     try {
       applyStatus(
         await deleteCredential(
@@ -271,7 +301,7 @@ export function SettingsView({
   };
 
   const exportDiagnostics = async () => {
-    setBusy("debug-bundle");
+    startBusy("debug-bundle");
     showToast({
       id: "debug-bundle",
       kind: "info",
@@ -305,7 +335,7 @@ export function SettingsView({
   };
 
   const checkUpdate = async () => {
-    setBusy("update-check");
+    startBusy("update-check");
     try {
       const result = await checkForUpdates();
       setUpdateResult(result);
@@ -344,7 +374,7 @@ export function SettingsView({
   };
 
   const chooseFolder = async () => {
-    setBusy("pick");
+    startBusy("pick");
     try {
       const result = await pickArchiveRoot();
       applyStatus(result.settings);
@@ -365,7 +395,7 @@ export function SettingsView({
   };
 
   const organize = async () => {
-    setBusy("organize");
+    startBusy("organize");
     try {
       const result = await organizeArchive();
       showToast({
@@ -386,7 +416,7 @@ export function SettingsView({
   };
 
   const testAI = async () => {
-    setBusy("ai-test");
+    startBusy("ai-test");
     try {
       const result = await testAiConnection();
       showToast({
@@ -692,6 +722,15 @@ export function SettingsView({
             kind={editing}
             saved={savedByKind[editing]}
             busy={Boolean(busy)}
+            busyAction={
+              busy === `save-${editing}`
+                ? "save"
+                : busy === `delete-${editing}`
+                  ? "delete"
+                  : busy === "ai-test"
+                    ? "test"
+                    : null
+            }
             mailAccount={mailAccount}
             aiBaseUrl={aiBaseUrl}
             aiModel={aiModel}
@@ -723,6 +762,7 @@ function ConfigDialog({
   kind,
   saved,
   busy,
+  busyAction,
   mailAccount,
   aiBaseUrl,
   aiModel,
@@ -741,6 +781,7 @@ function ConfigDialog({
   kind: ConfigKind;
   saved: boolean;
   busy: boolean;
+  busyAction: "save" | "delete" | "test" | null;
   mailAccount: string;
   aiBaseUrl: string;
   aiModel: string;
@@ -911,7 +952,7 @@ function ConfigDialog({
                 disabled={busy}
                 onClick={onDelete}
               >
-                删除凭据
+                {busyAction === "delete" ? "删除中…" : "删除凭据"}
               </Button>
             )}
             {kind === "ai" && saved && (
@@ -921,7 +962,7 @@ function ConfigDialog({
                 disabled={busy}
                 onClick={onTestAI}
               >
-                测试连接
+                {busyAction === "test" ? "测试中…" : "测试连接"}
               </Button>
             )}
             <span />
@@ -934,7 +975,7 @@ function ConfigDialog({
               取消
             </Button>
             <Button type="submit" disabled={busy || !canSave}>
-              {busy ? "保存中…" : "保存配置"}
+              {busyAction === "save" ? "保存中…" : "保存配置"}
             </Button>
           </footer>
         </form>

@@ -119,7 +119,10 @@ def _clear_integrity_failure_marker(database_path: Path) -> None:
 
 
 def _is_corruption_error(error: sqlite3.DatabaseError) -> bool:
-    return getattr(error, "sqlite_errorcode", None) in _SQLITE_CORRUPTION_CODES
+    # sqlite3 exposes the *extended* code (e.g. SQLITE_CORRUPT_INDEX = 779);
+    # the primary code lives in the low 8 bits.
+    code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(code, int) and (code & 0xFF) in _SQLITE_CORRUPTION_CODES
 
 
 def _run_integrity_check(database_path: Path, *, full: bool) -> bool:

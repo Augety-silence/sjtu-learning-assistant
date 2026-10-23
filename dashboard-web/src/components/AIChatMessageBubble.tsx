@@ -63,6 +63,15 @@ const MessageMarkdown = memo(function MessageMarkdown({
           a: ({ node: _node, ...props }) => (
             <a {...props} target="_blank" rel="noreferrer" />
           ),
+          // Never auto-load remote images from model output: a prompt-injected
+          // reply could encode local data into the URL and leak it without a
+          // click. Render a text placeholder (no <a>, so `[![x](u)](v)` stays
+          // valid markup) and keep the address visible on hover.
+          img: ({ src, alt }) => (
+            <span title={typeof src === "string" ? src : undefined}>
+              [图片：{alt || "外部图片"}]
+            </span>
+          ),
           table: ({ node: _node, ...props }) => (
             <div
               className="ai-markdown-table"
@@ -138,6 +147,10 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
         ease: motionEase.out,
       }}
       data-motion-entry={animateEntry ? message.role : undefined}
+      // The in-progress stream bubble opts out of the thread's polite live
+      // region so each content_delta is not read aloud; the final message is
+      // a new node and is announced once by the thread.
+      aria-live={message.id.startsWith("stream-") ? "off" : undefined}
       aria-label={message.role === "user" ? "你的消息" : "学习 Agent 回复"}
     >
       <div className="ai-message-body">

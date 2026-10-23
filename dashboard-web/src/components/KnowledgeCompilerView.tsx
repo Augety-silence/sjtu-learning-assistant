@@ -65,6 +65,14 @@ function statusLabel(status: KnowledgeCompilerTask["status"]) {
   return "等待开始";
 }
 
+function loadInitialStatus(targetRoot: string) {
+  return getKnowledgeCompilerStatus(targetRoot || undefined).catch((reason) => {
+    if (!targetRoot) throw reason;
+    // 已保存的输出目录可能已被删除或位于已拔出的磁盘；回退到全局状态，避免整页卡在错误页。
+    return getKnowledgeCompilerStatus();
+  });
+}
+
 function PathPicker({
   kind,
   value,
@@ -131,16 +139,25 @@ export function KnowledgeCompilerView() {
     }
   }, [targetRoot]);
 
+  // 初始化失败后的重试必须同时重读设置：只刷新状态会让 aiReady 停留在 null，
+  // 页面误报“需要先配置 AI 连接”且开始按钮永久禁用。
+  const retryInitialLoad = useCallback(async () => {
+    try {
+      const [settings, next] = await Promise.all([
+        getSettings(),
+        loadInitialStatus(targetRoot),
+      ]);
+      setAiReady(settings.ai_enabled && settings.ai_key_saved);
+      setTask(next);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "初始化失败");
+    }
+  }, [targetRoot]);
+
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      getSettings(),
-      getKnowledgeCompilerStatus(targetRoot || undefined).catch((reason) => {
-        if (!targetRoot) throw reason;
-        // 已保存的输出目录可能已被删除或位于已拔出的磁盘；回退到全局状态，避免整页卡在错误页。
-        return getKnowledgeCompilerStatus();
-      }),
-    ])
+    void Promise.all([getSettings(), loadInitialStatus(targetRoot)])
       .then(([settings, next]) => {
         if (!active) return;
         setAiReady(settings.ai_enabled && settings.ai_key_saved);
@@ -200,6 +217,14 @@ export function KnowledgeCompilerView() {
 
   const start = async () => {
     if (!sourceRoot || !targetRoot || !aiReady) return;
+    // 已有任务记录时重新开始会从第 1 轮重写输出目录，用户在 Vault 中的手动修改可能被覆盖。
+    if (
+      terminal &&
+      !window.confirm(
+        "重新开始会从第 1 轮重新生成，输出目录中由本功能生成的笔记将被覆盖更新。确定继续？",
+      )
+    )
+      return;
     setWorking(true);
     setError("");
     try {
@@ -233,7 +258,8 @@ export function KnowledgeCompilerView() {
   );
 
   if (loading) return <LoadingState label="正在读取知识库编译状态…" />;
-  if (!task && error) return <ErrorState message={error} retry={loadStatus} />;
+  if (!task && error)
+    return <ErrorState message={error} retry={retryInitialLoad} />;
 
   return (
     <ContentReveal className="section-stack knowledge-page" afterLoad>

@@ -256,7 +256,8 @@ export function MessagesView() {
         openDetail(items[selectedIndex]);
       } else if (event.key.toLowerCase() === "r" && event.shiftKey) {
         event.preventDefault();
-        void markCurrentFilterRead();
+        // Mirror the disabled "全部已读" button: never mark only unloaded (invisible) messages.
+        if (items.some((item) => item.is_unread)) void markCurrentFilterRead();
       } else if (event.key.toLowerCase() === "r") {
         event.preventDefault();
         void markOneRead(items[selectedIndex]);
