@@ -367,7 +367,7 @@ class AssignmentService:
             # POST already succeeded: a read-back failure must not look like a
             # plain failure, or the student may resubmit a duplicate attempt.
             self._audit(
-                course_id, assignment_id, submission_type, "failed",
+                course_id, assignment_id, submission_type, "submitted",
                 local_filename=local_filename, cloud_file_id=cloud_file_id,
                 error="Canvas POST 成功但回读验证失败",
             )

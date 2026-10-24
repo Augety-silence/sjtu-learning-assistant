@@ -30,27 +30,6 @@ function selectedPreviewer(preview: MaterialPreview) {
   return selected;
 }
 
-// Chromium (WebView2) caps URLs at 2MB, so large base64 PDFs render blank in an
-// iframe when passed as data: URLs. Convert to a Blob URL when the API exists.
-function pdfDataUrlToObjectUrl(dataUrl: string): string | null {
-  if (typeof URL.createObjectURL !== "function") return null;
-  const match = /^data:application\/pdf(;[^,]*)?;base64,/i.exec(dataUrl);
-  if (!match) return null;
-  try {
-    const binary = atob(dataUrl.slice(match[0].length));
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return URL.createObjectURL(
-      // Always typed as PDF: a same-origin blob must never be served as HTML.
-      new Blob([bytes], { type: "application/pdf" }),
-    );
-  } catch {
-    return null;
-  }
-}
-
 function usePdfSource(preview: MaterialPreview): string | null {
   const dataUrl = preview.kind === "pdf" ? preview.data_url : null;
   const [source, setSource] = useState<{
@@ -58,10 +37,39 @@ function usePdfSource(preview: MaterialPreview): string | null {
     src: string;
   } | null>(null);
   useEffect(() => {
-    if (!dataUrl) return;
-    const objectUrl = pdfDataUrlToObjectUrl(dataUrl);
-    setSource({ dataUrl, src: objectUrl ?? dataUrl });
+    if (!dataUrl) {
+      setSource(null);
+      return;
+    }
+    const isPdfDataUrl = /^data:application\/pdf(;[^,]*)?;base64,/i.test(
+      dataUrl,
+    );
+    if (
+      !isPdfDataUrl ||
+      typeof fetch !== "function" ||
+      typeof URL.createObjectURL !== "function"
+    ) {
+      setSource({ dataUrl, src: dataUrl });
+      return;
+    }
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    // Chromium/WebView2 caps data: URLs at 2MB. Let the browser decode the
+    // Base64 asynchronously so a 30 MiB PDF cannot block the dialog controls.
+    void fetch(dataUrl, { signal: controller.signal })
+      .then((response) => response.blob())
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(
+          new Blob([blob], { type: "application/pdf" }),
+        );
+        setSource({ dataUrl, src: objectUrl });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSource({ dataUrl, src: dataUrl });
+      });
     return () => {
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [dataUrl]);
