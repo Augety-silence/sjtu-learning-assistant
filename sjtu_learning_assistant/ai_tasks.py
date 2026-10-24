@@ -159,6 +159,11 @@ class AITaskLedger:
         return self.get(task_id)
 
     def start(self, task_id: str) -> None:
+        # Read-then-write like append_event: a concurrent cancel/sync writer can
+        # make WAL return SQLITE_BUSY_SNAPSHOT; the rolled-back transaction is safe to rerun.
+        _retry_write(lambda: self._start_once(task_id))
+
+    def _start_once(self, task_id: str) -> None:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None:
@@ -190,6 +195,9 @@ class AITaskLedger:
 
     def reserve_call(self, task_id: str, requested_output_tokens: int) -> tuple[int, int]:
         requested = max(1, int(requested_output_tokens))
+        return _retry_write(lambda: self._reserve_call_once(task_id, requested))
+
+    def _reserve_call_once(self, task_id: str, requested: int) -> tuple[int, int]:
         with Session(self.engine) as session, session.begin():
             row = session.get(AITask, task_id)
             if row is None:
