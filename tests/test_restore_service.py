@@ -187,17 +187,19 @@ def test_overwrite_rollback_preserves_concurrent_replacement_and_snapshot(
     target.write_bytes(b"original-content")
     authorized = restore.authorize_root(target_root)
     plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
-    original_open = restore_module.os.open
+    original_add_event = restore_module.add_event
 
-    def fail_directory_sync(path, flags, *args, **kwargs):
-        if Path(path) == target_root and flags == os.O_RDONLY:
+    def fail_completion_event(session, job, event_type, status, message=None, details=None):
+        if event_type == "restore_completed":
             replacement = target_root / "replacement.tmp"
             replacement.write_bytes(b"concurrent-content")
             os.replace(replacement, target)
-            raise OSError("forced directory sync failure")
-        return original_open(path, flags, *args, **kwargs)
+            raise OSError("forced completion failure")
+        return original_add_event(
+            session, job, event_type, status, message, details
+        )
 
-    monkeypatch.setattr(restore_module.os, "open", fail_directory_sync)
+    monkeypatch.setattr(restore_module, "add_event", fail_completion_event)
     with pytest.raises(RestoreError, match="隐藏快照"):
         restore.execute(plan["job"]["id"], "overwrite")
 
