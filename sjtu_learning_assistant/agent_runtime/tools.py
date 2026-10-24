@@ -27,6 +27,7 @@ from sjtu_learning_assistant.models import (
 )
 
 TOOL_RESULT_CHAR_LIMIT = 12_000
+MAX_ATTACHMENT_ID = 2**63 - 1
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 DONE_STATES = {"submitted", "graded", "pending_review"}
 MESSAGE_KINDS = frozenset({"email", "announcement", "assignment"})
@@ -166,7 +167,7 @@ class ReadOnlyToolRegistry:
             "get_message_detail": ("读取一条消息的截断详情", {"type": "object", "properties": {"kind": {"type": "string", "enum": sorted(MESSAGE_KINDS)}, "ref": {"type": "string", "maxLength": 80}}, "required": ["kind", "ref"], "additionalProperties": False}),
             "get_material_tree": ("读取截断后的资料树", {"type": "object", "properties": {"course_id": {"type": "string", "maxLength": 128}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "additionalProperties": False}),
             "search_ai_attachments": ("只搜索 AI 附件的名称、摘要和标签，先用它定位附件 ID", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
-            "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
+            "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1, "maximum": MAX_ATTACHMENT_ID}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
         return [
             {"type": "function", "function": {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
@@ -477,7 +478,9 @@ class ReadOnlyToolRegistry:
         args = _only(raw, {"attachment_id", "max_chars"})
         attachment_id = args.get("attachment_id")
         max_chars = args.get("max_chars", 4000)
-        if type(attachment_id) is not int or attachment_id <= 0:
+        # 上限对齐 BigInteger 主键；超大整数绑定到 SQLite 会抛 OverflowError
+        # （不是 SQLAlchemyError），会绕过 execute 的兜底让整轮对话失败。
+        if type(attachment_id) is not int or not 1 <= attachment_id <= MAX_ATTACHMENT_ID:
             raise AgentToolError("attachment_id 必须为正整数。")
         if type(max_chars) is not int or not 1 <= max_chars <= 12_000:
             raise AgentToolError("max_chars 必须为 1 到 12000 的整数。")
