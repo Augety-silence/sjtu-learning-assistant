@@ -20,6 +20,7 @@ from desktop_app import (
     _macos_dragged_file_paths,
     _native_file_drop_paths,
     _notify_database_recovery,
+    _report_startup_error,
     main,
     run_desktop_app,
     safe_message,
@@ -553,6 +554,26 @@ class DesktopBridgeTests(unittest.TestCase):
 
 
 class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_macos_windowed_startup_error_uses_native_dialog(self):
+        with (
+            patch("desktop_app.sys.platform", "darwin"),
+            patch("desktop_app.sys.stderr", None),
+            patch("desktop_app.subprocess.run") as runner,
+        ):
+            _report_startup_error("界面启动失败")
+
+        arguments = runner.call_args.args[0]
+        self.assertEqual("/usr/bin/osascript", arguments[0])
+        self.assertEqual("--", arguments[-2])
+        self.assertEqual("界面启动失败", arguments[-1])
+        runner.assert_called_once_with(
+            arguments,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
     def test_database_recovery_sends_user_notification(self):
         sender = Mock()
         recovery = Mock(requires_notice=True)

@@ -101,11 +101,16 @@ function getWorkflowMeta(
 
 function getAssignmentStatus(item: AssignmentItem): AssignmentStatusMeta {
   if (item.submission?.missing) return { label: "缺交", tone: "danger" };
-  if (item.submission?.late) return { label: "已逾期", tone: "danger" };
-  if (item.categories.includes("today")) {
+  // 本地缓存路径的 submission 不带 late/missing，逾期只体现在后端计算的 categories 中。
+  if (item.submission?.late || item.categories.includes("overdue")) {
+    return { label: "已逾期", tone: "danger" };
+  }
+  const workflow = getWorkflowMeta(item.submission?.workflow_state);
+  // 今天截止但已提交/待批改/已评分的作业应显示真实提交状态，而不是继续警示。
+  if (item.categories.includes("today") && workflow.tone === "neutral") {
     return { label: "今天截止", tone: "warning" };
   }
-  return getWorkflowMeta(item.submission?.workflow_state);
+  return workflow;
 }
 
 type PendingSubmission = {
@@ -608,6 +613,11 @@ export function AssignmentsView({
                     selected && sameAssignment(selected, item)
                       ? "assignment-card assignment-card-active"
                       : "assignment-card"
+                  }
+                  aria-current={
+                    selected && sameAssignment(selected, item)
+                      ? "true"
+                      : undefined
                   }
                   data-tone={status.tone}
                   onClick={() => void selectAssignment(item)}

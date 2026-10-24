@@ -588,6 +588,9 @@ class RestoreService:
     ) -> dict[str, Any]:
         provider = None
         temporary: Path | None = None
+        overwrite_snapshot: Path | None = None
+        restored_target_written = False
+        restored_target_identity: tuple[int, int, int, int] | None = None
         count = 0
         try:
             _reject_symlink_chain(target)
@@ -626,8 +629,18 @@ class RestoreService:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
             if verify_overwrite_identity and _identity(target) != overwrite_identity:
                 raise RestoreError("恢复目标在下载期间发生变化，已拒绝覆盖。")
+            if verify_overwrite_identity and overwrite_identity is not None:
+                snapshot_descriptor, snapshot_name = tempfile.mkstemp(
+                    prefix=".sjtu-restore-overwrite-", dir=target.parent
+                )
+                os.close(snapshot_descriptor)
+                overwrite_snapshot = Path(snapshot_name)
+                overwrite_snapshot.unlink()
+                _replace_with_retry(target, overwrite_snapshot)
             _replace_with_retry(temporary, target)
             temporary = None
+            restored_target_written = True
+            restored_target_identity = _identity(target)
             if os.name != "nt":
                 directory_fd = os.open(target.parent, os.O_RDONLY)
                 try:
@@ -645,10 +658,30 @@ class RestoreService:
                 session.commit()
                 result = job_data(job)
                 result["target"] = str(target)
+                if overwrite_snapshot is not None:
+                    overwrite_snapshot.unlink(missing_ok=True)
+                    overwrite_snapshot = None
                 return result
         except Exception as exc:
+            rollback_failed = False
+            if overwrite_snapshot is not None:
+                try:
+                    if restored_target_written:
+                        if _identity(target) != restored_target_identity:
+                            rollback_failed = True
+                        else:
+                            target.unlink(missing_ok=True)
+                    if not rollback_failed:
+                        _replace_with_retry(overwrite_snapshot, target)
+                        overwrite_snapshot = None
+                except OSError:
+                    rollback_failed = True
             # 任务面板只读 last_error：保留可操作的已脱敏原因，而不是只显示异常类名。
-            if isinstance(exc, CloudArchiveError):
+            if rollback_failed:
+                public_error = (
+                    "恢复失败，且原文件自动回滚失败；已在目标目录保留隐藏快照，请勿删除。"
+                )
+            elif isinstance(exc, CloudArchiveError):
                 public_error = str(exc)
             elif isinstance(exc, CloudAuthError):
                 # 与归档上传一致：凭据失效需引导用户更新 UserToken，而不是笼统的“恢复失败”。
@@ -671,6 +704,8 @@ class RestoreService:
                     job.last_error = public_error[:500]
                     add_event(session, job, "restore_failed", "failed", job.last_error)
                     session.commit()
+            if rollback_failed:
+                raise RestoreError(public_error) from exc
             if isinstance(exc, RestoreError):
                 raise
             if isinstance(exc, (CloudAuthError, CloudNetworkError, CloudNotFoundError, PermissionError)):

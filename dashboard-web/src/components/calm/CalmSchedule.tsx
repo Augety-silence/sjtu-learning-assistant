@@ -613,15 +613,16 @@ export function CalmSchedule({
             >
               {selectedEvents.map((event) => {
                 const due = dueInfo(event, now);
+                // Due tones only describe assignments; a class that already ended is not "overdue".
                 const barClass = [
                   "calm-item-bar",
-                  due.tone === "done"
-                    ? "is-done"
-                    : due.tone === "overdue"
-                      ? "is-overdue"
-                      : isAssignment(event)
-                        ? "is-deadline"
-                        : "",
+                  !isAssignment(event)
+                    ? ""
+                    : due.tone === "done"
+                      ? "is-done"
+                      : due.tone === "overdue"
+                        ? "is-overdue"
+                        : "is-deadline",
                 ]
                   .filter(Boolean)
                   .join(" ");

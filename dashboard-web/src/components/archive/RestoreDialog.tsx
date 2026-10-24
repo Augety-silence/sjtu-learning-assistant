@@ -1,5 +1,5 @@
 import { FolderOpen, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatArchiveMtime } from "@/components/archive/archiveUtils";
 import { Button } from "@/components/ui/Button";
@@ -60,10 +60,15 @@ export function RestoreDialog({
   const [error, setError] = useState("");
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const planActionRef = useRef<HTMLButtonElement>(null);
+  const [refocusPlanAction, setRefocusPlanAction] = useState(0);
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: closeRef,
     dismissible: !busy,
   });
+  useEffect(() => {
+    if (refocusPlanAction) planActionRef.current?.focus();
+  }, [refocusPlanAction]);
 
   const createPlan = async (nextMode = mode, nextRoot = root) => {
     setBusy(true);
@@ -99,13 +104,32 @@ export function RestoreDialog({
 
   const runRestore = async () => {
     if (!plan) return;
+    if (
+      plan.existing &&
+      policy === "overwrite" &&
+      !window.confirm(
+        `确认覆盖“${plan.target}”？原文件会先在同目录创建临时快照，恢复成功后才删除。`,
+      )
+    )
+      return;
     setBusy(true);
     setError("");
     try {
       const job = await executeRestore(plan.job.id, policy, confirmDirs);
       onComplete(job);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "恢复执行失败");
+      // 失败后后端可能已把该计划标为 failed（下载/校验失败），或目标已变化需重新核对；
+      // 保留旧计划会让“开始恢复”一直可点却只得到“计划不存在或已执行”。统一要求重新检查。
+      setPlan(null);
+      const message =
+        reason instanceof Error ? reason.message : "恢复执行失败。";
+      setError(
+        /重新|重试/.test(message)
+          ? message
+          : message + "请重新检查目标后再恢复。",
+      );
+      // 计划区随之卸载，焦点不能掉到 body（模态内焦点丢失），移回“检查”按钮。
+      setRefocusPlanAction((count) => count + 1);
     } finally {
       setBusy(false);
     }
@@ -191,6 +215,7 @@ export function RestoreDialog({
 
         <div className="archive-plan-action">
           <Button
+            ref={planActionRef}
             type="button"
             variant="outline"
             loading={busy}
@@ -298,7 +323,7 @@ export function RestoreDialog({
 
             {plan.existing && policy === "overwrite" && (
               <p className="archive-notice" role="note">
-                将用云端版本替换现有文件，原文件不会保留副本。
+                将用云端版本替换现有文件；执行前会再次确认，并在同目录创建可回滚快照。
               </p>
             )}
 

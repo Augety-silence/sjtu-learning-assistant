@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 def _configure_keyring_backend(platform_name: str | None = None) -> None:
@@ -1752,6 +1753,22 @@ def _report_startup_error(message: str) -> None:
             ctypes.windll.user32.MessageBoxW(None, message, "SJTU 学习助手", 0x10)
         except (AttributeError, OSError):
             pass
+    if sys.platform == "darwin" and (sys.stderr is None or getattr(sys, "frozen", False)):
+        script = """
+on run argv
+    display dialog (item 1 of argv) with title "SJTU 学习助手" buttons {"退出"} default button "退出" with icon stop
+end run
+""".strip()
+        try:
+            subprocess.run(
+                ["/usr/bin/osascript", "-e", script, "--", message],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def run_desktop_app() -> int:
@@ -1860,7 +1877,18 @@ def run_desktop_app() -> int:
             "private_mode": False,
             "storage_path": str(APP_SUPPORT_DIR / "webview"),
         }
-        webview.start(_initialize_desktop_window, (window,), **start_options)
+        try:
+            webview.start(_initialize_desktop_window, (window,), **start_options)
+        except Exception as exc:  # noqa: BLE001 - surface GUI backend failures in windowed builds
+            hint = (
+                "请安装或修复 Microsoft Edge WebView2 Runtime 后重试。"
+                if sys.platform == "win32"
+                else "请重新安装 SJTU 学习助手。"
+            )
+            _report_startup_error(
+                f"错误：无法启动界面（{type(exc).__name__}: {safe_message(exc)}）。{hint}"
+            )
+            return 2
         return 0
     finally:
         if scheduler is not None:

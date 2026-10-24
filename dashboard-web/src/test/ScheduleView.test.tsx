@@ -159,6 +159,19 @@ describe("ScheduleView", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("清理缺少月份范围的旧版离线缓存", async () => {
+    localStorage.setItem(
+      "sjtu-learning-timetable-cache-v1",
+      JSON.stringify({ status: awaitingStatus, events: [] }),
+    );
+    vi.mocked(getTimetableSchedule).mockRejectedValueOnce(new Error("offline"));
+
+    renderView();
+
+    expect(await screen.findByText("offline")).toBeTruthy();
+    expect(localStorage.getItem("sjtu-learning-timetable-cache-v1")).toBeNull();
+  });
+
   it("does nothing when the ICS picker is cancelled", async () => {
     vi.mocked(importTimetableIcs).mockResolvedValueOnce({ cancelled: true });
     renderView();

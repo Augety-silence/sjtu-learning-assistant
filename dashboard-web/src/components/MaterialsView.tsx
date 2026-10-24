@@ -199,10 +199,15 @@ export function MaterialsView() {
   const compact = useCompactViewport();
   const { showToast } = useToast();
 
+  // Row actions on different files can refresh concurrently; only the newest
+  // material_tree response may replace the tree (older ones are stale).
+  const loadRequestRef = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setError("");
     try {
       const nextTree = await invoke<MaterialTree>("material_tree");
+      if (requestId !== loadRequestRef.current) return;
       setTree(nextTree);
       setExpandedIds((current) =>
         current.size > 1 ? current : defaultExpandedIds(nextTree.root),
@@ -214,6 +219,7 @@ export function MaterialsView() {
         findNodePath(nextTree.root, current) ? current : nextTree.root.id,
       );
     } catch (reason) {
+      if (requestId !== loadRequestRef.current) return;
       setError(reason instanceof Error ? reason.message : "资料加载失败");
     }
   }, []);

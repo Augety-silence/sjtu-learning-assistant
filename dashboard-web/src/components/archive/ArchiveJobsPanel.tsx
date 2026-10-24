@@ -1,5 +1,5 @@
 import { ChevronDown, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
 import {
   archiveStatusLabel,
@@ -30,7 +30,10 @@ export function ArchiveJobsPanel({
   const [events, setEvents] = useState<Record<string, ArchiveJobEvent[]>>({});
   const [eventErrors, setEventErrors] = useState<Record<string, string>>({});
   const [loadingEvents, setLoadingEvents] = useState<Set<string>>(new Set());
-  const [retrying, setRetrying] = useState<string | null>(null);
+  // 按任务记录在途重试：单一 id 会在并发重试时被后完成的请求清空，导致仍在执行的
+  // 恢复/上传任务按钮重新可点、重复提交；ref 同步拦截同一帧内的连击。
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  const retryingRef = useRef<Set<string>>(new Set());
 
   const toggleEvents = async (jobId: string) => {
     if (openJob === jobId) {
@@ -62,12 +65,24 @@ export function ArchiveJobsPanel({
     }
   };
 
-  const retry = async (jobId: string) => {
-    setRetrying(jobId);
+  const retry = async (job: ArchiveJob) => {
+    if (
+      job.kind === "restore" &&
+      job.conflict_policy === "overwrite" &&
+      !window.confirm(
+        "确认重试覆盖恢复？系统会再次替换目标文件，并在成功前保留同目录回滚快照。",
+      )
+    )
+      return;
+    const jobId = job.id;
+    if (retryingRef.current.has(jobId)) return;
+    retryingRef.current.add(jobId);
+    setRetrying(new Set(retryingRef.current));
     try {
       await onRetry(jobId);
     } finally {
-      setRetrying(null);
+      retryingRef.current.delete(jobId);
+      setRetrying(new Set(retryingRef.current));
     }
   };
 
@@ -120,9 +135,9 @@ export function ArchiveJobsPanel({
                       type="button"
                       variant="outline"
                       size="sm"
-                      loading={retrying === job.id}
+                      loading={retrying.has(job.id)}
                       loadingLabel="重试中…"
-                      onClick={() => void retry(job.id)}
+                      onClick={() => void retry(job)}
                     >
                       <RotateCcw aria-hidden="true" />
                       重试

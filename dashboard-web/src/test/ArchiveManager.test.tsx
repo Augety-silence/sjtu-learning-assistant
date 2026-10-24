@@ -381,6 +381,7 @@ describe("RestoreDialog", () => {
     "提交冲突策略 %s 与目录确认",
     async (policy) => {
       const onComplete = vi.fn();
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
       render(
         <RestoreDialog
           entry={detailEntry}
@@ -418,6 +419,8 @@ describe("RestoreDialog", () => {
         ),
       );
       expect(onComplete).toHaveBeenCalled();
+      if (policy === "overwrite") expect(confirm).toHaveBeenCalledOnce();
+      else expect(confirm).not.toHaveBeenCalled();
     },
   );
 

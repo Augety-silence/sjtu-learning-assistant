@@ -55,10 +55,12 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in range(1, 10)}
 )
 _SECRET = re.compile(
-    r"(?i)(authorization\s*[:=]\s*bearer\s+|bearer\s+|(?:access_)?token\s*[=:]\s*)"
-    r"[^\s,;&]+"
+    r"(?i)(authorization\s*[:=]\s*bearer\s+|bearer\s+"
+    r"|(?:access_|refresh_)?token[\"']?\s*[=:]\s*[\"']?)"
+    r"[^\s,;&\"'}]+"
 )
 _QUERY_SECRET = re.compile(r"(?i)([?&](?:access_)?token=)[^&#\s]+")
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@")
 
 
 class AcademicFeatureError(RuntimeError):
@@ -134,6 +136,7 @@ def redact_error_message(message: object) -> str:
     value = _CONTROL.sub(" ", str(message or "")).strip()
     value = _SECRET.sub(lambda match: f"{match.group(1)}[REDACTED]", value)
     value = _QUERY_SECRET.sub(lambda match: f"{match.group(1)}[REDACTED]", value)
+    value = _URL_USERINFO.sub(lambda match: f"{match.group(1)}[REDACTED]@", value)
     return value[:300] or "Canvas 学术功能请求失败。"
 
 

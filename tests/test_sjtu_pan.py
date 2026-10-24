@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -144,6 +145,67 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(503, caught.exception.status_code)
         self.assertNotIn(TOKEN, str(caught.exception))
 
+    def test_safe_get_retries_transient_status_and_honors_retry_after(self) -> None:
+        calls = {"directory": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            calls["directory"] += 1
+            if calls["directory"] == 1:
+                return httpx.Response(503, headers={"Retry-After": "0"}, request=request)
+            return httpx.Response(
+                200, json={"contents": [], "totalNum": 0, "path": []}, request=request
+            )
+
+        provider, client = self.provider(handler)
+        try:
+            with patch("sjtu_learning_assistant.cloud_storage.sjtu_pan.time.sleep") as sleeper:
+                self.assertEqual(0, provider.list_directory().total)
+        finally:
+            client.close()
+        self.assertEqual(2, calls["directory"])
+        sleeper.assert_called_once_with(0.0)
+
+    def test_stream_get_retries_before_yielding_bytes(self) -> None:
+        calls = {"download": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            calls["download"] += 1
+            if calls["download"] == 1:
+                return httpx.Response(503, headers={"Retry-After": "0"}, request=request)
+            return httpx.Response(200, content=b"payload", request=request)
+
+        provider, client = self.provider(handler)
+        try:
+            with patch("sjtu_learning_assistant.cloud_storage.sjtu_pan.time.sleep") as sleeper:
+                self.assertEqual(b"payload", b"".join(provider.download_stream(("file",))))
+        finally:
+            client.close()
+        self.assertEqual(2, calls["download"])
+        sleeper.assert_called_once_with(0.0)
+
+    def test_ordinary_write_request_is_not_replayed(self) -> None:
+        calls = {"directory": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            calls["directory"] += 1
+            return httpx.Response(503, headers={"Retry-After": "0"}, request=request)
+
+        provider, client = self.provider(handler)
+        try:
+            with patch("sjtu_learning_assistant.cloud_storage.sjtu_pan.time.sleep") as sleeper:
+                with self.assertRaises(CloudRemoteApiError):
+                    provider.create_directory(("folder",))
+        finally:
+            client.close()
+        self.assertEqual(1, calls["directory"])
+        sleeper.assert_not_called()
+
     def test_directory_pagination_and_segment_encoding(self) -> None:
         requested_pages: list[str] = []
         paths: list[str] = []
@@ -278,6 +340,49 @@ class SJTUCloudPanTests(unittest.TestCase):
         confirms = [request for request in requests if "confirm" in request.url.params]
         self.assertEqual(1, len(confirms))
         self.assertEqual("ask", confirms[0].url.params["conflict_resolution_strategy"])
+
+    def test_simple_upload_size_mismatch_cleans_remote_object(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            if request.url.host == "cos.example.test":
+                return httpx.Response(200, request=request)
+            if request.method == "DELETE":
+                return httpx.Response(204, request=request)
+            if request.method == "PUT":
+                return httpx.Response(
+                    200,
+                    json={
+                        "confirmKey": "simple-confirm",
+                        "domain": "cos.example.test",
+                        "path": "/object",
+                        "headers": {"authorization": "dynamic-signature"},
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "name": "file.txt",
+                    "path": ["dir", "file.txt"],
+                    "type": "file",
+                    "size": "1",
+                },
+                request=request,
+            )
+
+        provider, client = self.provider(handler)
+        try:
+            with self.assertRaisesRegex(CloudRemoteApiError, "大小"):
+                provider.simple_upload(("dir", "file.txt"), b"payload")
+        finally:
+            client.close()
+        deletes = [request for request in requests if request.method == "DELETE"]
+        self.assertEqual(1, len(deletes))
+        self.assertEqual("1", deletes[0].url.params["permanent"])
 
     def test_multipart_renew_resume_confirm_and_safe_serialization(self) -> None:
         requests: list[httpx.Request] = []

@@ -54,6 +54,13 @@ class FakeProvider:
         for index in range(0, len(data), chunk_size):
             yield data[index:index + chunk_size]
 
+    def delete(self, path, *, permanent=False, missing_ok=True):
+        assert permanent is True
+        key = tuple(path)
+        if not missing_ok and key not in self.objects:
+            raise FileNotFoundError(key)
+        self.objects.pop(key, None)
+
     def close(self):
         return None
 
@@ -195,6 +202,47 @@ def test_uploaded_but_db_update_failed_can_reconcile(archive_env):
     with Session(engine) as session:
         version = session.scalar(select(ArchiveVersion))
         assert version.status == "needs_verification"
+
+    verified = service.retry(job_id)
+    assert verified["status"] == "completed"
+    assert verified["reconciled"] is True
+    assert provider.uploads == 1
+    with Session(engine) as session:
+        assert session.scalar(select(ArchiveVersion)).status == "archived"
+
+
+def test_strong_verification_claims_job_and_cleans_conflict_for_retry(archive_env):
+    root, engine, provider, service = archive_env
+    path = root / "verification.txt"
+    path.write_bytes(b"expected-content")
+
+    service.after_upload_hook = lambda _job, _item: (_ for _ in ()).throw(
+        RuntimeError("forced db failure")
+    )
+    with pytest.raises(CloudArchiveError):
+        service.archive_file(path)
+    service.after_upload_hook = None
+    job_id = service.reconcile()["items"][0]["id"]
+    remote_path = next(iter(provider.objects))
+    provider.objects[remote_path] = b"x" * len(provider.objects[remote_path])
+    original_download_stream = provider.download_stream
+
+    def asserted_download_stream(path, chunk_size=65536, start=None, end=None):
+        with Session(engine) as session:
+            assert session.get(ArchiveJob, job_id).status == "verifying"
+        yield from original_download_stream(path, chunk_size, start, end)
+
+    provider.download_stream = asserted_download_stream
+    failed = service.retry(job_id)
+    assert failed["status"] == "failed"
+    assert remote_path not in provider.objects
+
+    provider.download_stream = original_download_stream
+    completed = service.retry(job_id)
+    assert completed["status"] == "completed"
+    service._mark_reconcile(job_id, "late failure")
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).status == "completed"
 
 
 def test_manager_initialization_marks_running_jobs_interrupted(archive_env):

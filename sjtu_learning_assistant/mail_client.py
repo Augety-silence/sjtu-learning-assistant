@@ -472,6 +472,11 @@ def fetch_email_body_backfill(
             )
     except imaplib.IMAP4.error as exc:
         raise MailCheckError("IMAP 登录或旧邮件正文回填失败。") from exc
+    except UnicodeEncodeError:
+        # imaplib 以 ASCII 编码命令参数；异常对象携带含密码的原始参数，不得外泄。
+        raise MailCheckError(
+            "邮箱地址或密码包含无法用于 IMAP 登录的字符（如全角符号），请检查后重试。"
+        ) from None
     except (socket.timeout, TimeoutError) as exc:
         raise MailCheckError("IMAP 正文回填连接超时，请检查网络后重试。") from exc
     except ssl.SSLError as exc:
@@ -575,6 +580,11 @@ def fetch_incremental_mail(
             )
     except imaplib.IMAP4.error as exc:
         raise MailCheckError("IMAP 登录或增量读取失败，请检查账号和密码。") from exc
+    except UnicodeEncodeError:
+        # imaplib 以 ASCII 编码命令参数；异常对象携带含密码的原始参数，不得外泄。
+        raise MailCheckError(
+            "邮箱地址或密码包含无法用于 IMAP 登录的字符（如全角符号），请检查后重试。"
+        ) from None
     except (socket.timeout, TimeoutError) as exc:
         raise MailCheckError("IMAP 连接超时，请检查网络后重试。") from exc
     except ssl.SSLError as exc:

@@ -94,10 +94,13 @@ export function SidebarAssistant({
           <textarea
             value={prompt}
             rows={2}
+            maxLength={4000}
             aria-label="直接询问 AI"
             placeholder="直接询问课程、作业或资料…"
             onChange={(event) => setPrompt(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229)
+                return;
               if (event.key !== "Enter" || event.shiftKey) return;
               event.preventDefault();
               submit();
@@ -112,14 +115,14 @@ export function SidebarAssistant({
           </button>
         </form>
 
-        <div className="sidebar-ai-history">
+        <div className="sidebar-ai-history" aria-busy={loading}>
           <div className="sidebar-ai-history-label">
             <span>最近对话</span>
             <button type="button" onClick={() => onOpen()}>
               查看全部
             </button>
           </div>
-          {loading && <p>正在读取…</p>}
+          {loading && <p role="status">正在读取…</p>}
           {!loading && unavailable && (
             <button
               type="button"
@@ -131,7 +134,7 @@ export function SidebarAssistant({
             </button>
           )}
           {!loading && !unavailable && sessions.length === 0 && (
-            <p>开始第一段学习对话</p>
+            <p role="status">开始第一段学习对话</p>
           )}
           {!loading &&
             !unavailable &&

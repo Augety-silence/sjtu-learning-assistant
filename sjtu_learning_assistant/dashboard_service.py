@@ -238,6 +238,12 @@ def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[s
     value = str(target)
     if sys.platform == "win32":
         if reveal:
+            # subprocess.list2cmdline quotes any argv element containing
+            # whitespace; explorer ignores a quoted "/select,<path>" token and
+            # silently opens the default folder instead. Pass the path as a
+            # separate argument so it becomes: explorer.exe /select, "<path>".
+            if any(character.isspace() for character in value):
+                return ["explorer.exe", "/select,", value]
             return ["explorer.exe", f"/select,{value}"]
         if isinstance(target, Path):
             return ["explorer.exe", value]
@@ -2235,7 +2241,19 @@ class DashboardService:
                 "_",
                 Path(record.display_name or record.filename or "文件").name,
             ).rstrip(" .") or "文件"
+            # Windows MAX_PATH 为 260：限制临时文件名长度，保留扩展名。
+            safe_suffix = Path(safe_name).suffix[:16]
+            safe_stem = safe_name[: len(safe_name) - len(safe_suffix)] if safe_suffix else safe_name
+            safe_name = (safe_stem[:100].rstrip(" .") or "文件") + safe_suffix
             destination = Path(self._material_temp.name) / f"{record.id}-{safe_name}"
+
+            def discard_destination() -> None:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    # Windows 上文件仍被其他程序打开时无法删除，交由 close() 清理。
+                    pass
+
             try:
                 with self._cloud_provider() as provider:
                     info = provider.get_info(remote_path)
@@ -2246,13 +2264,17 @@ class DashboardService:
                     ) as temporary:
                         shutil.copyfile(temporary, destination)
                 if destination.stat().st_size != record.cloud_size:
-                    destination.unlink(missing_ok=True)
+                    discard_destination()
                     raise DashboardError("云端文件大小校验失败，无法打开。")
                 path = destination
             except DashboardError:
                 raise
+            except PermissionError:
+                raise DashboardError(
+                    "该资料的临时副本正被其他程序占用，请关闭后重试。"
+                ) from None
             except Exception:
-                destination.unlink(missing_ok=True)
+                discard_destination()
                 raise DashboardError("云端文件下载失败，请检查网络后重试。") from None
         command = _desktop_open_command(path)
         completed = self.command_runner(command, check=False)

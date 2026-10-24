@@ -86,6 +86,9 @@ class UploadSession:
     def validate_contiguous(self) -> None:
         if type(self.next_part) is not int or self.next_part < 1:
             raise ValueError("上传会话的下一个分片序号无效。")
+        # 先比较长度，避免篡改的超大 next_part 让 range() 物化出巨大列表。
+        if len(self.uploaded_parts) != self.next_part - 1:
+            raise ValueError("上传会话的已完成分片不是连续前缀。")
         expected = list(range(1, self.next_part))
         if self.uploaded_parts != expected or set(self.part_sizes) != set(expected):
             raise ValueError("上传会话的已完成分片不是连续前缀。")
@@ -111,7 +114,7 @@ class UploadSession:
             "remote_path", "confirm_key", "overwrite", "next_part", "uploaded_parts",
             "part_sizes", "bytes_uploaded", "domain", "object_path", "upload_id", "expiration",
         }
-        if set(value) - allowed:
+        if not isinstance(value, Mapping) or set(value) - allowed:
             raise ValueError("上传会话包含未知或不安全字段。")
         part_sizes_value = value.get("part_sizes", {})
         if not isinstance(part_sizes_value, Mapping):
@@ -125,19 +128,45 @@ class UploadSession:
             or not confirm_key_value
         ):
             raise ValueError("上传会话格式错误。")
-        try:
-            session = cls(
-                remote_path=tuple(str(part) for part in remote_path_value),
-                confirm_key=confirm_key_value,
-                overwrite=bool(value.get("overwrite", False)),
-                next_part=int(value.get("next_part", 1)),
-                uploaded_parts=[int(part) for part in value.get("uploaded_parts", [])],
-                part_sizes={int(part): int(size) for part, size in part_sizes_value.items()},
+        # 持久化会话可能被篡改或损坏：严格校验类型，不做 bool("false")、int(2.9)、int(True) 之类的隐式转换。
+        overwrite_value = value.get("overwrite", False)
+        uploaded_value = value.get("uploaded_parts", [])
+        if (
+            not isinstance(overwrite_value, bool)
+            or not isinstance(uploaded_value, (list, tuple))
+            or not confirm_key_value.strip()
+            or any(
+                not isinstance(part, str) or not part.strip()
+                or part in {".", ".."} or "/" in part or "\\" in part or "\x00" in part
+                for part in remote_path_value
             )
-        except TypeError as exc:
-            raise ValueError("上传会话格式错误。") from exc
+        ):
+            raise ValueError("上传会话格式错误。")
+
+        def strict_int(raw: Any, *, allow_digit_string: bool = False) -> int:
+            if type(raw) is int:
+                return raw
+            if allow_digit_string and isinstance(raw, str) and raw.isascii() and raw.isdigit():
+                return int(raw)
+            raise ValueError("上传会话格式错误。")
+
+        # JSON 对象键总是字符串，所以分片序号允许十进制数字串；分片大小必须是正整数（空分片不会被上传）。
+        part_sizes = {
+            strict_int(part, allow_digit_string=True): strict_int(size)
+            for part, size in part_sizes_value.items()
+        }
+        if any(size <= 0 for size in part_sizes.values()):
+            raise ValueError("上传会话包含无效分片大小。")
+        session = cls(
+            remote_path=tuple(remote_path_value),
+            confirm_key=confirm_key_value,
+            overwrite=overwrite_value,
+            next_part=strict_int(value.get("next_part", 1)),
+            uploaded_parts=[strict_int(part) for part in uploaded_value],
+            part_sizes=part_sizes,
+        )
         session.validate_contiguous()
-        claimed_bytes = int(value.get("bytes_uploaded", session.bytes_uploaded))
+        claimed_bytes = strict_int(value.get("bytes_uploaded", session.bytes_uploaded))
         if claimed_bytes != session.bytes_uploaded:
             raise ValueError("上传会话的连续前缀大小不一致。")
         return session

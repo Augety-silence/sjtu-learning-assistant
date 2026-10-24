@@ -243,6 +243,10 @@ def parse_vtt(value: str) -> list[Cue]:
         raise ValueError("字幕不是标准 WebVTT。")
     cues: list[Cue] = []
     index = 1
+    # Skip the optional header block (e.g. "Kind: captions", "Language: zh-CN")
+    # that follows the WEBVTT signature line up to the first blank line.
+    while index < len(lines) and lines[index].strip() and "-->" not in lines[index]:
+        index += 1
     while index < len(lines):
         line = lines[index].strip()
         index += 1
@@ -468,7 +472,7 @@ def _validated_json(
     for fragment in fragments:
         try:
             parsed = json.loads(fragment)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError, RecursionError):
             continue
         if type(parsed) is not dict:
             continue
@@ -691,7 +695,7 @@ def _source_only_repair_guard(
         return None
     try:
         first_value = json.loads(fragment)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         return None
     if type(first_value) is not dict:
         return None
@@ -778,7 +782,7 @@ def _json_content(
         if guide_source_repair and fragment:
             try:
                 guide_fragment = _guide_root(json.loads(fragment))
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, RecursionError):
                 pass
         if (
             guide_source_repair
