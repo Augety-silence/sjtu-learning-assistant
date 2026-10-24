@@ -419,7 +419,7 @@ describe("MaterialsView selection and responsive states", () => {
     expect(
       await screen.findByRole("dialog", { name: "概览.pdf" }),
     ).toBeTruthy();
-    expect(screen.getByTitle("概览.pdf PDF 预览")).toBeTruthy();
+    expect(await screen.findByTitle("概览.pdf PDF 预览")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });

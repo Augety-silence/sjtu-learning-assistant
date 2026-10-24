@@ -645,9 +645,17 @@ class UpdateService:
         machine: str | None = None,
         fetch_checksum: bool = True,
     ) -> UpdateCheck:
-        current = str(SemanticVersion.parse(current_version or self.current_version))
+        current_semver = SemanticVersion.parse(current_version or self.current_version)
+        current = str(current_semver)
         release = self.fetch_release()
-        available = is_newer_version(release.version, current)
+        latest_semver = SemanticVersion.parse(release.version)
+        available = latest_semver.compare(current_semver) > 0
+        # releases/latest 按 GitHub 语义不返回预发布；若发布流程误把 rc 等标签设为 Latest，
+        # 稳定版用户不应被提示升级到预发布版本（第二道防线）。预发布用户仍按 SemVer 比较。
+        if available and not current_semver.prerelease and (
+            release.prerelease or latest_semver.prerelease
+        ):
+            available = False
         plan = None
         if available:
             try:

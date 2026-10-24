@@ -173,16 +173,36 @@ def sync_canvas(
             assignment_state = get_sync_state(engine, "canvas", assignment_resource)
             file_state = get_sync_state(engine, "canvas", file_resource)
 
-            announcement_result = fetch_course_announcements_incremental(
-                client,
-                source_id,
-                etag=announcement_state.cursor if announcement_state else None,
-            )
-            assignment_result = fetch_course_assignments_incremental(
-                client,
-                source_id,
-                etag=assignment_state.cursor if assignment_state else None,
-            )
+            # 单门课程的公告/作业栏目被隐藏或不可访问（403/404）时只跳过该资源，
+            # 不推进游标；401/429/网络错误仍中止整轮同步。
+            try:
+                announcement_result = fetch_course_announcements_incremental(
+                    client,
+                    source_id,
+                    etag=announcement_state.cursor if announcement_state else None,
+                )
+            except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
+                announcement_result = None
+                print(
+                    f"警告：课程 {source_id} 的公告暂不可读，已跳过：{exc}",
+                    file=sys.stderr,
+                )
+            try:
+                assignment_result = fetch_course_assignments_incremental(
+                    client,
+                    source_id,
+                    etag=assignment_state.cursor if assignment_state else None,
+                )
+            except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
+                assignment_result = None
+                print(
+                    f"警告：课程 {source_id} 的作业暂不可读，已跳过：{exc}",
+                    file=sys.stderr,
+                )
             # 教师可对学生隐藏“文件/模块”栏目，Canvas 会对该课程返回 401/403；
             # 只跳过该课程的对应资源（不推进游标、不触发失活），不中止整轮同步。
             try:
@@ -215,19 +235,25 @@ def sync_canvas(
                     file=sys.stderr,
                 )
 
-            announcement_cursors[source_id] = announcement_result.etag
-            assignment_cursors[source_id] = assignment_result.etag
+            if announcement_result is not None:
+                announcement_cursors[source_id] = announcement_result.etag
+            if assignment_result is not None:
+                assignment_cursors[source_id] = assignment_result.etag
             if file_result is not None:
                 file_cursors[source_id] = file_result.etag
                 folders_by_course[source_id] = folders
             if modules is not None:
                 modules_by_course[source_id] = modules
                 module_items_by_course[source_id] = module_items
-            if announcement_result.not_modified:
+            if announcement_result is None:
+                pass
+            elif announcement_result.not_modified:
                 unchanged_announcements += 1
             else:
                 announcements_by_course[source_id] = announcement_result.records
-            if assignment_result.not_modified:
+            if assignment_result is None:
+                pass
+            elif assignment_result.not_modified:
                 unchanged_assignments += 1
             else:
                 assignments_by_course[source_id] = assignment_result.records

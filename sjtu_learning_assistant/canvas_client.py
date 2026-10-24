@@ -162,6 +162,14 @@ class CanvasClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if uncertain_on_error and status in (502, 504):
+                # 网关错误/超时时上游可能已执行写入，交由调用方先验证再决定，避免重复提交。
+                error = CanvasNetworkError(
+                    f"Canvas API 返回 HTTP {status}，服务器可能已处理该请求。",
+                    operation_uncertain=True,
+                )
+                error.status_code = status
+                raise error from exc
             raise CanvasError(f"Canvas API 返回 HTTP {status}。", status_code=status) from exc
         return response
 

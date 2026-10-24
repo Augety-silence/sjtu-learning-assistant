@@ -293,6 +293,28 @@ class OptionalCapabilityTests(unittest.TestCase):
         self.assertIn("Pillow", result["reason"])
         self.assertNotIn("data", result)
 
+    def test_video_screenshot_rejects_playlists_before_starting_ffmpeg(self) -> None:
+        playlist = b"#EXTM3U\n#EXTINF:10,\nfile:///etc/passwd\n"
+        with patch.object(
+            media_features,
+            "video_screenshot_pdf_capability",
+            return_value={"available": True},
+        ), patch.object(media_features.subprocess, "run") as run:
+            with self.assertRaisesRegex(MediaFeatureError, "视频容器"):
+                video_screenshots_pdf(playlist)
+        run.assert_not_called()
+
+    def test_video_demuxer_uses_container_magic_not_filename_or_content(self) -> None:
+        self.assertEqual(
+            "mov", media_features._video_demuxer(b"\x00\x00\x00\x18ftypisom")
+        )
+        self.assertEqual(
+            "matroska", media_features._video_demuxer(b"\x1aE\xdf\xa3webm")
+        )
+        self.assertEqual(
+            "avi", media_features._video_demuxer(b"RIFF\x00\x00\x00\x00AVI ")
+        )
+
     def test_service_does_not_offer_output_path_parameters(self) -> None:
         with self.assertRaises(TypeError):
             MediaFeatureService.merge_pdfs([], output_path="/tmp/result.pdf")

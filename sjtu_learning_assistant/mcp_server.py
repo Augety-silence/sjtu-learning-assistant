@@ -240,13 +240,22 @@ class MCPServer:
             if isinstance(line, str) and not line.strip():
                 return None
             message = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # ValueError 覆盖 JSONDecodeError/UnicodeDecodeError 以及超长整数字面量
+            # （Python 3.11+ int 位数上限）；过深嵌套抛 RecursionError。任何一行
+            # 坏输入都只能得到 Parse error，不能让 stdio 服务进程退出。
             response: object = _error_response(None, _PARSE_ERROR, "Parse error")
         else:
             response = self.handle_message(message)
         if response is None:
             return None
-        return json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+        encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+        try:
+            encoded.encode("utf-8")
+        except UnicodeEncodeError:
+            # 回显的 id 或本地数据中的孤立代理项无法编码为 UTF-8，改用 \\u 转义输出。
+            encoded = json.dumps(response, ensure_ascii=True, separators=(",", ":"))
+        return encoded
 
     def serve(
         self,

@@ -1121,6 +1121,39 @@ def _ffmpeg_executable() -> str | None:
     return str(path) if path.is_file() and os.access(path, os.X_OK) else None
 
 
+def _video_demuxer(payload: bytes) -> str:
+    """只接受可由单个文件承载、且能用魔数确认的常见视频容器。"""
+    if len(payload) >= 12 and payload[4:8] == b"ftyp":
+        return "mov"
+    if payload.startswith(b"\x1aE\xdf\xa3"):
+        return "matroska"
+    if (
+        len(payload) >= 12
+        and payload.startswith(b"RIFF")
+        and payload[8:12] == b"AVI "
+    ):
+        return "avi"
+    if payload.startswith(b"FLV"):
+        return "flv"
+    if payload.startswith(b"OggS"):
+        return "ogg"
+    if payload.startswith(
+        b"\x30\x26\xb2\x75\x8e\x66\xcf\x11"
+        b"\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
+    ):
+        return "asf"
+    if payload.startswith((b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3")):
+        return "mpeg"
+    if (
+        len(payload) >= 377
+        and payload[0] == payload[188] == payload[376] == 0x47
+    ):
+        return "mpegts"
+    raise MediaFeatureError(
+        "仅支持可验证的 MP4、WebM、AVI、WMV、FLV、Ogg 或 MPEG 视频容器。"
+    )
+
+
 def video_screenshot_pdf_capability() -> dict[str, Any]:
     missing: list[str] = []
     if _ffmpeg_executable() is None:
@@ -1154,6 +1187,7 @@ def video_screenshots_pdf(
     payload = _as_bytes(video, max_video_size)
     if not payload:
         raise MediaFeatureError("视频内容为空。")
+    demuxer = _video_demuxer(payload)
     from PIL import Image, UnidentifiedImageError
 
     # Windows 上杀毒软件/索引器可能短暂占用新写入的截图；清理失败不应把已生成的 PDF
@@ -1163,6 +1197,14 @@ def video_screenshots_pdf(
     ) as directory:
         root = Path(directory)
         pattern = root / "frame-%04d.jpg"
+        # 管道输入不可 seek：moov 位于文件尾的常见 MP4 会被 ffmpeg 判为无法解析。
+        # 输入已按魔数限制为单文件容器，并显式强制对应 demuxer，避免把远端播放列表
+        # 自动探测为 HLS/concat 后继续读取用户机器上的其他本地路径。
+        source = root / "input.bin"
+        try:
+            source.write_bytes(payload)
+        except OSError as exc:
+            raise MediaFeatureError("无法写入临时视频文件。") from exc
         command = [
             _ffmpeg_executable() or "ffmpeg",
             "-nostdin",
@@ -1173,9 +1215,11 @@ def video_screenshots_pdf(
             "-max_alloc",
             str(64 * 1024 * 1024),
             "-protocol_whitelist",
-            "pipe",
+            "file",
+            "-f",
+            demuxer,
             "-i",
-            "pipe:0",
+            os.fspath(source),
             "-vf",
             f"fps=1/{interval_seconds},scale=1920:-2:force_original_aspect_ratio=decrease",
             "-frames:v",
@@ -1187,7 +1231,7 @@ def video_screenshots_pdf(
         try:
             completed = subprocess.run(
                 command,
-                input=payload,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout_seconds,

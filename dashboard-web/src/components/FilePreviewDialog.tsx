@@ -1,5 +1,5 @@
 import { motion, useIsPresent, useReducedMotion } from "motion/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ContentReveal } from "@/components/ContentReveal";
 import { RichPreviewContent } from "@/components/RichPreviewContent";
@@ -30,7 +30,57 @@ function selectedPreviewer(preview: MaterialPreview) {
   return selected;
 }
 
-function renderPreview(preview: MaterialPreview, previewer: PreviewerKind) {
+function usePdfSource(preview: MaterialPreview): string | null {
+  const dataUrl = preview.kind === "pdf" ? preview.data_url : null;
+  const [source, setSource] = useState<{
+    dataUrl: string;
+    src: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!dataUrl) {
+      setSource(null);
+      return;
+    }
+    const isPdfDataUrl = /^data:application\/pdf(;[^,]*)?;base64,/i.test(
+      dataUrl,
+    );
+    if (
+      !isPdfDataUrl ||
+      typeof fetch !== "function" ||
+      typeof URL.createObjectURL !== "function"
+    ) {
+      setSource({ dataUrl, src: dataUrl });
+      return;
+    }
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    // Chromium/WebView2 caps data: URLs at 2MB. Let the browser decode the
+    // Base64 asynchronously so a 30 MiB PDF cannot block the dialog controls.
+    void fetch(dataUrl, { signal: controller.signal })
+      .then((response) => response.blob())
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(
+          new Blob([blob], { type: "application/pdf" }),
+        );
+        setSource({ dataUrl, src: objectUrl });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSource({ dataUrl, src: dataUrl });
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [dataUrl]);
+  return source && source.dataUrl === dataUrl ? source.src : null;
+}
+
+function renderPreview(
+  preview: MaterialPreview,
+  previewer: PreviewerKind,
+  pdfSource: string | null,
+) {
   const compatible =
     (preview.kind === "image" && previewer === "image") ||
     (preview.kind === "pdf" && previewer === "pdf") ||
@@ -44,12 +94,19 @@ function renderPreview(preview: MaterialPreview, previewer: PreviewerKind) {
       />
     );
   }
+  if (preview.kind === "pdf" && !pdfSource) return null;
   return (
     <RichPreviewContent
       kind={previewer}
       title={preview.name}
       content={preview.kind === "text" ? preview.text : undefined}
-      sourceUrl={preview.kind === "text" ? undefined : preview.data_url}
+      sourceUrl={
+        preview.kind === "text"
+          ? undefined
+          : preview.kind === "pdf"
+            ? pdfSource
+            : preview.data_url
+      }
       alt={preview.name}
     />
   );
@@ -67,6 +124,7 @@ export function FilePreviewDialog({
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
   const previewer = selectedPreviewer(preview);
+  const pdfSource = usePdfSource(preview);
   const mediaKey =
     preview.kind === "text" ? null : `${preview.kind}:${preview.data_url}`;
   const [readyMediaKey, setReadyMediaKey] = useState<string | null>(null);
@@ -179,7 +237,7 @@ export function FilePreviewDialog({
               正在准备预览内容…
             </span>
           )}
-          {renderPreview(preview, previewer)}
+          {renderPreview(preview, previewer, pdfSource)}
         </ContentReveal>
       </motion.section>
     </div>,

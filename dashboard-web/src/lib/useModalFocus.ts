@@ -64,6 +64,47 @@ function isInsideClosedDetails(element: HTMLElement) {
   return false;
 }
 
+function tryFocus(
+  element: HTMLElement | null | undefined,
+  preventScroll = false,
+): boolean {
+  if (
+    !element?.isConnected ||
+    element.closest("[inert]") ||
+    (typeof element.checkVisibility === "function" &&
+      !element.checkVisibility())
+  ) {
+    return false;
+  }
+  element.focus({ preventScroll });
+  return document.activeElement === element;
+}
+
+// The trigger may be hidden (e.g. the narrow-screen menu button once the
+// window widens) or unmounted by the time the modal closes. Fall back to a
+// still-open outer modal, then the page heading / main landmark, instead of
+// silently dropping focus on <body>.
+function restoreFocus(trigger: HTMLElement | null, container: HTMLElement) {
+  if (trigger !== document.body && tryFocus(trigger)) return;
+  const current = document.activeElement;
+  if (
+    current instanceof HTMLElement &&
+    current !== document.body &&
+    current.isConnected &&
+    !container.contains(current)
+  ) {
+    return;
+  }
+  const openModals = Array.from(
+    document.querySelectorAll<HTMLElement>("[aria-modal='true']"),
+  ).filter((element) => element !== container && !container.contains(element));
+  if (tryFocus(openModals[openModals.length - 1], true)) return;
+  const main = document.querySelector<HTMLElement>("main");
+  if (tryFocus(main?.querySelector<HTMLElement>("h1[tabindex]"), true)) return;
+  if (main && !main.hasAttribute("tabindex")) main.tabIndex = -1;
+  tryFocus(main, true);
+}
+
 export function useModalFocus(
   containerRef: RefObject<HTMLElement | null>,
   onDismiss: () => void,
@@ -169,11 +210,8 @@ export function useModalFocus(
         else element.setAttribute("aria-hidden", ariaHidden);
       }
 
-      if (
-        optionsRef.current.shouldRestoreFocus?.() !== false &&
-        capturedTrigger?.isConnected
-      ) {
-        capturedTrigger.focus();
+      if (optionsRef.current.shouldRestoreFocus?.() !== false) {
+        restoreFocus(capturedTrigger, container);
       }
     };
   }, [active, containerRef]);

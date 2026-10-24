@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sjtu_learning_assistant.assignment_service import (
     AssignmentService,
@@ -100,6 +101,19 @@ class AssignmentServiceTests(unittest.TestCase):
         with self.assertRaises(SubmissionOutcomeUncertain):
             AssignmentService(uncertain).submit_text(1, 2, "answer")
         self.assertEqual(1, uncertain.posts)
+
+    def test_successful_post_with_failed_readback_is_audited_as_submitted(self) -> None:
+        class ReadbackFailureCanvas(FakeCanvas):
+            def submission(self, course_id, assignment_id):
+                if self.posts:
+                    raise CanvasNetworkError("readback failed", operation_uncertain=False)
+                return super().submission(course_id, assignment_id)
+
+        service = AssignmentService(ReadbackFailureCanvas("online_text_entry"))
+        with patch.object(service, "_audit") as audit:
+            with self.assertRaises(SubmissionOutcomeUncertain):
+                service.submit_text(1, 2, "answer")
+        self.assertEqual("submitted", audit.call_args.args[3])
 
     def test_cloud_temporary_file_is_always_removed(self) -> None:
         class Provider:
