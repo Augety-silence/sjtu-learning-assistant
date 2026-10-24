@@ -110,10 +110,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # æ­£å¼çæ¬è®¾ä¸º Latestï¼å¸¦è¿å­ç¬¦çè¯­ä¹åé¢åå¸çæ¬ä¸è¿å¥ Latestã
+          release_flags=(--latest)
+          if [[ "$GITHUB_REF_NAME" =~ - ]]; then
+            release_flags=(--prerelease --latest=false)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --latest \
+            "${release_flags[@]}" \
             --title "SJTU Learning Assistant $GITHUB_REF_NAME"
