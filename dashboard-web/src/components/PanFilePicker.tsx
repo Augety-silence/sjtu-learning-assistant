@@ -34,13 +34,31 @@ export function PanFilePicker({
 
   useEffect(() => void load(), [load]);
 
+  // Navigation replaces the list with a loading state, unmounting the focused
+  // button; move focus to the refreshed list so keyboard users are not dropped
+  // to <body> (WCAG 2.4.3).
+  const listRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef(false);
+  useEffect(() => {
+    if (page && restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      listRef.current?.focus();
+    }
+  }, [page]);
+
   const openDirectory = (item: PanItem) => {
+    restoreFocusRef.current = true;
     setPath(item.remote_path);
     setPageNumber(1);
   };
   const goUp = () => {
+    restoreFocusRef.current = true;
     setPath(path.split("/").slice(0, -1).join("/"));
     setPageNumber(1);
+  };
+  const changePage = (delta: number) => {
+    restoreFocusRef.current = true;
+    setPageNumber((value) => value + delta);
   };
 
   return (
@@ -64,7 +82,13 @@ export function PanFilePicker({
         <LoadingState />
       ) : (
         <>
-          <div className="pan-list" role="list" aria-label="云盘文件">
+          <div
+            ref={listRef}
+            className="pan-list"
+            role="list"
+            aria-label="云盘文件"
+            tabIndex={-1}
+          >
             {page.items.length === 0 && (
               <p className="finder-empty">此目录为空</p>
             )}
@@ -102,7 +126,7 @@ export function PanFilePicker({
               variant="outline"
               size="sm"
               disabled={pageNumber === 1 || disabled}
-              onClick={() => setPageNumber((value) => value - 1)}
+              onClick={() => changePage(-1)}
             >
               上一页
             </Button>
@@ -114,7 +138,7 @@ export function PanFilePicker({
               variant="outline"
               size="sm"
               disabled={!page.has_more || disabled}
-              onClick={() => setPageNumber((value) => value + 1)}
+              onClick={() => changePage(1)}
             >
               下一页
               <ChevronRight aria-hidden="true" />
