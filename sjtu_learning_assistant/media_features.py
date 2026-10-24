@@ -1163,6 +1163,13 @@ def video_screenshots_pdf(
     ) as directory:
         root = Path(directory)
         pattern = root / "frame-%04d.jpg"
+        # 管道输入不可 seek：moov 位于文件尾的常见 MP4 会被 ffmpeg 判为无法解析，
+        # 因此写入私有临时文件，并仅放行 file 协议（非标准扩展名下 HLS 等仍被拒绝）。
+        source = root / "input.bin"
+        try:
+            source.write_bytes(payload)
+        except OSError as exc:
+            raise MediaFeatureError("无法写入临时视频文件。") from exc
         command = [
             _ffmpeg_executable() or "ffmpeg",
             "-nostdin",
@@ -1173,9 +1180,9 @@ def video_screenshots_pdf(
             "-max_alloc",
             str(64 * 1024 * 1024),
             "-protocol_whitelist",
-            "pipe",
+            "file",
             "-i",
-            "pipe:0",
+            os.fspath(source),
             "-vf",
             f"fps=1/{interval_seconds},scale=1920:-2:force_original_aspect_ratio=decrease",
             "-frames:v",
@@ -1187,7 +1194,7 @@ def video_screenshots_pdf(
         try:
             completed = subprocess.run(
                 command,
-                input=payload,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=timeout_seconds,
