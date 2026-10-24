@@ -215,6 +215,7 @@ describe("MessagesView", () => {
         ids: ["mail-1"],
       }),
     );
+    await screen.findByText(/已将“邮件一”标记为已读/);
     fireEvent.keyDown(document, { key: "R", shiftKey: true });
     await waitFor(() =>
       expect(markMessagesRead).toHaveBeenCalledWith({ kind: "all", all: true }),

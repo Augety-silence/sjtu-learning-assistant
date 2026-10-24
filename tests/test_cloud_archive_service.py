@@ -196,6 +196,13 @@ def test_uploaded_but_db_update_failed_can_reconcile(archive_env):
         version = session.scalar(select(ArchiveVersion))
         assert version.status == "needs_verification"
 
+    verified = service.retry(job_id)
+    assert verified["status"] == "completed"
+    assert verified["reconciled"] is True
+    assert provider.uploads == 1
+    with Session(engine) as session:
+        assert session.scalar(select(ArchiveVersion)).status == "archived"
+
 
 def test_manager_initialization_marks_running_jobs_interrupted(archive_env):
     _root, engine, provider, _service = archive_env

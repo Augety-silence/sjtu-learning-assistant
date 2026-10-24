@@ -147,6 +147,35 @@ def test_conflict_policies(restore_env, policy):
         assert Path(result["target"]) != target
 
 
+def test_overwrite_failure_restores_same_directory_snapshot(restore_env, monkeypatch):
+    root, _engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="rollback.txt")
+    target_root = root / "rollback-target"
+    target_root.mkdir()
+    target = target_root / "rollback.txt"
+    target.write_bytes(b"original-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_replace = restore_module._replace_with_retry
+
+    def fail_install(source: Path, destination: Path) -> None:
+        if (
+            source.name.startswith(".sjtu-restore-")
+            and not source.name.startswith(".sjtu-restore-overwrite-")
+            and destination == target
+        ):
+            raise OSError("forced install failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(restore_module, "_replace_with_retry", fail_install)
+    with pytest.raises(RestoreError):
+        restore.execute(plan["job"]["id"], "overwrite")
+
+    assert target.read_bytes() == b"original-content"
+    assert not list(target_root.glob(".sjtu-restore-overwrite-*"))
+    assert not list(target_root.glob(".sjtu-restore-*"))
+
+
 def test_download_interruption_and_hash_failure_leave_no_target_or_temp(restore_env):
     root, engine, provider, archive, restore = restore_env
     _source, entry_id = _archive_file(root, archive)

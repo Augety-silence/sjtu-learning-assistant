@@ -21,6 +21,18 @@ CONTEXT_CHAR_BUDGET = 54_000
 PREFETCH_CHAR_BUDGET = 30_000
 
 
+def _content_chars(content: Any) -> int:
+    # 与 ai_classifier._clean_chat_messages 口径一致：多模态 list 只计文字部分，
+    # 不把图片 base64（可达数 MB）计入字符预算，否则附图时工具结果会被全部省略。
+    if isinstance(content, list):
+        return sum(
+            len(part["text"])
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+        )
+    return len(str(content or ""))
+
+
 @dataclass(frozen=True)
 class AgentResult:
     content: str
@@ -285,7 +297,7 @@ class AgentLoop:
                 tool_content = json.dumps(tool_result, ensure_ascii=False, separators=(",", ":"))
                 # 客户端对整轮对话有 60_000 字符 / 64 条的硬上限，超限会以不可重试的
                 # “对话内容过长”失败；这里在追加前按预算省略结果，保留 tool_call_id 配对。
-                used = sum(len(str(item.get("content") or "")) for item in conversation)
+                used = sum(_content_chars(item.get("content")) for item in conversation)
                 if used + len(tool_content) > CONTEXT_CHAR_BUDGET:
                     tool_content = json.dumps({"error": "工具结果超出本轮上下文预算，已省略；请基于已有结果作答或缩小范围。"}, ensure_ascii=False, separators=(",", ":"))
                 conversation.append({"role": "tool", "tool_call_id": call_id, "name": str(name or "unknown")[:80], "content": tool_content})

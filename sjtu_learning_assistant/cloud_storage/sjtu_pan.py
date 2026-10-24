@@ -12,8 +12,10 @@ import os
 import re
 import tempfile
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
@@ -42,6 +44,9 @@ KEYCHAIN_SERVICE = "SJTU Learning Assistant - SJTU Pan"
 KEYCHAIN_ACCOUNT = "user-token"
 MAX_TOKEN_LENGTH = 4096
 MAX_PARTS_PER_RENEWAL = 50
+MAX_SAFE_REQUEST_ATTEMPTS = 3
+MAX_RETRY_DELAY_SECONDS = 5.0
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 TRUSTED_OBJECT_HOST_SUFFIXES = (
     ".myqcloud.com",
     ".tencentcos.cn",
@@ -272,13 +277,51 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             raise CloudAuthError("尚未设置交大云盘 UserToken。")
         return self._user_token
 
-    def _send_raw(self, method: str, url: str | httpx.URL, **kwargs: Any) -> httpx.Response:
+    @staticmethod
+    def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+        fallback = min(0.25 * (2 ** attempt), MAX_RETRY_DELAY_SECONDS)
+        if response is None:
+            return fallback
+        value = response.headers.get("Retry-After", "").strip()
+        if not value:
+            return fallback
         try:
-            return self._client.request(method, url, **kwargs)
-        except httpx.TimeoutException:
-            raise CloudTimeoutError("交大云盘请求超时。") from None
-        except httpx.RequestError:
-            raise CloudNetworkError("无法连接交大云盘服务。") from None
+            seconds = float(value)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                return fallback
+        return min(max(0.0, seconds), MAX_RETRY_DELAY_SECONDS)
+
+    def _send_raw(
+        self,
+        method: str,
+        url: str | httpx.URL,
+        *,
+        retryable: bool = False,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        attempts = MAX_SAFE_REQUEST_ATTEMPTS if retryable else 1
+        for attempt in range(attempts):
+            response: httpx.Response | None = None
+            try:
+                response = self._client.request(method, url, **kwargs)
+            except httpx.TimeoutException:
+                if attempt + 1 == attempts:
+                    raise CloudTimeoutError("交大云盘请求超时。") from None
+            except httpx.RequestError:
+                if attempt + 1 == attempts:
+                    raise CloudNetworkError("无法连接交大云盘服务。") from None
+            else:
+                if response.status_code not in RETRYABLE_STATUS_CODES or attempt + 1 == attempts:
+                    return response
+                response.close()
+            time.sleep(self._retry_delay(response, attempt))
+        raise CloudNetworkError("无法连接交大云盘服务。")
 
     def _decode(self, response: httpx.Response, operation: str) -> Any:
         if response.status_code in (401, 403):
@@ -396,7 +439,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             url = self._pan_api_url(kind, credential, path)
             query = dict(params or {})
             query["access_token"] = credential.access_token
-            response = self._send_raw(method, url, params=query, json=json_body)
+            response = self._send_raw(
+                method, url, params=query, json=json_body, retryable=method.upper() == "GET"
+            )
             if response.status_code in (401, 403) and attempt == 0:
                 continue
             try:
@@ -410,7 +455,10 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         raise CloudCredentialExpiredError("刷新空间凭据后认证仍失败。")
 
     def get_space_info(self) -> SpaceInfo:
-        response = self._send_raw("GET", f"{self._base_url}/user/v1/space/1", params={"user_token": self._token()})
+        response = self._send_raw(
+            "GET", f"{self._base_url}/user/v1/space/1",
+            params={"user_token": self._token()}, retryable=True,
+        )
         payload = self._decode(response, "读取空间信息")
         if not isinstance(payload, Mapping):
             raise CloudRemoteApiError("交大云盘空间信息响应格式错误。")
@@ -540,13 +588,28 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         def send_stream(
             url: str | httpx.URL, *, params: Mapping[str, Any] | None = None
         ) -> httpx.Response:
-            try:
-                request = self._client.build_request("GET", url, params=params, headers=range_headers)
-                return self._client.send(request, stream=True)
-            except httpx.TimeoutException:
-                raise CloudTimeoutError("交大云盘下载超时。") from None
-            except httpx.RequestError:
-                raise CloudNetworkError("无法连接交大云盘服务。") from None
+            for attempt in range(MAX_SAFE_REQUEST_ATTEMPTS):
+                response: httpx.Response | None = None
+                try:
+                    request = self._client.build_request(
+                        "GET", url, params=params, headers=range_headers
+                    )
+                    response = self._client.send(request, stream=True)
+                except httpx.TimeoutException:
+                    if attempt + 1 == MAX_SAFE_REQUEST_ATTEMPTS:
+                        raise CloudTimeoutError("交大云盘下载超时。") from None
+                except httpx.RequestError:
+                    if attempt + 1 == MAX_SAFE_REQUEST_ATTEMPTS:
+                        raise CloudNetworkError("无法连接交大云盘服务。") from None
+                else:
+                    if (
+                        response.status_code not in RETRYABLE_STATUS_CODES
+                        or attempt + 1 == MAX_SAFE_REQUEST_ATTEMPTS
+                    ):
+                        return response
+                    response.close()
+                time.sleep(self._retry_delay(response, attempt))
+            raise CloudNetworkError("无法连接交大云盘服务。")
 
         def generate() -> Iterator[bytes]:
             response: httpx.Response | None = None
@@ -651,7 +714,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
     def _signed_put(self, domain: str, object_path: str, headers: Mapping[str, str], data: bytes, *, params: Mapping[str, Any] | None = None) -> None:
         url = self._signed_url(domain, object_path, params)
         safe_headers = {str(key): str(value) for key, value in headers.items()}
-        response = self._send_raw("PUT", url, headers=safe_headers, content=data)
+        response = self._send_raw("PUT", url, headers=safe_headers, content=data, retryable=True)
         if not 200 <= response.status_code < 300:
             raise CloudRemoteApiError(f"对象存储上传失败（HTTP {response.status_code}）。", status_code=response.status_code)
 
@@ -675,7 +738,16 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             params={"confirm": None, "conflict_resolution_strategy": "overwrite" if overwrite else "ask"},
         )
         item = _item(confirmed, normalized) if isinstance(confirmed, Mapping) else self.get_info(normalized)
-        return self._verify_uploaded_size(item, len(data))
+        try:
+            return self._verify_uploaded_size(item, len(data))
+        except CloudRemoteApiError:
+            try:
+                self.delete(normalized, permanent=True, missing_ok=True)
+            except Exception as cleanup_error:
+                raise CloudRemoteApiError(
+                    "云端确认的文件大小不一致，且无法自动清理残留对象。"
+                ) from cleanup_error
+            raise
 
     def init_multipart(self, path: RemotePath, *, part_numbers: Sequence[int] | None = None, overwrite: bool = False) -> UploadSession:
         normalized = _segments(path)
@@ -766,7 +838,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
                 session.domain, session.object_path, headers, data,
                 params={"uploadId": session.upload_id, "partNumber": part_number},
             )
-        except CloudRemoteApiError:
+        except CloudRemoteApiError as exc:
+            if exc.status_code not in (401, 403):
+                raise
             # A signed part request is idempotent. Renew its short-lived signature once.
             self.renew_upload(session, [part_number])
             renewed_headers = self._part_credentials.get(session.upload_id, {}).get(part_number)
@@ -790,7 +864,16 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         )
         self._part_credentials.pop(session.upload_id, None)
         item = _item(payload, session.remote_path) if isinstance(payload, Mapping) else self.get_info(session.remote_path)
-        return self._verify_uploaded_size(item, session.bytes_uploaded)
+        try:
+            return self._verify_uploaded_size(item, session.bytes_uploaded)
+        except CloudRemoteApiError:
+            try:
+                self.delete(session.remote_path, permanent=True, missing_ok=True)
+            except Exception as cleanup_error:
+                raise CloudRemoteApiError(
+                    "云端确认的文件大小不一致，且无法自动清理残留对象。"
+                ) from cleanup_error
+            raise
 
     @staticmethod
     def _verify_uploaded_size(item: CloudItem, expected: int) -> CloudItem:

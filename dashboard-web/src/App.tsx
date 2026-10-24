@@ -1297,6 +1297,7 @@ export default function App() {
         }),
       );
     }
+    setDrawerOpen(false);
     setView("ai-chat");
   };
 

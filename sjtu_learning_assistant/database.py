@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sjtu_learning_assistant.credential_store import credential_storage_name
 from sjtu_learning_assistant.sqlite_recovery import (
+    SQLiteRecoveryError,
     SQLiteRecoveryResult,
     prepare_sqlite_database,
 )
@@ -224,7 +225,16 @@ def create_database_engine(database_url: str | None = None) -> Engine:
         path = sqlite_database_path(url)
         recovery_result = None
         if path is not None:
-            recovery_result = prepare_sqlite_database(path)
+            # Callers handle DatabaseConfigError; keep lock/integrity/permission
+            # failures as readable errors instead of raw tracebacks.
+            try:
+                recovery_result = prepare_sqlite_database(path)
+            except SQLiteRecoveryError as exc:
+                raise DatabaseConfigError(str(exc)) from exc
+            except OSError as exc:
+                raise DatabaseConfigError(
+                    "无法访问本地数据库目录，请检查磁盘空间和目录权限后重试。"
+                ) from exc
         engine = create_engine(
             url,
             connect_args={"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000, "check_same_thread": False},

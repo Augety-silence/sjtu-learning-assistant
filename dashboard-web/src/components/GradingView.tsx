@@ -147,8 +147,15 @@ export function GradingView({
     submissions.find((item) => item.id === selectedId) ??
     submissions[0] ??
     null;
+  // 迟交但已评分的提交状态仍为 "late"，按是否已有分数判断，避免“待批改”虚高。
   const pending = submissions.filter(
-    (item) => item.status !== "graded" && item.status !== "missing",
+    (item) =>
+      item.status !== "graded" &&
+      item.status !== "missing" &&
+      !(
+        item.status === "late" &&
+        (typeof item.score === "number" || Boolean(item.displayGrade))
+      ),
   ).length;
   const previewAttachment = selected?.attachments.find(
     (item) => item.preview,

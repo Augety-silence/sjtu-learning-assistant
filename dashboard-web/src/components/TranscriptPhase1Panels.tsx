@@ -335,7 +335,7 @@ export function TranscriptTimedContent({
           return time && onSeek ? (
             <button
               type="button"
-              className="aura-button-link"
+              className="rounded-[8px] text-primary hover:text-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
               aria-label={`跳转到 ${children}`}
               onClick={() => onSeek(Number(time[1]))}
             >

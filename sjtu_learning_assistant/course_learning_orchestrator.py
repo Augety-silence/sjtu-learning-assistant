@@ -725,7 +725,9 @@ def _as_uncertain(change: CorrectionChange, source: str, cue_ids: tuple[str, ...
 
 def _apply_changes(source: str, changes: Sequence[CorrectionChange]) -> str:
     result = source
-    for change in reversed(changes):
+    # Apply right-to-left by offset: cue-anchored proposals arrive in model
+    # order, and an earlier length-changing edit would shift later offsets.
+    for change in sorted(changes, key=lambda item: (item.start, item.end), reverse=True):
         result = result[:change.start] + change.corrected + result[change.end:]
     return result
 

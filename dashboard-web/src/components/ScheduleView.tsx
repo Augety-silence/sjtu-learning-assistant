@@ -103,7 +103,10 @@ export function ScheduleView({
             parsed.range?.startAt !== range.startAt ||
             parsed.range?.endAt !== range.endAt
           ) {
-            throw new Error("缓存月份不匹配");
+            // A valid cache for another month is not corrupt: keep it so returning
+            // to that month while still offline can show it again.
+            setLoadError(messageFrom(reason, "课表加载失败"));
+            return;
           }
           setStatus({
             ...parsed.status,

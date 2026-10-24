@@ -1548,7 +1548,9 @@ class TranscriptService:
                     return None
                 batch["status"] = "queued"
             owner = batch.get("owner")
-            if self._owner_alive(owner) and not self._is_self_owner(owner):
+            # Check our own lease first: _owner_alive spawns a process probe
+            # (powershell.exe on Windows) while both locks are held.
+            if not self._is_self_owner(owner) and self._owner_alive(owner):
                 return None
             self._refresh_owner(batch)
             batch["updated_at"] = _now()
@@ -2937,6 +2939,9 @@ class TranscriptService:
             and self._completed_artifacts_valid(video_dir, manifest)
         ):
             if source_cues is None:
+                # Persist the finished V1 result before Phase1: a cancel, a
+                # playback yield or a crash during review must not lose it.
+                self._write_json(manifest_path, manifest)
                 self._run_phase1_safely(batch, job, video_dir, raw, context, manifest)
                 job["force_phase1"] = False
                 job["retry_failed_v1"] = False

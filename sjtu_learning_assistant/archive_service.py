@@ -1602,6 +1602,11 @@ class ArchiveService:
                 distinct_previous = previous_path != target and not _same_physical_file(
                     previous_path, target
                 )
+                # 旧路径可能已被同批中先处理的另一条记录占用（Canvas 上两文件互换/轮换
+                # 名称）；此时它是别人的新文件，既不能作为本记录旧版本保留，更不能删除。
+                previous_owned = not distinct_previous or self._holds_recorded_copy(
+                    context, previous_path
+                )
                 if distinct_previous and _path_mode(previous_path) is not None:
                     _ensure_safe_directory(self.archive_root, previous_path.parent)
                 if (
@@ -1615,7 +1620,9 @@ class ArchiveService:
                 if _is_regular_file(previous_path):
                     # 内容与新下载完全相同（仅路径变化：课程改名、分类/整理开关变化，或
                     # 上一轮替换后状态写回失败）时不再整份复制进 .versions。
-                    if not self._has_content(previous_path, size, digest):
+                    if previous_owned and not self._has_content(
+                        previous_path, size, digest
+                    ):
                         self._preserve_old_version(previous_path, context.source_id)
                 elif _path_mode(previous_path) is not None:
                     if previous_path.is_symlink():
@@ -1623,7 +1630,11 @@ class ArchiveService:
                     else:
                         raise ArchiveError("旧归档路径不是普通文件，已拒绝处理。")
                 _replace_with_regular_file(self.archive_root, temporary_path, target)
-                if distinct_previous and _is_regular_file(previous_path):
+                if (
+                    distinct_previous
+                    and previous_owned
+                    and _is_regular_file(previous_path)
+                ):
                     try:
                         previous_path.unlink()
                     except OSError:
@@ -1784,6 +1795,14 @@ class ArchiveService:
             return self._file_digest(path) == (size, digest)
         except (OSError, ArchiveError):
             return False
+
+    def _holds_recorded_copy(self, context: ArchiveFileContext, path: Path) -> bool:
+        """旧路径是否仍是本记录上次下载的内容；缺少记录时沿用原逻辑视为是。"""
+        if context.downloaded_sha256 is None or context.downloaded_size is None:
+            return True
+        return self._has_content(
+            path, context.downloaded_size, context.downloaded_sha256
+        )
 
     def _has_identical_version(
         self, target: Path, versions_dir: Path, source_id: str

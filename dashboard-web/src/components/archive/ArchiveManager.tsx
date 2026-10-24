@@ -11,6 +11,7 @@ import "@/components/archive/archive.css";
 import { ArchiveDetailDrawer } from "@/components/archive/ArchiveDetailDrawer";
 import { ArchiveJobsPanel } from "@/components/archive/ArchiveJobsPanel";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
+import { archiveStatusLabel } from "@/components/archive/archiveUtils";
 import { RestoreDialog } from "@/components/archive/RestoreDialog";
 import { Button } from "@/components/ui/Button";
 import {
@@ -39,7 +40,23 @@ const restorableStatuses = new Set(["archived"]);
 type RestoreVersion = Pick<ArchiveVersion, "id">;
 
 function isOfflineMessage(message: string) {
-  return /Bridge|不可用|尚未就绪|网络|连接/.test(message);
+  // 只有桌面 Bridge 自身的错误才算“离线”；“无法连接交大云盘”“目标目录不可用”等
+  // 后端业务错误若也标成 Bridge 离线，会误导用户重启应用而不是检查网络/目录。
+  return /桌面 Bridge/.test(message);
+}
+
+function archiveStartNotice(job: ArchiveJob) {
+  if (job.status === "needs_verification" || job.status === "needs_reconcile")
+    return "文件已上传，但云端副本尚未通过强校验；校验完成前请保留本地文件。";
+  if (runningStatuses.has(job.status) || job.status === "pending")
+    return "相同文件正在归档中，未重复上传；可在“任务与事件”查看进度。";
+  if (job.status !== "completed")
+    return (
+      "归档任务状态：" +
+      archiveStatusLabel(job.status) +
+      "，请在“任务与事件”中核对。"
+    );
+  return job.deduplicated ? "相同内容已归档，未重复上传。" : "文件归档完成。";
 }
 
 function currentVersion(entry: ArchiveListItem): RestoreVersion | undefined {
@@ -178,9 +195,7 @@ export function ArchiveManager() {
     setNotice("已打开原生文件选择器。选择文件后将开始归档。");
     try {
       const result = await startArchive();
-      setNotice(
-        result.deduplicated ? "相同内容已归档，未重复上传。" : "文件归档完成。",
-      );
+      setNotice(archiveStartNotice(result));
       await Promise.all([loadPage(), loadJobs()]);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "归档启动失败";
@@ -198,8 +213,18 @@ export function ArchiveManager() {
   const retry = async (jobId: string) => {
     setError("");
     try {
-      await retryArchive(jobId);
-      setNotice("失败任务已重新执行。");
+      const result = await retryArchive(jobId);
+      if (result.in_progress) {
+        setNotice("该任务已在处理中，未重复提交。");
+      } else if (result.kind === "archive") {
+        setNotice(archiveStartNotice(result));
+      } else if (result.status === "completed") {
+        setNotice("恢复任务已完成。");
+      } else {
+        setNotice(
+          `恢复任务状态：${archiveStatusLabel(result.status)}，请核对任务事件。`,
+        );
+      }
       await Promise.all([loadPage(), loadJobs()]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "重试失败");

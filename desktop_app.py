@@ -1860,7 +1860,18 @@ def run_desktop_app() -> int:
             "private_mode": False,
             "storage_path": str(APP_SUPPORT_DIR / "webview"),
         }
-        webview.start(_initialize_desktop_window, (window,), **start_options)
+        try:
+            webview.start(_initialize_desktop_window, (window,), **start_options)
+        except Exception as exc:  # noqa: BLE001 - surface GUI backend failures in windowed builds
+            hint = (
+                "请安装或修复 Microsoft Edge WebView2 Runtime 后重试。"
+                if sys.platform == "win32"
+                else "请重新安装 SJTU 学习助手。"
+            )
+            _report_startup_error(
+                f"错误：无法启动界面（{type(exc).__name__}: {safe_message(exc)}）。{hint}"
+            )
+            return 2
         return 0
     finally:
         if scheduler is not None:

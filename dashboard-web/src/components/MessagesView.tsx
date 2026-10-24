@@ -102,15 +102,29 @@ export function MessagesView() {
     [],
   );
 
-  const scheduleRowFocus = useCallback((key: string) => {
-    if (focusTimerRef.current !== null) {
-      window.clearTimeout(focusTimerRef.current);
-    }
-    focusTimerRef.current = window.setTimeout(() => {
-      focusTimerRef.current = null;
-      rowRefs.current.get(key)?.focus();
-    }, 0);
-  }, []);
+  const scheduleRowFocus = useCallback(
+    (key: string, onlyIfFocusLost = false) => {
+      if (focusTimerRef.current !== null) {
+        window.clearTimeout(focusTimerRef.current);
+      }
+      focusTimerRef.current = window.setTimeout(() => {
+        focusTimerRef.current = null;
+        const active = document.activeElement;
+        // Busy buttons are disabled (then unmounted); Chromium/WebView2 drops focus to <body>.
+        if (
+          onlyIfFocusLost &&
+          active instanceof HTMLElement &&
+          active !== document.body &&
+          active.isConnected &&
+          !active.matches(":disabled")
+        ) {
+          return;
+        }
+        rowRefs.current.get(key)?.focus();
+      }, 0);
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -166,9 +180,11 @@ export function MessagesView() {
         });
       } finally {
         setBusyKey(null);
+        // The clicked "标为已读" button disables and unmounts; return focus to its row.
+        scheduleRowFocus(key, true);
       }
     },
-    [applyRead, busyKey, showToast],
+    [applyRead, busyKey, scheduleRowFocus, showToast],
   );
 
   const markCurrentFilterRead = useCallback(async () => {
@@ -209,8 +225,10 @@ export function MessagesView() {
       });
     } finally {
       setBusyKey(null);
+      // "全部已读" becomes disabled once nothing is unread; keep keyboard focus in the list.
+      if (selectedKey) scheduleRowFocus(selectedKey, true);
     }
-  }, [busyKey, detailItem, kind, showToast]);
+  }, [busyKey, detailItem, kind, scheduleRowFocus, selectedKey, showToast]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

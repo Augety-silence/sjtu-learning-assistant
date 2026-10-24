@@ -625,6 +625,7 @@ export interface ArchiveJob {
   retryable?: boolean;
   deduplicated?: boolean;
   reconciled?: boolean;
+  in_progress?: boolean;
   target?: string;
   comparison?: {
     existing: ArchiveFileSignature | null;

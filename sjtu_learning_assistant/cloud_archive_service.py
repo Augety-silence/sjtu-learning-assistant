@@ -50,10 +50,11 @@ def redact_public_text(value: str) -> str:
     redacted = re.sub(
         r"(?i)\bbearer\s+[^\s,;\"']+", "Bearer <redacted>", redacted
     )
-    # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名。
+    # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名；
+    # 键名后允许 JSON/repr 的收尾引号（含转义 \"）与 URL 编码的 %3D，Authorization 值允许 Basic 方案。
     return re.sub(
         r"(?i)\b([\w-]*(?:token|cookie|authorization|password|secret|signature|api[_-]?key))"
-        r"(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?[^\s,;&]+)",
+        r"(\\?[\"']?\s*(?:[:=]|%3d)\s*)(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)",
         r"\1\2<redacted>",
         redacted,
     )
@@ -571,6 +572,7 @@ class CloudArchiveService:
         uploaded = False
         source_changed = False
         progress: ProgressThrottle | None = None
+        owns_job = False
         try:
             with Session(self.engine) as session:
                 # 原子认领：并发的同幂等键 archive_file/retry 只有一个能把任务推进到 uploading，
@@ -592,6 +594,7 @@ class CloudArchiveService:
                     current = job_data(job)
                     current["in_progress"] = job.status in ACTIVE_STATES
                     return current
+                owns_job = True
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 version = session.get(ArchiveVersion, job.version_id) if job else None
@@ -648,6 +651,9 @@ class CloudArchiveService:
                 result["deduplicated"] = False
                 return result
         except Exception as exc:
+            if not owns_job:
+                # 认领本身失败（如 SQLite busy）：任务可能正由另一调用上传，不能把它的状态改写为 failed。
+                raise
             bytes_done = progress.position if progress is not None else None
             if source_changed:
                 # 记为 failed：retry 会重新哈希并提示“归档源已变化”，引导创建新版本而非对账死循环。
@@ -742,7 +748,26 @@ class CloudArchiveService:
         expected = version.sha256.casefold()
         return any(value.strip('"').casefold() == expected for value in candidates)
 
-    def _reconcile_remote(self, job_id: str, provider: Any, remote_path: tuple[str, ...]) -> dict[str, Any]:
+    @staticmethod
+    def _remote_content_matches(
+        provider: Any,
+        remote_path: tuple[str, ...],
+        version: ArchiveVersion,
+    ) -> bool:
+        digest = hashlib.sha256()
+        size = 0
+        for chunk in provider.download_stream(remote_path):
+            if not isinstance(chunk, bytes):
+                raise CloudArchiveError("云端对象校验返回了无效数据。")
+            size += len(chunk)
+            if size > version.size:
+                return False
+            digest.update(chunk)
+        return size == version.size and digest.hexdigest() == version.sha256
+
+    def _reconcile_remote(
+        self, job_id: str, provider: Any, remote_path: tuple[str, ...], *, verify_content: bool = False
+    ) -> dict[str, Any]:
         item = provider.get_info(remote_path)
         with Session(self.engine) as session:
             job = session.get(ArchiveJob, job_id)
@@ -752,6 +777,33 @@ class CloudArchiveService:
             if getattr(item, "size", None) not in (None, version.size):
                 raise CloudArchiveError("确定性云端路径已存在不同大小的对象，拒绝覆盖。")
             if not self._strong_remote_match(version, item):
+                if verify_content:
+                    if not self._remote_content_matches(provider, remote_path, version):
+                        message = "云端对象内容与本地归档记录不一致，需要重新上传。"
+                        job.status = "failed"
+                        job.finished_at = utcnow()
+                        job.last_error = message
+                        version.status = "failed"
+                        version.last_error = message
+                        add_event(
+                            session,
+                            job,
+                            "verification_failed",
+                            "failed",
+                            message,
+                        )
+                        session.commit()
+                        result = job_data(job)
+                        result["reconciled"] = False
+                        return result
+                    self._complete_upload(session, job, item, remote_path, provider)
+                    add_event(
+                        session, job, "content_verified", "completed", "已下载并通过 SHA-256 强校验。"
+                    )
+                    session.commit()
+                    result = job_data(job)
+                    result["reconciled"] = True
+                    return result
                 job.status = "needs_verification"
                 job.finished_at = None
                 job.last_error = "云端对象仅通过大小检查，仍需强校验。"
@@ -838,7 +890,10 @@ class CloudArchiveService:
             if status not in (
                 "failed", "interrupted", "needs_reconcile", "needs_verification"
             ):
-                return job_data(job)
+                current = job_data(job)
+                if status in ACTIVE_STATES:
+                    current["in_progress"] = True
+                return current
             if status in ("needs_reconcile", "needs_verification"):
                 path = None
             else:
@@ -889,12 +944,17 @@ class CloudArchiveService:
                     if version is None:
                         raise CloudArchiveError("缺少可对账的版本。")
                     remote_path = decode_remote_path(version.cloud_remote_path)
+                    verify_content = job.status == "needs_verification"
                 provider = self.provider_factory()
                 if not provider.exists(remote_path):
                     self._mark_failed(identifier, "云端对象不存在，需要重新上传。")
                     results.append({"job_id": identifier, "status": "failed"})
                 else:
-                    results.append(self._reconcile_remote(identifier, provider, remote_path))
+                    results.append(
+                        self._reconcile_remote(
+                            identifier, provider, remote_path, verify_content=verify_content
+                        )
+                    )
             except CloudArchiveError as exc:
                 self._mark_failed(identifier, safe_failure("对账", exc))
                 results.append({"job_id": identifier, "status": "failed"})

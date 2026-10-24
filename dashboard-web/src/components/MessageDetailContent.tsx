@@ -268,6 +268,9 @@ export function MessageDetailContent({
 }: MessageDetailContentProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [busyAttachment, setBusyAttachment] = useState<string | null>(null);
+  // Busy attachment buttons are disabled; Chromium/WebView2 then drops focus to
+  // <body> inside the modal. Return it to the clicked button once re-enabled.
+  const attachmentFocusRef = useRef<HTMLElement | null>(null);
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const { showToast } = useToast();
   const messageKey = `${kind}:${sourceId}`;
@@ -461,11 +464,23 @@ export function MessageDetailContent({
     setPreviewImage({ alt: target.alt, messageKey, src: target.src });
   };
 
+  useEffect(() => {
+    if (busyAttachment !== null) return;
+    const trigger = attachmentFocusRef.current;
+    attachmentFocusRef.current = null;
+    const active = document.activeElement;
+    if (trigger?.isConnected && (!active || active === document.body)) {
+      trigger.focus();
+    }
+  }, [busyAttachment]);
+
   const runMailAction = async (
     attachment: MailMessageAttachment,
     action: "open" | "reveal",
+    trigger?: HTMLElement,
   ) => {
     const key = `${attachment.id}:${action}`;
+    attachmentFocusRef.current = trigger ?? null;
     setBusyAttachment(key);
     try {
       if (action === "open") {
@@ -537,8 +552,12 @@ export function MessageDetailContent({
                             variant="outline"
                             size="sm"
                             disabled={busyAttachment !== null}
-                            onClick={() =>
-                              void runMailAction(attachment, "open")
+                            onClick={(event) =>
+                              void runMailAction(
+                                attachment,
+                                "open",
+                                event.currentTarget,
+                              )
                             }
                           >
                             {busyAttachment === `${attachment.id}:open`
@@ -550,8 +569,12 @@ export function MessageDetailContent({
                             variant="ghost"
                             size="sm"
                             disabled={busyAttachment !== null}
-                            onClick={() =>
-                              void runMailAction(attachment, "reveal")
+                            onClick={(event) =>
+                              void runMailAction(
+                                attachment,
+                                "reveal",
+                                event.currentTarget,
+                              )
                             }
                           >
                             {busyAttachment === `${attachment.id}:reveal`
