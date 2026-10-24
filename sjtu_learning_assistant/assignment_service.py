@@ -358,10 +358,23 @@ class AssignmentService:
             )
             return SubmissionResult("verified", submission_type, observed, assignment)
 
-        observed = self.verify(
-            course_id, assignment_id, submission_type, body=body, url=url,
-            file_ids=file_ids, after_attempt=previous_attempt,
-        )
+        try:
+            observed = self.verify(
+                course_id, assignment_id, submission_type, body=body, url=url,
+                file_ids=file_ids, after_attempt=previous_attempt,
+            )
+        except CanvasError as verify_exc:
+            # POST already succeeded: a read-back failure must not look like a
+            # plain failure, or the student may resubmit a duplicate attempt.
+            self._audit(
+                course_id, assignment_id, submission_type, "failed",
+                local_filename=local_filename, cloud_file_id=cloud_file_id,
+                error="Canvas POST 成功但回读验证失败",
+            )
+            raise SubmissionOutcomeUncertain(
+                "Canvas 已受理提交请求，但回读验证时网络失败；"
+                "请先在 Canvas 作业页面核对，确认前不要重复提交。"
+            ) from verify_exc
         if observed is None:
             self._audit(
                 course_id, assignment_id, submission_type, "failed",
