@@ -46,8 +46,10 @@ MAX_ZIP_BYTES = 1024 * 1024
 MAX_SANITIZE_INPUT_CHARS = 2 * 1024 * 1024
 
 _URL_PATTERN = re.compile(r"(?i:https?)://[^\s<>\"']+")
+# 用后顾断言锚定 scheme 起点、并限定 userinfo 长度：原先 `\b` + 无界量词在
+# 长串无空白文本（如 "a.a.a..."、JWT 片段）上是 O(n^2)，2 MB 输入可卡死桥接线程。
 _URL_CREDENTIAL_PATTERN = re.compile(
-    r"(?i)\b([a-z][a-z0-9+.%]*://)[^\s/:]+:[^\s@]+@"
+    r"(?i)(?<![a-z0-9+.%])([a-z][a-z0-9+.%]*://)[^\s/:]{0,256}:[^\s@]{1,512}@"
 )
 _BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[a-z0-9_.~+/=-]+")
 _SECRET_VALUE_PATTERN = re.compile(
