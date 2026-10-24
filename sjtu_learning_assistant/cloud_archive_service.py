@@ -779,7 +779,8 @@ class CloudArchiveService:
             if not self._strong_remote_match(version, item):
                 if verify_content:
                     if not self._remote_content_matches(provider, remote_path, version):
-                        message = "云端对象内容与本地归档记录不一致，需要重新上传。"
+                        provider.delete(remote_path, permanent=True, missing_ok=True)
+                        message = "云端对象内容与本地归档记录不一致；冲突对象已清理，可重试重新上传。"
                         job.status = "failed"
                         job.finished_at = utcnow()
                         job.last_error = message
@@ -835,6 +836,10 @@ class CloudArchiveService:
                 job = session.get(ArchiveJob, job_id)
                 if job is None:
                     return
+                if job.status not in ACTIVE_STATES + (
+                    "needs_reconcile", "needs_verification"
+                ):
+                    return
                 version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
                 entry = session.get(ArchiveEntry, job.entry_id) if job.entry_id else None
                 job.status = "failed"
@@ -866,6 +871,10 @@ class CloudArchiveService:
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is None:
+                    return
+                if job.status not in ACTIVE_STATES + (
+                    "needs_reconcile", "needs_verification"
+                ):
                     return
                 version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
                 job.status = "needs_reconcile"
@@ -941,10 +950,35 @@ class CloudArchiveService:
                 with Session(self.engine) as session:
                     job = session.get(ArchiveJob, identifier)
                     version = session.get(ArchiveVersion, job.version_id) if job else None
-                    if version is None:
+                    if job is None or version is None:
                         raise CloudArchiveError("缺少可对账的版本。")
+                    original_status = job.status
+                    if original_status not in ("needs_reconcile", "needs_verification"):
+                        current = job_data(job)
+                        if original_status in ACTIVE_STATES:
+                            current["in_progress"] = True
+                        results.append(current)
+                        continue
+                    claimed = session.execute(
+                        update(ArchiveJob)
+                        .where(
+                            ArchiveJob.id == identifier,
+                            ArchiveJob.status == original_status,
+                        )
+                        .values(status="verifying", finished_at=None, last_error=None)
+                    ).rowcount
+                    if claimed != 1:
+                        session.expire_all()
+                        current_job = session.get(ArchiveJob, identifier)
+                        if current_job is not None:
+                            current = job_data(current_job)
+                            if current_job.status in ACTIVE_STATES:
+                                current["in_progress"] = True
+                            results.append(current)
+                        continue
+                    session.commit()
                     remote_path = decode_remote_path(version.cloud_remote_path)
-                    verify_content = job.status == "needs_verification"
+                    verify_content = original_status == "needs_verification"
                 provider = self.provider_factory()
                 if not provider.exists(remote_path):
                     self._mark_failed(identifier, "云端对象不存在，需要重新上传。")

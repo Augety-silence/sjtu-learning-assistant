@@ -176,6 +176,37 @@ def test_overwrite_failure_restores_same_directory_snapshot(restore_env, monkeyp
     assert not list(target_root.glob(".sjtu-restore-*"))
 
 
+def test_overwrite_rollback_preserves_concurrent_replacement_and_snapshot(
+    restore_env, monkeypatch
+):
+    root, _engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="concurrent.txt")
+    target_root = root / "concurrent-target"
+    target_root.mkdir()
+    target = target_root / "concurrent.txt"
+    target.write_bytes(b"original-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_open = restore_module.os.open
+
+    def fail_directory_sync(path, flags, *args, **kwargs):
+        if Path(path) == target_root and flags == os.O_RDONLY:
+            replacement = target_root / "replacement.tmp"
+            replacement.write_bytes(b"concurrent-content")
+            os.replace(replacement, target)
+            raise OSError("forced directory sync failure")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(restore_module.os, "open", fail_directory_sync)
+    with pytest.raises(RestoreError, match="隐藏快照"):
+        restore.execute(plan["job"]["id"], "overwrite")
+
+    assert target.read_bytes() == b"concurrent-content"
+    snapshots = list(target_root.glob(".sjtu-restore-overwrite-*"))
+    assert len(snapshots) == 1
+    assert snapshots[0].read_bytes() == b"original-content"
+
+
 def test_download_interruption_and_hash_failure_leave_no_target_or_temp(restore_env):
     root, engine, provider, archive, restore = restore_env
     _source, entry_id = _archive_file(root, archive)

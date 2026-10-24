@@ -1797,9 +1797,9 @@ class ArchiveService:
             return False
 
     def _holds_recorded_copy(self, context: ArchiveFileContext, path: Path) -> bool:
-        """旧路径是否仍是本记录上次下载的内容；缺少记录时沿用原逻辑视为是。"""
+        """旧路径是否仍是本记录上次下载的内容；缺少指纹时不能证明归属。"""
         if context.downloaded_sha256 is None or context.downloaded_size is None:
-            return True
+            return False
         return self._has_content(
             path, context.downloaded_size, context.downloaded_sha256
         )

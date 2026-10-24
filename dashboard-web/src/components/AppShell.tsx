@@ -298,6 +298,10 @@ export function AppShell({
     setView(next);
     setDrawerOpen(false);
   };
+  const openMobileAI = (request?: SidebarAIRequest) => {
+    navigatingRef.current = drawerOpen;
+    onOpenAI(request);
+  };
 
   return (
     <div className="app-shell" data-aura-shell>
@@ -341,7 +345,7 @@ export function AppShell({
             close={closeDrawer}
             menuButtonRef={menuButtonRef}
             shouldRestoreFocus={() => !navigatingRef.current}
-            onOpenAI={onOpenAI}
+            onOpenAI={openMobileAI}
           />
         )}
       </AnimatePresence>

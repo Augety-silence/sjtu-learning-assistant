@@ -290,6 +290,20 @@ class ArchiveDownloadTests(unittest.TestCase):
         target.write_bytes(b"changed")
         self.assertFalse(service._is_unchanged(matching, target))
 
+    def test_missing_fingerprint_never_claims_a_previous_path(self) -> None:
+        service = self.make_service()
+        context = replace(
+            self.context(),
+            local_path=str(self.root / "old.pdf"),
+            download_status="downloaded",
+            downloaded_size=None,
+            downloaded_sha256=None,
+        )
+        previous = self.root / "old.pdf"
+        previous.write_bytes(b"another file now owns this path")
+
+        self.assertFalse(service._holds_recorded_copy(context, previous))
+
     def test_downloaded_matching_file_is_idempotently_unchanged(self) -> None:
         service = self.make_service()
         context = self.context()

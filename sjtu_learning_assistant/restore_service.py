@@ -590,6 +590,7 @@ class RestoreService:
         temporary: Path | None = None
         overwrite_snapshot: Path | None = None
         restored_target_written = False
+        restored_target_identity: tuple[int, int, int, int] | None = None
         count = 0
         try:
             _reject_symlink_chain(target)
@@ -639,6 +640,7 @@ class RestoreService:
             _replace_with_retry(temporary, target)
             temporary = None
             restored_target_written = True
+            restored_target_identity = _identity(target)
             if os.name != "nt":
                 directory_fd = os.open(target.parent, os.O_RDONLY)
                 try:
@@ -665,9 +667,13 @@ class RestoreService:
             if overwrite_snapshot is not None:
                 try:
                     if restored_target_written:
-                        target.unlink(missing_ok=True)
-                    _replace_with_retry(overwrite_snapshot, target)
-                    overwrite_snapshot = None
+                        if _identity(target) != restored_target_identity:
+                            rollback_failed = True
+                        else:
+                            target.unlink(missing_ok=True)
+                    if not rollback_failed:
+                        _replace_with_retry(overwrite_snapshot, target)
+                        overwrite_snapshot = None
                 except OSError:
                     rollback_failed = True
             # 任务面板只读 last_error：保留可操作的已脱敏原因，而不是只显示异常类名。
@@ -698,6 +704,8 @@ class RestoreService:
                     job.last_error = public_error[:500]
                     add_event(session, job, "restore_failed", "failed", job.last_error)
                     session.commit()
+            if rollback_failed:
+                raise RestoreError(public_error) from exc
             if isinstance(exc, RestoreError):
                 raise
             if isinstance(exc, (CloudAuthError, CloudNetworkError, CloudNotFoundError, PermissionError)):

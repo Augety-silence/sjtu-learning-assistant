@@ -100,8 +100,15 @@ export function ScheduleView({
             range?: { startAt: string; endAt: string };
           };
           if (
-            parsed.range?.startAt !== range.startAt ||
-            parsed.range?.endAt !== range.endAt
+            !parsed.range ||
+            typeof parsed.range.startAt !== "string" ||
+            typeof parsed.range.endAt !== "string"
+          ) {
+            throw new Error("课表缓存缺少有效范围");
+          }
+          if (
+            parsed.range.startAt !== range.startAt ||
+            parsed.range.endAt !== range.endAt
           ) {
             // A valid cache for another month is not corrupt: keep it so returning
             // to that month while still offline can show it again.

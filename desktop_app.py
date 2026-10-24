@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 def _configure_keyring_backend(platform_name: str | None = None) -> None:
@@ -1751,6 +1752,22 @@ def _report_startup_error(message: str) -> None:
             # MB_OK | MB_ICONERROR
             ctypes.windll.user32.MessageBoxW(None, message, "SJTU 学习助手", 0x10)
         except (AttributeError, OSError):
+            pass
+    if sys.platform == "darwin" and (sys.stderr is None or getattr(sys, "frozen", False)):
+        script = """
+on run argv
+    display dialog (item 1 of argv) with title "SJTU 学习助手" buttons {"退出"} default button "退出" with icon stop
+end run
+""".strip()
+        try:
+            subprocess.run(
+                ["/usr/bin/osascript", "-e", script, "--", message],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
             pass
 
 

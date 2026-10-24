@@ -31,6 +31,7 @@ function emitViewport(width: number) {
 function Harness({
   initiallyOpen = false,
   onOpenAI = vi.fn(),
+  navigateOnAI = false,
 }: {
   initiallyOpen?: boolean;
   onOpenAI?: (request?: {
@@ -38,9 +39,21 @@ function Harness({
     sessionId?: string;
     newSession?: boolean;
   }) => void;
+  navigateOnAI?: boolean;
 }) {
   const [view, setView] = useState<ViewName>("overview");
   const [drawerOpen, setDrawerOpen] = useState(initiallyOpen);
+  const handleOpenAI = (request?: {
+    prompt?: string;
+    sessionId?: string;
+    newSession?: boolean;
+  }) => {
+    onOpenAI(request);
+    if (navigateOnAI) {
+      setDrawerOpen(false);
+      setView("ai-chat");
+    }
+  };
   return (
     <AppShell
       view={view}
@@ -50,7 +63,7 @@ function Harness({
       syncStatus={null}
       syncing={false}
       onSync={vi.fn()}
-      onOpenAI={onOpenAI}
+      onOpenAI={handleOpenAI}
     >
       <div>content</div>
     </AppShell>
@@ -196,6 +209,21 @@ describe("AppShell 移动导航", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新建 AI 对话" }));
     expect(onOpenAI).toHaveBeenCalledWith({ newSession: true });
+  });
+
+  it("从移动抽屉进入 AI 后不把焦点恢复到菜单按钮", async () => {
+    render(<Harness initiallyOpen navigateOnAI />);
+    const dialog = screen.getByRole("dialog", { name: "移动导航" });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "新建 AI 对话" }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const heading = document.querySelector("h1");
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("button", { name: "菜单" }),
+    );
   });
 
   it("在左侧与移动导航中提供独立云盘备份入口", () => {
