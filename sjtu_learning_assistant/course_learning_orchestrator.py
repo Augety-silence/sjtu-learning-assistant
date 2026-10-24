@@ -1018,7 +1018,11 @@ class CourseLearningOrchestrator:
             if path.is_symlink() or _sha256(path.read_bytes()) != digest:
                 raise RawTranscriptConflictError("stored raw transcript hash mismatch")
             return
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        # O_BINARY: without it the Windows CRT rewrites b"\n" as b"\r\n", so raw.bin
+        # would never match its digest again and every rerun raises a conflict.
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600
+        )
         try:
             with os.fdopen(descriptor, "wb") as stream:
                 descriptor = -1
