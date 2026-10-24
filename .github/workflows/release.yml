@@ -110,7 +110,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # æ­£å¼çæ¬è®¾ä¸º Latestï¼å¸¦è¿å­ç¬¦çè¯­ä¹åé¢åå¸çæ¬ä¸è¿å¥ Latestã
+          # Stable tags become Latest; prerelease tags containing a hyphen do not.
           release_flags=(--latest)
           if [[ "$GITHUB_REF_NAME" =~ - ]]; then
             release_flags=(--prerelease --latest=false)
