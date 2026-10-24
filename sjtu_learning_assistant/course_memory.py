@@ -646,7 +646,9 @@ def _ensure_private_directory(path: Path) -> None:
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    # Keep the temp name short: snapshot paths are already ~200 chars under the
+    # Windows app-data root, and a 260-char MAX_PATH overflow would fail every commit.
+    temporary = path.with_name(f".{uuid.uuid4().hex[:16]}.tmp")
     descriptor: int | None = None
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
