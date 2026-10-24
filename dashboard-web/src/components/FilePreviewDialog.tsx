@@ -1,5 +1,5 @@
 import { motion, useIsPresent, useReducedMotion } from "motion/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ContentReveal } from "@/components/ContentReveal";
 import { RichPreviewContent } from "@/components/RichPreviewContent";
@@ -30,7 +30,49 @@ function selectedPreviewer(preview: MaterialPreview) {
   return selected;
 }
 
-function renderPreview(preview: MaterialPreview, previewer: PreviewerKind) {
+// Chromium (WebView2) caps URLs at 2MB, so large base64 PDFs render blank in an
+// iframe when passed as data: URLs. Convert to a Blob URL when the API exists.
+function pdfDataUrlToObjectUrl(dataUrl: string): string | null {
+  if (typeof URL.createObjectURL !== "function") return null;
+  const match = /^data:application\/pdf(;[^,]*)?;base64,/i.exec(dataUrl);
+  if (!match) return null;
+  try {
+    const binary = atob(dataUrl.slice(match[0].length));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return URL.createObjectURL(
+      // Always typed as PDF: a same-origin blob must never be served as HTML.
+      new Blob([bytes], { type: "application/pdf" }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function usePdfSource(preview: MaterialPreview): string | null {
+  const dataUrl = preview.kind === "pdf" ? preview.data_url : null;
+  const [source, setSource] = useState<{
+    dataUrl: string;
+    src: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!dataUrl) return;
+    const objectUrl = pdfDataUrlToObjectUrl(dataUrl);
+    setSource({ dataUrl, src: objectUrl ?? dataUrl });
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [dataUrl]);
+  return source && source.dataUrl === dataUrl ? source.src : null;
+}
+
+function renderPreview(
+  preview: MaterialPreview,
+  previewer: PreviewerKind,
+  pdfSource: string | null,
+) {
   const compatible =
     (preview.kind === "image" && previewer === "image") ||
     (preview.kind === "pdf" && previewer === "pdf") ||
@@ -44,12 +86,19 @@ function renderPreview(preview: MaterialPreview, previewer: PreviewerKind) {
       />
     );
   }
+  if (preview.kind === "pdf" && !pdfSource) return null;
   return (
     <RichPreviewContent
       kind={previewer}
       title={preview.name}
       content={preview.kind === "text" ? preview.text : undefined}
-      sourceUrl={preview.kind === "text" ? undefined : preview.data_url}
+      sourceUrl={
+        preview.kind === "text"
+          ? undefined
+          : preview.kind === "pdf"
+            ? pdfSource
+            : preview.data_url
+      }
       alt={preview.name}
     />
   );
@@ -67,6 +116,7 @@ export function FilePreviewDialog({
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
   const previewer = selectedPreviewer(preview);
+  const pdfSource = usePdfSource(preview);
   const mediaKey =
     preview.kind === "text" ? null : `${preview.kind}:${preview.data_url}`;
   const [readyMediaKey, setReadyMediaKey] = useState<string | null>(null);
@@ -179,7 +229,7 @@ export function FilePreviewDialog({
               正在准备预览内容…
             </span>
           )}
-          {renderPreview(preview, previewer)}
+          {renderPreview(preview, previewer, pdfSource)}
         </ContentReveal>
       </motion.section>
     </div>,
