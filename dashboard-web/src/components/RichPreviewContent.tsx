@@ -124,6 +124,18 @@ function hasAllowedProtocol(value: string, protocols: readonly string[]) {
   }
 }
 
+// 桌面端以 file:// 加载，target=_blank 链接由 pywebview 交给系统打开（Windows 为 os.startfile）；
+// Markdown 只放行绝对 http(s)/mailto 链接与 https 图片，相对、file、UNC 及其他协议一律去掉。
+function safeMarkdownUrl(url: string, key: string) {
+  const value = url.trim();
+  if (key === "href") {
+    return hasAllowedProtocol(value, ["https:", "http:", "mailto:"])
+      ? value
+      : null;
+  }
+  return hasAllowedProtocol(value, ["https:"]) ? value : null;
+}
+
 function copySafePreviewNode(node: Node, output: Document): Node | null {
   if (node.nodeType === Node.TEXT_NODE) {
     return output.createTextNode(node.textContent ?? "");
@@ -260,6 +272,7 @@ export function RichPreviewContent({
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeSanitize]}
+          urlTransform={safeMarkdownUrl}
           components={{
             a: ({ node: _node, ...props }) => (
               <a {...props} target="_blank" rel="noreferrer noopener" />
