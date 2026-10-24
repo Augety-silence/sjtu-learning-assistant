@@ -16,6 +16,8 @@ const toolLabels: Record<string, string> = {
   search_messages: "检索课程消息",
   get_message_detail: "读取消息详情",
   get_material_tree: "读取资料目录",
+  search_ai_attachments: "检索 AI 附件",
+  read_ai_attachment_text: "读取附件正文",
 };
 
 export function toolLabel(toolName: string) {
@@ -68,10 +70,13 @@ export function traceHitCount(toolRuns: AIToolRun[]) {
 }
 
 export function traceFailed(trace: AIAgentTrace) {
-  return (
-    !["completed", "complete", "ok"].includes(trace.status) ||
-    trace.tool_runs.some((run) => run.status === "rejected")
-  );
+  // 个别工具调用被拒绝（参数错误、预检索预算跳过、preset 未授权）后模型仍可完成回答；
+  // 整轮状态以后端 trace.status 为准，被拒绝的调用在各自行内单独标注并单独计数。
+  return !["completed", "complete", "ok"].includes(trace.status);
+}
+
+export function traceRejectedCount(toolRuns: AIToolRun[]) {
+  return toolRuns.filter((run) => run.status === "rejected").length;
 }
 
 export function TraceRun({ run }: { run: AIToolRun }) {
@@ -157,10 +162,13 @@ export function InlineAgentExecution({
     ? traceFailed(trace)
     : runs.some((run) => run.status === "rejected");
   const hits = traceHitCount(runs);
+  const rejected = traceRejectedCount(runs);
   const firstAction = runs[0] ? toolLabel(runs[0].tool_name) : "整理回答";
   const summary = failed
     ? `未完成 · ${runs.length} 项可观察操作`
-    : `已完成 · ${runs.length} 项操作${hits > 0 ? ` · 命中 ${hits} 项` : ""}`;
+    : `已完成 · ${runs.length} 项操作${hits > 0 ? ` · 命中 ${hits} 项` : ""}${
+        rejected > 0 ? ` · ${rejected} 项未执行` : ""
+      }`;
 
   return (
     <details
