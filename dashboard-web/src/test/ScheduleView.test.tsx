@@ -8,6 +8,7 @@ import {
   getTimetableStatus,
   importTimetableIcs,
 } from "@/lib/api";
+import { mergeCalendarEvents } from "@/lib/calendarEvents";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -17,6 +18,14 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
     importTimetableIcs: vi.fn(),
+  };
+});
+
+vi.mock("@/lib/calendarEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/calendarEvents")>();
+  return {
+    ...actual,
+    mergeCalendarEvents: vi.fn(actual.mergeCalendarEvents),
   };
 });
 
@@ -57,6 +66,114 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ScheduleView", () => {
+  it("对缺少 ID 或时间的运行时事件仍按旧的严格身份规则去重", () => {
+    const malformed = [
+      { id: undefined, eventType: "course" },
+      { id: undefined, eventType: "assignment" },
+      { id: undefined, eventType: "course" },
+      { id: "same", eventType: "course", startAt: "" },
+      { id: "same", eventType: "course", startAt: "2026-10-01T09:00:00" },
+    ] as unknown as Parameters<typeof mergeCalendarEvents>[0];
+    const baseline = [...malformed].filter(
+      (event, index, events) =>
+        events.findIndex(
+          (candidate) =>
+            candidate.id === event.id &&
+            candidate.eventType === event.eventType,
+        ) === index,
+    );
+
+    expect(mergeCalendarEvents(malformed, [])).toEqual(baseline);
+  });
+
+  it("合并时保留来源顺序、同 ID 的不同类型，并在稳定输入重渲染时复用结果", async () => {
+    const canvasEvents = [
+      {
+        id: "shared",
+        title: "Canvas 作业",
+        courseName: "文本分析",
+        startAt: "2026-10-06T12:00:00+08:00",
+        eventType: "assignment" as const,
+      },
+      {
+        id: "shared",
+        title: "Canvas 课程",
+        courseName: "文本分析",
+        startAt: "2026-10-06T08:00:00+08:00",
+        eventType: "course" as const,
+      },
+    ];
+    const localCourse = {
+      id: "shared",
+      title: "本地重复课程",
+      courseName: "文本分析",
+      startAt: "2026-10-06T08:00:00+08:00",
+      eventType: "course" as const,
+    };
+    const month = new Date(2026, 9, 1);
+    const onMonthChange = vi.fn();
+    vi.mocked(getTimetableSchedule).mockResolvedValueOnce({
+      events: [
+        {
+          ...localCourse,
+          endAt: null,
+          location: null,
+          periodLabel: null,
+          source: "local",
+          canonicalCourseId: null,
+        },
+      ],
+    });
+
+    const view = render(
+      <ScheduleView
+        canvasEvents={canvasEvents}
+        month={month}
+        onMonthChange={onMonthChange}
+      />,
+    );
+    expect(await screen.findByText("尚未完成 Canvas 数据同步")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "10月6日" }));
+    expect(await screen.findByText("Canvas 课程")).toBeTruthy();
+    const derivationsAfterLoad =
+      vi.mocked(mergeCalendarEvents).mock.calls.length;
+    view.rerender(
+      <ScheduleView
+        canvasEvents={canvasEvents}
+        canvasSyncedAt="2026-10-20T12:00:00+08:00"
+        month={month}
+        onMonthChange={onMonthChange}
+      />,
+    );
+
+    expect(vi.mocked(mergeCalendarEvents)).toHaveBeenCalledTimes(
+      derivationsAfterLoad,
+    );
+    expect(getTimetableStatus).toHaveBeenCalledOnce();
+    expect(getTimetableSchedule).toHaveBeenCalledOnce();
+    view.rerender(
+      <ScheduleView
+        canvasEvents={canvasEvents}
+        month={new Date(2026, 10, 1)}
+        onMonthChange={onMonthChange}
+      />,
+    );
+    await waitFor(() => {
+      expect(getTimetableStatus).toHaveBeenCalledTimes(2);
+      expect(getTimetableSchedule).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(vi.mocked(mergeCalendarEvents).mock.calls.length).toBeGreaterThan(
+        derivationsAfterLoad,
+      );
+    });
+    expect(
+      mergeCalendarEvents(canvasEvents, [localCourse, localCourse]).map(
+        (event) => event.title,
+      ),
+    ).toEqual(["Canvas 作业", "Canvas 课程"]);
+  });
+
   it("只保留轻量状态和 ICS 导入按钮，不展示课程配置卡", async () => {
     renderView();
     expect(await screen.findByText("等待开放平台配置")).toBeTruthy();

@@ -1,0 +1,97 @@
+{
+  "baseline_commit": "3aa54d1a76fd8603dcc43eef5629eb5ae3cc37dd",
+  "seed": 20261024,
+  "limit_chars": 5880,
+  "repeats": 3,
+  "method": "Baseline loaded from git show; exact cue dictionaries compared; median time and tracemalloc peak; copy volume is a deterministic slice-length calculation from each implementation.",
+  "long_cue_scenarios": {
+    "short": {
+      "input_chars": 100,
+      "output_equal": true,
+      "output_parts": 1,
+      "baseline": {
+        "median_ms": 0.002,
+        "peak_memory_bytes_median": 8
+      },
+      "optimized": {
+        "median_ms": 0.001,
+        "peak_memory_bytes_median": 8
+      },
+      "estimated_slice_copied_chars": {
+        "baseline": 0,
+        "optimized": 0
+      }
+    },
+    "ordinary": {
+      "input_chars": 10000,
+      "output_equal": true,
+      "output_parts": 2,
+      "baseline": {
+        "median_ms": 0.286,
+        "peak_memory_bytes_median": 21140
+      },
+      "optimized": {
+        "median_ms": 0.182,
+        "peak_memory_bytes_median": 21140
+      },
+      "estimated_slice_copied_chars": {
+        "baseline": 10000,
+        "optimized": 10000
+      }
+    },
+    "very_long": {
+      "input_chars": 1000000,
+      "output_equal": true,
+      "output_parts": 171,
+      "baseline": {
+        "median_ms": 23.183,
+        "peak_memory_bytes_median": 3988584
+      },
+      "optimized": {
+        "median_ms": 17.099,
+        "peak_memory_bytes_median": 2051230
+      },
+      "estimated_slice_copied_chars": {
+        "baseline": 85533800,
+        "optimized": 1000000
+      }
+    }
+  },
+  "correctness_defect": {
+    "case": "non-empty cue with max_chars=120 (split limit becomes zero)",
+    "baseline_child_process": "timed_out_after_1s",
+    "current": "ValueError",
+    "fixed_by_rejecting_max_chars_at_or_below_120": true
+  },
+  "rejected_experiment": {
+    "candidate": "chunk_cues cached overlap line sizes",
+    "decision": "rejected: default-overlap runs showed no stable speed gain and increased peak memory; a threshold or duplicated code path was judged unnecessary complexity",
+    "observed_default_and_large_overlap_run": {
+      "production_defaults_160_cues_ms": {
+        "baseline": 0.574,
+        "candidate": 0.687
+      },
+      "production_defaults_500_cues_ms": {
+        "baseline": 1.749,
+        "candidate": 2.074
+      },
+      "production_defaults_peak_bytes_500_cues": {
+        "baseline": 9612,
+        "candidate": 9612
+      },
+      "expanded_overlap_40_500_cues_ms": {
+        "baseline": 2.578,
+        "candidate": 2.276
+      },
+      "expanded_overlap_40_500_cues_peak_bytes": {
+        "baseline": 13888,
+        "candidate": 14496
+      }
+    }
+  },
+  "acceptance": {
+    "all_long_cue_outputs_equal": true,
+    "defect_guard_confirmed": true
+  },
+  "optimization_decision": "keep for very long single cues only: outputs match, short/ordinary peak memory is unchanged, and the 1M-character case improves CPU and peak memory; no ordinary-input or whole-app speed claim"
+}

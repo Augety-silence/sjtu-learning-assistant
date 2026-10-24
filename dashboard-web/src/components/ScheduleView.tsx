@@ -1,5 +1,5 @@
 import { Upload } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type CalendarEventItem } from "@/components/CalendarView";
 import { ContentReveal } from "@/components/ContentReveal";
 import { CalmSchedule } from "@/components/calm/CalmSchedule";
@@ -9,6 +9,7 @@ import {
   getTimetableStatus,
   importTimetableIcs,
 } from "@/lib/api";
+import { mergeCalendarEvents } from "@/lib/calendarEvents";
 import { formatDateTime } from "@/lib/format";
 import type { TimetableStatus } from "@/lib/types";
 
@@ -157,12 +158,9 @@ export function ScheduleView({
   };
 
   const hasCourseData = Boolean(status?.hasLocalData || courseEvents.length);
-  const allEvents = [...canvasEvents, ...courseEvents].filter(
-    (event, index, items) =>
-      items.findIndex(
-        (candidate) =>
-          candidate.id === event.id && candidate.eventType === event.eventType,
-      ) === index,
+  const allEvents = useMemo(
+    () => mergeCalendarEvents(canvasEvents, courseEvents),
+    [canvasEvents, courseEvents],
   );
   // Never let other rows hide a Canvas failure: local course sessions are no
   // substitute for deadlines, and Canvas rows kept from a previous load are stale.

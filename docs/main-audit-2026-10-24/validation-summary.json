@@ -1,0 +1,61 @@
+{
+  "baseline_revision": "3aa54d1a76fd8603dcc43eef5629eb5ae3cc37dd",
+  "branch": "codex/main-ablation-20261024",
+  "delivery": "isolated PR branch awaiting user review; no merge, release, desktop packaging or installation performed",
+  "baseline": {
+    "python_isolated": {
+      "passed": 734,
+      "failed_environment_assertion": 1,
+      "skipped": 1,
+      "subtests_passed": 302
+    },
+    "python_default_path_separate_environment": {
+      "passed": 1
+    },
+    "frontend": {
+      "files_passed": 48,
+      "tests_passed": 467
+    }
+  },
+  "current": {
+    "python_isolated": {
+      "passed": 738,
+      "skipped": 1,
+      "deselected": 1,
+      "subtests_passed": 307
+    },
+    "python_default_path_separate_environment": {
+      "passed": 1
+    },
+    "python_combined_passed": 739,
+    "frontend": {
+      "files_passed": 49,
+      "tests_passed": 470
+    },
+    "frontend_lint": true,
+    "frontend_typescript_and_build": true,
+    "python_licenses": true,
+    "npm_licenses": true,
+    "secret_pattern_scan": true,
+    "compileall": true
+  },
+  "protection": {
+    "original_source_diff_unchanged": true,
+    "original_untracked_sources_unchanged": true,
+    "installed_app_main_unchanged": false,
+    "original_app_process_alive": false,
+    "app_change_attribution": "unconfirmed environment change; this task performed no desktop packaging, installation or process control"
+  },
+  "scope_limits": [
+    "No real Canvas/campus API, AI model or personal coursework was used.",
+    "Python combined total comes from two environments; the default-path assertion cannot run under an overridden application directory.",
+    "Microbenchmarks do not establish app-wide speed or native-app acceptance.",
+    "Historical rejected overlap-cache observations are retained as notes, not replayed by current scripts."
+  ],
+  "experiments": {
+    "backend-results.json": "7233b7c4458cad736b55dee0fea6850d81fd12695cb072ac56ccc10b425d93fb",
+    "compute-results.json": "53183db459e9e21c00a8b0b7739616a3034770e5d1339854abe53761a15959d6",
+    "frontend-results.json": "74b14a04058165ec4c5ce11d75f1ebe6a8532021789b0e76b447061382b589a9",
+    "source-scan-results.json": "662b31732bc618b7de0c70e36548a7292a3e2688368f2922cd5aee29e77160a8"
+  }
+}

@@ -75,6 +75,7 @@ import {
   type BoundedReadRequest,
   createBoundedReadPool,
 } from "@/lib/boundedReadPool";
+import { uniqueCalendarEventsById } from "@/lib/calendarEvents";
 import { applyThemeMode } from "@/lib/theme";
 import type {
   AppCapabilities,
@@ -289,14 +290,11 @@ function ScheduleAdapter({
       );
       if (calendarRequest.current !== request) return;
       setEvents(
-        [...result.month_events, ...result.upcoming_events]
-          .map(adaptCalendarEvent)
-          .filter((item): item is CalendarEventItem => item !== null)
-          .filter(
-            (item, index, items) =>
-              items.findIndex((candidate) => candidate.id === item.id) ===
-              index,
-          ),
+        uniqueCalendarEventsById(
+          [...result.month_events, ...result.upcoming_events]
+            .map(adaptCalendarEvent)
+            .filter((item): item is CalendarEventItem => item !== null),
+        ),
       );
     } catch (reason) {
       if (calendarRequest.current === request)

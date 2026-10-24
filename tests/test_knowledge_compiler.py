@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from sjtu_learning_assistant.knowledge_compiler import (
     KnowledgeCompilerError,
@@ -43,6 +44,31 @@ class KnowledgeCompilerServiceTests(unittest.TestCase):
         self.assertEqual(1, result["markdown_files"])
         self.assertEqual(1, result["image_references"])
         self.assertEqual(["数据库"], result["courses"])
+
+    def test_source_limit_stops_consuming_an_oversized_directory(self) -> None:
+        consumed = []
+
+        def candidates():
+            for index in range(10_000):
+                consumed.append(index)
+                yield self.source / f"{index}.md"
+
+        source = Mock()
+        source.rglob.return_value = candidates()
+        service = KnowledgeCompilerService(ai_runner=self.runner, max_files=2)
+        with self.assertRaisesRegex(KnowledgeCompilerError, "Markdown 文件超过 2 个"):
+            service._source_files(source)
+        self.assertEqual([0, 1, 2], consumed)
+
+    def test_valid_source_order_remains_casefold_sorted(self) -> None:
+        for name in ("z.md", "B.md", "中.md"):
+            (self.source / name).write_text("# note", encoding="utf-8")
+        service = KnowledgeCompilerService(ai_runner=self.runner)
+        files = service._source_files(self.source.resolve())
+        self.assertEqual(
+            sorted(files, key=lambda path: path.as_posix().casefold()), files
+        )
+        self.assertEqual(4, len(files))
 
     def test_foundation_job_preserves_source_and_builds_vault(self) -> None:
         original = (self.source / "数据库" / "第一讲.md").read_bytes()
