@@ -1,0 +1,408 @@
+{
+  "method": {
+    "baseline_revision": "3aa54d1a76fd8603dcc43eef5629eb5ae3cc37dd",
+    "seed": 20261024,
+    "repeats_per_variant": 15,
+    "event_counts": [
+      100,
+      1000,
+      5000
+    ],
+    "intervals": {
+      "overlap": "September 2026 month and Sep 15 + 31 days",
+      "distant": "September 2026 month and Dec 15 + 31 days"
+    },
+    "baseline": "Current restored production AcademicFeatureService.calendar_overview, matching baseline_revision.",
+    "optimized": "Rejected overlap/touch-only candidate: stable explicit course Sequence required; distant ranges call the production baseline unchanged; merged ranges use production events_between filtering and deduplication.",
+    "cold_cache_off": "Mock response cache disabled; repeated service calls still use deterministic in-memory event fixtures.",
+    "warm_mock_cache": "Mock response cache primed once, then timed calls use cached endpoint responses.",
+    "measurements": "Median wall time over 15 operations and maximum per-operation tracemalloc peak; API call counts are mock client/server call counts.",
+    "limits": "No SQLite or real Canvas/network is involved. Timings and memory describe local Python work only, not network latency or server performance."
+  },
+  "results": [
+    {
+      "event_count": 100,
+      "interval_relation": "overlap",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "f0724b829f020e95897606d0b12f9717350fe8c95dbb35259832a28237138e8b",
+        "median_ms": 0.833,
+        "peak_tracemalloc_bytes": 35697,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "f0724b829f020e95897606d0b12f9717350fe8c95dbb35259832a28237138e8b",
+        "median_ms": 1.2034,
+        "peak_tracemalloc_bytes": 22448,
+        "client_calls_total": 15,
+        "remote_calls_total": 15,
+        "cache_hits_total": 0,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 1.0
+      }
+    },
+    {
+      "event_count": 100,
+      "interval_relation": "overlap",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "f0724b829f020e95897606d0b12f9717350fe8c95dbb35259832a28237138e8b",
+        "median_ms": 0.7079,
+        "peak_tracemalloc_bytes": 22994,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "f0724b829f020e95897606d0b12f9717350fe8c95dbb35259832a28237138e8b",
+        "median_ms": 0.5533,
+        "peak_tracemalloc_bytes": 21034,
+        "client_calls_total": 15,
+        "remote_calls_total": 0,
+        "cache_hits_total": 15,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 0.0
+      }
+    },
+    {
+      "event_count": 100,
+      "interval_relation": "distant",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "3e0d83d019489910670864c948c998ea247451d9d5116e2d6881213f9c9860e2",
+        "median_ms": 0.951,
+        "peak_tracemalloc_bytes": 24265,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "3e0d83d019489910670864c948c998ea247451d9d5116e2d6881213f9c9860e2",
+        "median_ms": 0.9886,
+        "peak_tracemalloc_bytes": 24321,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      }
+    },
+    {
+      "event_count": 100,
+      "interval_relation": "distant",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "3e0d83d019489910670864c948c998ea247451d9d5116e2d6881213f9c9860e2",
+        "median_ms": 0.6239,
+        "peak_tracemalloc_bytes": 24137,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "3e0d83d019489910670864c948c998ea247451d9d5116e2d6881213f9c9860e2",
+        "median_ms": 0.6233,
+        "peak_tracemalloc_bytes": 24321,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      }
+    },
+    {
+      "event_count": 1000,
+      "interval_relation": "overlap",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "a122810a34cfd2a1f11729426ea334df8ec43b1a42f5e926a123c4c392d37712",
+        "median_ms": 8.167,
+        "peak_tracemalloc_bytes": 221174,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "a122810a34cfd2a1f11729426ea334df8ec43b1a42f5e926a123c4c392d37712",
+        "median_ms": 6.8551,
+        "peak_tracemalloc_bytes": 187148,
+        "client_calls_total": 15,
+        "remote_calls_total": 15,
+        "cache_hits_total": 0,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 1.0
+      }
+    },
+    {
+      "event_count": 1000,
+      "interval_relation": "overlap",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "a122810a34cfd2a1f11729426ea334df8ec43b1a42f5e926a123c4c392d37712",
+        "median_ms": 4.6863,
+        "peak_tracemalloc_bytes": 205478,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "a122810a34cfd2a1f11729426ea334df8ec43b1a42f5e926a123c4c392d37712",
+        "median_ms": 4.9363,
+        "peak_tracemalloc_bytes": 175924,
+        "client_calls_total": 15,
+        "remote_calls_total": 0,
+        "cache_hits_total": 15,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 0.0
+      }
+    },
+    {
+      "event_count": 1000,
+      "interval_relation": "distant",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "3521a669d1627192c5abeaa385a964e951e51a859952120ed9be17cc8a926bd9",
+        "median_ms": 8.3803,
+        "peak_tracemalloc_bytes": 216638,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "3521a669d1627192c5abeaa385a964e951e51a859952120ed9be17cc8a926bd9",
+        "median_ms": 7.4053,
+        "peak_tracemalloc_bytes": 216758,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      }
+    },
+    {
+      "event_count": 1000,
+      "interval_relation": "distant",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "3521a669d1627192c5abeaa385a964e951e51a859952120ed9be17cc8a926bd9",
+        "median_ms": 6.8151,
+        "peak_tracemalloc_bytes": 216510,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "3521a669d1627192c5abeaa385a964e951e51a859952120ed9be17cc8a926bd9",
+        "median_ms": 6.168,
+        "peak_tracemalloc_bytes": 216694,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      }
+    },
+    {
+      "event_count": 5000,
+      "interval_relation": "overlap",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "2c964940575a9ad079b62cf1bca552e83e518bfbdfbe6100a23404b444e8ed7d",
+        "median_ms": 69.697,
+        "peak_tracemalloc_bytes": 1211110,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "2c964940575a9ad079b62cf1bca552e83e518bfbdfbe6100a23404b444e8ed7d",
+        "median_ms": 53.007,
+        "peak_tracemalloc_bytes": 1148626,
+        "client_calls_total": 15,
+        "remote_calls_total": 15,
+        "cache_hits_total": 0,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 1.0
+      }
+    },
+    {
+      "event_count": 5000,
+      "interval_relation": "overlap",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "2c964940575a9ad079b62cf1bca552e83e518bfbdfbe6100a23404b444e8ed7d",
+        "median_ms": 41.7831,
+        "peak_tracemalloc_bytes": 1121830,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "2c964940575a9ad079b62cf1bca552e83e518bfbdfbe6100a23404b444e8ed7d",
+        "median_ms": 45.9788,
+        "peak_tracemalloc_bytes": 1148762,
+        "client_calls_total": 15,
+        "remote_calls_total": 0,
+        "cache_hits_total": 15,
+        "calls_per_operation": 1.0,
+        "remote_calls_per_operation": 0.0
+      }
+    },
+    {
+      "event_count": 5000,
+      "interval_relation": "distant",
+      "cache_state": "cold_cache_off",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "2ced713f9a74c4e842e7daad3944cf14fe54a9135a08f7ffd795367e45cf74fc",
+        "median_ms": 44.2669,
+        "peak_tracemalloc_bytes": 1125503,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      },
+      "optimized": {
+        "result_sha256": "2ced713f9a74c4e842e7daad3944cf14fe54a9135a08f7ffd795367e45cf74fc",
+        "median_ms": 44.8475,
+        "peak_tracemalloc_bytes": 1263799,
+        "client_calls_total": 30,
+        "remote_calls_total": 30,
+        "cache_hits_total": 0,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 2.0
+      }
+    },
+    {
+      "event_count": 5000,
+      "interval_relation": "distant",
+      "cache_state": "warm_mock_cache",
+      "outputs_identical": true,
+      "baseline": {
+        "result_sha256": "2ced713f9a74c4e842e7daad3944cf14fe54a9135a08f7ffd795367e45cf74fc",
+        "median_ms": 27.9182,
+        "peak_tracemalloc_bytes": 1125375,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      },
+      "optimized": {
+        "result_sha256": "2ced713f9a74c4e842e7daad3944cf14fe54a9135a08f7ffd795367e45cf74fc",
+        "median_ms": 28.2217,
+        "peak_tracemalloc_bytes": 1263855,
+        "client_calls_total": 30,
+        "remote_calls_total": 0,
+        "cache_hits_total": 30,
+        "calls_per_operation": 2.0,
+        "remote_calls_per_operation": 0.0
+      }
+    }
+  ],
+  "counterexample": {
+    "same_event_identity": [
+      "assignment",
+      "77",
+      ""
+    ],
+    "baseline": {
+      "calls": 2,
+      "month_events": [
+        {
+          "id": "month-instance",
+          "title": "Homework September snapshot",
+          "context_code": "course_1",
+          "start_at": "2026-09-10T09:00:00+00:00",
+          "assignment": {
+            "id": 77
+          },
+          "courseName": "Homework September snapshot",
+          "startAt": "2026-09-10T09:00:00+00:00",
+          "endAt": "2026-09-10T09:00:00+00:00",
+          "location": null,
+          "periodLabel": null,
+          "eventType": "canvas",
+          "source": "canvas",
+          "canonicalCourseId": null
+        }
+      ],
+      "upcoming_events": [
+        {
+          "id": "upcoming-instance",
+          "title": "Homework October snapshot",
+          "context_code": "course_1",
+          "start_at": "2026-10-10T09:00:00+00:00",
+          "assignment": {
+            "id": 77
+          },
+          "courseName": "Homework October snapshot",
+          "startAt": "2026-10-10T09:00:00+00:00",
+          "endAt": "2026-10-10T09:00:00+00:00",
+          "location": null,
+          "periodLabel": null,
+          "eventType": "canvas",
+          "source": "canvas",
+          "canonicalCourseId": null
+        }
+      ]
+    },
+    "merged_candidate": {
+      "calls": 1,
+      "month_events": [
+        {
+          "id": "month-instance",
+          "title": "Homework September snapshot",
+          "context_code": "course_1",
+          "start_at": "2026-09-10T09:00:00+00:00",
+          "assignment": {
+            "id": 77
+          },
+          "courseName": "Homework September snapshot",
+          "startAt": "2026-09-10T09:00:00+00:00",
+          "endAt": "2026-09-10T09:00:00+00:00",
+          "location": null,
+          "periodLabel": null,
+          "eventType": "canvas",
+          "source": "canvas",
+          "canonicalCourseId": null
+        }
+      ],
+      "upcoming_events": []
+    },
+    "outputs_identical": false
+  }
+}

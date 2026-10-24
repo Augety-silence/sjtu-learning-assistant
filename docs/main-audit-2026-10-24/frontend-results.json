@@ -1,0 +1,162 @@
+{
+  "baselineRevision": "3aa54d1a76fd8603dcc43eef5629eb5ae3cc37dd",
+  "generatedAt": "2026-10-24T07:15:01.039Z",
+  "method": {
+    "baseline": "repeat the original [...canvas, ...course].filter(...findIndex(...)) on every render commit",
+    "optimized": "Map(id) -> Set(eventType) first-wins merge, memoized for stable source-array references",
+    "singleFactorControls": "scheduleBaseline versus scheduleSetOnly isolates the merge algorithm at six derivations; scheduleSetOnly versus scheduleOptimized isolates memo reuse with the same production helper",
+    "appIdDeduplication": "independent one-load factor: original month_events + upcoming_events findIndex(id) versus Set(id), preserving first event and strict equality regardless of eventType",
+    "fixture": "synthetic event arrays; IDs repeat across and within sources; some events omit startAt and two omit id at runtime; bridge returns fixed status and schedule",
+    "bridgeRequests": "two per run (status + schedule), equal in both variants",
+    "renderCommits": "6 simulated commits with stable source arrays; baseline derives each time and optimized derives once as useMemo would",
+    "productionVariant": "the optimized variants import dashboard-web/src/lib/calendarEvents.ts using Node 22 experimental type stripping; iteration counts are inferred from the production helper's single pass, not runtime instrumentation",
+    "timingMethod": "2 warmup runs and 5 measured runs per variant; report median elapsed time in one Node process",
+    "timingLimitations": "machine/JIT/load dependent; baseline timing includes comparison-counter instrumentation while production timing does not, so timing ratios are not an unbiased speedup estimate; the six commits are a useMemo model, not React Profiler measurements; deterministic comparison/iteration counts and output equivalence are primary"
+  },
+  "results": [
+    {
+      "fixtureEventsPerSourceCombined": 44,
+      "uniqueScheduleIdentityCount": 35,
+      "missingIdEvents": 2,
+      "missingTimeEvents": 2,
+      "mockBridgeRequests": 2,
+      "appMockBridgeRequests": 1,
+      "renderCommits": 6,
+      "scheduleBaseline": {
+        "derivations": 6,
+        "identityComparisons": 4680,
+        "medianElapsedMs": 0.265,
+        "samples": 5
+      },
+      "scheduleOptimized": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 1,
+        "inputVisits": 44,
+        "medianElapsedMs": 0.017,
+        "samples": 5
+      },
+      "scheduleSetOnly": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 6,
+        "inputVisits": 264,
+        "medianElapsedMs": 0.113,
+        "samples": 5,
+        "outputEquivalent": true
+      },
+      "scheduleOutputEquivalent": true,
+      "appIdDeduplication": {
+        "renderCommits": 1,
+        "baseline": {
+          "derivations": 1,
+          "identityComparisons": 758,
+          "medianElapsedMs": 0.061,
+          "samples": 5
+        },
+        "optimized": {
+          "productionHelper": "uniqueCalendarEventsById",
+          "derivations": 1,
+          "inputVisits": 44,
+          "medianElapsedMs": 0.014,
+          "samples": 5
+        },
+        "outputEquivalent": true
+      }
+    },
+    {
+      "fixtureEventsPerSourceCombined": 502,
+      "uniqueScheduleIdentityCount": 421,
+      "missingIdEvents": 2,
+      "missingTimeEvents": 18,
+      "mockBridgeRequests": 2,
+      "appMockBridgeRequests": 1,
+      "renderCommits": 6,
+      "scheduleBaseline": {
+        "derivations": 6,
+        "identityComparisons": 660318,
+        "medianElapsedMs": 5.149,
+        "samples": 5
+      },
+      "scheduleOptimized": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 1,
+        "inputVisits": 502,
+        "medianElapsedMs": 0.107,
+        "samples": 5
+      },
+      "scheduleSetOnly": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 6,
+        "inputVisits": 3012,
+        "medianElapsedMs": 0.758,
+        "samples": 5,
+        "outputEquivalent": true
+      },
+      "scheduleOutputEquivalent": true,
+      "appIdDeduplication": {
+        "renderCommits": 1,
+        "baseline": {
+          "derivations": 1,
+          "identityComparisons": 106002,
+          "medianElapsedMs": 1.887,
+          "samples": 5
+        },
+        "optimized": {
+          "productionHelper": "uniqueCalendarEventsById",
+          "derivations": 1,
+          "inputVisits": 502,
+          "medianElapsedMs": 0.1,
+          "samples": 5
+        },
+        "outputEquivalent": true
+      }
+    },
+    {
+      "fixtureEventsPerSourceCombined": 3002,
+      "uniqueScheduleIdentityCount": 2511,
+      "missingIdEvents": 2,
+      "missingTimeEvents": 104,
+      "mockBridgeRequests": 2,
+      "appMockBridgeRequests": 1,
+      "renderCommits": 6,
+      "scheduleBaseline": {
+        "derivations": 6,
+        "identityComparisons": 23509818,
+        "medianElapsedMs": 184.263,
+        "samples": 5
+      },
+      "scheduleOptimized": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 1,
+        "inputVisits": 3002,
+        "medianElapsedMs": 0.322,
+        "samples": 5
+      },
+      "scheduleSetOnly": {
+        "productionHelper": "mergeCalendarEvents",
+        "derivations": 6,
+        "inputVisits": 18012,
+        "medianElapsedMs": 1.625,
+        "samples": 5,
+        "outputEquivalent": true
+      },
+      "scheduleOutputEquivalent": true,
+      "appIdDeduplication": {
+        "renderCommits": 1,
+        "baseline": {
+          "derivations": 1,
+          "identityComparisons": 3786002,
+          "medianElapsedMs": 24.334,
+          "samples": 5
+        },
+        "optimized": {
+          "productionHelper": "uniqueCalendarEventsById",
+          "derivations": 1,
+          "inputVisits": 3002,
+          "medianElapsedMs": 0.37,
+          "samples": 5
+        },
+        "outputEquivalent": true
+      }
+    }
+  ]
+}

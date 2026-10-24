@@ -328,12 +328,15 @@ def _split_long_cue(cue: Cue, limit: int) -> list[Cue]:
     parts: list[str] = []
     buffer = ""
     for sentence in sentences:
-        while len(sentence) > limit:
+        if len(sentence) > limit:
             if buffer:
                 parts.append(buffer)
                 buffer = ""
-            parts.append(sentence[:limit])
-            sentence = sentence[limit:]
+            full_parts = (len(sentence) - 1) // limit
+            for index in range(full_parts):
+                start = index * limit
+                parts.append(sentence[start : start + limit])
+            sentence = sentence[full_parts * limit :]
         if buffer and len(buffer) + len(sentence) > limit:
             parts.append(buffer)
             buffer = sentence
@@ -360,7 +363,7 @@ def chunk_cues(
     overlap_cues: int = 2,
     max_cues: int = MAX_CHUNK_CUES,
 ) -> list[TranscriptChunk]:
-    if target_chars <= 0 or max_chars <= target_chars or max_chars >= MAX_MESSAGE_CHARS or max_cues <= 0:
+    if target_chars <= 0 or max_chars <= max(target_chars, 120) or max_chars >= MAX_MESSAGE_CHARS or max_cues <= 0:
         raise ValueError("字幕分块参数无效。")
     expanded: list[Cue] = []
     for cue in cues:

@@ -25,6 +25,7 @@ from sjtu_learning_assistant.transcript_pipeline import (
     _fallback_study_guide,
     _guide_prompt,
     _json_content,
+    _split_long_cue,
     _audit_guide,
     chunk_cues,
     deterministic_summary,
@@ -473,6 +474,20 @@ class TranscriptPipelineTests(unittest.TestCase):
         chunks = chunk_cues(normalize_cues(parse_vtt(text)))
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk.as_prompt_text()) < 6000 for chunk in chunks))
+
+    def test_rejects_chunk_budget_that_cannot_split_nonempty_cues(self):
+        with self.assertRaisesRegex(ValueError, "字幕分块参数无效"):
+            chunk_cues([Cue(0, 10, "超长字幕" * 50, "long")], target_chars=50, max_chars=120)
+
+    def test_long_cue_split_preserves_text_at_chunk_boundaries(self):
+        for length in (5880, 5881, 11760, 11761, 10000):
+            with self.subTest(length=length):
+                source = Cue(100, 1100, "x" * length, "long")
+                parts = _split_long_cue(source, 5880)
+                self.assertEqual(source.text, "".join(part.text for part in parts))
+                self.assertTrue(all(len(part.text) <= 5880 for part in parts))
+                self.assertEqual(source.start_ms, parts[0].start_ms)
+                self.assertEqual(source.end_ms, parts[-1].end_ms)
 
     def test_extracts_fenced_prefixed_bom_json_with_nested_braces_in_string(self):
         payload = {"value": "公式集合 {a, {b}} 不应影响平衡"}

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -203,11 +204,12 @@ class KnowledgeCompilerService:
 
     def _source_files(self, root: Path) -> list[Path]:
         try:
-            candidates = sorted(root.rglob("*.md"), key=lambda path: path.as_posix().casefold())
+            candidates = list(islice(root.rglob("*.md"), max(0, self.max_files + 1)))
         except OSError:
             raise KnowledgeCompilerError("素材目录扫描失败。") from None
         if len(candidates) > self.max_files:
             raise KnowledgeCompilerError(f"Markdown 文件超过 {self.max_files} 个，请拆分后处理。")
+        candidates.sort(key=lambda path: path.as_posix().casefold())
         files: list[Path] = []
         total_bytes = 0
         for path in candidates:
