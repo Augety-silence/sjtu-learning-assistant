@@ -826,3 +826,24 @@ interface FilePreviewer {
 验证：Python 在隔离环境及单独默认路径契约环境合计 739 项通过、1 跳过、307 子测试通过；前端 49 文件、470 项通过，lint、类型检查、构建、许可证、秘密扫描与 diff 检查通过。基线环境差异、原始数据、脚本及测量限制见 [报告](docs/main-audit-2026-10-24/README.md)。所有实验均使用合成或临时文件，未连接真实课件、校内 API 或模型。
 
 交付状态：独立 PR 分支 `codex/main-ablation-20261024`，等待用户决定是否合并，未发布或安装。原工作目录源码改动前后哈希一致。审阅期间安装目录的 App 主程序及原进程状态发生变化，本轮未执行打包、安装或启停，变化原因尚未确认，因此不宣称运行 App 保持不变；未为此覆盖或重启 App。
+
+## 37. 全模块审计落地与 1.8.3 发布（2026-10-24）
+
+已完成：
+
+- 在 `3ccd1b8` 审计基线上复核 9 个模块 173 个单元的补丁包，应用 18 个当前主线尚未包含且无重复实现的补丁。
+- PR 前结构化复审补齐 ffmpeg 本地路径读取边界、PDF 异步预览、Canvas 提交审计终态和 Windows manifest 兼容性问题。
+- Windows 构建保留 PyInstaller 默认 manifest，并在真实 Windows CI 产物上强制验证 `longPathAware=true`。
+- 版本推进至 1.8.3，并补充对应发布说明。
+
+验证结果：
+
+- PR #35 的前端、Python、Windows pytest、macOS/Windows 应用构建、许可证和秘密扫描全部通过。
+- 完整回归为 Python 688 项通过、1 项跳过，前端 470 项通过；最终修复定向回归 Python 30 项、前端 19 项通过。
+- 前端 lint、TypeScript/Vite production build、许可证检查、秘密扫描与 `git diff --check` 通过。
+
+下一步与风险：
+
+- 从合并后的 main 构建并安装 macOS 应用，完成冷启动 smoke 后创建正式 `v1.8.3` 标签。
+- Windows 干净 runner 已验证 EXE manifest；约 320 字符路径的真实读写仍需 Windows 10/11 真机交互验收。
+- 本轮未连接真实学习数据、交大云盘或模型凭据执行提交、上传、删除或付费调用。
