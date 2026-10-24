@@ -8,6 +8,7 @@ from sjtu_learning_assistant import __version__
 ROOT = Path(SPECPATH).parent
 APP_NAME = "SJTU Learning Assistant"
 ICON = ROOT / "packaging" / "app.ico"
+MANIFEST = ROOT / "packaging" / "windows-long-path.manifest"
 
 datas = [
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
@@ -89,6 +90,7 @@ exe = EXE(
     upx=False,
     console=False,
     icon=str(ICON),
+    manifest=str(MANIFEST),
 )
 collection = COLLECT(
     exe,

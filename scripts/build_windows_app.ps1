@@ -46,6 +46,7 @@ $Executable = Join-Path $AppDir "SJTU Learning Assistant.exe"
 if (-not (Test-Path $Executable)) {
     throw "PyInstaller 未生成预期可执行文件：$Executable"
 }
+& $Python scripts/verify_windows_manifest.py $Executable
 $SeedGlossaryDir = Join-Path $AppDir "_internal\resources\seed_glossary"
 $ExpectedSeedGlossaries = @(
     "traditional_machine_learning.json",
