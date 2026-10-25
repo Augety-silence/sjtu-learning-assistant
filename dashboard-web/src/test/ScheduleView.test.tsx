@@ -256,10 +256,10 @@ describe("ScheduleView", () => {
     const [startAt, endAt] = vi.mocked(getTimetableSchedule).mock.calls[0];
     expect(startAt).toBe("2026-09-27T16:00:00.000Z");
     expect(endAt).toBe("2026-11-08T16:00:00.000Z");
-    expect(new Date(startAt).getDate()).toBe(28);
-    expect(new Date(startAt).getMonth()).toBe(8);
-    expect(new Date(endAt).getDate()).toBe(9);
-    expect(new Date(endAt).getMonth()).toBe(10);
+    expect(new Date(startAt).getUTCDate()).toBe(27);
+    expect(new Date(startAt).getUTCMonth()).toBe(8);
+    expect(new Date(endAt).getUTCDate()).toBe(8);
+    expect(new Date(endAt).getUTCMonth()).toBe(10);
     fireEvent.click(screen.getByRole("button", { name: "9月28日" }));
     const agenda = await screen.findByLabelText("当日安排");
     expect(within(agenda).findByText("本地课程")).toBeTruthy();
