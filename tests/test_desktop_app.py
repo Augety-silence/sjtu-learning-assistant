@@ -667,6 +667,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         native.setTitleVisibility_.assert_called_once_with(appkit.NSWindowTitleHidden)
         native.setMovableByWindowBackground_.assert_called_once_with(False)
 
+    @unittest.skipIf(sys.platform == "win32", "macOS native drop adapter uses POSIX file URLs")
     def test_native_drop_bridge_forwards_only_real_unique_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

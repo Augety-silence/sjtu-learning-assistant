@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
 import plistlib
 import re
 import sys
@@ -95,10 +96,10 @@ def _has_sensitive_value(payload: bytes, forbidden_path: bytes) -> bool:
 
 
 def _forbidden_path_bytes(value: str) -> bytes:
-    normalized = os.path.normpath(value)
-    if normalized in {"", os.path.sep, "."}:
+    normalized = posixpath.normpath(value)
+    if normalized in {"", "/", "."}:
         return b""
-    return os.fsencode(normalized.rstrip("/\\") + os.path.sep)
+    return os.fsencode(normalized.rstrip("/\\") + "/")
 
 
 def main() -> int:

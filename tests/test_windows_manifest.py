@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -55,6 +56,7 @@ class VerifyWindowsManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Common-Controls v6"):
                 manifest_module.verify_long_path_manifest(Path("app.exe"))
 
+    @unittest.skipIf(os.name == "nt", "requires a non-Windows platform")
     def test_non_windows_invocation_reports_platform_error(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
