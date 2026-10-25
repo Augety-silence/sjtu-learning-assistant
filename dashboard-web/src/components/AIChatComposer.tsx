@@ -37,6 +37,18 @@ const COMPOSER_MIN_HEIGHT = 42;
 const COMPOSER_MAX_HEIGHT = 160;
 const COMPOSER_MAX_VIEWPORT_RATIO = 0.32;
 
+function attachmentTextStatusLabel(attachment: AIManagedAttachment) {
+  if (attachment.text_status === "ready") return "正文已就绪";
+  if (attachment.text_status === "unsupported")
+    return "仅可查看文件名，正文格式不支持读取";
+  if (
+    attachment.text_status === "failed" ||
+    attachment.text_status === "unavailable"
+  )
+    return "仅可查看文件名，正文不可读取";
+  return "正文仍在处理中";
+}
+
 function AnimatedChoiceMenu({
   id,
   className = "ai-choice-menu",
@@ -236,6 +248,10 @@ export function AIChatComposer({
   onRemoveAttachment,
   onSubmit,
   onRetry,
+  retryDisabled,
+  busy,
+  stopping,
+  onCancel,
 }: {
   draft: string;
   error: string | null;
@@ -259,6 +275,10 @@ export function AIChatComposer({
   onRemoveAttachment: (id: number) => void;
   onSubmit: (value: string) => void;
   onRetry?: () => void;
+  retryDisabled?: boolean;
+  busy?: boolean;
+  stopping?: boolean;
+  onCancel?: () => void;
 }) {
   const [openMenu, setOpenMenu] = useState<"agent" | "model" | "depth" | null>(
     null,
@@ -303,7 +323,12 @@ export function AIChatComposer({
         setOpenMenu(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenMenu(null);
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !event.defaultPrevented
+      )
+        setOpenMenu(null);
     };
     document.addEventListener("mousedown", closeOnOutside);
     document.addEventListener("keydown", closeOnEscape);
@@ -321,11 +346,16 @@ export function AIChatComposer({
   return (
     <form className="ai-composer" onSubmit={submit}>
       {error && (
-        <div className="ai-chat-error" role="alert">
+        <div className="ai-chat-error" role="status">
           <span>{error}</span>
           {onRetry && (
-            <button type="button" onClick={onRetry}>
-              重试本次
+            <button
+              type="button"
+              disabled={retryDisabled}
+              title={retryDisabled ? "当前任务完成或停止后可重试" : undefined}
+              onClick={onRetry}
+            >
+              {retryDisabled ? "当前任务结束后可重试" : "重试本次"}
             </button>
           )}
         </div>
@@ -363,7 +393,18 @@ export function AIChatComposer({
             <button
               type="button"
               className="ai-attachment-button"
-              aria-label={attachmentBusy ? "正在添加附件" : "添加本地附件"}
+              aria-label={
+                attachmentBusy
+                  ? "正在添加附件"
+                  : attachments.length >= 20
+                    ? "已达到20个附件上限"
+                    : "添加本地附件"
+              }
+              title={
+                attachments.length >= 20
+                  ? "每段对话最多添加 20 个附件"
+                  : undefined
+              }
               disabled={attachmentBusy || attachments.length >= 20}
               onClick={onPickAttachment}
             >
@@ -374,10 +415,27 @@ export function AIChatComposer({
               )}
             </button>
             {attachments.length > 0 && (
-              <div className="ai-attachment-chips" aria-label="待发送附件">
+              <div
+                className="ai-attachment-chips"
+                role="group"
+                aria-label="待发送附件"
+              >
                 {attachments.map((attachment) => (
                   <span className="ai-attachment-chip" key={attachment.id}>
-                    <span title={attachment.summary ?? attachment.name}>
+                    <span
+                      aria-label={
+                        attachment.name +
+                        "：" +
+                        attachmentTextStatusLabel(attachment)
+                      }
+                      title={
+                        attachment.text_status === "ready"
+                          ? (attachment.summary ?? attachment.name)
+                          : attachment.name +
+                            "：" +
+                            attachmentTextStatusLabel(attachment)
+                      }
+                    >
                       {attachment.name}
                     </span>
                     <button
@@ -509,6 +567,29 @@ export function AIChatComposer({
               }}
             />
           </div>
+          {busy && onCancel && (
+            <Button
+              type="button"
+              size={stopping ? "sm" : "icon"}
+              aria-label={stopping ? "正在停止本次任务" : "停止本次任务"}
+              title={
+                stopping
+                  ? "正在等待当前模型或工具请求返回"
+                  : "停止当前任务并清空排队消息"
+              }
+              disabled={stopping}
+              onClick={onCancel}
+            >
+              {stopping ? (
+                <>
+                  <LoaderCircle className="ai-spin" aria-hidden="true" />
+                  正在停止
+                </>
+              ) : (
+                <X aria-hidden="true" />
+              )}
+            </Button>
+          )}
           <Button
             type="submit"
             size="icon"
@@ -525,7 +606,8 @@ export function AIChatComposer({
         </div>
       </div>
       <p className="ai-chat-notice">
-        只读访问本机同步数据 · AI 可能出错，请核对截止时间与提交要求
+        已输入 {draft.length}/4000 字 · 只读访问本机同步数据 · AI
+        可能出错，请核对截止时间与提交要求
       </p>
     </form>
   );

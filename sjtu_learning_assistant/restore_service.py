@@ -672,17 +672,17 @@ class RestoreService:
             return result
         except Exception as exc:
             rollback_failed = False
+            rollback_succeeded = False
             snapshot_name = overwrite_snapshot.name if overwrite_snapshot is not None else ""
             if overwrite_snapshot is not None:
                 try:
                     if restored_target_written:
                         if _identity(target) != restored_target_identity:
                             rollback_failed = True
-                        else:
-                            target.unlink(missing_ok=True)
                     if not rollback_failed:
                         _replace_with_retry(overwrite_snapshot, target)
                         overwrite_snapshot = None
+                        rollback_succeeded = True
                 except (OSError, RestoreError):
                     # _identity 把 lstat 失败包装成 RestoreError；漏捕会跳过下方 failed 回写，
                     # 任务停在 verifying，前端会一直轮询。
@@ -691,7 +691,7 @@ class RestoreService:
             if rollback_failed:
                 # 只给出快照文件名（随机名，不含路径），否则用户在 Windows 上找不到无扩展名的副本。
                 public_error = (
-                    "恢复失败，且原文件自动回滚失败；原文件保留在目标目录的隐藏快照“"
+                    "恢复失败，且原文件自动回滚失败；原文件保留在目标目录的临时快照“"
                     + snapshot_name
                     + "”中，请勿删除，核对后可手动改回原文件名。"
                 )
@@ -709,6 +709,8 @@ class RestoreService:
                 public_error = "目标文件正被其他程序占用或没有写入权限，请关闭相关程序后重试。"
             else:
                 public_error = f"恢复失败（{type(exc).__name__}）。"
+            if rollback_succeeded and not rollback_failed:
+                public_error += " 原文件已自动还原。"
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
                 if job is not None:
@@ -716,9 +718,17 @@ class RestoreService:
                     job.bytes_done = min(job.bytes_total, max(job.bytes_done, count))
                     job.finished_at = utcnow()
                     job.last_error = public_error[:500]
+                    if rollback_succeeded:
+                        add_event(
+                            session,
+                            job,
+                            "restore_rolled_back",
+                            "failed",
+                            "恢复未完成，原文件已自动还原。",
+                        )
                     add_event(session, job, "restore_failed", "failed", job.last_error)
                     session.commit()
-            if rollback_failed:
+            if rollback_failed or rollback_succeeded:
                 raise RestoreError(public_error) from exc
             if isinstance(exc, RestoreError):
                 raise

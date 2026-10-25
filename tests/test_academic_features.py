@@ -418,7 +418,15 @@ class AcademicFeatureServiceTests(unittest.TestCase):
             self.service.comment_submission(1, 21, 10, "duplicate")
 
     def test_invalid_grade_comment_and_ids_are_rejected_before_write(self) -> None:
-        for invalid_grade in (-1, float("inf"), "NaN"):
+        for invalid_grade in (
+            -1,
+            float("inf"),
+            "NaN",
+            "８５",
+            "1_000",
+            "١٢",
+            "1e3",
+        ):
             with self.assertRaises(AcademicValidationError):
                 self.service.grade_submission(1, 21, 10, invalid_grade)
         with self.assertRaises(AcademicValidationError):

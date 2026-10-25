@@ -70,7 +70,7 @@ button.app-brand:focus-visible {
   outline-offset: 2px;
 }
 
-/* Match the home sidebar's 14px top inset and 11px horizontal inset. */
+/* Match the home sidebar's 12px top inset and 11px horizontal inset. */
 .app-brand-header {
   height: 72px;
   padding: 12px 11px 8px;

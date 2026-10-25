@@ -12,6 +12,8 @@ import {
   getBackupStatus,
   getCalendar,
   getCourseMedia,
+  getGradebook,
+  getGrading,
   getMediaCapabilities,
   getMessageDetail,
   getMessages,
@@ -59,6 +61,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getBackupStatus: vi.fn(),
     getCalendar: vi.fn(),
     getCourseMedia: vi.fn(),
+    getGradebook: vi.fn(),
+    getGrading: vi.fn(),
     getMediaCapabilities: vi.fn(),
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
@@ -358,6 +362,19 @@ afterEach(() => {
 });
 
 describe("课程视频首帧导航", () => {
+  it("does not announce missing staff permissions before capabilities resolve", () => {
+    window.location.hash = "#/roster";
+    render(<App />);
+    expect(screen.getByText("正在加载课程成员…")).toBeTruthy();
+    expect(screen.queryByText("没有成员访问权限")).toBeNull();
+  });
+
+  it("normalizes a supported legacy route alias in the address bar", async () => {
+    window.location.hash = "#/deadlines";
+    render(<App />);
+    await waitFor(() => expect(window.location.hash).toBe("#/calendar"));
+  });
+
   it("capabilities 未返回时已经显示课程视频入口", () => {
     render(<App />);
 
@@ -491,6 +508,62 @@ describe("花名册导出防护", () => {
     window.location.hash = "#/overview";
   });
 
+  it("ignores a roster response from the previously selected course", async () => {
+    let resolveCourse12!: (value: {
+      items: Array<{ id: number; name: string }>;
+    }) => void;
+    let resolveCourse13!: (value: {
+      items: Array<{ id: number; name: string }>;
+    }) => void;
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") {
+        const capabilities = staffCapabilities();
+        const courses = capabilities.courses;
+        if (!("items" in courses)) throw new Error("Expected multiple courses");
+        courses.items.push({
+          ...courses.items[0],
+          course_id: "13",
+          course_name: "课程 B",
+        });
+        return capabilities as never;
+      }
+      if (action === "sync_status") return { status: "idle" } as never;
+      if (action === "overview") return overview as never;
+      if (action === "settings_status")
+        return { theme_mode: settingsTheme } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getRoster).mockImplementation(
+      (courseId) =>
+        new Promise((resolve) => {
+          if (courseId === 12)
+            resolveCourse12 = resolve as typeof resolveCourse12;
+          else resolveCourse13 = resolve as typeof resolveCourse13;
+        }),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "花名册" }));
+    await waitFor(() => expect(getRoster).toHaveBeenCalledWith(12));
+    fireEvent.change(
+      await screen.findByRole("combobox", { name: "选择课程" }),
+      {
+        target: { value: "13" },
+      },
+    );
+    await waitFor(() => expect(getRoster).toHaveBeenCalledWith(13));
+    await act(async () =>
+      resolveCourse13({ items: [{ id: 13, name: "课程 B 成员" }] }),
+    );
+    await screen.findByText("课程 B 成员");
+    await act(async () =>
+      resolveCourse12({ items: [{ id: 12, name: "课程 A 旧响应" }] }),
+    );
+
+    expect(screen.getByText("课程 B 成员")).toBeTruthy();
+    expect(screen.queryByText("课程 A 旧响应")).toBeNull();
+  });
+
   it("无效成员 ID 时取消导出，避免空 ID 列表退化为全员导出", async () => {
     vi.mocked(invoke).mockImplementation(async (action) => {
       if (action === "capabilities") return staffCapabilities() as never;
@@ -546,6 +619,33 @@ describe("花名册导出防护", () => {
       ),
     ).toBeTruthy();
     expect(exportRoster).not.toHaveBeenCalled();
+  });
+});
+
+describe("GradingAdapter loading", () => {
+  it("loads the gradebook once when it selects the initial assignment", async () => {
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return staffCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      if (action === "overview") return overview as never;
+      if (action === "settings_status")
+        return { theme_mode: settingsTheme } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getGradebook).mockResolvedValue({
+      course_id: "12",
+      assignments: [{ id: 42, name: "期中作业", points_possible: 100 }],
+      students: [],
+      submissions: [],
+      rows: [],
+      statistics: {},
+    });
+    vi.mocked(getGrading).mockResolvedValue({ items: [] } as never);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "作业批改" }));
+    await waitFor(() => expect(getGrading).toHaveBeenCalledWith(12, 42));
+    expect(getGradebook).toHaveBeenCalledTimes(1);
   });
 });
 

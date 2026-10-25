@@ -95,6 +95,7 @@ export function TranscriptDetailDrawer({
   const [v1Content, setV1Content] = useState<Record<string, string>>({});
   const [v1Loading, setV1Loading] = useState(true);
   const [v1Error, setV1Error] = useState("");
+  const [actionError, setActionError] = useState("");
   const [v1Attempt, setV1Attempt] = useState(0);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const actionBusyRef = useRef(false);
@@ -322,12 +323,13 @@ export function TranscriptDetailDrawer({
     if (!action || actionBusyRef.current) return;
     actionBusyRef.current = true;
     setActionBusy(key);
+    setActionError("");
     setV1Error("");
     try {
       await action(job);
       if (close) onClose();
     } catch (reason) {
-      setV1Error(messageFrom(reason, "字幕任务操作失败"));
+      setActionError(messageFrom(reason, "字幕任务操作失败"));
     } finally {
       actionBusyRef.current = false;
       setActionBusy(null);
@@ -506,6 +508,12 @@ export function TranscriptDetailDrawer({
             <span style={{ width: `${progress}%` }} />
           </div>
         </div>
+
+        {actionError && (
+          <div role="alert" className="transcript-inline-error">
+            <p>{actionError}</p>
+          </div>
+        )}
 
         {((active && onCancel) ||
           (retryable && onRetry) ||

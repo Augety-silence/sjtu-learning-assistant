@@ -529,6 +529,7 @@ export interface BackupResult {
   uploaded?: number;
   skipped_existing?: number;
   skipped_missing_local?: number;
+  skipped_changed?: number;
   local_removed?: number;
   failed?: number;
   failures?: BackupFailure[];
@@ -627,6 +628,7 @@ export interface ArchiveJob {
   reconciled?: boolean;
   in_progress?: boolean;
   target?: string;
+  target_filename?: string | null;
   comparison?: {
     existing: ArchiveFileSignature | null;
     expected: ArchiveFileSignature;

@@ -11,17 +11,21 @@ from typing import Any, Callable
 
 from sjtu_learning_assistant.agent_runtime.presets import AgentPreset, default_resource_root
 from sjtu_learning_assistant.agent_runtime.tools import LOCAL_TIMEZONE, AgentToolError, ReadOnlyToolRegistry
+from sjtu_learning_assistant.ai_limits import (
+    AGENT_CONTEXT_CHAR_BUDGET,
+    MAX_CHAT_MESSAGES,
+    SYSTEM_MESSAGE_CHAR_BUDGET,
+)
 from sjtu_learning_assistant.ai_classifier import AIToolsUnsupportedError
 
 MAX_STEPS = 6
 DEFAULT_TIMEOUT_SECONDS = 75.0
 # 低于 ai_classifier._clean_chat_messages 的 60_000 字符总上限，留出余量。
-CONTEXT_CHAR_BUDGET = 54_000
+CONTEXT_CHAR_BUDGET = AGENT_CONTEXT_CHAR_BUDGET
 # 预检索结果合计上限，为系统提示、历史与本轮问题保留空间。
 PREFETCH_CHAR_BUDGET = 30_000
 # 网关只接受一条 system 消息，而 ai_classifier._clean_chat_messages 对单条字符串
 # 消息限制 14_000 字符（超限为不可重试的 validation 错误），合并后须低于该值。
-SYSTEM_MESSAGE_CHAR_BUDGET = 13_500
 _SYSTEM_PART_SEPARATOR = "\n\n"
 _TRUNCATED_MARKER = "…（上下文过长，已截断）"
 
@@ -36,6 +40,17 @@ def _content_chars(content: Any) -> int:
             if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
         )
     return len(str(content or ""))
+
+
+def _has_image_content(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(message.get("content"), list)
+        and any(
+            isinstance(part, dict) and part.get("type") == "image_url"
+            for part in message["content"]
+        )
+        for message in messages
+    )
 
 
 @dataclass(frozen=True)
@@ -111,7 +126,12 @@ class AgentLoop:
                         "phase": "prefetch",
                         "status": "rejected",
                         "arguments_summary": {},
-                        "result_summary": {"status": "error", "error": str(exc)[:240]},
+                        "result_summary": {
+                            "status": "error",
+                            "error": str(exc)[:240],
+                            "category": exc.category,
+                            "retryable": exc.retryable,
+                        },
                     }
                 )
                 continue
@@ -258,7 +278,7 @@ class AgentLoop:
             try:
                 stream_method = getattr(self.client, "chat_completion_stream", None)
                 if (
-                    not attachment_ids
+                    not _has_image_content(conversation)
                     and callable(stream_method)
                     and bool(getattr(self.client, "supports_streaming", True))
                 ):
@@ -312,12 +332,31 @@ class AgentLoop:
                 reasoning_parts.append(reasoning.strip())
             tool_calls = completion.get("tool_calls") or []
             content = completion.get("content")
+            metadata = completion.get("response_metadata")
+            if isinstance(metadata, dict) and metadata.get("finish_reason") == "length":
+                visible = content.strip() if isinstance(content, str) and content.strip() else "模型回复达到长度上限，本轮未完成。"
+                if isinstance(content, str) and content.strip():
+                    visible += "\n\n（回复可能因长度限制未完成。）"
+                combined = "\n\n".join(reasoning_parts)[:12_000] or None
+                return AgentResult(visible, combined, "max_steps", step, tuple(runs))
             if not tool_calls:
                 visible = content.strip() if isinstance(content, str) and content.strip() else "模型未返回可显示内容。"
                 combined = "\n\n".join(reasoning_parts)[:12_000] or None
                 return AgentResult(visible, combined, "completed", step, tuple(runs))
+            available_slots = max(0, MAX_CHAT_MESSAGES - len(conversation) - 1)
+            if available_slots == 0:
+                return AgentResult("本轮工具交互达到消息数量上限，请缩小问题范围后重试。", "\n\n".join(reasoning_parts)[:12_000] or None, "max_steps", step, tuple(runs))
+            omitted_calls = tool_calls[available_slots:]
+            tool_calls = tool_calls[:available_slots]
             assistant_message: dict[str, Any] = {"role": "assistant", "content": content or "", "tool_calls": tool_calls}
             conversation.append(assistant_message)
+            for call in omitted_calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                name = function.get("name") if isinstance(function, dict) else None
+                skipped = {"tool_name": str(name or "unknown")[:80], "phase": "model", "status": "rejected", "arguments_summary": {}, "result_summary": {"status": "error", "error": "本轮消息数量已达上限，未执行此工具调用。", "category": "context_limit", "retryable": False}}
+                runs.append(skipped)
+                if event_callback is not None:
+                    event_callback("tool", dict(skipped))
             for index, call in enumerate(tool_calls):
                 call_id = str((call.get("id") if isinstance(call, dict) else None) or f"call-{step}-{index}")[:128]
                 function = call.get("function") if isinstance(call, dict) else None
@@ -328,19 +367,20 @@ class AgentLoop:
                     execution = self.tools.execute(name, arguments, self.preset.allowed_tools)
                 except AgentToolError as exc:
                     error = str(exc)[:240]
-                    runs.append({"tool_name": str(name or "unknown")[:80], "phase": "model", "status": "rejected", "arguments_summary": {}, "result_summary": {"status": "error", "error": error}})
+                    runs.append({"tool_name": str(name or "unknown")[:80], "phase": "model", "status": "rejected", "arguments_summary": {}, "result_summary": {"status": "error", "error": error, "category": exc.category, "retryable": exc.retryable}})
                     tool_result: dict[str, Any] = {"error": error}
                 else:
                     runs.append({"tool_name": execution.name, "phase": "model", "status": "ok", "arguments_summary": execution.arguments_summary, "result_summary": execution.result_summary})
                     tool_result = execution.result
-                if event_callback is not None:
-                    event_callback("tool", dict(runs[-1]))
                 tool_content = json.dumps(tool_result, ensure_ascii=False, separators=(",", ":"))
                 # 客户端对整轮对话有 60_000 字符 / 64 条的硬上限，超限会以不可重试的
                 # “对话内容过长”失败；这里在追加前按预算省略结果，保留 tool_call_id 配对。
                 used = sum(_content_chars(item.get("content")) for item in conversation)
                 if used + len(tool_content) > CONTEXT_CHAR_BUDGET:
                     tool_content = json.dumps({"error": "工具结果超出本轮上下文预算，已省略；请基于已有结果作答或缩小范围。"}, ensure_ascii=False, separators=(",", ":"))
+                    runs[-1]["result_summary"] = {"status": "omitted", "reason": "context_budget"}
+                if event_callback is not None:
+                    event_callback("tool", dict(runs[-1]))
                 conversation.append({"role": "tool", "tool_call_id": call_id, "name": str(name or "unknown")[:80], "content": tool_content})
         combined = "\n\n".join(reasoning_parts)[:12_000] or None
         return AgentResult("已达到本轮工具调用上限，请缩小问题范围后重试。", combined, "max_steps", self.max_steps, tuple(runs))

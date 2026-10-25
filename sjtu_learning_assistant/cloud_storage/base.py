@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
-from .models import CloudDirectoryPage, CloudItem, UploadSession
+from .models import CloudDirectoryPage, CloudItem
 
 RemotePath = str | tuple[str, ...] | list[str]
 

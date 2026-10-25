@@ -148,6 +148,13 @@ CANVAS_ORIGIN = ("https", "oc.sjtu.edu.cn", 443)
 CANVAS_REDIRECT_LIMIT = 5
 CANVAS_FILE_API_PATH = re.compile(r"/api/v1/courses/[0-9]+/files/[0-9]+")
 INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
+WINDOWS_EXECUTABLE_ATTACHMENT_SUFFIXES = frozenset({
+    ".bat", ".cmd", ".com", ".cpl", ".exe", ".hta", ".inf", ".ins",
+    ".isp", ".jar", ".js", ".jse", ".lnk", ".msc", ".msi", ".msp",
+    ".ocx", ".pif", ".ps1", ".ps1xml", ".ps2", ".ps2xml", ".psc1",
+    ".psc2", ".reg", ".scf", ".scr", ".sct", ".shb", ".shs", ".vbe",
+    ".vbs", ".ws", ".wsc", ".wsf", ".wsh",
+})
 MATERIAL_IMAGE_LIMIT = 15 * 1024 * 1024
 MATERIAL_PDF_LIMIT = 30 * 1024 * 1024
 MATERIAL_TEXT_LIMIT = 2 * 1024 * 1024
@@ -1158,6 +1165,10 @@ class DashboardService:
     def deadlines(
         self, hours: int | None, *, limit: int = 100
     ) -> list[dict[str, Any]]:
+        if hours is not None and (type(hours) is not int or not 0 <= hours <= 8760):
+            raise DashboardError("截止日期时间范围无效。")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("截止日期数量限制无效。")
         now = self.now()
         until = now + timedelta(hours=hours) if hours is not None else None
         with Session(self.engine) as session:
@@ -1598,6 +1609,16 @@ class DashboardService:
     ) -> dict[str, str]:
         attachment = self._email_attachment(source_id, attachment_id)
         path = self._resolve_controlled_mail_file(attachment.local_path)
+        if (
+            sys.platform == "win32"
+            and not reveal
+            and (
+                path.suffix.casefold() in WINDOWS_EXECUTABLE_ATTACHMENT_SUFFIXES
+                or Path(self._mail_attachment_name(attachment.filename)).suffix.casefold()
+                in WINDOWS_EXECUTABLE_ATTACHMENT_SUFFIXES
+            )
+        ):
+            raise DashboardError("该邮件附件可能会运行程序，已阻止直接打开；可在文件夹中检查附件。")
         command = _desktop_open_command(path, reveal=reveal)
         completed = self.command_runner(command, check=False)
         # explorer.exe returns exit code 1 even on success; do not treat it as failure.
@@ -2210,9 +2231,12 @@ class DashboardService:
 
         if kind == "text":
             try:
-                text = payload.decode("utf-8")
+                text = payload.decode("utf-8-sig")
             except UnicodeDecodeError:
-                raise DashboardError("文本不是有效的 UTF-8，无法在 App 内预览。") from None
+                try:
+                    text = payload.decode("gb18030")
+                except UnicodeDecodeError:
+                    text = payload.decode("utf-8", errors="replace")
             return {"kind": "text", "name": name, "text": text}
         if kind == "pdf":
             media_type = "application/pdf"
@@ -2598,6 +2622,9 @@ class DashboardService:
             image_parts = self.ai_files.vision_message_parts(selected_attachment_ids)
         except AIFileError as exc:
             raise DashboardError(str(exc), category="attachment", retryable=False) from None
+        if image_parts and model == "auto":
+            # Auto mode must keep image requests on the supported multimodal model.
+            selected_model = "qwen3.8-27b"
         if image_parts and selected_model != "qwen3.8-27b":
             raise DashboardError(
                 "图片识别需要使用 Qwen 3.8 模型，请切换模型后重试。",

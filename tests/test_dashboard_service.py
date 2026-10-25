@@ -83,6 +83,19 @@ class DashboardOverviewTests(unittest.TestCase):
             [item["source_id"] for item in overview["deadlines"]],
         )
 
+    def test_deadlines_rejects_invalid_service_level_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = create_database_engine(
+                default_sqlite_url(Path(directory) / "dashboard.db")
+            )
+            bootstrap_sqlite(engine)
+            service = DashboardService(engine)
+            for hours, limit in ((-1, 10), (8761, 10), (True, 10), (24, 0), (24, 501)):
+                with self.subTest(hours=hours, limit=limit):
+                    with self.assertRaises(DashboardError):
+                        service.deadlines(hours, limit=limit)
+            engine.dispose()
+
 
 class DashboardCalendarTests(unittest.TestCase):
     def test_calendar_reads_assignments_landed_by_canvas_sync(self) -> None:

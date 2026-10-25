@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{40,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"postgres(?:ql)?(?:\+\w+)?://[^\s:'\"]+:[^\s@'\"]+@", re.IGNORECASE),
     re.compile(r"(?:api[_-]?key|secret|token|password)\s*[=:]\s*['\"][A-Za-z0-9_./+=-]{20,}['\"]", re.IGNORECASE),
@@ -41,13 +43,17 @@ def candidates() -> list[Path]:
 
 def main() -> int:
     findings: set[str] = set()
+    skipped_non_utf8 = 0
     for file_path in candidates():
         relative = file_path.relative_to(ROOT).as_posix()
         if relative in ALLOWLIST or file_path.suffix.lower() in SKIP_SUFFIXES or not file_path.is_file():
             continue
         try:
             text = file_path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
+            skipped_non_utf8 += 1
+            continue
+        except OSError:
             continue
         if any(pattern.search(text) for pattern in PATTERNS):
             findings.add(relative)
@@ -56,6 +62,8 @@ def main() -> int:
         for name in sorted(findings):
             print(name, file=sys.stderr)
         return 1
+    if skipped_non_utf8:
+        print(f"提示：有 {skipped_non_utf8} 个非 UTF-8 文件未扫描。", file=sys.stderr)
     print("秘密模式扫描通过。")
     return 0
 

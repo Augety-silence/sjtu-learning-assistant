@@ -163,6 +163,31 @@ class DashboardRichResourceTests(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             service.open_mail_attachment("mail:two", "cid-one")
 
+    def test_windows_mail_attachment_blocks_executable_open_but_allows_reveal(self) -> None:
+        self.persist_mail()
+        executable = self.attachment_root / "runme.ps1"
+        executable.write_text("Write-Output unsafe", encoding="utf-8")
+        with Session(self.engine) as session, session.begin():
+            attachment = session.scalar(
+                select(EmailAttachment)
+                .join(Email)
+                .where(Email.source_id == "mail:one")
+            )
+            attachment.filename = executable.name
+            attachment.local_path = str(executable)
+
+        service = self.service()
+        with patch("sjtu_learning_assistant.dashboard_service.sys.platform", "win32"):
+            with self.assertRaisesRegex(DashboardError, "阻止直接打开"):
+                service.open_mail_attachment("mail:one", "cid-one")
+            self.assertEqual([], self.commands)
+
+            revealed = service.reveal_mail_attachment("mail:one", "cid-one")
+            self.assertEqual("revealed", revealed["status"])
+            self.assertEqual(
+                _desktop_open_command(executable.resolve(), reveal=True), self.commands[0]
+            )
+
     def test_mail_attachment_rejects_outside_directory_and_symlink_component(self) -> None:
         self.persist_mail()
         service = self.service()

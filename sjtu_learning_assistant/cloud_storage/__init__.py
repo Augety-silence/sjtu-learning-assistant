@@ -3,8 +3,10 @@
 from .base import CloudStorageProvider, RemotePath, TemporaryDownload
 from .errors import (
     CloudAuthError,
+    CloudCleanupError,
     CloudConflictError,
     CloudCredentialExpiredError,
+    CloudIntegrityError,
     CloudNetworkError,
     CloudNotFoundError,
     CloudRemoteApiError,
@@ -23,9 +25,9 @@ from .sjtu_pan import (
 )
 
 __all__ = [
-    "CloudAuthError", "CloudConflictError", "CloudCredentialExpiredError",
+    "CloudAuthError", "CloudCleanupError", "CloudConflictError", "CloudCredentialExpiredError",
     "CloudDirectoryPage", "CloudItem", "CloudNetworkError", "CloudNotFoundError",
-    "CloudRemoteApiError", "CloudStorageError", "CloudStorageProvider",
+    "CloudIntegrityError", "CloudRemoteApiError", "CloudStorageError", "CloudStorageProvider",
     "CloudTimeoutError", "RemotePath", "SJTUCloudPanProvider", "SpaceCredential",
     "SpaceInfo", "TemporaryDownload", "UploadSession", "clear_user_token_cache", "delete_user_token",
     "load_user_token", "save_user_token", "user_token_saved", "validate_user_token_value",

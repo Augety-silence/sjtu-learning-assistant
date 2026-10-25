@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -514,6 +515,57 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertEqual([False, True], orchestrator.force_refresh_values)
         self.assertEqual("completed", service.get_batch(retried["id"])["jobs"][0]["phase1_status"])
 
+    def test_failed_phase1_refresh_preserves_valid_prior_v2_artifacts(self):
+        class SuccessfulReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-test"
+            model_version = "phase1-test"
+
+            def orchestrate(inner_self, **kwargs):
+                raw = kwargs["raw_vtt"]
+                return SimpleNamespace(
+                    chunks=(), corrections=(), critics=(), quality={"passed": True}, warnings=(),
+                    corrected_transcript=raw, uncertain=(), memory_version=None,
+                    events=(), status="completed",
+                    raw_hash=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                )
+
+        service = TranscriptService(
+            self.root, memory_root=self.root.parent / "memory", subtitle_fetcher=self.fetch,
+            ai_context_provider=lambda: AIContext(None, "qwen", "endpoint-hash", False),
+            orchestrator=SuccessfulReview(), sleeper=lambda delay: None, autostart_worker=False,
+        )
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service.run_pending()
+        video_dir = service._video_dir(VIDEO["source_id"])
+        v2_manifest_path = video_dir / "v2" / "manifest.json"
+        previous_bytes = v2_manifest_path.read_bytes()
+        previous = json.loads(previous_bytes)
+        self.assertTrue(service._v2_artifacts_valid(video_dir, previous))
+
+        class FailingReview:
+            pipeline_version = "phase1-test"
+            prompt_version = "phase1-next-version"
+            model_version = "phase1-test"
+
+            def orchestrate(self, **_kwargs):
+                raise RuntimeError("refresh failed")
+
+        service.orchestrator = FailingReview()
+        stored = service.get_batch(batch["id"])
+        job = stored["jobs"][0]
+        raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
+        service._run_phase1_safely(
+            stored, job, video_dir, raw,
+            AIContext(None, "qwen", "endpoint-hash", False),
+            service._read_json(video_dir / "manifest.json"),
+        )
+
+        self.assertEqual(previous_bytes, v2_manifest_path.read_bytes())
+        self.assertTrue(service._v2_artifacts_valid(video_dir, service._v2_manifest(video_dir)))
+        self.assertIsNotNone(service._corrected_cues(video_dir, service._read_json(video_dir / "manifest.json"), raw))
+        service.close()
+
     def test_clean_v1_and_phase1_clear_stale_job_diagnostics(self):
         chunk = self.valid_chunk()
 
@@ -742,6 +794,86 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertNotIn("request body", serialized)
         service.close()
 
+    def test_provider_http_code_does_not_replace_actionable_failure_category(self):
+        service = self.service()
+
+        class AuthenticationFailure(RuntimeError):
+            category = "authentication"
+            error_code = "HTTP_401"
+            status_code = 401
+
+        job = {}
+        service._record_ai_diagnostic(job, 1, time.monotonic(), AuthenticationFailure())
+        self.assertEqual("authentication", job["diagnostic"]["code"])
+        self.assertEqual("http_401", job["diagnostic"]["provider_code"])
+        self.assertIn(
+            "检查 API Key",
+            service._learning_error_message(job, {}),
+        )
+        service.close()
+
+    def test_windows_file_lock_has_actionable_retry_category(self):
+        service = self.service()
+        error = PermissionError("sharing violation")
+        error.winerror = 32
+        job = {}
+        service._schedule_retry(job, error)
+        self.assertEqual("file_locked", service._diagnostic_code(error))
+        self.assertTrue(job["retryable"])
+        self.assertTrue(job["auto_retryable"])
+        self.assertIn("其他程序占用", service._learning_error_message({"diagnostic": {"code": "file_locked"}}, {}))
+        service.close()
+
+    def test_corrupt_stored_vtt_raises_actionable_artifact_error(self):
+        service = self.service()
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service.run_pending()
+        video_dir = service._video_dir(VIDEO["source_id"])
+        raw_path = video_dir / "raw.vtt"
+        manifest_path = video_dir / "manifest.json"
+        raw_path.write_text("not webvtt", encoding="utf-8")
+        digest = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+        manifest = service._read_json(manifest_path)
+        manifest["raw_sha256"] = digest
+        manifest["artifacts"]["raw_vtt"]["sha256"] = digest
+        service._write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(TranscriptError, "重新获取字幕"):
+            service.learning_segments(VIDEO["source_id"])
+        service.close()
+
+    def test_worker_failure_logging_is_sanitized_and_rate_limited(self):
+        service = self.service()
+        calls = 0
+
+        def fail_pending():
+            nonlocal calls
+            calls += 1
+            if calls >= 2:
+                service._stop.set()
+            raise RuntimeError("private path and token")
+
+        service.run_pending = fail_pending
+        service._wake = SimpleNamespace(wait=lambda _timeout: True, clear=lambda: None, set=lambda: None)
+        with patch("sjtu_learning_assistant.transcript_service.LOGGER.warning") as warning:
+            service._worker()
+        self.assertEqual(2, calls)
+        warning.assert_called_once()
+        logged = " ".join(str(item) for item in warning.call_args.args)
+        self.assertNotIn("private path", logged)
+        self.assertNotIn("token", logged)
+        service.close()
+
+    def test_run_pending_records_retry_metadata_for_escaped_worker_error(self):
+        service = self.service()
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service._process_batch = Mock(side_effect=TimeoutError("worker timeout"))
+        service.run_pending()
+        job = service.get_batch(batch["id"])["jobs"][0]
+        self.assertEqual("partial", job["status"])
+        self.assertEqual("worker_failed", job["stage"])
+        self.assertEqual("timeout", job["diagnostic"]["code"])
+        self.assertTrue(job["retryable"])
+        service.close()
 
     def test_unvalidated_nonempty_raw_does_not_prevent_failed_status(self):
         service = self.service()
@@ -761,6 +893,52 @@ class TranscriptServiceTests(unittest.TestCase):
         self.assertIn("字幕存储失败", job.get("message"))
         self.assertEqual("failed", service.get_batch(batch.get("id")).get("status"))
 
+
+    def test_fetch_job_mutation_waits_for_batch_serialization(self):
+        service = self.service()
+        batch = service.start_batch(course_id="12", course_name="管理会计", videos=[VIDEO])
+        service._synchronize_batch_jobs(batch)
+        job = batch["jobs"][0]
+        serialization_started = threading.Event()
+        allow_serialization = threading.Event()
+        mutation_finished = threading.Event()
+        module = __import__("sjtu_learning_assistant.transcript_service", fromlist=["_json_bytes"])
+        original_json_bytes = module._json_bytes
+
+        def pause_batch_serialization(value):
+            if isinstance(value, dict) and value.get("id") == batch["id"]:
+                serialization_started.set()
+                if not allow_serialization.wait(timeout=3):
+                    raise TimeoutError("test serializer was not released")
+            return original_json_bytes(value)
+
+        writer = threading.Thread(target=service._save_batch, args=(batch,))
+        with patch("sjtu_learning_assistant.transcript_service._json_bytes", side_effect=pause_batch_serialization):
+            writer.start()
+            self.assertTrue(serialization_started.wait(timeout=3))
+
+            def mutate_job():
+                job["worker_state"] = "fetch_complete"
+                mutation_finished.set()
+
+            worker = threading.Thread(target=mutate_job)
+            worker.start()
+            self.assertFalse(mutation_finished.wait(timeout=0.05))
+            allow_serialization.set()
+            writer.join(timeout=3)
+            worker.join(timeout=3)
+
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(mutation_finished.is_set())
+        persisted = service._read_json(service._batch_path(batch["id"]))
+        self.assertNotIn("worker_state", persisted["jobs"][0])
+        service._save_batch(batch)
+        self.assertEqual(
+            "fetch_complete",
+            service._read_json(service._batch_path(batch["id"]))["jobs"][0]["worker_state"],
+        )
+        service.close()
 
     def test_usable_subtitle_requires_current_manifest_hash_and_parse_validation(self):
         service = self.service()

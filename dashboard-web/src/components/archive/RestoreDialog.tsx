@@ -29,7 +29,7 @@ const conflictOptions: Array<{
 function HashValue({ value }: { value: string | null }) {
   if (!value) return <>—</>;
   return (
-    <code title={value}>
+    <code title={value} aria-label={value}>
       {value.slice(0, 12)}…{value.slice(-6)}
     </code>
   );
@@ -40,11 +40,13 @@ export function RestoreDialog({
   version,
   onClose,
   onComplete,
+  onFailed,
 }: {
   entry: ArchiveEntry;
   version?: Pick<ArchiveVersion, "id">;
   onClose: () => void;
   onComplete: (job: ArchiveJob) => void;
+  onFailed?: () => void;
 }) {
   const originalAvailable =
     entry.restore_capability === "original_path" &&
@@ -108,7 +110,7 @@ export function RestoreDialog({
       plan.existing &&
       policy === "overwrite" &&
       !window.confirm(
-        `确认覆盖“${plan.target}”？原文件会先在同目录创建临时快照，恢复成功后才删除。`,
+        `确认覆盖“${plan.target}”？请先关闭正在打开该文件的程序。原文件会先在同目录创建临时快照，恢复成功后才删除。`,
       )
     )
       return;
@@ -124,10 +126,11 @@ export function RestoreDialog({
       const message =
         reason instanceof Error ? reason.message : "恢复执行失败。";
       setError(
-        /重新|重试/.test(message)
+        /重新|重试|快照|回滚/.test(message)
           ? message
           : message + "请重新检查目标后再恢复。",
       );
+      onFailed?.();
       // 计划区随之卸载，焦点不能掉到 body（模态内焦点丢失），移回“检查”按钮。
       setRefocusPlanAction((count) => count + 1);
     } finally {
@@ -262,35 +265,37 @@ export function RestoreDialog({
               role="table"
               aria-label="本地与云端文件对照"
             >
-              <div role="row">
-                <strong role="columnheader">属性</strong>
-                <strong role="columnheader">现有文件</strong>
-                <strong role="columnheader">云端版本</strong>
-              </div>
-              <div role="row">
-                <span role="rowheader">大小</span>
-                <span role="cell">
-                  {formatSize(plan.existing?.size ?? null)}
-                </span>
-                <span role="cell">{formatSize(plan.expected.size)}</span>
-              </div>
-              <div role="row">
-                <span role="rowheader">修改时间</span>
-                <span role="cell">
-                  {formatArchiveMtime(plan.existing?.mtime_ns)}
-                </span>
-                <span role="cell">
-                  {formatArchiveMtime(plan.expected.mtime_ns)}
-                </span>
-              </div>
-              <div role="row">
-                <span role="rowheader">SHA-256</span>
-                <span role="cell">
-                  <HashValue value={plan.existing?.sha256 ?? null} />
-                </span>
-                <span role="cell">
-                  <HashValue value={plan.expected.sha256} />
-                </span>
+              <div role="rowgroup">
+                <div role="row">
+                  <strong role="columnheader">属性</strong>
+                  <strong role="columnheader">现有文件</strong>
+                  <strong role="columnheader">云端版本</strong>
+                </div>
+                <div role="row">
+                  <span role="rowheader">大小</span>
+                  <span role="cell">
+                    {formatSize(plan.existing?.size ?? null)}
+                  </span>
+                  <span role="cell">{formatSize(plan.expected.size)}</span>
+                </div>
+                <div role="row">
+                  <span role="rowheader">修改时间</span>
+                  <span role="cell">
+                    {formatArchiveMtime(plan.existing?.mtime_ns)}
+                  </span>
+                  <span role="cell">
+                    {formatArchiveMtime(plan.expected.mtime_ns)}
+                  </span>
+                </div>
+                <div role="row">
+                  <span role="rowheader">SHA-256</span>
+                  <span role="cell">
+                    <HashValue value={plan.existing?.sha256 ?? null} />
+                  </span>
+                  <span role="cell">
+                    <HashValue value={plan.expected.sha256} />
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -352,10 +357,20 @@ export function RestoreDialog({
                 type="button"
                 loading={busy}
                 loadingLabel="正在恢复…"
+                variant={policy === "overwrite" ? "outline" : "default"}
+                className={
+                  policy === "overwrite"
+                    ? "archive-overwrite-action"
+                    : undefined
+                }
                 disabled={plan.requires_directory_confirmation && !confirmDirs}
                 onClick={() => void runRestore()}
               >
-                {policy === "compare" ? "执行对照" : "开始恢复"}
+                {policy === "compare"
+                  ? "执行对照"
+                  : policy === "overwrite"
+                    ? "覆盖并恢复"
+                    : "开始恢复"}
               </Button>
             </div>
           </div>

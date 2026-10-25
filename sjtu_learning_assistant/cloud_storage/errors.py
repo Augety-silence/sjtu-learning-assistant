@@ -38,3 +38,11 @@ class CloudNotFoundError(CloudRemoteApiError):
 
 class CloudConflictError(CloudRemoteApiError):
     """The destination already exists."""
+
+
+class CloudIntegrityError(CloudRemoteApiError):
+    """A confirmed remote object does not match the uploaded content."""
+
+
+class CloudCleanupError(CloudIntegrityError):
+    """An invalid remote object could not be removed automatically."""

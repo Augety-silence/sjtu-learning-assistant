@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.cloud_archive_service import CloudArchiveError, CloudArchiveService
+from sjtu_learning_assistant.cloud_storage import CloudNetworkError
 from sjtu_learning_assistant.cloud_storage.models import CloudItem
 from sjtu_learning_assistant.models import (
     AIManagedFile, ArchiveEntry, ArchiveEvent, ArchiveJob, ArchiveVersion, Base,
@@ -284,6 +285,32 @@ def test_reconcile_content_hash_overrides_stale_remote_size_metadata(archive_env
         assert session.scalar(select(ArchiveVersion)).status == "archived"
 
 
+def test_archiving_unverified_file_again_performs_strong_reconciliation(archive_env):
+    root, engine, provider, service = archive_env
+    path, job_id, _remote_path = _create_reconcile_job(root, provider, service)
+
+    result = service.archive_file(path)
+
+    assert result["id"] == job_id
+    assert result["status"] == "completed"
+    assert provider.uploads == 1
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).attempt_count == 1
+
+
+def test_public_redaction_covers_full_headers_and_sensitive_mapping_keys():
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text, redact_public_value
+
+    text = "Authorization: Token S6\nCookie: a=1; sid=S7\nother: useful"
+    redacted = redact_public_text(text)
+    assert "S6" not in redacted
+    assert "S7" not in redacted
+    assert "other: useful" in redacted
+    assert redact_public_value({"q-signature": "S1", "api_key": "S2", "Credential": "S3"}) == {
+        "q-signature": "<redacted>", "api_key": "<redacted>", "Credential": "<redacted>"
+    }
+
+
 def test_reconcile_cleans_different_size_content_and_allows_retry(archive_env):
     root, engine, provider, service = archive_env
     path, job_id, remote_path = _create_reconcile_job(root, provider, service)
@@ -316,6 +343,25 @@ def test_reconcile_download_or_delete_failure_never_records_success(archive_env,
     with Session(engine) as session:
         assert session.get(ArchiveJob, job_id).status == "needs_reconcile"
         assert session.scalar(select(ArchiveVersion)).status != "archived"
+
+
+def test_reconcile_network_failure_preserves_verification_state(archive_env):
+    root, engine, provider, service = archive_env
+    _path, job_id, remote_path = _create_reconcile_job(root, provider, service)
+
+    def fail_network(_path, chunk_size=65536, start=None, end=None):
+        raise CloudNetworkError("offline")
+        yield b""
+
+    provider.download_stream = fail_network
+    result = service.reconcile(job_id).get("items").pop()
+
+    assert result.get("status") == "needs_verification"
+    assert remote_path in provider.objects
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, job_id)
+        assert job.status == "needs_verification"
+        assert "检查网络" in job.last_error
 
 
 def test_normal_upload_still_rejects_existing_conflict_without_deleting_it(archive_env):

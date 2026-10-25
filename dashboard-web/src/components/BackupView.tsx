@@ -36,6 +36,7 @@ function ResultSummary({ result }: { result: BackupResult }) {
     ["云端已存在", result.skipped_existing ?? 0],
     ["已安全移除本地文件", result.local_removed ?? 0],
     ["本地缺失跳过", result.skipped_missing_local ?? 0],
+    ["内容变化跳过", result.skipped_changed ?? 0],
     ["失败", result.failed ?? 0],
   ] as const;
 

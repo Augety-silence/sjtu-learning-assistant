@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import mimetypes
 import re
@@ -17,7 +18,13 @@ from typing import Any, Callable, Mapping
 from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from sjtu_learning_assistant.cloud_storage import CloudAuthError, CloudNetworkError, SJTUCloudPanProvider
+from sjtu_learning_assistant.cloud_storage import (
+    CloudAuthError,
+    CloudCleanupError,
+    CloudIntegrityError,
+    CloudNetworkError,
+    SJTUCloudPanProvider,
+)
 from sjtu_learning_assistant.models import (
     AIManagedFile,
     ArchiveAuthorizedRoot,
@@ -29,11 +36,13 @@ from sjtu_learning_assistant.models import (
     EmailAttachment,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 REMOTE_ROOT = ("SJTU Learning Assistant", "Archive")
 ACTIVE_STATES = ("running", "uploading", "verifying", "downloading")
 PROGRESS_MIN_BYTES = 5 * 1024 * 1024
 SOURCE_CHANGED_DURING_UPLOAD = "文件在上传期间发生变化，云端副本需要重新校验；请在文件保存完成后重新归档。"
-_SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret")
+_SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret", "signature", "apikey", "credential")
 
 
 def redact_public_text(value: str) -> str:
@@ -50,6 +59,14 @@ def redact_public_text(value: str) -> str:
     redacted = re.sub(
         r"(?i)\bbearer\s+[^\s,;\"']+", "Bearer <redacted>", redacted
     )
+    redacted = re.sub(
+        r"(?im)\b((?:set-)?cookie\s*:\s*)[^\r\n]+",
+        r"\1<redacted>", redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b(authorization\s*:\s*)(?:[a-z][\w-]*\s+)?[^\s,;\"']+",
+        r"\1<redacted>", redacted,
+    )
     # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名；
     # 键名后允许 JSON/repr 的收尾引号（含转义 \"）与 URL 编码的 %3D，Authorization 值允许 Basic 方案。
     return re.sub(
@@ -65,7 +82,7 @@ def redact_public_value(value: Any) -> Any:
         return {
             str(key): (
                 "<redacted>"
-                if any(part in str(key).casefold() for part in _SENSITIVE_KEY_PARTS)
+                if any(part in re.sub(r"[^a-z0-9]", "", str(key).casefold()) for part in _SENSITIVE_KEY_PARTS)
                 else redact_public_value(item)
             )
             for key, item in value.items()
@@ -326,6 +343,7 @@ def job_data(job: ArchiveJob) -> dict[str, Any]:
         "bytes_total": job.bytes_total,
         "bytes_done": job.bytes_done,
         "conflict_policy": job.conflict_policy,
+        "target_filename": Path(job.target_abs_path).name if job.target_abs_path else None,
         "last_error": redact_public_text(job.last_error) if job.last_error else None,
         "attempt_count": job.attempt_count,
         "created_at": iso_utc(job.created_at),
@@ -529,6 +547,7 @@ class CloudArchiveService:
             job_id = job.id
             archived = version.status == "archived"
             completed = job.status == "completed"
+            reconcile_required = job.status in ("needs_verification", "needs_reconcile")
             if not (archived or completed) and job.status in ACTIVE_STATES:
                 # 同一幂等键的任务仍在上传/校验：不要并发再起一次 _upload（会重复上传、互相覆盖进度与状态）。
                 in_progress = job_data(job)
@@ -536,6 +555,8 @@ class CloudArchiveService:
                 return in_progress
         if archived or completed:
             return self._finish_duplicate(job_id)
+        if reconcile_required:
+            return self.retry(job_id)
         return self._upload(job_id, path)
 
     def _finish_duplicate(self, job_id: str) -> dict[str, Any]:
@@ -659,6 +680,14 @@ class CloudArchiveService:
                 # 记为 failed：retry 会重新哈希并提示“归档源已变化”，引导创建新版本而非对账死循环。
                 self._mark_failed(job_id, SOURCE_CHANGED_DURING_UPLOAD, bytes_done)
                 raise
+            if isinstance(exc, CloudCleanupError):
+                self._mark_reconcile(
+                    job_id, str(exc), bytes_done, event_type="remote_cleanup_failed"
+                )
+                raise CloudArchiveError(str(exc)) from exc
+            if isinstance(exc, CloudIntegrityError):
+                self._mark_failed(job_id, str(exc), bytes_done)
+                raise CloudArchiveError(str(exc)) from exc
             if uploaded:
                 self._mark_reconcile(job_id, safe_failure("保存上传状态", exc), bytes_done)
                 raise CloudArchiveError("文件已上传，但本地状态保存失败；请执行 reconcile。") from exc
@@ -788,13 +817,24 @@ class CloudArchiveService:
             if size_conflict or not self._strong_remote_match(version, item):
                 if size_conflict or verify_content:
                     if not self._remote_content_matches(provider, remote_path, version):
-                        provider.delete(remote_path, permanent=True, missing_ok=True)
-                        message = "云端对象内容与本地归档记录不一致；冲突对象已清理，可重试重新上传。"
+                        try:
+                            provider.delete(remote_path, permanent=True, missing_ok=True)
+                        except Exception as cleanup_error:
+                            raise CloudCleanupError(
+                                "云端对象内容与本地归档记录不一致，且无法自动清理冲突对象。"
+                            ) from cleanup_error
+                        message = "云端对象内容与本地归档记录不一致；冲突对象已清理，可重试重新上传（需本地源文件未变）。"
                         job.status = "failed"
                         job.finished_at = utcnow()
                         job.last_error = message
                         version.status = "failed"
                         version.last_error = message
+                        version.retry_count += 1
+                        entry = session.get(ArchiveEntry, job.entry_id) if job.entry_id else None
+                        if entry is not None:
+                            entry.status = "failed"
+                            entry.last_error = message
+                            entry.retry_count += 1
                         add_event(
                             session,
                             job,
@@ -867,7 +907,7 @@ class CloudArchiveService:
                 add_event(session, job, "failed", "failed", message)
                 session.commit()
         except Exception:
-            return
+            LOGGER.exception("无法将归档任务标记为失败", extra={"job_id": job_id})
 
     def _mark_reconcile(
         self,
@@ -875,7 +915,10 @@ class CloudArchiveService:
         message: str,
         bytes_done: int | None = None,
         event_type: str = "db_update_failed",
+        target_status: str = "needs_reconcile",
     ) -> None:
+        if target_status not in ("needs_reconcile", "needs_verification"):
+            raise ValueError("无效的对账状态。")
         try:
             with Session(self.engine) as session:
                 job = session.get(ArchiveJob, job_id)
@@ -886,17 +929,17 @@ class CloudArchiveService:
                 ):
                     return
                 version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
-                job.status = "needs_reconcile"
+                job.status = target_status
                 if bytes_done is not None:
                     job.bytes_done = min(job.bytes_total, max(job.bytes_done, bytes_done))
                 job.last_error = message
                 if version is not None:
-                    version.status = "needs_reconcile"
+                    version.status = target_status
                     version.last_error = message
-                add_event(session, job, event_type, "needs_reconcile", message)
+                add_event(session, job, event_type, target_status, message)
                 session.commit()
         except Exception:
-            return
+            LOGGER.exception("无法更新归档任务对账状态", extra={"job_id": job_id})
 
     def retry(self, job_id: str) -> dict[str, Any]:
         with Session(self.engine) as session:
@@ -955,6 +998,7 @@ class CloudArchiveService:
         results = []
         for identifier in identifiers:
             provider = None
+            original_status = "needs_reconcile"
             try:
                 with Session(self.engine) as session:
                     job = session.get(ArchiveJob, identifier)
@@ -1003,13 +1047,33 @@ class CloudArchiveService:
                         )
                     )
             except CloudArchiveError as exc:
-                self._mark_failed(identifier, safe_failure("对账", exc))
-                results.append({"job_id": identifier, "status": "failed"})
+                self._mark_failed(identifier, str(exc))
+                results.append(dict(job_id=identifier, status="failed"))
+            except CloudCleanupError as exc:
+                self._mark_reconcile(
+                    identifier,
+                    str(exc),
+                    event_type="remote_cleanup_failed",
+                    target_status="needs_reconcile",
+                )
+                results.append(dict(job_id=identifier, status="needs_reconcile"))
+            except (CloudAuthError, CloudNetworkError) as exc:
+                if isinstance(exc, CloudAuthError):
+                    message = "交大云盘凭据无效或已过期，请更新 UserToken 后重试。"
+                else:
+                    message = "无法连接交大云盘，请检查网络后重试。"
+                self._mark_reconcile(
+                    identifier,
+                    message,
+                    event_type="reconcile_retryable",
+                    target_status=original_status,
+                )
+                results.append(dict(job_id=identifier, status=original_status))
             except Exception as exc:
                 self._mark_reconcile(
                     identifier, safe_failure("对账", exc), event_type="reconcile_failed"
                 )
-                results.append({"job_id": identifier, "status": "needs_reconcile"})
+                results.append(dict(job_id=identifier, status="needs_reconcile"))
             finally:
                 close = getattr(provider, "close", None) if provider is not None else None
                 if callable(close):

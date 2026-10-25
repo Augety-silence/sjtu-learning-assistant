@@ -11,7 +11,10 @@ import "@/components/archive/archive.css";
 import { ArchiveDetailDrawer } from "@/components/archive/ArchiveDetailDrawer";
 import { ArchiveJobsPanel } from "@/components/archive/ArchiveJobsPanel";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
-import { archiveStatusLabel } from "@/components/archive/archiveUtils";
+import {
+  archiveStatusLabel,
+  archiveStatusTone,
+} from "@/components/archive/archiveUtils";
 import { RestoreDialog } from "@/components/archive/RestoreDialog";
 import { Button } from "@/components/ui/Button";
 import {
@@ -31,6 +34,7 @@ import type {
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
 const runningStatuses = new Set([
+  "pending",
   "running",
   "uploading",
   "downloading",
@@ -88,7 +92,10 @@ export function ArchiveManager() {
   const [jobsLoading, setJobsLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, setNoticeState] = useState({ text: "", tone: "info" });
+  const setNotice = useCallback((text: string, tone = "info") => {
+    setNoticeState({ text, tone });
+  }, []);
   const pageRequest = useRef(0);
   const jobsRequest = useRef(0);
 
@@ -195,7 +202,7 @@ export function ArchiveManager() {
     setNotice("已打开原生文件选择器。选择文件后将开始归档。");
     try {
       const result = await startArchive();
-      setNotice(archiveStartNotice(result));
+      setNotice(archiveStartNotice(result), archiveStatusTone(result.status));
       await Promise.all([loadPage(), loadJobs()]);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "归档启动失败";
@@ -217,7 +224,7 @@ export function ArchiveManager() {
       if (result.in_progress) {
         setNotice("该任务已在处理中，未重复提交。");
       } else if (result.kind === "archive") {
-        setNotice(archiveStartNotice(result));
+        setNotice(archiveStartNotice(result), archiveStatusTone(result.status));
       } else if (result.status === "completed") {
         setNotice("恢复任务已完成。");
       } else {
@@ -263,7 +270,9 @@ export function ArchiveManager() {
         ? "文件对照已完成。"
         : job.status === "skipped"
           ? "已按策略跳过现有文件。"
-          : "恢复任务已完成。",
+          : job.status === "completed"
+            ? "恢复任务已完成。"
+            : `恢复任务状态：${archiveStatusLabel(job.status)}，请核对任务记录。`,
     );
     const next = restoreQueue[0];
     setRestoreQueue((current) => current.slice(1));
@@ -324,10 +333,11 @@ export function ArchiveManager() {
 
       <div
         className="archive-live-region"
+        data-tone={notice.tone}
         aria-live="polite"
         aria-atomic="true"
       >
-        {notice}
+        {notice.text}
       </div>
       {error && (
         <div
@@ -608,6 +618,7 @@ export function ArchiveManager() {
             setRestoreQueue([]);
           }}
           onComplete={completeRestore}
+          onFailed={() => void loadJobs(true)}
         />
       )}
     </section>

@@ -1715,7 +1715,7 @@ export function VideosView({
     setSlideImageLoading(true);
     setSlideImageError("");
     const loadCachedPage = (page: VideoSlidePage) => {
-      const key = `${selected.id}:${page.index}`;
+      const key = `${courseId ?? "unscoped"}:${selected.id}:${page.index}`;
       let pending = slideImageCacheRef.current.get(key);
       if (!pending) {
         pending = readVideo(

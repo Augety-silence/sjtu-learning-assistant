@@ -103,6 +103,9 @@ def render_dashboard_logo() -> Image.Image:
 
 
 def main() -> int:
+    iconutil = shutil.which("iconutil")
+    if iconutil is None:
+        raise SystemExit("错误：生成 .icns 需要 macOS iconutil。")
     APP_ICON_PNG.parent.mkdir(parents=True, exist_ok=True)
     app_icon = render_app_icon()
     app_icon.save(APP_ICON_PNG, optimize=True)
@@ -110,14 +113,15 @@ def main() -> int:
     LOGO_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     render_dashboard_logo().save(LOGO_OUTPUT, optimize=True)
 
-    if shutil.which("iconutil") is None:
-        raise SystemExit("错误：生成 .icns 需要 macOS iconutil。")
     shutil.rmtree(ICONSET, ignore_errors=True)
     ICONSET.mkdir(parents=True)
     for name, size in SIZES.items():
         app_icon.resize((size, size), Image.Resampling.LANCZOS).save(ICONSET / name)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["iconutil", "-c", "icns", str(ICONSET), "-o", str(OUTPUT)], check=True)
+    try:
+        subprocess.run([iconutil, "-c", "icns", str(ICONSET), "-o", str(OUTPUT)], check=True)
+    except subprocess.CalledProcessError:
+        raise SystemExit("错误：iconutil 生成 .icns 失败。") from None
     print(
         "已从保留的 JPG 源图生成透明 1024 PNG、AppIcon.iconset、app.icns 和 UI logo。"
     )

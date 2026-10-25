@@ -39,6 +39,10 @@ class ArchivePathAndTermTests(unittest.TestCase):
 
     def test_sanitizes_components_and_enforces_root_boundary(self) -> None:
         self.assertEqual("_.._evil_.pdf", sanitize_component("/../evil\\.pdf", fallback="x"))
+        long_name = "课".ljust(200, "课") + ".pdf"
+        shortened = sanitize_component(long_name, fallback="x")
+        self.assertLessEqual(len(shortened.encode("utf-8")), 240)
+        self.assertTrue(shortened.endswith(".pdf"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "root"
             self.assertEqual(

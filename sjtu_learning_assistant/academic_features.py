@@ -1114,6 +1114,8 @@ class AcademicFeatureService:
             numeric = Decimal(text)
         except InvalidOperation:
             return text
+        if not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", text):
+            raise AcademicValidationError("评分格式无效。")
         if not numeric.is_finite() or numeric < 0:
             raise AcademicValidationError("评分必须是非负有限数值。")
         return text

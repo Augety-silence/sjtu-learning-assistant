@@ -152,6 +152,33 @@ class MaterialCloudTests(unittest.TestCase):
         self.assertNotIn("token", str(result).casefold())
         self.assertTrue(provider.closed)
 
+    def test_cloud_text_preview_supports_legacy_windows_encoding_and_utf8_bom(self) -> None:
+        for suffix, payload, expected in (
+            ("gbk", "中文课程资料".encode("gb18030"), "中文课程资料"),
+            ("bom", b"\xef\xbb\xbfwith BOM", "with BOM"),
+            ("invalid", b"text\xff", "text\ufffd"),
+        ):
+            with self.subTest(suffix=suffix):
+                with Session(self.engine) as session, session.begin():
+                    record = session.scalar(
+                        select(CourseFile).where(CourseFile.source_id == "file-1")
+                    )
+                    record.display_name = "说明.txt"
+                    record.filename = "说明.txt"
+                    record.content_type = "text/plain"
+                    record.size = len(payload)
+                    record.local_path = None
+                    record.cloud_size = len(payload)
+                    record.cloud_backed_up_at = NOW
+                provider = FakeCloudProvider({self.old_path: payload})
+                service = self.service(provider)
+                try:
+                    result = service.material_preview("file-1")
+                finally:
+                    service.close()
+                self.assertEqual("text", result["kind"])
+                self.assertEqual(expected, result["text"])
+
     def test_cloud_office_open_uses_managed_temp_and_shutdown_cleans_it(self) -> None:
         with Session(self.engine) as session, session.begin():
             record = session.scalar(

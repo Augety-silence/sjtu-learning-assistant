@@ -35,7 +35,10 @@ FILE_CATEGORIES = frozenset({"assignments", "courseware", "supplementary", "othe
 SENSITIVE_TEXT = (
     # 不用 \b：中文字符属于 \w，“访问token=…”“资料在C:\…”之间没有词边界。
     re.compile(r"(?i)(?<![A-Za-z0-9])(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
-    re.compile(r"(?i)(?<![A-Za-z0-9])(token|password|passwd|secret|api[_ -]?key|密码|口令|令牌|密钥)\s*[=:：]\s*[^\s,;，；]+"),
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])['\"]?(token|password|passwd|secret|api[_ -]?key|密码|口令|令牌|密钥)['\"]?"
+        r"\s*[=:：]\s*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;，；}\"']+)"
+    ),
     re.compile(r"(?:/Users|/home)/[^\s]+"),
     re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s]+"),
     re.compile(r"\\\\[^\s\\]+\\[^\s]+"),
@@ -47,6 +50,17 @@ SENSITIVE_TEXT = (
 
 class AgentToolError(RuntimeError):
     """安全、可展示的工具参数或执行错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "invalid_params",
+        retryable: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.retryable = category == "execution" if retryable is None else retryable
 
 
 @dataclass(frozen=True)
@@ -95,6 +109,11 @@ def _clip(value: object, limit: int) -> str:
     for pattern in SENSITIVE_TEXT:
         text = pattern.sub("[已隐藏]", text)
     return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _like_pattern(value: str) -> str:
+    escaped = value.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _bounded_payload(value: dict[str, Any]) -> dict[str, Any]:
@@ -183,7 +202,7 @@ class ReadOnlyToolRegistry:
             result, arg_summary = self._handlers[name](arguments)
         except SQLAlchemyError:
             # loop 只捕获 AgentToolError；数据库锁/损坏不应让整轮对话失败。
-            raise AgentToolError("本地数据库暂时不可用，请稍后重试。") from None
+            raise AgentToolError("本地数据库暂时不可用，请稍后重试。", category="execution") from None
         result = _bounded_payload(result)
         items = result.get("items")
         summary = {
@@ -199,8 +218,8 @@ class ReadOnlyToolRegistry:
         limit = _bounded_limit(args.get("limit"))
         statement = select(Course).order_by(Course.term_name.desc(), Course.name.asc()).limit(limit)
         if query:
-            pattern = f"%{query.casefold()}%"
-            statement = statement.where(or_(func.lower(Course.name).like(pattern), func.lower(Course.course_code).like(pattern)))
+            pattern = _like_pattern(query)
+            statement = statement.where(or_(func.lower(Course.name).like(pattern, escape="\\"), func.lower(Course.course_code).like(pattern, escape="\\")))
         with Session(self.engine) as session:
             rows = session.scalars(statement).all()
         items = [{"course_id": row.source_id, "name": _clip(row.name, 180), "course_code": _clip(row.course_code, 80) or None, "term": _clip(row.term_name, 100) or None} for row in rows]
@@ -229,8 +248,8 @@ class ReadOnlyToolRegistry:
         if course_id:
             statement = statement.where(Course.source_id == course_id)
         if query:
-            pattern = f"%{query.casefold()}%"
-            statement = statement.where(or_(func.lower(CourseFile.display_name).like(pattern), func.lower(CourseFile.filename).like(pattern), func.lower(Course.name).like(pattern)))
+            pattern = _like_pattern(query)
+            statement = statement.where(or_(func.lower(CourseFile.display_name).like(pattern, escape="\\"), func.lower(CourseFile.filename).like(pattern, escape="\\"), func.lower(Course.name).like(pattern, escape="\\")))
         if category:
             effective = case((CourseFile.manual_override.is_(True), CourseFile.manual_category), else_=CourseFile.ai_category)
             if category == "other":
@@ -288,7 +307,7 @@ class ReadOnlyToolRegistry:
         if type(kind) is not str or kind not in MESSAGE_KINDS | {"all"}:
             raise AgentToolError("kind 无效。")
         limit = _bounded_limit(args.get("limit"))
-        pattern = f"%{query.casefold()}%"
+        pattern = _like_pattern(query)
         results: list[dict[str, Any]] = []
         with Session(self.engine) as session:
             if kind in {"all", "email"}:
@@ -300,9 +319,9 @@ class ReadOnlyToolRegistry:
                 if query:
                     statement = statement.where(
                         or_(
-                            func.lower(Email.subject).like(pattern),
-                            func.lower(Email.body_preview).like(pattern),
-                            func.lower(Email.sender_name).like(pattern),
+                            func.lower(Email.subject).like(pattern, escape="\\"),
+                            func.lower(Email.body_preview).like(pattern, escape="\\"),
+                            func.lower(Email.sender_name).like(pattern, escape="\\"),
                         )
                     )
                 rows = session.execute(
@@ -334,9 +353,9 @@ class ReadOnlyToolRegistry:
                 if query:
                     statement = statement.where(
                         or_(
-                            func.lower(Announcement.title).like(pattern),
-                            func.lower(Announcement.body).like(pattern),
-                            func.lower(Course.name).like(pattern),
+                            func.lower(Announcement.title).like(pattern, escape="\\"),
+                            func.lower(Announcement.body).like(pattern, escape="\\"),
+                            func.lower(Course.name).like(pattern, escape="\\"),
                         )
                     )
                 rows = session.execute(
@@ -366,8 +385,8 @@ class ReadOnlyToolRegistry:
                 if query:
                     statement = statement.where(
                         or_(
-                            func.lower(Assignment.name).like(pattern),
-                            func.lower(Course.name).like(pattern),
+                            func.lower(Assignment.name).like(pattern, escape="\\"),
+                            func.lower(Course.name).like(pattern, escape="\\"),
                         )
                     )
                 rows = session.execute(
@@ -406,10 +425,15 @@ class ReadOnlyToolRegistry:
         item_id = int(ref[len(prefix):])
         with Session(self.engine) as session:
             if kind == "email":
-                item = session.get(Email, item_id)
-                if item is None:
+                row = session.execute(
+                    select(Email, UnifiedItem)
+                    .join(UnifiedItem, UnifiedItem.email_id == Email.id)
+                    .where(Email.id == item_id, UnifiedItem.is_active.is_(True))
+                ).one_or_none()
+                if row is None:
                     raise AgentToolError("消息不存在。")
-                result = {"ref": ref, "kind": kind, "title": _clip(item.subject, 240), "source_label": "邮件发件人" if "@" in (item.sender_name or "") else _clip(item.sender_name or "邮件", 80), "occurred_at": _iso(item.sent_at or item.received_at), "body": _clip(item.body_text or item.body_preview, 3000), "attachments": [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]}
+                item, unified = row
+                result = {"ref": ref, "kind": kind, "title": _clip(item.subject, 240), "source_label": "邮件发件人" if "@" in (item.sender_name or "") else _clip(item.sender_name or "邮件", 80), "occurred_at": _iso(unified.occurred_at), "body": _clip(item.body_text or item.body_preview, 3000), "attachments": [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]}
             elif kind == "announcement":
                 row = session.execute(select(Announcement, Course).join(Course, Course.id == Announcement.course_id).where(Announcement.id == item_id, Announcement.is_active.is_(True))).one_or_none()
                 if row is None:
@@ -467,7 +491,14 @@ class ReadOnlyToolRegistry:
                 query, attachment_ids=scoped_ids, limit=limit
             )
         except AIFileError as exc:
-            raise AgentToolError(str(exc)) from None
+            raise AgentToolError(str(exc), category="execution") from None
+        result = {
+            **result,
+            "items": [
+                {**item, "name": _clip(item.get("name"), 255), "summary": _clip(item.get("summary"), 400)}
+                for item in result.get("items", []) if isinstance(item, dict)
+            ],
+        }
         return result, {
             "has_query": bool(query),
             "scope": "message" if scoped_ids is not None else "library",
@@ -491,7 +522,12 @@ class ReadOnlyToolRegistry:
                 attachment_id, max_chars=max_chars
             )
         except AIFileError as exc:
-            raise AgentToolError(str(exc)) from None
+            raise AgentToolError(str(exc), category="execution") from None
+        if isinstance(result.get("text"), str):
+            result["text"] = _clip(result["text"], max_chars)
+            result["returned_chars"] = len(result["text"])
+        if isinstance(result.get("name"), str):
+            result["name"] = _clip(result["name"], 255)
         return result, {
             "attachment_id": attachment_id,
             "max_chars": max_chars,

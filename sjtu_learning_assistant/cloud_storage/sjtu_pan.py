@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import re
 import tempfile
@@ -30,8 +31,10 @@ from sjtu_learning_assistant.credential_store import (
 from .base import CloudStorageProvider, RemotePath, TemporaryDownload
 from .errors import (
     CloudAuthError,
+    CloudCleanupError,
     CloudConflictError,
     CloudCredentialExpiredError,
+    CloudIntegrityError,
     CloudNetworkError,
     CloudNotFoundError,
     CloudRemoteApiError,
@@ -161,8 +164,8 @@ def delete_user_token(*, keyring_module: Any | None = None) -> None:
 
 def _segments(path: RemotePath) -> tuple[str, ...]:
     raw = path.split("/") if isinstance(path, str) else list(path)
-    result = tuple(part for part in (str(item).strip() for item in raw) if part)
-    if any(part in {".", ".."} or "/" in part or "\\" in part or "\x00" in part for part in result):
+    result = tuple(str(item) for item in raw if str(item))
+    if any(not part.strip() or part in {".", ".."} or "/" in part or "\\" in part or "\x00" in part for part in result):
         raise ValueError("云盘路径包含无效分段。")
     return result
 
@@ -285,17 +288,18 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         value = response.headers.get("Retry-After", "").strip()
         if not value:
             return fallback
+        if value.isascii() and value.isdigit():
+            return min(float(int(value)), MAX_RETRY_DELAY_SECONDS)
         try:
-            seconds = float(value)
-        except ValueError:
-            try:
-                retry_at = parsedate_to_datetime(value)
-                if retry_at.tzinfo is None:
-                    retry_at = retry_at.replace(tzinfo=timezone.utc)
-                seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
-            except (TypeError, ValueError, OverflowError):
-                return fallback
-        return min(max(0.0, seconds), MAX_RETRY_DELAY_SECONDS)
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+        if seconds <= 0 or not math.isfinite(seconds):
+            return fallback
+        return min(seconds, MAX_RETRY_DELAY_SECONDS)
 
     def _send_raw(
         self,
@@ -520,7 +524,12 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             try:
                 self.create_directory(tuple(current))
             except CloudConflictError:
-                continue
+                item = self.get_info(tuple(current))
+                if not item.is_directory:
+                    raise CloudConflictError(
+                        "创建目录失败：同名项目不是目录。", status_code=409
+                    )
+
 
     def get_info(self, path: RemotePath) -> CloudItem:
         normalized = _segments(path)
@@ -744,7 +753,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             try:
                 self.delete(normalized, permanent=True, missing_ok=True)
             except Exception as cleanup_error:
-                raise CloudRemoteApiError(
+                raise CloudCleanupError(
                     "云端确认的文件大小不一致，且无法自动清理残留对象。"
                 ) from cleanup_error
             raise
@@ -870,16 +879,17 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             try:
                 self.delete(session.remote_path, permanent=True, missing_ok=True)
             except Exception as cleanup_error:
-                raise CloudRemoteApiError(
+                raise CloudCleanupError(
                     "云端确认的文件大小不一致，且无法自动清理残留对象。"
                 ) from cleanup_error
             raise
 
-    @staticmethod
-    def _verify_uploaded_size(item: CloudItem, expected: int) -> CloudItem:
+    def _verify_uploaded_size(self, item: CloudItem, expected: int) -> CloudItem:
         # 服务端确认后的对象大小与实际发送字节数不一致时不能当作成功（调用方可能随后删除本地副本）。
-        if item.size is not None and item.size != expected:
-            raise CloudRemoteApiError("云端确认的文件大小与上传内容不一致。")
+        if item.size is None:
+            item = self.get_info(item.path)
+        if item.size != expected:
+            raise CloudIntegrityError("云端确认的文件大小与上传内容不一致。")
         return item
 
     def resume_upload(self, session: UploadSession, source: bytes | BinaryIO, *, chunk_size: int = 4 * 1024 * 1024, overwrite: bool | None = None) -> CloudItem:

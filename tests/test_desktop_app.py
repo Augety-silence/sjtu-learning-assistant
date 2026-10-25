@@ -35,7 +35,7 @@ from sjtu_learning_assistant.cloud_storage import (
 
 
 class DesktopAppKeyringBackendTests(unittest.TestCase):
-    def _import_with_platform(self, backend=None):
+    def _import_with_platform(self, backend=None, platform_name="darwin"):
         environment = os.environ.copy()
         if backend is None:
             environment.pop("PYTHON_KEYRING_BACKEND", None)
@@ -44,7 +44,10 @@ class DesktopAppKeyringBackendTests(unittest.TestCase):
         script = (
             "import os; "
             "import desktop_app; "
-            "desktop_app._configure_keyring_backend(\"darwin\"); "
+            f"backend = {backend!r}; "
+            "os.environ.pop(\"PYTHON_KEYRING_BACKEND\", None); "
+            "backend is None or os.environ.__setitem__(\"PYTHON_KEYRING_BACKEND\", backend); "
+            f"desktop_app._configure_keyring_backend({platform_name!r}); "
             "print(os.environ.get(\"PYTHON_KEYRING_BACKEND\"))"
         )
         return subprocess.run(
@@ -59,6 +62,12 @@ class DesktopAppKeyringBackendTests(unittest.TestCase):
         self.assertEqual(
             "keyring.backends.macOS.Keyring",
             self._import_with_platform(),
+        )
+
+    def test_windows_sets_native_keyring_backend_by_default(self):
+        self.assertEqual(
+            "keyring.backends.Windows.WinVaultKeyring",
+            self._import_with_platform(platform_name="win32"),
         )
 
     def test_darwin_preserves_existing_keyring_backend(self):
@@ -486,6 +495,8 @@ class DesktopBridgeTests(unittest.TestCase):
             {"path": absolute_path, "extra": True},
             {"path": 42},
             {"path": absolute_path + "\x00"},
+            {"path": r"\\server\share\lecture-notes.md"},
+            {"path": r"\\?\C:\lecture-notes.md"},
         ):
             with self.subTest(payload=payload):
                 self.assertEqual(
@@ -611,7 +622,6 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
         )
 
     def test_database_recovery_sends_user_notification(self):
@@ -720,6 +730,24 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
                 ),
             )
 
+            localhost_url = SimpleNamespace(
+                filePathURL=lambda: SimpleNamespace(
+                    absoluteString=lambda: "file://localhost" + str(first).replace(" ", "%20")
+                )
+            )
+            localhost_sender = SimpleNamespace(
+                draggingSource=lambda: None,
+                draggingPasteboard=lambda: SimpleNamespace(
+                    readObjectsForClasses_options_=lambda _classes, _options: [localhost_url]
+                ),
+            )
+            self.assertEqual(
+                (str(first),),
+                _macos_dragged_file_paths(
+                    localhost_sender, url_class=object(), file_urls_only_key=object()
+                ),
+            )
+
             class DropEvent:
                 callback = None
 
@@ -741,6 +769,11 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertIn("sjtu-native-file-drop", script)
             self.assertIn(json.dumps(str(first), ensure_ascii=False), script)
             self.assertIn(json.dumps(str(second), ensure_ascii=False), script)
+
+    def test_native_drop_ignores_path_probe_permission_error(self):
+        event = {"dataTransfer": {"files": [{"pywebviewFullPath": "/restricted/file.pdf"}]}}
+        with patch.object(Path, "is_file", side_effect=PermissionError("denied")):
+            self.assertEqual((), _native_file_drop_paths(event))
 
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
@@ -796,6 +829,22 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         dashboard.close.assert_called_once_with()
         learning.close.assert_called_once_with()
         engine.dispose.assert_called_once_with()
+
+
+class DesktopMcpStdioTests(unittest.TestCase):
+    @patch("desktop_app.sys.frozen", True, create=True)
+    @patch("desktop_app.sys.argv", ["app", "--mcp-stdio"])
+    def test_windowed_mcp_mode_requires_stdio_streams(self):
+        with (
+            patch("desktop_app.sys.stdin", None),
+            patch("desktop_app.sys.stdout", None),
+            patch("desktop_app._report_startup_error") as report,
+            patch("desktop_app.create_database_engine") as create_engine,
+        ):
+            self.assertEqual(2, main())
+        report.assert_called_once()
+        self.assertIn("标准输入", report.call_args.args[0])
+        create_engine.assert_not_called()
 
 
 class DesktopBackgroundSyncTests(unittest.TestCase):

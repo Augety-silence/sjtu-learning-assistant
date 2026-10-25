@@ -5,12 +5,7 @@ import {
   RichPreviewContent,
   type RichPreviewContentProps,
 } from "@/components/RichPreviewContent";
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  Section,
-} from "@/components/States";
+import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import {
@@ -138,10 +133,16 @@ export function GradingView({
   const [detailTab, setDetailTab] = useState<
     "submission" | "comments" | "references"
   >("submission");
+  const [previewAttachmentId, setPreviewAttachmentId] = useState<string | null>(
+    null,
+  );
+  const [scoreError, setScoreError] = useState("");
   const [scoreDraft, setScoreDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [busy, setBusy] = useState<"score" | "comment" | string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const detailHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const previousSelectedIdRef = useRef(selectedId);
   const { showToast } = useToast();
   const selected =
     submissions.find((item) => item.id === selectedId) ??
@@ -158,12 +159,28 @@ export function GradingView({
       ),
   ).length;
   const previewAttachment = selected?.attachments.find(
-    (item) => item.preview,
-  )?.preview;
+    (item) => item.id === previewAttachmentId && item.preview,
+  );
 
   useEffect(() => {
     if (!selected && submissions[0]) setSelectedId(submissions[0].id);
   }, [selected, submissions]);
+  useEffect(() => {
+    setPreviewAttachmentId(
+      selected?.attachments.find((item) => item.preview)?.id ?? null,
+    );
+    setScoreError("");
+  }, [selected?.id]);
+  useEffect(() => {
+    if (
+      previousSelectedIdRef.current &&
+      selected?.id &&
+      previousSelectedIdRef.current !== selected.id
+    ) {
+      window.setTimeout(() => detailHeadingRef.current?.focus(), 0);
+    }
+    previousSelectedIdRef.current = selected?.id ?? null;
+  }, [selected?.id]);
   useEffect(() => {
     setScoreDraft(
       selected?.score === null || selected?.score === undefined
@@ -185,12 +202,15 @@ export function GradingView({
         score < 0 ||
         (maxScore !== null && maxScore !== undefined && score > maxScore))
     ) {
-      showToast({
-        kind: "error",
-        message: `请输入 0 至 ${maxScore ?? "有效上限"} 的分数。`,
-      });
+      const message =
+        maxScore === null || maxScore === undefined
+          ? "请输入不小于 0 的有效分数。"
+          : `请输入 0 至 ${maxScore} 的分数。`;
+      setScoreError(message);
+      showToast({ kind: "error", message });
       return;
     }
+    setScoreError("");
     // Saving an empty score deletes the posted Canvas grade; require explicit confirmation (WCAG 3.3.4).
     if (
       score === null &&
@@ -316,10 +336,12 @@ export function GradingView({
           <dd>{submissions.length}</dd>
           <span>当前作业</span>
         </div>
-        <div className="summary-item summary-urgent">
+        <div
+          className={`summary-item summary-urgent${pending === 0 ? " summary-zero" : ""}`}
+        >
           <dt>待批改</dt>
           <dd>{pending}</dd>
-          <span>需要处理</span>
+          <span>{pending === 0 ? "已全部处理" : "需要处理"}</span>
         </div>
         <div className="summary-item summary-priority">
           <dt>平均分</dt>
@@ -381,7 +403,7 @@ export function GradingView({
                     </TableCell>
                     <TableCell>
                       <span
-                        className={`status-tag ${submission.status === "late" || submission.status === "missing" ? "status-failed" : submission.status === "graded" ? "status-downloaded" : ""}`}
+                        className={`status-tag ${submission.status === "late" || submission.status === "missing" ? "status-failed" : submission.status === "graded" ? "status-downloaded" : submission.status === "submitted" ? "aura-tone-info" : ""}`}
                       >
                         {statusLabel(submission.status)}
                       </span>
@@ -395,17 +417,15 @@ export function GradingView({
             </Table>
           </div>
 
-          <section
-            className="assignment-detail"
-            aria-label="提交详情"
-            aria-live="polite"
-          >
+          <section className="assignment-detail" aria-label="提交详情">
             {selected && (
               <>
                 <div className="assignment-detail-heading">
                   <div>
                     <span>{selected.loginId ?? selected.studentId}</span>
-                    <h3>{selected.studentName}</h3>
+                    <h3 ref={detailHeadingRef} tabIndex={-1}>
+                      {selected.studentName}
+                    </h3>
                   </div>
                   <span className="status-tag">
                     第 {selected.attempt ?? 1} 次提交
@@ -458,14 +478,32 @@ export function GradingView({
                             value={scoreDraft}
                             readOnly={Boolean(busy)}
                             aria-busy={busy === "score" || undefined}
-                            onChange={(event) =>
-                              setScoreDraft(event.target.value)
+                            aria-invalid={Boolean(scoreError) || undefined}
+                            aria-describedby={
+                              scoreError ? "grading-score-error" : undefined
                             }
+                            onChange={(event) => {
+                              setScoreError("");
+                              setScoreDraft(event.target.value);
+                            }}
                           />
-                          <Button type="submit" loading={busy === "score"}>
+                          <Button
+                            type="submit"
+                            loading={busy === "score"}
+                            disabled={Boolean(busy)}
+                          >
                             保存评分
                           </Button>
                         </div>
+                        {scoreError && (
+                          <p
+                            id="grading-score-error"
+                            role="alert"
+                            className="form-error"
+                          >
+                            {scoreError}
+                          </p>
+                        )}
                       </form>
                     )}
                     {selected.body && (
@@ -498,13 +536,18 @@ export function GradingView({
                                 <Button
                                   variant="link"
                                   size="sm"
-                                  onClick={() =>
-                                    document
-                                      .getElementById(
-                                        `preview-${attachment.id}`,
-                                      )
-                                      ?.focus()
-                                  }
+                                  onClick={() => {
+                                    setPreviewAttachmentId(attachment.id);
+                                    window.setTimeout(
+                                      () =>
+                                        document
+                                          .getElementById(
+                                            `preview-${attachment.id}`,
+                                          )
+                                          ?.focus(),
+                                      0,
+                                    );
+                                  }}
                                 >
                                   <Eye aria-hidden="true" />
                                   预览
@@ -540,12 +583,9 @@ export function GradingView({
                     ) : (
                       <p className="notice">该提交没有附件。</p>
                     )}
-                    {previewAttachment && (
-                      <div
-                        id={`preview-${selected.attachments.find((item) => item.preview)?.id}`}
-                        tabIndex={-1}
-                      >
-                        <RichPreviewContent {...previewAttachment} />
+                    {previewAttachment?.preview && (
+                      <div id={`preview-${previewAttachment.id}`} tabIndex={-1}>
+                        <RichPreviewContent {...previewAttachment.preview} />
                       </div>
                     )}
                   </div>

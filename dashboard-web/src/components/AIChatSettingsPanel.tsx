@@ -92,6 +92,30 @@ function SegmentedChoice<T extends string>({
         className="ai-preference-options"
         role="radiogroup"
         aria-label={label}
+        onKeyDown={(event) => {
+          const current = choices.findIndex((choice) => choice.value === value);
+          const delta =
+            event.key === "ArrowRight" || event.key === "ArrowDown"
+              ? 1
+              : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                ? -1
+                : 0;
+          const index =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? choices.length - 1
+                : delta
+                  ? (current + delta + choices.length) % choices.length
+                  : -1;
+          if (index < 0) return;
+          event.preventDefault();
+          const next = choices[index];
+          onChange(next.value);
+          event.currentTarget
+            .querySelectorAll<HTMLElement>("[role='radio']")
+            [index]?.focus();
+        }}
       >
         {choices.map((choice) => (
           <button
@@ -100,6 +124,7 @@ function SegmentedChoice<T extends string>({
             data-selection-layout-id={indicatorId}
             role="radio"
             aria-checked={choice.value === value}
+            tabIndex={choice.value === value ? 0 : -1}
             className={
               choice.value === value
                 ? "selection-host selection-active"
@@ -151,7 +176,11 @@ export function AIChatSettingsPanel({
       if (!rootRef.current?.contains(event.target as Node)) close();
     };
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !event.defaultPrevented
+      ) {
         event.preventDefault();
         close(true);
       }
@@ -171,6 +200,20 @@ export function AIChatSettingsPanel({
         ".ai-personalization-panel [role='radio'][aria-checked='true']",
       )
       ?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const root = rootRef.current;
+    const handleFocusOut = (event: FocusEvent) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        !root?.contains(event.relatedTarget)
+      )
+        close();
+    };
+    root?.addEventListener("focusout", handleFocusOut);
+    return () => root?.removeEventListener("focusout", handleFocusOut);
   }, [open]);
 
   return (

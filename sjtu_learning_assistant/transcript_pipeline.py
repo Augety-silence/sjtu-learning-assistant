@@ -26,7 +26,7 @@ LEARNING_PRODUCTS_INCOMPLETE_WARNING = "未提取出可验证知识点，已保�
 AUDIT_FALLBACK_WARNING = "讲义审校未完成，已保留阶段1讲义并标记全部审校分块。"
 SOURCE_TYPES = frozenset(("课堂明确讲述", "根据课堂内容归纳", "自编练习或例子", "字幕存疑"))
 PLACEHOLDER_TERMS = frozenset(("要点", "兼容概念说明", "兼容案例、公式或结论"))
-_TIMESTAMP = re.compile(r"^(?:(?P<h>\d{2,}):)?(?P<m>\d{2}):(?P<s>\d{2})[.,](?P<ms>\d{3})$")
+_TIMESTAMP = re.compile(r"^(?:(?P<h>[0-9]{2,}):)?(?P<m>[0-9]{2}):(?P<s>[0-9]{2})[.,](?P<ms>[0-9]{3})$")
 _TIMING = re.compile(r"^(?P<start>\S+)\s+-->\s+(?P<end>\S+)(?:\s+.*)?$")
 _TAG = re.compile(r"<[^>]+>")
 _SENTENCE = re.compile(r"(?<=[。！？；.!?;])")
@@ -284,11 +284,21 @@ def parse_vtt(value: str) -> list[Cue]:
 
 def normalize_cues(cues: Sequence[Cue]) -> list[Cue]:
     result: list[Cue] = []
+    reserved_ids = {cue.cue_id for cue in cues if cue.cue_id}
+    used_ids: set[str] = set()
+    next_generated_id = 1
     for cue in cues:
         text = unicodedata.normalize("NFC", " ".join(cue.text.split()))
         if not text:
             continue
-        cue_id = cue.cue_id or f"cue-{len(result) + 1:06d}"
+        cue_id = cue.cue_id
+        if not cue_id or cue_id in used_ids:
+            while True:
+                candidate = f"cue-{next_generated_id:06d}"
+                next_generated_id += 1
+                if candidate not in reserved_ids and candidate not in used_ids:
+                    cue_id = candidate
+                    break
         current = Cue(cue.start_ms, cue.end_ms, text, cue_id)
         if result:
             previous = result[-1]
@@ -318,6 +328,7 @@ def normalize_cues(cues: Sequence[Cue]) -> list[Cue]:
                 )
                 continue
         result.append(current)
+        used_ids.add(current.cue_id)
     return result
 
 
@@ -448,8 +459,8 @@ def _diagnostics(content: object, response: object, error_type: str) -> dict[str
     _fragments, unbalanced = _balanced_object_fragments(text)
     return {
         "content_length": len(text),
-        "first_char": stripped[:1],
-        "last_char": stripped[-1:],
+        "starts_with_object": stripped.startswith("{"),
+        "ends_with_object": stripped.endswith("}"),
         "finish_reason": finish_reason if type(finish_reason) is str else None,
         "has_code_fence": "```" in text,
         "suspected_truncation": finish_reason == "length" or unbalanced,
@@ -743,7 +754,11 @@ def _json_content(
 ) -> dict[str, Any]:
     system = "只依据字幕证据处理内容，不补写外部事实。只返回一个严格 JSON 对象。"
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
-        raise ValueError("AI 请求超过单次消息安全限制。")
+        raise TranscriptAIFormatError(
+            "AI 请求超过单次消息安全限制。",
+            category="prompt_too_long",
+            diagnostics={"request_chars": len(system) + len(prompt)},
+        )
     _check_cancel(should_cancel)
     response = ai_client.chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -967,8 +982,8 @@ def _text_list(value, path, count, size):
     return result
 
 
-def _find_evidence_cue(row, cues, quote):
-    lookup = _cue_lookup(cues)
+def _find_evidence_cue(row, cues, quote, lookup=None):
+    lookup = lookup or _cue_lookup(cues)
     cue_id = _alias(row, ("cue_id", "cueId", "id"))
     candidate = lookup.get(str(cue_id).strip()) if type(cue_id) in (str, int) else None
     if candidate is not None and quote in candidate.text:
@@ -990,6 +1005,7 @@ def _normalize_evidence(value, cues, path):
     seen = set()
     if cues is None:
         return result
+    lookup = _cue_lookup(cues)
     for raw in _coerce_items(value, path, 12):
         if type(raw) is not dict:
             continue
@@ -997,7 +1013,7 @@ def _normalize_evidence(value, cues, path):
         if type(quote_value) is not str or not quote_value.strip() or len(quote_value) > 240:
             continue
         quote = quote_value.strip()
-        cue = _find_evidence_cue(raw, cues, quote)
+        cue = _find_evidence_cue(raw, cues, quote, lookup)
         key = (cue.cue_id, quote) if cue is not None else None
         if cue is None or key in seen or len(result) >= 6:
             continue
@@ -1400,7 +1416,7 @@ def _validated_map_response(content, response, cues):
         try:
             return parse_plain_map_output(content, cues)
         except SchemaValidationError as plain_error:
-            if json_error.category == "truncated":
+            if json_error.category in {"empty", "truncated"}:
                 raise json_error
             diagnostics = dict(json_error.diagnostics)
             diagnostics.update(plain_schema_mismatch=dict(plain_error.detail))
@@ -1412,14 +1428,13 @@ def _validated_map_response(content, response, cues):
 
 
 def _map_content(ai_client, prompt, cues, should_cancel=None, *, json_mode: bool = False):
-    system = (
-        "只依据字幕证据提取内容，不补写外部事实。知识点仅限定义、原则、方法、事实、公式和结论；"
-        "教师演示、案例和类比必须单列为课堂例子并关联知识点。无法判定时宁缺毋滥并保留逐字证据。"
-        "练习面向学生回忆或应用，不得把 ASR 纠错样本伪装成学习训练。"
-        + ("严格返回JSON对象，不输出固定标签文本。" if json_mode else "严格使用用户指定的固定标签纯文本格式。")
-    )
+    system = _map_system_prompt(json_mode)
     if len(system) + len(prompt) >= MAX_MESSAGE_CHARS:
-        raise ValueError("AI 请求超过单次消息安全限制。")
+        raise TranscriptAIFormatError(
+            "AI 请求超过单次消息安全限制。",
+            category="prompt_too_long",
+            diagnostics={"request_chars": len(system) + len(prompt)},
+        )
     _check_cancel(should_cancel)
     response = ai_client.chat_completion(
         list((dict(role="system", content=system), dict(role="user", content=prompt))),
@@ -1436,6 +1451,15 @@ def _map_content(ai_client, prompt, cues, should_cancel=None, *, json_mode: bool
         if getattr(ai_client, "last_call_index", None) is not None:
             exc.diagnostics["call_index"] = ai_client.last_call_index
         raise
+
+
+def _map_system_prompt(json_mode: bool) -> str:
+    return (
+        "只依据字幕证据提取内容，不补写外部事实。知识点仅限定义、原则、方法、事实、公式和结论；"
+        "教师演示、案例和类比必须单列为课堂例子并关联知识点。无法判定时宁缺毋滥并保留逐字证据。"
+        "练习面向学生回忆或应用，不得把 ASR 纠错样本伪装成学习训练。"
+        + ("严格返回JSON对象，不输出固定标签文本。" if json_mode else "严格使用用户指定的固定标签纯文本格式。")
+    )
 
 
 def _fallback_map(chunk: TranscriptChunk) -> dict[str, Any]:
@@ -1459,6 +1483,14 @@ def _markdown_text(value: object) -> str:
     return html.escape(" ".join(str(value).split()), quote=False)
 
 
+def _safe_milliseconds(value: object) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, result)
+
+
 def render_cleaned(chunks: Sequence[Mapping[str, Any]]) -> str:
     lines = list(("# 规整字幕", ""))
     by_cue_id: dict[str, Mapping[str, Any]] = dict()
@@ -1467,19 +1499,26 @@ def render_cleaned(chunks: Sequence[Mapping[str, Any]]) -> str:
             by_cue_id.setdefault(str(row.get("cue_id")), row)
     ordered = sorted(
         by_cue_id.values(),
-        key=lambda row: (int(row.get("start_ms")), int(row.get("end_ms")), str(row.get("cue_id"))),
+        key=lambda row: (
+            _safe_milliseconds(row.get("start_ms")),
+            _safe_milliseconds(row.get("end_ms")),
+            str(row.get("cue_id")),
+        ),
     )
     for row in ordered:
-        seconds = int(row.get("start_ms")) // 1000
         lines.append(
-            f"**{seconds // 60:02d}:{seconds % 60:02d}**  {_markdown_text(row.get('text'))}"
+            f"**{_time_label(row.get('start_ms'))}**  {_markdown_text(row.get('text'))}"
         )
     return "\n\n".join(lines).strip() + "\n"
 
 
 def _time_label(milliseconds: object) -> str:
-    value = int(milliseconds or 0) // 1000
-    return f"{value // 60:02d}:{value % 60:02d}"
+    value = _safe_milliseconds(milliseconds) // 1000
+    hours, remainder = divmod(value, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{value // 60:02d}:{seconds:02d}"
 
 
 def _evidence_markdown(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -2591,6 +2630,7 @@ class TranscriptPipeline:
         warnings: list[str] = list()
         pipeline_diagnostics: list[dict[str, Any]] = []
         chunk_warnings: dict[int, list[str]] = {}
+        fallback_categories: dict[int, str] = {}
         source_unchanged = cues == original_cues
         cached = cached_chunks or {}
         pending = list(chunks)
@@ -2616,28 +2656,50 @@ class TranscriptPipeline:
                     + "\n字幕块：\n"
                     + chunk.as_prompt_text()
                 )
-                if len(prompt) >= MAX_MESSAGE_CHARS:
-                    raise ValueError("字幕分块超过 AI 单消息限制。")
-                map_started = time.monotonic()
-                try:
-                    result = _map_content(
-                        ai_client, prompt, chunk.cues, should_cancel=should_cancel, json_mode=json_mode
-                    )
-                except TranscriptAIFormatError as exc:
+                if len(_map_system_prompt(json_mode)) + len(prompt) >= MAX_MESSAGE_CHARS:
                     result = _fallback_map(chunk)
-                    chunk_warnings[chunk.index].append("第 %d 块：%s" % (chunk.index + 1, exc.category))
+                    fallback_categories[chunk.index] = "prompt_too_long"
                     diagnostic = {
                         "stage": "map", "chunk_index": chunk.index,
-                        "validator": "map_response", "request_chars": len(prompt),
-                        "latency_ms": round((time.monotonic() - map_started) * 1000, 2),
+                        "category": "prompt_too_long",
+                        "request_chars": len(_map_system_prompt(json_mode)) + len(prompt),
                     }
-                    diagnostic.update(_schema_diagnostic_fields(exc, ai_client))
                     pipeline_diagnostics.append(diagnostic)
+                else:
+                    map_started = time.monotonic()
+                    try:
+                        result = _map_content(
+                            ai_client, prompt, chunk.cues, should_cancel=should_cancel, json_mode=json_mode
+                        )
+                    except TranscriptAIFormatError as exc:
+                        result = _fallback_map(chunk)
+                        fallback_categories[chunk.index] = exc.category
+                        diagnostic = {
+                            "stage": "map", "chunk_index": chunk.index,
+                            "validator": "map_response", "request_chars": len(prompt),
+                            "latency_ms": round((time.monotonic() - map_started) * 1000, 2),
+                        }
+                        diagnostic.update(_schema_diagnostic_fields(exc, ai_client))
+                        pipeline_diagnostics.append(diagnostic)
             _check_cancel(should_cancel)
             if on_chunk:
                 on_chunk(chunk.index, result)
             if result.get("partial_warning"):
-                chunk_warnings[chunk.index].append("第 %d 块：已使用回退" % (chunk.index + 1))
+                category = fallback_categories.get(chunk.index)
+                failure_label = {
+                    "empty": "AI 响应为空",
+                    "format": "AI 返回格式不正确",
+                    "prompt_too_long": "AI 请求超过单消息长度限制",
+                    "schema": "AI 返回结构不正确",
+                    "truncated": "AI 响应被截断",
+                }.get(category, "使用确定性字幕回退")
+                period = (
+                    f"{_time_label(chunk.cues[0].start_ms)}–"
+                    f"{_time_label(chunk.cues[-1].end_ms)}"
+                )
+                chunk_warnings[chunk.index].append(
+                    f"第 {chunk.index + 1} 块（{period}）：{failure_label}，已使用原字幕回退。"
+                )
             by_index[chunk.index] = result
         _check_cancel(should_cancel)
         mapped = [by_index[chunk.index] for chunk in chunks]

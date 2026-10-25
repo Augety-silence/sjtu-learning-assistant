@@ -19,6 +19,7 @@ from sjtu_learning_assistant.database import (
     default_sqlite_url,
     get_database_url,
     redact_database_url,
+    sqlite_database_path,
     validate_database_url,
 )
 
@@ -61,6 +62,14 @@ class DatabaseConfigTests(unittest.TestCase):
             value = default_sqlite_url(Path(temporary) / "test.db")
             with patch.dict(os.environ, {DATABASE_URL_ENV: value}):
                 self.assertEqual(value, get_database_url())
+
+    def test_sqlite_uri_filename_is_not_treated_as_recovery_path(self) -> None:
+        self.assertIsNone(
+            sqlite_database_path("sqlite:///file:app.db?mode=ro&uri=true")
+        )
+        self.assertEqual(
+            Path("app.db"), sqlite_database_path("sqlite:///app.db")
+        )
 
     def test_remote_url_requires_tls(self) -> None:
         with self.assertRaisesRegex(DatabaseConfigError, "sslmode"):

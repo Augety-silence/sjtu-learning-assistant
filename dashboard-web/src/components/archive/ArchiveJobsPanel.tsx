@@ -2,6 +2,7 @@ import { ChevronDown, RotateCcw } from "lucide-react";
 import { useRef, useState } from "react";
 import { ArchiveStatusChip } from "@/components/archive/ArchiveStatusChip";
 import {
+  archiveEventLabel,
   archiveStatusLabel,
   jobProgress,
 } from "@/components/archive/archiveUtils";
@@ -41,7 +42,12 @@ export function ArchiveJobsPanel({
       return;
     }
     setOpenJob(jobId);
-    if (events[jobId] || loadingEvents.has(jobId)) return;
+    if (loadingEvents.has(jobId)) return;
+    setEvents((current) => {
+      const next = { ...current };
+      delete next[jobId];
+      return next;
+    });
     setEventErrors((current) => {
       const next = { ...current };
       delete next[jobId];
@@ -70,7 +76,7 @@ export function ArchiveJobsPanel({
       job.kind === "restore" &&
       job.conflict_policy === "overwrite" &&
       !window.confirm(
-        "确认重试覆盖恢复？系统会再次替换目标文件，并在成功前保留同目录回滚快照。",
+        `确认重试覆盖恢复${job.target_filename ? `“${job.target_filename}”` : ""}？请先关闭正在打开该文件的程序。系统会再次替换目标文件，并在成功前保留同目录回滚快照。`,
       )
     )
       return;
@@ -116,7 +122,9 @@ export function ArchiveJobsPanel({
                     type="button"
                     className="archive-job-toggle"
                     aria-expanded={expanded}
-                    aria-controls={"archive-events-" + job.id}
+                    aria-controls={
+                      expanded ? "archive-events-" + job.id : undefined
+                    }
                     onClick={() => void toggleEvents(job.id)}
                   >
                     <ChevronDown aria-hidden="true" />
@@ -137,6 +145,7 @@ export function ArchiveJobsPanel({
                       size="sm"
                       loading={retrying.has(job.id)}
                       loadingLabel="重试中…"
+                      aria-label={`重试${job.kind === "restore" ? "恢复" : "上传"}${job.target_filename ? ` ${job.target_filename}` : ""} ${formatDateTime(job.started_at ?? job.created_at)}`}
                       onClick={() => void retry(job)}
                     >
                       <RotateCcw aria-hidden="true" />
@@ -193,7 +202,9 @@ export function ArchiveJobsPanel({
                           <li key={event.id}>
                             <span>{archiveStatusLabel(event.status)}</span>
                             <div>
-                              <strong>{event.event_type}</strong>
+                              <strong>
+                                {archiveEventLabel(event.event_type)}
+                              </strong>
                               <small>
                                 {event.message ??
                                   formatDateTime(event.created_at)}

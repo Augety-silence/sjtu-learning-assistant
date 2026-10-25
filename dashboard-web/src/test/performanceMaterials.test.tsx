@@ -52,14 +52,14 @@ describe("material tree render workload", () => {
     expect(filesBelow).not.toHaveBeenCalled();
     fireEvent.click(course);
     expect(
-      await screen.findByRole("listitem", { name: "拖动资料：讲义 0-99.pdf" }),
+      await screen.findByRole("listitem", { name: "讲义 0-99.pdf" }),
     ).toBeTruthy();
     expect(screen.queryByText("Needle.pdf")).toBeNull();
     expect(filesBelow).not.toHaveBeenCalled();
     const search = screen.getByRole("textbox", { name: "搜索文件名" });
     fireEvent.change(search, { target: { value: " needle " } });
     expect(
-      await screen.findByRole("listitem", { name: "拖动资料：Needle.pdf" }),
+      await screen.findByRole("listitem", { name: "Needle.pdf" }),
     ).toBeTruthy();
     expect(filesBelow).toHaveBeenCalledTimes(1);
     fireEvent.change(search, { target: { value: "NEEDLE.PDF" } });
@@ -82,7 +82,7 @@ describe("material tree render workload", () => {
     expect(filesBelow).toHaveBeenCalledTimes(1);
     fireEvent.change(search, { target: { value: " " } });
     expect(
-      screen.getByRole("listitem", { name: "拖动资料：讲义 0-99.pdf" }),
+      screen.getByRole("listitem", { name: "讲义 0-99.pdf" }),
     ).toBeTruthy();
     expect(screen.queryByText("Needle.pdf")).toBeNull();
     expect(filesBelow).toHaveBeenCalledTimes(1);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -52,11 +53,13 @@ from sjtu_learning_assistant.video_service import SJTUVideoError, parse_remote_s
 BACKUP_ROOT = "SJTU Learning Assistant"
 DEFAULT_MULTIPART_THRESHOLD = 8 * 1024 * 1024
 MAX_COMPONENT_LENGTH = 120
+MAX_COMPONENT_BYTES = 220
 MAX_FILENAME_LENGTH = 200
 MAX_FAILURE_DETAILS = 100
 MAX_TRANSCRIPT_MANIFEST_SIZE = 2 * 1024 * 1024
 TRANSCRIPT_DIRECTORY = "Transcripts"
 _HEX_DIGITS = frozenset("0123456789abcdef")
+_WINDOWS_INVALID_CHARS = frozenset(map(chr, (34, 42, 47, 58, 60, 62, 63, 92, 124)))
 _WINDOWS_RESERVED_NAME = re.compile(
     r"^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$", re.IGNORECASE
 )
@@ -90,6 +93,14 @@ def _is_link_like(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS
 
 
+def _same_file_state(left: os.stat_result, right: os.stat_result) -> bool:
+    if left.st_dev != right.st_dev:
+        return False
+    if left.st_ino and right.st_ino:
+        return left.st_ino == right.st_ino
+    return (left.st_size, left.st_mtime_ns) == (right.st_size, right.st_mtime_ns)
+
+
 def _open_by_verified_path(lexical_root: Path, parts: tuple[str, ...]) -> tuple[int, Path]:
     """Windows fallback without dir_fd: reject links/junctions per component, then
     open in binary mode and require the handle to match the final lstat identity."""
@@ -107,7 +118,7 @@ def _open_by_verified_path(lexical_root: Path, parts: tuple[str, ...]) -> tuple[
         raise BackupError("本地备份文件缺失或不安全。")
     file_fd = os.open(target, os.O_RDONLY | _O_BINARY)
     opened = os.fstat(file_fd)
-    if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+    if not _same_file_state(opened, before):
         os.close(file_fd)
         raise BackupError("本地备份文件缺失或不安全。")
     return file_fd, target
@@ -147,17 +158,25 @@ def safe_path_component(
     *,
     fallback: str = "未命名",
     limit: int = MAX_COMPONENT_LENGTH,
+    byte_limit: int = MAX_COMPONENT_BYTES,
 ) -> str:
     """Create one bounded remote component; separators and controls never survive."""
     text = unicodedata.normalize("NFKC", str(value or ""))
     cleaned = "".join(
-        "_" if character in {"/", "\\"} or ord(character) < 32 or ord(character) == 127 else character
+        "_" if character in _WINDOWS_INVALID_CHARS or ord(character) < 32 or ord(character) == 127 else character
         for character in text
     )
     cleaned = " ".join(cleaned.split()).strip(" .")
     if not cleaned or cleaned in {".", ".."}:
         cleaned = fallback
-    cleaned = cleaned[:limit].rstrip(" .") or fallback
+    if len(cleaned) > limit:
+        extension = Path(cleaned).suffix
+        if len(extension) > 16:
+            extension = ""
+        stem = cleaned.removesuffix(extension) if extension else cleaned
+        budget = max(1, limit - len(extension))
+        cleaned = "".join(itertools.islice(stem, budget)).rstrip(" .") + extension
+    cleaned = cleaned or fallback
     if cleaned in {".", ".."}:
         cleaned = fallback
     # Windows treats these device names (with or without extension) as devices;
@@ -165,6 +184,18 @@ def safe_path_component(
     if _WINDOWS_RESERVED_NAME.match(cleaned):
         cleaned = f"_{cleaned}"
         cleaned = cleaned[:limit].rstrip(" .") or fallback
+    if len(cleaned.encode("utf-8")) > byte_limit:
+        digest = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+        digest = "".join(itertools.islice(digest, 10))
+        extension = Path(cleaned).suffix
+        if len(extension.encode("utf-8")) > 24:
+            extension = ""
+        marker = "--" + digest + extension
+        budget = byte_limit - len(marker.encode("utf-8"))
+        stem = cleaned.removesuffix(extension) if extension else cleaned
+        while len(stem.encode("utf-8")) > budget:
+            stem = "".join(itertools.islice(stem, max(0, len(stem) - 1)))
+        cleaned = stem.rstrip(" .") + marker
     return cleaned
 
 
@@ -392,7 +423,7 @@ def remove_controlled_file(
             not stat.S_ISREG(opened.st_mode)
             or stat.S_ISLNK(current.st_mode)
             or opened.st_size != expected_size
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or not _same_file_state(opened, current)
             or (
                 expected_identity is not None
                 and (opened.st_dev, opened.st_ino, opened.st_mtime_ns)
@@ -902,6 +933,7 @@ class BackupService:
             "uploaded": 0,
             "skipped_existing": 0,
             "skipped_missing_local": 0,
+            "skipped_changed": 0,
             "local_removed": 0,
             "failed": 0,
             "failures": [],
@@ -1018,10 +1050,17 @@ class BackupService:
                                     overwrite=overwrite,
                                 )
                             uploaded = True
-                except BackupError:
+                except BackupError as exc:
                     if candidate.transcript_group is not None:
                         failed_transcript_groups.add(candidate.transcript_group)
-                    result["skipped_missing_local"] += 1
+                    if "发生变化" in str(exc):
+                        result.update(
+                            skipped_changed=result.get("skipped_changed", 0) + 1
+                        )
+                    else:
+                        result.update(
+                            skipped_missing_local=result.get("skipped_missing_local", 0) + 1
+                        )
                     continue
 
                 # Never trust only an upload response or a previous exists check.
@@ -1242,6 +1281,7 @@ class BackupManager:
             "uploaded": 0,
             "skipped_existing": 0,
             "skipped_missing_local": 0,
+            "skipped_changed": 0,
             "local_removed": 0,
             "failed": failed,
             "failures": [

@@ -21,7 +21,20 @@ STRONG_COPYLEFT = re.compile(
     r"(?:^|[^l])a?gpl(?:[-\s v)+\d]|$)|(?<!lesser )(?<!library )general public licen[cs]e",
     re.IGNORECASE,
 )
-PERMISSIVE_ALTERNATIVES = ("apache", "bsd", "isc", "mit")
+NON_DISTRIBUTABLE_LICENSES = frozenset({"unlicensed", "see license in"})
+PERMISSIVE_ALTERNATIVES = frozenset({
+    "apache 2 0",
+    "apache license 2 0",
+    "apache software license",
+    "bsd",
+    "bsd 2 clause",
+    "bsd 3 clause",
+    "bsd license",
+    "isc",
+    "isc license",
+    "mit",
+    "mit license",
+})
 REVIEWED_LICENSE_OVERRIDES = {
     "clr-loader": "MIT",
 }
@@ -92,8 +105,12 @@ def has_pyinstaller_exception(distribution: importlib.metadata.Distribution, lic
 
 
 def has_permissive_or_branch(license_name: str) -> bool:
-    normalized = license_name.casefold()
-    return " or " in normalized and any(item in normalized for item in PERMISSIVE_ALTERNATIVES)
+    branches = re.split(r"\s+OR\s+", license_name, flags=re.IGNORECASE)
+    for branch in branches:
+        normalized = re.sub(r"[^a-z0-9]+", " ", branch.casefold()).strip()
+        if normalized in PERMISSIVE_ALTERNATIVES:
+            return True
+    return False
 
 
 def check_group(label: str, roots: set[str], *, allow_pyinstaller: bool) -> list[str]:
@@ -106,6 +123,10 @@ def check_group(label: str, roots: set[str], *, allow_pyinstaller: bool) -> list
         license_name = license_for(distribution) or REVIEWED_LICENSE_OVERRIDES.get(name, "")
         if not license_name:
             errors.append(f"{label}: {name} 缺少可验证许可证元数据")
+            continue
+        normalized_license = license_name.casefold().strip()
+        if any(normalized_license.startswith(marker) for marker in NON_DISTRIBUTABLE_LICENSES):
+            errors.append(f"{label}: 不可分发许可证：{name} ({license_name})")
             continue
         if name == "pyinstaller":
             if not allow_pyinstaller:
@@ -123,11 +144,12 @@ def main() -> int:
     optional = requirement_names(OPTIONAL_FILE)
     dev = requirement_names(DEV_FILE) - runtime
     windows = requirement_names(WINDOWS_FILE) - runtime
+    package_distributions = importlib.metadata.packages_distributions()
     installed_windows = {
         name
         for name in windows
-        if importlib.metadata.packages_distributions().get(name.replace("-", "_"))
-        or importlib.metadata.packages_distributions().get(name)
+        if package_distributions.get(name.replace("-", "_"))
+        or package_distributions.get(name)
     }
     if "psycopg" in runtime or "psycopg-binary" in runtime:
         print("错误：psycopg 只能位于 requirements-postgres.txt", file=sys.stderr)

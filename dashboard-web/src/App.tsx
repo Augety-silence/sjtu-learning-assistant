@@ -262,13 +262,11 @@ function adaptCalendarEvent(
 function ScheduleAdapter({
   mode,
   syncStatus,
-  onModeChange,
   onNavigateAssignments,
   onAskAI,
 }: {
   mode: ScheduleMode;
   syncStatus: SyncStatus | null;
-  onModeChange: (mode: ScheduleMode) => void;
   onNavigateAssignments: (target?: AssignmentTarget) => void;
   onAskAI: (prompt: string) => void;
 }) {
@@ -388,26 +386,41 @@ function adaptGradebook(result: GradebookResult) {
   return { assignments, students };
 }
 
-function GradesAdapter({ courseId }: { courseId: number | null }) {
+function GradesAdapter({
+  courseId,
+  courseResolved,
+}: {
+  courseId: number | null;
+  courseResolved: boolean;
+}) {
   const [book, setBook] = useState<GradebookResult | null>(null);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
   const load = useCallback(
     async (silent = false) => {
       if (!courseId) return;
+      const request = ++requestRef.current;
       if (!silent) setLoading(true);
       setError(null);
       try {
-        setBook(await getGradebook(courseId));
+        const result = await getGradebook(courseId);
+        if (requestRef.current === request) setBook(result);
       } catch (reason) {
-        setError(messageFrom(reason, "评分册加载失败"));
+        if (requestRef.current === request)
+          setError(messageFrom(reason, "评分册加载失败"));
       } finally {
-        setLoading(false);
+        if (requestRef.current === request) setLoading(false);
       }
     },
     [courseId],
   );
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [load]);
   const adapted = useMemo(
     () => (book ? adaptGradebook(book) : { assignments: [], students: [] }),
     [book],
@@ -425,9 +438,9 @@ function GradesAdapter({ courseId }: { courseId: number | null }) {
   return (
     <GradesView
       {...adapted}
-      loading={loading}
+      loading={loading || !courseResolved}
       error={error}
-      permissionDenied={!courseId}
+      permissionDenied={courseResolved && !courseId}
       onRetry={load}
       onSaveGrade={save}
     />
@@ -457,16 +470,25 @@ function memberSection(member: Record<string, unknown>) {
   return null;
 }
 
-function RosterAdapter({ courseId }: { courseId: number | null }) {
+function RosterAdapter({
+  courseId,
+  courseResolved,
+}: {
+  courseId: number | null;
+  courseResolved: boolean;
+}) {
   const [members, setMembers] = useState<RosterMember[]>([]);
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
   const load = useCallback(async () => {
     if (!courseId) return;
+    const request = ++requestRef.current;
     setLoading(true);
     setError(null);
     try {
       const result = await getRoster(courseId);
+      if (requestRef.current !== request) return;
       setMembers(
         result.items.map((member) => ({
           id: String(member.id),
@@ -480,12 +502,18 @@ function RosterAdapter({ courseId }: { courseId: number | null }) {
         })),
       );
     } catch (reason) {
-      setError(messageFrom(reason, "课程花名册加载失败"));
+      if (requestRef.current === request)
+        setError(messageFrom(reason, "课程花名册加载失败"));
     } finally {
-      setLoading(false);
+      if (requestRef.current === request) setLoading(false);
     }
   }, [courseId]);
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [load]);
   const runExport = async (request: RosterExportRequest) => {
     if (!courseId) return;
     const ids = request.members
@@ -502,9 +530,9 @@ function RosterAdapter({ courseId }: { courseId: number | null }) {
   return (
     <RosterView
       members={members}
-      loading={loading}
+      loading={loading || !courseResolved}
       error={error}
-      permissionDenied={!courseId}
+      permissionDenied={courseResolved && !courseId}
       onRetry={load}
       onExport={runExport}
     />
@@ -567,9 +595,16 @@ function adaptGradingSubmission(
   };
 }
 
-function GradingAdapter({ courseId }: { courseId: number | null }) {
+function GradingAdapter({
+  courseId,
+  courseResolved,
+}: {
+  courseId: number | null;
+  courseResolved: boolean;
+}) {
   const [assignments, setAssignments] = useState<GradeAssignment[]>([]);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>("");
+  const selectedAssignmentIdRef = useRef("");
   const [assignment, setAssignment] = useState<GradeAssignment | null>(null);
   const [submissions, setSubmissions] = useState<GradingSubmission[]>([]);
   const [loading, setLoading] = useState(Boolean(courseId));
@@ -595,16 +630,19 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
         setAssignments(availableAssignments);
         const nextAssignment =
           availableAssignments.find(
-            (item) => item.id === selectedAssignmentId,
+            (item) => item.id === selectedAssignmentIdRef.current,
           ) ?? availableAssignments[0];
         if (!nextAssignment) {
+          selectedAssignmentIdRef.current = "";
           setSelectedAssignmentId("");
           setAssignment(null);
           setSubmissions([]);
           return;
         }
-        if (nextAssignment.id !== selectedAssignmentId)
+        if (nextAssignment.id !== selectedAssignmentIdRef.current) {
+          selectedAssignmentIdRef.current = nextAssignment.id;
           setSelectedAssignmentId(nextAssignment.id);
+        }
         setAssignment(nextAssignment);
         const result = await getGrading(courseId, Number(nextAssignment.id));
         if (gradingRequest.current !== request) return;
@@ -620,9 +658,14 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
         if (gradingRequest.current === request) setLoading(false);
       }
     },
-    [courseId, selectedAssignmentId],
+    [courseId],
   );
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    void load();
+    return () => {
+      gradingRequest.current += 1;
+    };
+  }, [load]);
   const update = async (
     studentId: string,
     payload: { grade?: number | null; comment?: string },
@@ -637,7 +680,7 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
     await load(true);
   };
   return (
-    <ContentReveal className="section-stack" ready={!loading}>
+    <ContentReveal className="section-stack" ready={!loading && courseResolved}>
       {assignments.length > 1 && (
         <div className="finder-toolbar">
           <label>
@@ -645,7 +688,11 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
             <select
               aria-label="选择要批改的作业"
               value={selectedAssignmentId}
-              onChange={(event) => setSelectedAssignmentId(event.target.value)}
+              onChange={(event) => {
+                selectedAssignmentIdRef.current = event.target.value;
+                setSelectedAssignmentId(event.target.value);
+                void load();
+              }}
             >
               {assignments.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -660,9 +707,9 @@ function GradingAdapter({ courseId }: { courseId: number | null }) {
         assignmentName={assignment?.name}
         maxScore={assignment?.pointsPossible}
         submissions={submissions}
-        loading={loading}
+        loading={loading || !courseResolved}
         error={error}
-        permissionDenied={!courseId}
+        permissionDenied={courseResolved && !courseId}
         onRetry={load}
         onSaveScore={({ studentId, score }) =>
           update(studentId, { grade: score })
@@ -803,96 +850,99 @@ function VideosAdapter({
   const mediaWait = useRef<AbortController | null>(null);
   const activeCourseId = useRef(courseId);
   activeCourseId.current = courseId;
-  const load = useCallback(async () => {
-    const request = ++mediaRequestSequence.current;
-    mediaWait.current?.abort();
-    const controller = new AbortController();
-    mediaWait.current = controller;
-    setVideos([]);
-    setSlidesPdfAvailable(false);
-    setToolError(null);
-    setError(null);
-    if (!courseId) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await readRequest(
-        `course_media:${courseId}`,
-        () => getCourseMedia(courseId),
-        controller.signal,
-        "课程录像读取超时，请检查连接后重新加载。",
-      );
-      if (
-        mediaRequestSequence.current !== request ||
-        activeCourseId.current !== courseId
-      )
-        return;
-      setLoadedCourseId(courseId);
+  const load = useCallback(
+    async (silent = false) => {
+      const request = ++mediaRequestSequence.current;
+      mediaWait.current?.abort();
+      const controller = new AbortController();
+      mediaWait.current = controller;
+      if (!silent) setVideos([]);
       setSlidesPdfAvailable(false);
-      setVideos(
-        result.items
-          .filter((item) => item.media_kind === "video")
-          .map((item) => {
-            const video = adaptVideo(item);
-            return {
-              ...video,
-              supportsSlidesPdf:
-                video.source === "video_space"
-                  ? video.supportsSlidesPdf
-                  : false,
-            };
-          }),
-      );
-      // Optional tooling must not delay showing the already loaded videos.
-      void readRequest(
-        "media_capabilities",
-        getMediaCapabilities,
-        controller.signal,
-        "视频工具能力读取超时。",
-      )
-        .then((capabilities) => {
-          if (
-            controller.signal.aborted ||
-            mediaRequestSequence.current !== request ||
-            activeCourseId.current !== courseId
-          )
-            return;
-          const canCreateSlides = Boolean(
-            capabilities.video_screenshot_pdf?.available,
-          );
-          setSlidesPdfAvailable(canCreateSlides);
-          setVideos((current) =>
-            current.map((video) =>
-              video.source === "canvas"
-                ? { ...video, supportsSlidesPdf: canCreateSlides }
-                : video,
-            ),
-          );
-        })
-        .catch((reason) => {
-          if (
-            !controller.signal.aborted &&
-            mediaRequestSequence.current === request
-          ) {
-            setToolError(messageFrom(reason, "视频导出工具暂不可用。"));
-          }
-        });
-    } catch (reason) {
-      if (
-        mediaRequestSequence.current === request &&
-        activeCourseId.current === courseId
-      )
-        setError(messageFrom(reason, "课程视频加载失败"));
-    } finally {
-      if (
-        mediaRequestSequence.current === request &&
-        activeCourseId.current === courseId
-      )
+      setToolError(null);
+      setError(null);
+      if (!courseId) {
         setLoading(false);
-    }
-  }, [courseId, refreshVersion, readRequest]);
+        return;
+      }
+      if (!silent) setLoading(true);
+      try {
+        const result = await readRequest(
+          `course_media:${courseId}`,
+          () => getCourseMedia(courseId),
+          controller.signal,
+          "课程录像读取超时，请检查连接后重新加载。",
+        );
+        if (
+          mediaRequestSequence.current !== request ||
+          activeCourseId.current !== courseId
+        )
+          return;
+        setLoadedCourseId(courseId);
+        setSlidesPdfAvailable(false);
+        setVideos(
+          result.items
+            .filter((item) => item.media_kind === "video")
+            .map((item) => {
+              const video = adaptVideo(item);
+              return {
+                ...video,
+                supportsSlidesPdf:
+                  video.source === "video_space"
+                    ? video.supportsSlidesPdf
+                    : false,
+              };
+            }),
+        );
+        // Optional tooling must not delay showing the already loaded videos.
+        void readRequest(
+          "media_capabilities",
+          getMediaCapabilities,
+          controller.signal,
+          "视频工具能力读取超时。",
+        )
+          .then((capabilities) => {
+            if (
+              controller.signal.aborted ||
+              mediaRequestSequence.current !== request ||
+              activeCourseId.current !== courseId
+            )
+              return;
+            const canCreateSlides = Boolean(
+              capabilities.video_screenshot_pdf?.available,
+            );
+            setSlidesPdfAvailable(canCreateSlides);
+            setVideos((current) =>
+              current.map((video) =>
+                video.source === "canvas"
+                  ? { ...video, supportsSlidesPdf: canCreateSlides }
+                  : video,
+              ),
+            );
+          })
+          .catch((reason) => {
+            if (
+              !controller.signal.aborted &&
+              mediaRequestSequence.current === request
+            ) {
+              setToolError(messageFrom(reason, "视频导出工具暂不可用。"));
+            }
+          });
+      } catch (reason) {
+        if (
+          mediaRequestSequence.current === request &&
+          activeCourseId.current === courseId
+        )
+          setError(messageFrom(reason, "课程视频加载失败"));
+      } finally {
+        if (
+          mediaRequestSequence.current === request &&
+          activeCourseId.current === courseId
+        )
+          setLoading(false);
+      }
+    },
+    [courseId, refreshVersion, readRequest],
+  );
   useEffect(() => {
     void load();
     return () => {
@@ -974,7 +1024,7 @@ function VideosAdapter({
             size="sm"
             onClick={() => {
               setTaskRetry((value) => value + 1);
-              if (toolError) void load();
+              if (toolError) void load(true);
             }}
           >
             重新检查
@@ -1376,6 +1426,15 @@ export default function App() {
   }, [availableViews, capabilities, view]);
 
   useEffect(() => {
+    if (window.location.hash === `#/${view}`) return;
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}#/${view}`,
+    );
+  }, [view]);
+
+  useEffect(() => {
     const onHash = () => setViewState(initialView());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -1575,22 +1634,42 @@ export default function App() {
                 key={dataVersion}
                 mode={scheduleMode}
                 syncStatus={syncStatus}
-                onModeChange={setScheduleMode}
                 onNavigateAssignments={(target) => {
                   setAssignmentTarget(target ?? null);
                   setView("assignments");
                 }}
                 onAskAI={(prompt) => {
-                  window.localStorage.setItem("ai-chat-pending-prompt", prompt);
-                  window.localStorage.setItem(
-                    "ai-chat-pending-context",
-                    JSON.stringify({
-                      page_id: "calendar",
-                      source: "calendar-selection",
-                      title: "日程",
-                      selection: { schedule_mode: scheduleMode },
-                    }),
-                  );
+                  try {
+                    for (const key of [
+                      "ai-chat-pending-prompt",
+                      "ai-chat-pending-context",
+                      "ai-chat-pending-session",
+                      "ai-chat-new-session",
+                      "ai-chat-auto-submit",
+                    ]) {
+                      window.localStorage.removeItem(key);
+                    }
+                    window.localStorage.setItem(
+                      "ai-chat-pending-prompt",
+                      prompt,
+                    );
+                    window.localStorage.setItem(
+                      "ai-chat-pending-context",
+                      JSON.stringify({
+                        page_id: "calendar",
+                        source: "calendar-selection",
+                        title: "日程",
+                        selection: { schedule_mode: scheduleMode },
+                      }),
+                    );
+                    window.localStorage.setItem("ai-chat-auto-submit", "true");
+                  } catch {
+                    showToast({
+                      kind: "error",
+                      message: "浏览器存储不可用，无法将日程交给 AI 助手。",
+                    });
+                    return;
+                  }
                   setView("ai-chat");
                 }}
               />
@@ -1610,6 +1689,7 @@ export default function App() {
                 <GradesAdapter
                   key={`${dataVersion}:${staffCourseId}`}
                   courseId={staffCourseId}
+                  courseResolved={capabilitiesInitialized}
                 />
               </div>
             )}
@@ -1619,6 +1699,7 @@ export default function App() {
                 <RosterAdapter
                   key={`${dataVersion}:${staffCourseId}`}
                   courseId={staffCourseId}
+                  courseResolved={capabilitiesInitialized}
                 />
               </div>
             )}
@@ -1628,6 +1709,7 @@ export default function App() {
                 <GradingAdapter
                   key={`${dataVersion}:${staffCourseId}`}
                   courseId={staffCourseId}
+                  courseResolved={capabilitiesInitialized}
                 />
               </div>
             )}

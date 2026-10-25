@@ -9,6 +9,7 @@ export const archiveStatusLabels: Record<string, string> = {
   legacy: "旧记录",
   pending: "等待处理",
   planned: "已规划",
+  running: "处理中",
   uploading: "上传中",
   downloading: "下载中",
   verifying: "校验中",
@@ -35,12 +36,37 @@ export function archiveStatusTone(status: string) {
   )
     return "warning";
   if (
-    ["uploading", "downloading", "verifying", "pending", "planned"].includes(
-      status,
-    )
+    [
+      "running",
+      "uploading",
+      "downloading",
+      "verifying",
+      "pending",
+      "planned",
+    ].includes(status)
   )
     return "info";
   return "neutral";
+}
+
+const eventLabels: Record<string, string> = {
+  upload_started: "开始上传",
+  upload_completed: "上传完成",
+  download_verifying: "校验下载内容",
+  restore_completed: "恢复完成",
+  restore_failed: "恢复失败",
+  interrupted: "任务中断",
+  failed: "任务失败",
+  verification_required: "等待强校验",
+  verification_failed: "校验失败",
+  content_verified: "内容校验通过",
+  reconciled: "对账完成",
+  reconcile_failed: "对账失败",
+  duplicate_skipped: "相同内容已归档",
+};
+
+export function archiveEventLabel(eventType: string) {
+  return eventLabels[eventType] ?? eventType;
 }
 
 export function latestVersion(entry: ArchiveEntry): ArchiveVersion | undefined {

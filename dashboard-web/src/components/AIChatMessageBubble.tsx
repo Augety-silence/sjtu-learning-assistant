@@ -5,6 +5,8 @@ import {
   isValidElement,
   memo,
   type ReactNode,
+  useEffect,
+  useRef,
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -116,16 +118,35 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   animateEntry?: boolean;
   queued?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(
+    null,
+  );
+  const copyTimerRef = useRef<number | null>(null);
   const shouldReduceMotion = useReducedMotion();
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null)
+        window.clearTimeout(copyTimerRef.current);
+    },
+    [],
+  );
+  const showCopyStatus = (status: "copied" | "failed") => {
+    setCopyStatus(status);
+    if (copyTimerRef.current !== null)
+      window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopyStatus(null);
+    }, 1600);
+  };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(message.content);
     } catch {
+      showCopyStatus("failed");
       return;
     }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    showCopyStatus("copied");
   };
 
   return (
@@ -150,8 +171,12 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
       // The in-progress stream bubble opts out of the thread's polite live
       // region so each content_delta is not read aloud; the final message is
       // a new node and is announced once by the thread.
-      aria-live={message.id.startsWith("stream-") ? "off" : undefined}
-      aria-label={message.role === "user" ? "你的消息" : "学习 Agent 回复"}
+      aria-live={
+        message.role === "user" || message.id.startsWith("stream-")
+          ? "off"
+          : undefined
+      }
+      aria-label={message.role === "user" ? "你的消息" : agentName + " 回复"}
     >
       <div className="ai-message-body">
         {message.role === "assistant" && (
@@ -200,12 +225,24 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
             <span className="ai-message-queued">将在当前检索完成后执行</span>
           )}
           {message.model && <span>{message.model}</span>}
+          {copyStatus === "failed" && (
+            <span className="ai-copy-feedback" role="status">
+              复制失败
+            </span>
+          )}
           <button
             type="button"
-            aria-label="复制消息"
+            aria-label={
+              copyStatus === "copied"
+                ? "已复制"
+                : copyStatus === "failed"
+                  ? "复制失败，请重试"
+                  : "复制消息"
+            }
+            title={copyStatus === "failed" ? "复制失败，请重试" : undefined}
             onClick={() => void copy()}
           >
-            {copied ? (
+            {copyStatus === "copied" ? (
               <Check aria-hidden="true" />
             ) : (
               <Copy aria-hidden="true" />

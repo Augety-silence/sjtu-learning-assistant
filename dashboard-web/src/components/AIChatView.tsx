@@ -121,6 +121,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -153,6 +155,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const stickToBottomRef = useRef(true);
   const lastThreadScrollTopRef = useRef(0);
   const pendingComposerFocusRef = useRef(false);
+  const taskAbortRef = useRef<AbortController | null>(null);
+  const restoredFailedRequestIdsRef = useRef(new Set<string>());
+  const sessionLoadSequenceRef = useRef(0);
+  const nativeDropTimerRef = useRef<number | null>(null);
+  const nativeDropSeenRef = useRef(false);
   const sidebarAutoSubmitRef = useRef<string | null>(null);
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
@@ -170,6 +177,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       isPresentRef.current = false;
     };
   }, [isPresent]);
+  useEffect(
+    () => () => {
+      pendingQueueRef.current.splice(0);
+      taskAbortRef.current?.abort();
+    },
+    [],
+  );
   useEffect(() => {
     const pendingPrompt = window.localStorage.getItem("ai-chat-pending-prompt");
     const pendingContext = window.localStorage.getItem(
@@ -200,33 +214,73 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     const receive = (rawEvent: Event) => {
       const detail = (rawEvent as CustomEvent<Record<string, unknown>>).detail;
-      if (!detail || detail.type !== "content_delta") return;
+      if (!detail) return;
       const sessionId = detail.session_id;
       const taskId = detail.task_id;
-      const delta = detail.delta;
-      if (
-        typeof sessionId !== "string" ||
-        typeof taskId !== "string" ||
-        typeof delta !== "string" ||
-        !delta
-      )
-        return;
+      if (typeof sessionId !== "string" || typeof taskId !== "string") return;
       const streamId = `stream-${taskId}`;
+      if (
+        detail.type === "tool" &&
+        detail.run &&
+        typeof detail.run === "object"
+      ) {
+        const run = detail.run as import("@/lib/types").AIToolRun;
+        setActive((current) => {
+          if (current?.id !== sessionId) return current;
+          const messages = current.messages.filter(
+            (message) => message.id !== streamId,
+          );
+          const existing = current.traces.findIndex(
+            (trace) => trace.id === streamId,
+          );
+          const trace =
+            existing >= 0
+              ? current.traces[existing]
+              : {
+                  id: streamId,
+                  preset_id: current.preset_id,
+                  status: "running",
+                  steps: 0,
+                  tool_runs: [],
+                };
+          const traces = [...current.traces];
+          const next = { ...trace, tool_runs: [...trace.tool_runs, run] };
+          if (existing >= 0) traces[existing] = next;
+          else traces.push(next);
+          return { ...current, messages, traces };
+        });
+        return;
+      }
+      if (detail.type !== "content_delta" && detail.type !== "reasoning_delta")
+        return;
+      const delta = detail.delta;
+      if (typeof delta !== "string" || !delta) return;
       setActive((current) => {
         if (current?.id !== sessionId) return current;
         const existing = current.messages.findIndex(
           (message) => message.id === streamId,
         );
         if (existing < 0) {
+          const streamingMessage: AIChatMessage = {
+            id: streamId,
+            role: "assistant",
+            content: detail.type === "content_delta" ? delta : "",
+            reasoning_content: detail.type === "reasoning_delta" ? delta : null,
+          };
           return {
             ...current,
-            messages: [
-              ...current.messages,
-              { id: streamId, role: "assistant", content: delta },
-            ],
+            messages: [...current.messages, streamingMessage],
           };
         }
         const messages = [...current.messages];
+        if (detail.type === "reasoning_delta") {
+          messages[existing] = {
+            ...messages[existing],
+            reasoning_content:
+              (messages[existing].reasoning_content ?? "") + delta,
+          };
+          return { ...current, messages };
+        }
         messages[existing] = {
           ...messages[existing],
           content: messages[existing].content + delta,
@@ -262,13 +316,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const restoreFailedRequest = useCallback((failed: FailedChatRequest) => {
     const { request } = failed;
-    setDraft((current) =>
-      !current.trim()
-        ? request.text
-        : current.includes(request.text)
-          ? current
-          : `${current}\n\n${request.text}`,
+    const alreadyRestored = restoredFailedRequestIdsRef.current.has(
+      request.optimisticId,
     );
+    restoredFailedRequestIdsRef.current.add(request.optimisticId);
+    if (!alreadyRestored) {
+      setDraft((current) =>
+        !current.trim() ? request.text : [current, request.text].join("\n\n"),
+      );
+    }
     setAttachments((current) => {
       const restored = [...current];
       for (const attachment of request.attachments) {
@@ -304,15 +360,19 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const openSession = useCallback(
     async (sessionId: string) => {
+      const sequence = ++sessionLoadSequenceRef.current;
       setLoading(true);
       setError(null);
       try {
-        applySession(await getAiChatSession(sessionId));
+        const session = await getAiChatSession(sessionId);
+        if (sequence !== sessionLoadSequenceRef.current) return;
+        applySession(session);
         setHistoryOpen(false);
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "对话读取失败");
+        if (sequence === sessionLoadSequenceRef.current)
+          setError(reason instanceof Error ? reason.message : "对话读取失败");
       } finally {
-        setLoading(false);
+        if (sequence === sessionLoadSequenceRef.current) setLoading(false);
       }
     },
     [applySession],
@@ -321,17 +381,20 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const newSession = useCallback(
     async (presetId = selectedPresetId) => {
       if (!presetId) return;
+      const sequence = ++sessionLoadSequenceRef.current;
       setLoading(true);
       setError(null);
       try {
         const session = await createAiChatSession("auto", "standard", presetId);
+        if (sequence !== sessionLoadSequenceRef.current) return;
         applySession(session);
         setHistoryOpen(false);
         await refreshSessions();
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "无法创建新对话");
+        if (sequence === sessionLoadSequenceRef.current)
+          setError(reason instanceof Error ? reason.message : "无法创建新对话");
       } finally {
-        setLoading(false);
+        if (sequence === sessionLoadSequenceRef.current) setLoading(false);
       }
     },
     [applySession, refreshSessions, selectedPresetId],
@@ -364,6 +427,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             ? getAiChatSession(sessionResult.items[0].id)
             : createAiChatSession("auto", "standard", defaultPresetId);
         let session: AIChatSession;
+        let fallbackNotice: string | null = null;
         if (forceNewSession) {
           session = await createAiChatSession(
             "auto",
@@ -371,13 +435,20 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             defaultPresetId,
           );
         } else if (requestedSessionId) {
-          session =
-            await getAiChatSession(requestedSessionId).catch(fallbackSession);
+          try {
+            session = await getAiChatSession(requestedSessionId);
+          } catch {
+            sidebarAutoSubmitRef.current = null;
+            session = await fallbackSession();
+            fallbackNotice =
+              "指定的对话无法读取，已打开最近对话；请确认后再发送消息。";
+          }
         } else {
           session = await fallbackSession();
         }
         if (cancelled) return;
         applySession(session);
+        if (fallbackNotice) setError(fallbackNotice);
         if (forceNewSession || !sessionResult.items[0]) await refreshSessions();
       } catch (reason) {
         if (!cancelled) {
@@ -517,7 +588,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const ingestDroppedPaths = useCallback(
     async (paths: string[]) => {
-      if (attachmentBusy || paths.length === 0) return;
+      if (paths.length === 0) return;
+      if (attachmentBusy) {
+        setError("附件处理中，请稍候再拖入文件。");
+        return;
+      }
       const availableSlots = 20 - attachments.length;
       if (availableSlots <= 0) {
         setError("一次最多添加 20 个附件，请先移除部分附件。");
@@ -527,13 +602,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setAttachmentBusy(true);
       setError(null);
       const ingested: AIManagedAttachment[] = [];
-      let failure: string | null = null;
+      const failures: string[] = [];
       for (const path of paths.slice(0, availableSlots)) {
         try {
           ingested.push(await ingestAiAttachment(path as string));
         } catch (reason) {
-          failure =
-            reason instanceof Error ? reason.message : "附件安全摄取失败";
+          failures.push(
+            `${path.split(/[\\/]/).pop()}: ${reason instanceof Error ? reason.message : "附件安全摄取失败"}`,
+          );
         }
       }
       if (ingested.length > 0) {
@@ -546,7 +622,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           return next.slice(0, 20);
         });
       }
-      if (failure) setError(`部分附件未能添加：${failure}`);
+      if (failures.length > 0) {
+        setError(`部分附件未能添加：${failures.join("；")}`);
+      } else if (paths.length > availableSlots) {
+        setError(
+          `只添加了前 ${availableSlots} 个文件；每段对话最多添加 20 个附件。`,
+        );
+      }
       setAttachmentBusy(false);
       window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
     },
@@ -564,11 +646,19 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         detail.paths.some((path) => typeof path !== "string")
       )
         return;
+      nativeDropSeenRef.current = true;
+      if (nativeDropTimerRef.current !== null) {
+        window.clearTimeout(nativeDropTimerRef.current);
+        nativeDropTimerRef.current = null;
+      }
       void ingestDroppedPaths(detail.paths);
     };
     window.addEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
-    return () =>
+    return () => {
       window.removeEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
+      if (nativeDropTimerRef.current !== null)
+        window.clearTimeout(nativeDropTimerRef.current);
+    };
   }, [ingestDroppedPaths]);
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
@@ -582,7 +672,19 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     });
     // Native pywebview drops omit File.path in JavaScript. Its DOM bridge emits
     // NATIVE_FILE_DROP_EVENT with OS-validated paths immediately after this event.
-    if (paths.length > 0) void ingestDroppedPaths(paths);
+    if (paths.length > 0) {
+      void ingestDroppedPaths(paths);
+    } else {
+      nativeDropSeenRef.current = false;
+      nativeDropTimerRef.current = window.setTimeout(() => {
+        nativeDropTimerRef.current = null;
+        if (!nativeDropSeenRef.current) {
+          setError(
+            "桌面文件路径尚未就绪；请使用“添加本地附件”选择文件，或稍后重试拖放。",
+          );
+        }
+      }, 900);
+    }
   };
 
   const revealAttachment = useCallback(async (attachmentId: number) => {
@@ -597,6 +699,29 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const openActivity = useCallback(() => setActivityOpen(true), []);
 
+  const cancelCurrentTask = useCallback(() => {
+    const controller = taskAbortRef.current;
+    if (controller && !controller.signal.aborted) {
+      setStopping(true);
+      controller.abort();
+    }
+    const queued = pendingQueueRef.current.splice(0);
+    const queuedIds = new Set(queued.map((request) => request.optimisticId));
+    setQueuedMessageIds((current) =>
+      current.filter((id) => !queuedIds.has(id)),
+    );
+    setActive((current) =>
+      current
+        ? {
+            ...current,
+            messages: current.messages.filter(
+              (message) => !queuedIds.has(message.id),
+            ),
+          }
+        : current,
+    );
+  }, []);
+
   async function runSubmission(request: PendingChatRequest) {
     const attachmentIds = request.attachments.map(
       (attachment) => attachment.id,
@@ -605,6 +730,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       current.filter((id) => id !== request.optimisticId),
     );
     setBusy(true);
+    setStopping(false);
+    setRunningSessionId(request.sessionId);
+    const controller = new AbortController();
+    taskAbortRef.current = controller;
     setCanRetry(false);
     try {
       const result =
@@ -616,6 +745,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               request.depth,
               request.presetId,
               attachmentIds,
+              { signal: controller.signal },
             )
           : await sendAiChatMessage(
               request.sessionId,
@@ -623,6 +753,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               request.model,
               request.depth,
               request.presetId,
+              undefined,
+              { signal: controller.signal },
             );
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
@@ -647,7 +779,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           ...current,
           ...result.session,
           messages,
-          traces: [...current.traces, result.trace],
+          traces: [
+            ...current.traces.filter(
+              (trace) => !trace.id.startsWith("stream-"),
+            ),
+            result.trace,
+          ],
         };
       });
       await refreshSessions();
@@ -691,11 +828,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         );
       }
     } finally {
+      if (taskAbortRef.current === controller) taskAbortRef.current = null;
+      setStopping(false);
       const next = pendingQueueRef.current.shift();
       if (next) {
         void runSubmission(next);
       } else {
         setBusy(false);
+        setRunningSessionId(null);
         window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
       }
     }
@@ -784,6 +924,18 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       await deleteAiChatSession(sessionId);
       deletedSessionIdsRef.current.add(sessionId);
       failedRequestsRef.current.delete(sessionId);
+      const removed = pendingQueueRef.current.filter(
+        (request) => request.sessionId === sessionId,
+      );
+      pendingQueueRef.current = pendingQueueRef.current.filter(
+        (request) => request.sessionId !== sessionId,
+      );
+      const removedIds = new Set(
+        removed.map((request) => request.optimisticId),
+      );
+      setQueuedMessageIds((current) =>
+        current.filter((id) => !removedIds.has(id)),
+      );
       const remaining = await refreshSessions();
       if (sessionId !== active?.id) return;
       if (remaining[0]) await openSession(remaining[0].id);
@@ -796,6 +948,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const hasMessages = Boolean(active?.messages.length);
+  const visibleBusy = busy && active?.id === runningSessionId;
+  const hasVisibleStream = Boolean(
+    active?.messages.some(
+      (message) =>
+        message.id.startsWith("stream-") && Boolean(message.content.trim()),
+    ),
+  );
   // Streaming deltas are kept quiet by aria-live="off" on the stream bubble
   // (AIChatMessageBubble). aria-busy on this live region is avoided on purpose:
   // NVDA/JAWS on Chromium never announce the region after busy clears.
@@ -924,15 +1083,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           </header>
 
           {dragActive && (
-            <div
-              className="ai-file-drop-overlay"
-              role="status"
-              aria-live="assertive"
-            >
+            <div className="ai-file-drop-overlay" role="status">
               <div>
                 <strong>将文件拖拽到这里</strong>
                 <span>
-                  支持 TXT、Markdown、CSV / JSON 与常见代码文件 · 单文件最大 2GB
+                  支持 TXT、Markdown、CSV / JSON、常见代码文件与图片；2GB
+                  是摄取上限，附件摘要和可分析内容受限
                 </span>
               </div>
             </div>
@@ -943,6 +1099,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             ready={!loading}
             className="ai-chat-thread"
             data-page-reveal-part="thread"
+            role="log"
             aria-live="polite"
             onScroll={(event) => {
               const thread = event.currentTarget;
@@ -1018,7 +1175,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                   );
                 })}
                 <AnimatePresence>
-                  {busy && (
+                  {visibleBusy && !hasVisibleStream && (
                     <motion.div
                       className="ai-inline-execution"
                       initial={
@@ -1070,8 +1227,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               )
             }
             onSubmit={(value) => void submit(value)}
+            busy={busy}
+            stopping={stopping}
+            onCancel={cancelCurrentTask}
+            retryDisabled={busy}
             onRetry={
-              canRetry && draft.trim() && !busy && !attachmentBusy
+              canRetry && draft.trim() && !attachmentBusy
                 ? () => submit(draft)
                 : undefined
             }
@@ -1102,7 +1263,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           onClose={closeActivity}
           preset={selectedPreset}
           traces={active?.traces ?? []}
-          busy={busy}
+          busy={visibleBusy}
         />
       </div>
     </ContentReveal>
