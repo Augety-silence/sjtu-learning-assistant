@@ -46,10 +46,14 @@ from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import (
     APP_SUPPORT_DIR,
+    DatabaseConfigError,
     create_database_engine,
     database_recovery_result,
 )
-from sjtu_learning_assistant.desktop_database import initialize_desktop_database
+from sjtu_learning_assistant.desktop_database import (
+    DesktopDatabaseError,
+    initialize_desktop_database,
+)
 from sjtu_learning_assistant.diagnostic_bundle import (
     DiagnosticBundleError,
     DiagnosticBundleService,
@@ -1786,7 +1790,11 @@ def run_desktop_app() -> int:
         return 2
 
     _install_macos_native_file_drop_hook()
-    engine = create_database_engine()
+    try:
+        engine = create_database_engine()
+    except DatabaseConfigError as exc:
+        _report_startup_error(f"错误：{safe_message(exc)}")
+        return 2
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None
     learning_service: DesktopLearningService | None = None
@@ -1794,7 +1802,11 @@ def run_desktop_app() -> int:
     try:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
-            initialize_desktop_database(engine, skip_import=True)
+            try:
+                initialize_desktop_database(engine, skip_import=True)
+            except DesktopDatabaseError as exc:
+                _report_startup_error(f"错误：{safe_message(exc)}")
+                return 2
             _notify_database_recovery(engine)
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)

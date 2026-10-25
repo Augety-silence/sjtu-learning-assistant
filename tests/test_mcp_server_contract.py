@@ -113,6 +113,24 @@ class MCPServerContractTests(unittest.TestCase):
         self.assertEqual(-32700, json.loads(lines[0])["error"]["code"])
         self.assertEqual({}, json.loads(lines[1])["result"])
 
+    def test_stdio_continues_after_invalid_utf8_line(self) -> None:
+        payload = (
+            b"\xff\xfe\n"
+            + json.dumps(
+                {"jsonrpc": "2.0", "id": 10, "method": "ping"}
+            ).encode("utf-8")
+            + b"\n"
+        )
+        # TextIOWrapper reproduces stdin's strict text decoder; serve must read its
+        # byte buffer so one malformed line cannot terminate the process loop.
+        source = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8", errors="strict")
+        sink = io.StringIO()
+        self.server.serve(source, sink)
+        lines = sink.getvalue().splitlines()
+        self.assertEqual(2, len(lines))
+        self.assertEqual(-32700, json.loads(lines[0])["error"]["code"])
+        self.assertEqual({"jsonrpc": "2.0", "id": 10, "result": {}}, json.loads(lines[1]))
+
     def test_invalid_params_and_batch(self) -> None:
         response = self.request("tools/call", [])
         self.assertEqual(-32602, response["error"]["code"])

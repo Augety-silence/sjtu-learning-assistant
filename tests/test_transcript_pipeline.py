@@ -1003,6 +1003,33 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual([0], published)
         self.assertEqual(cached[0], result.chunks[0])
 
+    def test_matching_corrected_source_checkpoint_is_reused_offline(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        corrected = [
+            Cue(cue.start_ms, cue.end_ms, cue.text.replace("不要改动", "必须保留"), cue.cue_id)
+            for cue in cues
+        ]
+        payload = map_payload()
+        for item in payload["emphasized_points"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        for item in payload["knowledge_points"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        for item in payload["practice_items"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        payload["cleaned_transcript"] = [cue.as_dict() for cue in corrected]
+        cached = {0: validate_map(payload, corrected)}
+        ai = FakeAI()
+
+        result = TranscriptPipeline().run(
+            VTT, ai, cached_chunks=cached, source_cues=corrected, offline_only=True
+        )
+
+        self.assertEqual([], ai.calls)
+        self.assertEqual(cached[0], result.chunks[0])
+
     def test_cancelled_before_start_never_requests_ai_or_publishes(self):
         ai = FakeAI()
         published = []

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
 import { getAICapabilities } from "@/lib/aiCapabilities";
 import {
+  exportRoster,
   getAssignmentDetail,
   getAssignments,
   getBackupStatus,
@@ -14,6 +15,7 @@ import {
   getMediaCapabilities,
   getMessageDetail,
   getMessages,
+  getRoster,
   getSettings,
   getTimetableSchedule,
   getTimetableStatus,
@@ -61,6 +63,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getMessageDetail: vi.fn(),
     getMessages: vi.fn(),
     getSettings: vi.fn(),
+    getRoster: vi.fn(),
+    exportRoster: vi.fn(),
     getTimetableSchedule: vi.fn(),
     getTimetableStatus: vi.fn(),
     getTranscriptJobs: vi.fn(),
@@ -137,6 +141,29 @@ function learnerCapabilities(): AppCapabilities {
           can_view_members: true,
           can_view_submissions: false,
           can_manage_grades: false,
+          can_comment_submissions: false,
+        },
+      ],
+    },
+    media: {},
+    update: { check_only: true, automatic_install: false },
+    mcp: { transport: "stdio", read_only: true },
+  };
+}
+
+function staffCapabilities(): AppCapabilities {
+  return {
+    courses: {
+      items: [
+        {
+          course_id: "12",
+          course_name: "课程 A",
+          roles: ["teacher"],
+          role_source: "canvas",
+          can_view_calendar: true,
+          can_view_members: true,
+          can_view_submissions: true,
+          can_manage_grades: true,
           can_comment_submissions: false,
         },
       ],
@@ -300,6 +327,7 @@ beforeEach(() => {
     segments: [],
   });
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
+  vi.mocked(getRoster).mockResolvedValue({ items: [] } as never);
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
   vi.mocked(getBackupStatus).mockResolvedValue({
     status: "idle",
@@ -455,6 +483,69 @@ describe("课程视频首帧导航", () => {
       expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
     );
     expect(startTranscriptBatch).not.toHaveBeenCalledWith(13, ["video-12"]);
+  });
+});
+
+describe("花名册导出防护", () => {
+  beforeEach(() => {
+    window.location.hash = "#/overview";
+  });
+
+  it("无效成员 ID 时取消导出，避免空 ID 列表退化为全员导出", async () => {
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return staffCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      if (action === "overview") return overview as never;
+      if (action === "settings_status")
+        return { theme_mode: settingsTheme } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getRoster).mockResolvedValue({
+      items: [{ id: 0, name: "无效成员" }],
+    } as never);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "花名册" }));
+    expect(window.location.hash).toBe("#/roster");
+    await waitFor(() => expect(getRoster).toHaveBeenCalledWith(12));
+    await screen.findByRole("heading", { level: 2, name: "课程花名册" });
+    fireEvent.click(screen.getByRole("button", { name: "导出筛选结果" }));
+
+    expect(
+      await screen.findByText("所选成员标识无效，已取消导出。"),
+    ).toBeTruthy();
+    expect(exportRoster).not.toHaveBeenCalled();
+  });
+
+  it("超过 500 名成员时取消导出", async () => {
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return staffCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      if (action === "overview") return overview as never;
+      if (action === "settings_status")
+        return { theme_mode: settingsTheme } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    vi.mocked(getRoster).mockResolvedValue({
+      items: Array.from({ length: 501 }, (_, index) => ({
+        id: index + 1,
+        name: `成员 ${index + 1}`,
+      })),
+    } as never);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "花名册" }));
+    expect(window.location.hash).toBe("#/roster");
+    await waitFor(() => expect(getRoster).toHaveBeenCalledWith(12));
+    await screen.findByRole("heading", { level: 2, name: "课程花名册" });
+    fireEvent.click(screen.getByRole("button", { name: "导出筛选结果" }));
+
+    expect(
+      await screen.findByText(
+        "单次最多导出 500 名成员，请缩小筛选范围后重试。",
+      ),
+    ).toBeTruthy();
+    expect(exportRoster).not.toHaveBeenCalled();
   });
 });
 

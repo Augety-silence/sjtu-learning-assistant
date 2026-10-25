@@ -634,9 +634,12 @@ class RestoreService:
                     prefix=".sjtu-restore-overwrite-", dir=target.parent
                 )
                 os.close(snapshot_descriptor)
-                overwrite_snapshot = Path(snapshot_name)
-                overwrite_snapshot.unlink()
-                _replace_with_retry(target, overwrite_snapshot)
+                snapshot_path = Path(snapshot_name)
+                snapshot_path.unlink()
+                _replace_with_retry(target, snapshot_path)
+                # 只有原文件确实移入快照后才进入回滚路径：Windows 上目标被 Word 等占用时
+                # 这一步就会失败，此时原文件仍在原位，不能再误报“回滚失败/保留快照”。
+                overwrite_snapshot = snapshot_path
             _replace_with_retry(temporary, target)
             temporary = None
             restored_target_written = True
@@ -658,12 +661,18 @@ class RestoreService:
                 session.commit()
                 result = job_data(job)
                 result["target"] = str(target)
-                if overwrite_snapshot is not None:
-                    overwrite_snapshot.unlink(missing_ok=True)
-                    overwrite_snapshot = None
-                return result
+            if overwrite_snapshot is not None:
+                snapshot_path, overwrite_snapshot = overwrite_snapshot, None
+                try:
+                    snapshot_path.unlink(missing_ok=True)
+                except OSError:
+                    # 恢复已提交为 completed；快照被杀软/索引短暂占用时只残留一个副本，
+                    # 不能进入 except 把新文件回滚并改写成 failed。
+                    pass
+            return result
         except Exception as exc:
             rollback_failed = False
+            snapshot_name = overwrite_snapshot.name if overwrite_snapshot is not None else ""
             if overwrite_snapshot is not None:
                 try:
                     if restored_target_written:
@@ -674,12 +683,17 @@ class RestoreService:
                     if not rollback_failed:
                         _replace_with_retry(overwrite_snapshot, target)
                         overwrite_snapshot = None
-                except OSError:
+                except (OSError, RestoreError):
+                    # _identity 把 lstat 失败包装成 RestoreError；漏捕会跳过下方 failed 回写，
+                    # 任务停在 verifying，前端会一直轮询。
                     rollback_failed = True
             # 任务面板只读 last_error：保留可操作的已脱敏原因，而不是只显示异常类名。
             if rollback_failed:
+                # 只给出快照文件名（随机名，不含路径），否则用户在 Windows 上找不到无扩展名的副本。
                 public_error = (
-                    "恢复失败，且原文件自动回滚失败；已在目标目录保留隐藏快照，请勿删除。"
+                    "恢复失败，且原文件自动回滚失败；原文件保留在目标目录的隐藏快照“"
+                    + snapshot_name
+                    + "”中，请勿删除，核对后可手动改回原文件名。"
                 )
             elif isinstance(exc, CloudArchiveError):
                 public_error = str(exc)

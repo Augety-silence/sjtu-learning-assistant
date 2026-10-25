@@ -57,8 +57,10 @@ _SECRET_VALUE_PATTERN = re.compile(
     r"password|passwd|secret|api[_ -]?key|cookie|set-cookie|database_url)\b[\"']?"
     r"\s*[:=]\s*(\"[^\"\n]*\"|'[^'\n]*'|[^\s,;}]+)"
 )
+# 后顾断言必须覆盖本地部分字符集的全部字符（含 %），否则 "%%%%..." 这类
+# 输入每个位置都会重新起扫，2 MB 时退化为 O(n^2)。
 _EMAIL_PATTERN = re.compile(
-    r"(?<![\w.+-])[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I
+    r"(?<![\w.%+-])[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I
 )
 _MASKED_EMAIL_PATTERN = re.compile(r"\[ph_EMAIL_[0-9]+_ph\]")
 _MAC_USER_PATH = re.compile(r"/Users/[^/\s\"'<>]+(?:/[^\s\"'<>]*)?")
@@ -67,8 +69,13 @@ _WINDOWS_USER_PATH = re.compile(
     r"(?i)(?:\\{2,4}\?\\{1,2})?[A-Z]:\\{1,2}Users\\{1,2}[^\\\r\n\t\"'<>]+"
     r"(?:\\[^\r\n\t\"'<>]*)?"
 )
+# 用后顾断言代替前导 \b：\b 在 "-eyJ-eyJ..." 中每个 eyJ 前都成立，随后
+# [a-z0-9_-]{20,} 扫到串尾再回溯，同样是 O(n^2)。保留 "-eyJ..."（单个连字符
+# 前缀）仍可命中，但同一 token 字符串内部不再重复起扫。
 _JWT_PATTERN = re.compile(
-    r"\beyJ[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b", re.I
+    r"(?<![a-z0-9_])(?<![a-z0-9_-]-)"
+    r"eyJ[a-z0-9_-]{20,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b",
+    re.I,
 )
 _KNOWN_TOKEN_PATTERN = re.compile(
     r"\b(?:sk[-_][a-z0-9_-]{8,}|ghp_[a-z0-9]{10,}|gho_[a-z0-9]{10,})\b",

@@ -26,6 +26,8 @@ from desktop_app import (
     safe_message,
 )
 from sjtu_learning_assistant.diagnostic_bundle import DiagnosticBundleError
+from sjtu_learning_assistant.database import DatabaseConfigError
+from sjtu_learning_assistant.desktop_database import DesktopDatabaseError
 from sjtu_learning_assistant.cloud_storage import (
     delete_user_token as delete_cloud_user_token,
     save_user_token as save_cloud_user_token,
@@ -554,6 +556,44 @@ class DesktopBridgeTests(unittest.TestCase):
 
 
 class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_database_configuration_error_is_reported_at_startup(self):
+        webview = SimpleNamespace()
+        with (
+            patch("desktop_app.STATIC_INDEX", SimpleNamespace(is_file=lambda: True)),
+            patch.dict("sys.modules", {"webview": webview}),
+            patch("desktop_app._install_macos_native_file_drop_hook"),
+            patch(
+                "desktop_app.create_database_engine",
+                side_effect=DatabaseConfigError("database configuration invalid"),
+            ),
+            patch("desktop_app._report_startup_error") as report,
+        ):
+            self.assertEqual(2, run_desktop_app())
+
+        report.assert_called_once()
+        self.assertIn("database configuration invalid", report.call_args.args[0])
+
+    def test_desktop_database_initialization_error_is_reported_and_engine_closed(self):
+        engine = Mock()
+        engine.dialect.name = "sqlite"
+        webview = SimpleNamespace()
+        with (
+            patch("desktop_app.STATIC_INDEX", SimpleNamespace(is_file=lambda: True)),
+            patch.dict("sys.modules", {"webview": webview}),
+            patch("desktop_app._install_macos_native_file_drop_hook"),
+            patch("desktop_app.create_database_engine", return_value=engine),
+            patch(
+                "desktop_app.initialize_desktop_database",
+                side_effect=DesktopDatabaseError("database initialization failed"),
+            ),
+            patch("desktop_app._report_startup_error") as report,
+        ):
+            self.assertEqual(2, run_desktop_app())
+
+        report.assert_called_once()
+        self.assertIn("database initialization failed", report.call_args.args[0])
+        engine.dispose.assert_called_once_with()
+
     def test_macos_windowed_startup_error_uses_native_dialog(self):
         with (
             patch("desktop_app.sys.platform", "darwin"),

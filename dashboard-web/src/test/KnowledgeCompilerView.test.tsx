@@ -172,4 +172,18 @@ describe("KnowledgeCompilerView", () => {
       screen.getByRole("button", { name: "开始编译" }).hasAttribute("disabled"),
     ).toBe(true);
   });
+
+  it("终态进度没有当前文件时显示任务已结束", async () => {
+    vi.mocked(getKnowledgeCompilerStatus).mockResolvedValue({
+      ...idleTask,
+      status: "completed",
+      progress: { done: 12, total: 12, current_file: null },
+    });
+
+    render(<KnowledgeCompilerView />);
+
+    expect(await screen.findByText("编译已完成")).toBeTruthy();
+    expect(screen.getByText("本次任务已结束")).toBeTruthy();
+    expect(screen.queryByText("正在切换到下一轮…")).toBeNull();
+  });
 });

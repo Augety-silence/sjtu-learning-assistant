@@ -1642,9 +1642,13 @@ class DashboardService:
                             "尚未保存 Canvas Access Token，请在设置中配置后重试。",
                             retryable=False,
                         )
-                    self._canvas_client = build_http_client(
-                        DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
-                    )
+                    try:
+                        self._canvas_client = build_http_client(
+                            DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
+                        )
+                    except CanvasCheckError as exc:
+                        # e.g. a pasted zero-width space; surface the actionable hint.
+                        raise DashboardError(str(exc), retryable=False) from None
             return self._canvas_client
 
     @staticmethod
@@ -3255,6 +3259,7 @@ class DashboardService:
         if self._archive_root_override is None:
             self.archive_root = Path(settings.archive_root)
             self.ai_files.archive_root = self.archive_root
+            self._sync_cloud_archive_root()
         if {"ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"} & set(payload):
             self._discard_ai_client()
         return self.settings_status()
@@ -3269,7 +3274,15 @@ class DashboardService:
         if self._archive_root_override is None:
             self.archive_root = Path(updated.archive_root)
             self.ai_files.archive_root = self.archive_root
+            self._sync_cloud_archive_root()
         return {"cancelled": False, "settings": self.settings_status()}
+
+    def _sync_cloud_archive_root(self) -> None:
+        # CloudArchiveService snapshots archive_root at construction; keep it in step
+        # so new ArchiveEntry rows record the current root/relative_path.
+        self.cloud_archive.archive_root = Path(
+            os.path.abspath(os.fspath(self.archive_root.expanduser()))
+        )
 
     def organize_archive(self) -> dict[str, Any]:
         settings = self._effective_settings()

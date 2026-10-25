@@ -491,6 +491,11 @@ function RosterAdapter({ courseId }: { courseId: number | null }) {
     const ids = request.members
       .map((member) => Number(member.id))
       .filter((id) => Number.isSafeInteger(id) && id > 0);
+    // 空 user_ids 在后端表示导出全员；任何成员标识无效都取消，避免过量或静默缩水导出。
+    if (ids.length === 0 || ids.length !== request.members.length)
+      throw new Error("所选成员标识无效，已取消导出。");
+    if (ids.length > 500)
+      throw new Error("单次最多导出 500 名成员，请缩小筛选范围后重试。");
     const result = await exportRoster(courseId, ids);
     await revealAcademicExport(result.reveal_token);
   };

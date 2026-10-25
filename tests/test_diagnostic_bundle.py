@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -90,6 +91,14 @@ class DiagnosticBundleTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, result)
         self.assertIn("https://canvas.example.edu/courses/1?[redacted]#[redacted]", result)
+
+    def test_sanitizer_handles_long_email_and_jwt_like_runs_in_linear_time(self) -> None:
+        adversarial_inputs = ("%" * 1_000_000, "-eyJ" * 250_000)
+        started = time.perf_counter()
+        results = [sanitize_text(value) for value in adversarial_inputs]
+
+        self.assertLess(time.perf_counter() - started, 2.0)
+        self.assertTrue(all(0 < len(result) <= 256 * 1024 for result in results))
 
     def test_bundle_uses_exact_allowlist_and_safe_aggregates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

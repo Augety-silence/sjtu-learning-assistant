@@ -623,16 +623,18 @@ def _validate_repair_preserves(role: str, original: object, repaired: object) ->
                 "confidence": span.confidence,
             })
         empty_noop = not before.get("changes") and not before.get("uncertain")
+        # The repair prompt permits exactly these fills for absent keys: [] / 0.0.
+        before_changes = before.get("changes", [])
         if (
             ("chunk_id" in before and before.get("chunk_id") != after.get("chunk_id") and not empty_noop)
-            or before.get("confidence") != after.get("confidence")
-            or before.get("uncertain") != projected_uncertain
-            or type(before.get("changes")) is not list
-            or len(before["changes"]) != len(after.get("changes", []))
+            or before.get("confidence", 0.0) != after.get("confidence")
+            or before.get("uncertain", []) != projected_uncertain
+            or type(before_changes) is not list
+            or len(before_changes) != len(after.get("changes", []))
             or ("corrected_text" in before and before["corrected_text"] != after.get("corrected_text"))
         ):
             raise SchemaValidationError("$: correction repair changed proposal content")
-        for previous, current in zip(before["changes"], after["changes"]):
+        for previous, current in zip(before_changes, after["changes"]):
             if type(previous) is not dict or type(current) is not dict:
                 raise SchemaValidationError("$.changes: correction repair changed proposal content")
             projected = {

@@ -19,6 +19,7 @@ from sjtu_learning_assistant.agent_runtime import (
     PresetLoader,
     ReadOnlyToolRegistry,
 )
+from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
 from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
@@ -219,6 +220,52 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("get_material_tree", [run["tool_name"] for run in result.tool_runs])
         request_text = json.dumps(client.requests[0][0], ensure_ascii=False)
         self.assertIn("lecture.pdf", request_text)
+
+    def test_prefetch_uses_only_system_budget_left_after_caller_context(self) -> None:
+        client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])
+        loop = AgentLoop(client, self.registry, preset(*ALL_TOOLS))
+        base_system = loop.system_prompt + "\n\n" + loop._time_hint()
+        caller_room = SYSTEM_MESSAGE_CHAR_BUDGET - len(base_system) - len("\n\n")
+        caller_context = "CALLER_CONTEXT_SENTINEL " + "x" * (caller_room - 50 - 24)
+        result = loop.run(
+            [{"role": "system", "content": caller_context}, {"role": "user", "content": "有哪些课程？"}],
+            user_text="有哪些课程？",
+            max_tokens=500,
+            temperature=0,
+        )
+
+        self.assertEqual("completed", result.status)
+        request_messages = client.requests[0][0]
+        system_messages = [item for item in request_messages if item["role"] == "system"]
+        self.assertEqual(1, len(system_messages))
+        system_content = system_messages[0]["content"]
+        self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
+        self.assertTrue(system_content.endswith(caller_context))
+        self.assertTrue(
+            any(
+                run["phase"] == "prefetch" and run["status"] == "rejected"
+                for run in result.tool_runs
+            )
+        )
+
+    def test_oversized_system_context_is_marked_and_bounded(self) -> None:
+        client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [
+                {"role": "system", "content": "CALLER_CONTEXT_SENTINEL " + "x" * 15_000},
+                {"role": "user", "content": "你好"},
+            ],
+            user_text="你好",
+            max_tokens=500,
+            temperature=0,
+        )
+
+        self.assertEqual("completed", result.status)
+        system_messages = [item for item in client.requests[0][0] if item["role"] == "system"]
+        self.assertEqual(1, len(system_messages))
+        system_content = system_messages[0]["content"]
+        self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
+        self.assertIn("上下文过长，已截断", system_content)
 
     def test_model_tool_calls_loop_and_reasoning(self) -> None:
         client = ScriptedClient(

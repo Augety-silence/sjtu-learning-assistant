@@ -766,7 +766,13 @@ class CloudArchiveService:
         return size == version.size and digest.hexdigest() == version.sha256
 
     def _reconcile_remote(
-        self, job_id: str, provider: Any, remote_path: tuple[str, ...], *, verify_content: bool = False
+        self,
+        job_id: str,
+        provider: Any,
+        remote_path: tuple[str, ...],
+        *,
+        verify_content: bool = False,
+        clean_conflict: bool = False,
     ) -> dict[str, Any]:
         item = provider.get_info(remote_path)
         with Session(self.engine) as session:
@@ -774,10 +780,13 @@ class CloudArchiveService:
             version = session.get(ArchiveVersion, job.version_id) if job else None
             if job is None or version is None:
                 raise CloudArchiveError("归档任务记录不完整。")
-            if getattr(item, "size", None) not in (None, version.size):
+            size_conflict = getattr(item, "size", None) not in (None, version.size)
+            if size_conflict and not clean_conflict:
                 raise CloudArchiveError("确定性云端路径已存在不同大小的对象，拒绝覆盖。")
-            if not self._strong_remote_match(version, item):
-                if verify_content:
+            # 对账入口（needs_reconcile/needs_verification）遇到大小不符：先按内容强校验（防元数据滞后），
+            # 不一致则按冲突对象清理；否则 retry 走 _upload 会被“拒绝覆盖”永久打回。
+            if size_conflict or not self._strong_remote_match(version, item):
+                if size_conflict or verify_content:
                     if not self._remote_content_matches(provider, remote_path, version):
                         provider.delete(remote_path, permanent=True, missing_ok=True)
                         message = "云端对象内容与本地归档记录不一致；冲突对象已清理，可重试重新上传。"
@@ -986,7 +995,11 @@ class CloudArchiveService:
                 else:
                     results.append(
                         self._reconcile_remote(
-                            identifier, provider, remote_path, verify_content=verify_content
+                            identifier,
+                            provider,
+                            remote_path,
+                            verify_content=verify_content,
+                            clean_conflict=True,
                         )
                     )
             except CloudArchiveError as exc:

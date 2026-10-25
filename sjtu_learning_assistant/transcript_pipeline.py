@@ -2540,6 +2540,25 @@ def _validated_source_cues(corrected: Sequence[Cue], original: Sequence[Cue]) ->
     return [by_id[cue.cue_id] for cue in original]
 
 
+def _cached_chunk_matches_source(value: object, chunk: TranscriptChunk) -> bool:
+    """Reuse a corrected-source checkpoint only if its rows are exactly this chunk's cues.
+
+    Map results always carry the source cue rows verbatim, so a checkpoint made
+    from the original text (or another correction) never matches and is re-extracted.
+    """
+    rows = value.get("cleaned_transcript") if isinstance(value, Mapping) else None
+    if type(rows) is not list or len(rows) != len(chunk.cues):
+        return False
+    return all(
+        isinstance(row, Mapping)
+        and row.get("cue_id") == cue.cue_id
+        and row.get("start_ms") == cue.start_ms
+        and row.get("end_ms") == cue.end_ms
+        and row.get("text") == cue.text
+        for row, cue in zip(rows, chunk.cues)
+    )
+
+
 class TranscriptPipeline:
     def run(
         self,
@@ -2572,14 +2591,17 @@ class TranscriptPipeline:
         warnings: list[str] = list()
         pipeline_diagnostics: list[dict[str, Any]] = []
         chunk_warnings: dict[int, list[str]] = {}
-        cached = (cached_chunks or {}) if cues == original_cues else {}
+        source_unchanged = cues == original_cues
+        cached = cached_chunks or {}
         pending = list(chunks)
         while pending:
             _check_cancel(should_cancel)
             chunk = min(pending, key=lambda item: (chunk_priority(item), item.index)) if chunk_priority else pending[0]
             pending.remove(chunk)
             chunk_warnings[chunk.index] = []
-            if chunk.index in cached:
+            if chunk.index in cached and (
+                source_unchanged or _cached_chunk_matches_source(cached.get(chunk.index), chunk)
+            ):
                 result = validate_map(cached.get(chunk.index), chunk.cues)
             elif offline_only:
                 raise ValueError("离线恢复要求全部字幕分块均已存在且验证通过。")

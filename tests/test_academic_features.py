@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from sjtu_learning_assistant.academic_features import (
     AcademicPermissionError,
     AcademicValidationError,
     AcademicVerificationError,
+    redact_error_message,
 )
 from sjtu_learning_assistant.canvas_client import CanvasError, CanvasNetworkError
 from sjtu_learning_assistant.models import Base, Course
@@ -440,6 +442,20 @@ class AcademicFeatureServiceTests(unittest.TestCase):
         self.assertNotIn("second-secret", message)
         self.assertNotIn("\n", message)
         self.assertIn("[REDACTED]", message)
+
+    def test_url_userinfo_redaction_handles_long_scheme_like_input_quickly(self) -> None:
+        value = "a." * 20_000
+        started = time.perf_counter()
+
+        result = redact_error_message(value)
+
+        elapsed = time.perf_counter() - started
+        self.assertEqual(value[:300], result)
+        self.assertLess(elapsed, 0.5)
+
+    def test_url_userinfo_redaction_still_handles_punctuation_context(self) -> None:
+        result = redact_error_message('see(https://student:secret@example.test/path)')
+        self.assertEqual("see(https://[REDACTED]@example.test/path)", result)
 
 
 if __name__ == "__main__":

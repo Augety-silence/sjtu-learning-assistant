@@ -266,7 +266,12 @@ class MCPServer:
 
         source = input_stream or sys.stdin
         sink = output_stream or sys.stdout
-        for line in source:
+        # 优先按字节读取底层缓冲区：文本层（尤其 reconfigure 后 errors=strict）遇到
+        # 非 UTF-8 字节会在迭代时抛 UnicodeDecodeError 并终止服务；交给 process_line
+        # 解码即可把坏行映射为 Parse error 并继续处理后续请求。
+        reader = getattr(source, "buffer", None)
+        lines = reader if reader is not None and hasattr(reader, "readline") else source
+        for line in lines:
             response = self.process_line(line)
             if response is not None:
                 sink.write(response + "\n")
