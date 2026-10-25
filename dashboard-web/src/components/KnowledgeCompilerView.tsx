@@ -511,7 +511,11 @@ export function KnowledgeCompilerView() {
             </dl>
             <div className="knowledge-progress-copy">
               <strong>{percentage}%</strong>
-              <span>{progress?.current_file || "正在切换到下一轮…"}</span>
+              {/* 后端在完成/停止时会清空 current_file；终态不能再显示"正在切换"。 */}
+              <span>
+                {progress?.current_file ||
+                  (running ? "正在切换到下一轮…" : "本次任务已结束")}
+              </span>
             </div>
             <div
               className="knowledge-progress"

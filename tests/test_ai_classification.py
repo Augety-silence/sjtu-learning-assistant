@@ -61,6 +61,18 @@ class AIClientTests(unittest.TestCase):
         with self.assertRaises(AIClassificationError):
             OpenAIClassificationClient._parse_result({"classifications": [{"id": "1", "category": "invalid"}]}, ["1"])
 
+    def test_classify_many_preserves_authentication_category(self):
+        client = OpenAIClassificationClient(
+            api_key="fake-key",
+            transport=httpx.MockTransport(lambda request: httpx.Response(401, text="secret", request=request)),
+            limiter=lambda: None,
+        )
+        with self.assertRaises(AIClassificationError) as raised:
+            client.classify_many((ClassificationInput("1", "课程", "a.pdf"),))
+        client.close()
+        self.assertEqual("authentication", raised.exception.category)
+        self.assertEqual(401, raised.exception.status_code)
+
     def test_chat_uses_context_and_validates_bounded_messages(self):
         seen = []
 
@@ -119,10 +131,22 @@ class AIClientTests(unittest.TestCase):
             system_prompt=False,
         )
         client.close()
-
         self.assertEqual("图中是课程安排。", result["content"])
         image_url = seen[0]["messages"][0]["content"][0]["image_url"]
         self.assertEqual({"url": data_url}, image_url)
+
+    def test_multimodal_validation_uses_actionable_categories(self):
+        valid = "data:image/jpeg;base64," + base64.b64encode(b"x").decode("ascii")
+        base = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": valid}}, {"type": "text", "text": "描述"}]}
+        too_many = {"role": "user", "content": [base["content"][0]] * 5 + [{"type": "text", "text": "描述"}]}
+        for message, category in ((too_many, "image_count_limit"),):
+            with self.assertRaises(AIClassificationError) as raised:
+                OpenAIClassificationClient._clean_chat_messages([message])
+            self.assertEqual(category, raised.exception.category)
+        malformed = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,%%%"}}, {"type": "text", "text": "描述"}]}
+        with self.assertRaises(AIClassificationError) as raised:
+            OpenAIClassificationClient._clean_chat_messages([malformed])
+        self.assertEqual("image_encoding", raised.exception.category)
 
     def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
         with patch.dict(os.environ):

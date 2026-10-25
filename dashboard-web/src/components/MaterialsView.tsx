@@ -54,8 +54,43 @@ const structuredPreviewExtensions = new Set([
 ]);
 
 function fileManagerName() {
-  const platform = navigator.platform || navigator.userAgent;
+  const modernNavigator = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  const platform =
+    modernNavigator.userAgentData?.platform ||
+    modernNavigator.platform ||
+    modernNavigator.userAgent;
   return /Win/i.test(platform) ? "资源管理器" : "Finder";
+}
+
+function materialAvailability(file: MaterialNode) {
+  if (file.download_status === "downloaded") return "downloaded";
+  if (file.download_status === "failed") return "failed";
+  if (file.cloud_ready || file.download_status === "cloud_only")
+    return "cloud_only";
+  return "pending";
+}
+
+function materialAvailabilityLabel(file: MaterialNode) {
+  const availability = materialAvailability(file);
+  if (availability === "downloaded") return "已下载";
+  if (availability === "failed") return "失败";
+  if (availability === "cloud_only") return "仅云端";
+  return "未下载";
+}
+
+function compactLocalPath(value: string) {
+  const windowsSeparator = String.fromCharCode(92);
+  const windowsParts = value.split(windowsSeparator);
+  if (
+    /^[A-Za-z]:$/.test(windowsParts[0] ?? "") &&
+    windowsParts[1]?.toLowerCase() === "users" &&
+    windowsParts[2]
+  ) {
+    return ["~", ...windowsParts.slice(3)].join(windowsSeparator);
+  }
+  return value.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
 }
 
 function records(value: unknown): Record<string, unknown>[] {
@@ -252,12 +287,7 @@ export function MaterialsView() {
         const categoryMatched =
           category === "all" || file.category === category;
         const statusMatched =
-          status === "all" ||
-          file.download_status === status ||
-          (status === "pending" &&
-            !["downloaded", "cloud_only", "failed"].includes(
-              file.download_status ?? "pending",
-            ));
+          status === "all" || materialAvailability(file) === status;
         return searchMatched && categoryMatched && statusMatched;
       }),
     [allMatches, category, current, isSearching, normalizedQuery, path, status],
@@ -712,7 +742,7 @@ export function MaterialsView() {
         <ErrorState message={error} retry={load} />
       ) : !tree ? (
         <LoadingState label="正在整理课程资料…" />
-      ) : tree.root.children?.length === 0 ? (
+      ) : !tree.root.children?.length ? (
         <EmptyState
           title="暂无课程资料"
           description="完成 Canvas 同步后，资料会按课程目录显示。"
@@ -770,6 +800,9 @@ export function MaterialsView() {
                   <span key={node.id}>
                     <button
                       type="button"
+                      aria-current={
+                        index === path.length - 1 ? "page" : undefined
+                      }
                       onClick={() => {
                         setSelectedId(node.id);
                         setActiveId(node.id);
@@ -777,13 +810,15 @@ export function MaterialsView() {
                     >
                       {node.name}
                     </button>
-                    {index < path.length - 1 && <span>/</span>}
+                    {index < path.length - 1 && (
+                      <span aria-hidden="true">/</span>
+                    )}
                   </span>
                 ))}
               </nav>
               <p
                 className="result-count finder-result-count"
-                aria-live="polite"
+                aria-live={hasFilters ? "polite" : undefined}
               >
                 {childFolders.length + visibleFiles.length} 个结果
               </p>
@@ -875,8 +910,8 @@ export function MaterialsView() {
                       aria-current={
                         selectedContentId === file.id ? "true" : undefined
                       }
-                      aria-label={`拖动资料：${file.name}`}
-                      aria-describedby="material-drop-help"
+                      aria-label={file.name}
+                      aria-describedby={`material-drop-help material-row-meta-${fileIndex}`}
                       onFocus={() => setSelectedContentId(file.id)}
                       onClick={() => setSelectedContentId(file.id)}
                       onDoubleClick={(event) => {
@@ -942,23 +977,20 @@ export function MaterialsView() {
                               className="finder-local-path"
                               title={file.local_path}
                             >
-                              {file.local_path}
+                              {compactLocalPath(file.local_path)}
                             </span>
                           )
                         )}
                       </div>
                       <span
-                        className={`status-tag status-${file.download_status}`}
+                        className={`status-tag status-${materialAvailability(file)}`}
                       >
-                        {file.cloud_ready
-                          ? "云端"
-                          : file.download_status === "downloaded"
-                            ? "已下载"
-                            : file.download_status === "failed"
-                              ? "失败"
-                              : "未下载"}
+                        {materialAvailabilityLabel(file)}
                       </span>
-                      <span className="finder-meta">
+                      <span
+                        id={`material-row-meta-${fileIndex}`}
+                        className="finder-meta"
+                      >
                         {formatSize(file.size ?? null)} ·{" "}
                         {formatDateTime(file.updated_at ?? null)}
                       </span>
@@ -1100,7 +1132,9 @@ export function MaterialsView() {
                             disabled={Boolean(active)}
                             onClick={() => void act(file, "download")}
                           >
-                            下载
+                            {file.download_status === "failed"
+                              ? "重新下载"
+                              : "下载"}
                           </Button>
                         )}
                       </div>

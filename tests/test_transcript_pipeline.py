@@ -4,6 +4,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sjtu_learning_assistant.transcript_pipeline import (
     AUDIT_WIRE_VERSION,
@@ -22,6 +23,7 @@ from sjtu_learning_assistant.transcript_pipeline import (
     _validated_map_response,
     _normalize_study_guide,
     _normalize_audit_evidence,
+    _diagnostics,
     _fallback_study_guide,
     _guide_prompt,
     _json_content,
@@ -33,6 +35,7 @@ from sjtu_learning_assistant.transcript_pipeline import (
     normalize_map_output,
     normalize_summary_output,
     parse_plain_map_output,
+    render_cleaned,
     parse_vtt,
     validate_map,
     validate_summary,
@@ -461,9 +464,48 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual(0, cues[0].start_ms)
         self.assertIn("不要改动术语、数字或公式", cues[1].text)
 
+    def test_generated_cue_id_skips_existing_explicit_id(self):
+        cues = normalize_cues([
+            Cue(0, 1000, "第一句证据。", ""),
+            Cue(2000, 3000, "第二句显式编号。", "cue-000001"),
+            Cue(4000, 5000, "第三句自动编号。", ""),
+        ])
+        self.assertEqual(["cue-000002", "cue-000001", "cue-000003"], [cue.cue_id for cue in cues])
+
+    def test_cleaned_transcript_uses_hour_timestamp_for_long_recordings(self):
+        markdown = render_cleaned([{
+            "cleaned_transcript": [{
+                "cue_id": "long",
+                "start_ms": 75 * 60 * 1000 + 30_000,
+                "end_ms": 75 * 60 * 1000 + 45_000,
+                "text": "长课片段",
+            }]
+        }])
+        self.assertIn("**1:15:30**", markdown)
+
+    def test_cleaned_transcript_tolerates_missing_cached_timestamps(self):
+        markdown = render_cleaned([{
+            "cleaned_transcript": [{
+                "cue_id": "stale",
+                "start_ms": None,
+                "end_ms": None,
+                "text": "旧缓存片段",
+            }]
+        }])
+        self.assertIn("**00:00**", markdown)
+        self.assertIn("旧缓存片段", markdown)
+
     def test_rejects_invalid_vtt(self):
         with self.assertRaises(ValueError):
             parse_vtt("00:00.000 --> 00:01.000\nbad")
+
+    def test_webvtt_lone_surrogate_has_actionable_error(self):
+        with self.assertRaisesRegex(ValueError, "UTF-8"):
+            parse_vtt("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n\ud800\n")
+
+    def test_webvtt_timestamp_requires_ascii_digits(self):
+        with self.assertRaisesRegex(ValueError, "时间戳格式无效"):
+            parse_vtt("WEBVTT\n\n００:００.０００ --> ００:０１.０００\n文本\n")
 
     def test_chunks_at_cue_boundaries_under_safer_limit(self):
         text = "WEBVTT\n\n" + "\n\n".join(
@@ -509,6 +551,15 @@ class TranscriptPipelineTests(unittest.TestCase):
         self.assertEqual("length", error.diagnostics["finish_reason"])
         self.assertNotIn(sensitive, str(error))
         self.assertNotIn(sensitive, json.dumps(error.diagnostics, ensure_ascii=False))
+
+    def test_parse_diagnostics_keep_structure_without_persisting_output_characters(self):
+        result = _diagnostics("XsecretZ", {}, "JSONDecodeError")
+        self.assertTrue(result["starts_with_object"] is False)
+        self.assertTrue(result["ends_with_object"] is False)
+        self.assertNotIn("first_char", result)
+        self.assertNotIn("last_char", result)
+        self.assertNotIn("X", result.values())
+        self.assertNotIn("Z", result.values())
 
     def test_unbalanced_object_is_classified_as_truncated_without_finish_reason(self):
         with self.assertRaises(TranscriptAIFormatError) as raised:
@@ -656,9 +707,56 @@ class TranscriptPipelineTests(unittest.TestCase):
         result = TranscriptPipeline().run(VTT, ai)
         self.assertFalse(result.summary_empty)
         self.assertEqual(MAP_FALLBACK_WARNING, result.chunks[0].get("partial_warning"))
+        self.assertTrue(any("AI 响应被截断" in warning for warning in result.partial_warnings))
+        self.assertTrue(any("00:00–00:05" in warning for warning in result.partial_warnings))
+        self.assertFalse(any("已使用回退" in warning for warning in result.partial_warnings))
         self.assertEqual("", result.summary.get("lesson_topic"))
         self.assertIn("study_guide", result.summary)
         self.assertEqual(3, len(ai.calls))
+
+    def test_empty_map_response_keeps_empty_error_category(self):
+        with self.assertRaises(TranscriptAIFormatError) as raised:
+            _validated_map_response("", {}, normalize_cues(parse_vtt(VTT)))
+        self.assertEqual("empty", raised.exception.category)
+
+    def test_map_prompt_with_system_text_over_limit_falls_back_without_calling_ai(self):
+        ai = FakeAI()
+        with patch(
+            "sjtu_learning_assistant.transcript_pipeline._map_system_prompt",
+            return_value="x" * MAX_MESSAGE_CHARS,
+        ):
+            result = TranscriptPipeline().run(VTT, ai)
+        self.assertEqual(MAP_FALLBACK_WARNING, result.chunks[0]["partial_warning"])
+        self.assertTrue(any("单消息长度限制" in item for item in result.partial_warnings))
+        map_prompts = [
+            message["content"]
+            for call in ai.calls
+            for message in call
+            if message.get("role") == "user"
+            and message.get("content", "").startswith("从以下带 cue_id")
+        ]
+        self.assertEqual([], map_prompts)
+
+    def test_json_prompt_limit_raises_structured_error(self):
+        class NoCall:
+            calls = 0
+
+            def chat_completion(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("overlong requests must fail before provider call")
+
+        client = NoCall()
+        prompt = "private prompt content"
+        system = "只依据字幕证据处理内容，不补写外部事实。只返回一个严格 JSON 对象。"
+        with patch(
+            "sjtu_learning_assistant.transcript_pipeline.MAX_MESSAGE_CHARS",
+            len(system) + len(prompt),
+        ):
+            with self.assertRaises(TranscriptAIFormatError) as raised:
+                _json_content(client, prompt, lambda value: value, schema_hint="object")
+        self.assertEqual("prompt_too_long", raised.exception.category)
+        self.assertNotIn(prompt, str(raised.exception))
+        self.assertEqual(0, client.calls)
 
 
     def test_valid_map_uses_deterministic_summary_without_reduce_request(self):
@@ -1001,6 +1099,33 @@ class TranscriptPipelineTests(unittest.TestCase):
         )
         self.assertEqual([], ai.calls)
         self.assertEqual([0], published)
+        self.assertEqual(cached[0], result.chunks[0])
+
+    def test_matching_corrected_source_checkpoint_is_reused_offline(self):
+        cues = normalize_cues(parse_vtt(VTT))
+        corrected = [
+            Cue(cue.start_ms, cue.end_ms, cue.text.replace("不要改动", "必须保留"), cue.cue_id)
+            for cue in cues
+        ]
+        payload = map_payload()
+        for item in payload["emphasized_points"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        for item in payload["knowledge_points"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        for item in payload["practice_items"]:
+            for evidence in item["evidence"]:
+                evidence["quote"] = "必须保留"
+        payload["cleaned_transcript"] = [cue.as_dict() for cue in corrected]
+        cached = {0: validate_map(payload, corrected)}
+        ai = FakeAI()
+
+        result = TranscriptPipeline().run(
+            VTT, ai, cached_chunks=cached, source_cues=corrected, offline_only=True
+        )
+
+        self.assertEqual([], ai.calls)
         self.assertEqual(cached[0], result.chunks[0])
 
     def test_cancelled_before_start_never_requests_ai_or_publishes(self):

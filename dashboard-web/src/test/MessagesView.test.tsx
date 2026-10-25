@@ -66,6 +66,12 @@ afterEach(() => {
 });
 
 describe("MessagesView", () => {
+  it("exposes the message collection as a list to assistive technology", async () => {
+    render(<MessagesView />);
+    const list = await screen.findByRole("list", { name: "消息列表" });
+    expect(list.querySelectorAll('[role="listitem"]').length).toBe(2);
+  });
+
   it("消息框先出现，异步正文准备后才进入详情显现", async () => {
     let finish: ((value: MessageDetail) => void) | undefined;
     vi.mocked(getMessageDetail).mockReturnValueOnce(
@@ -190,6 +196,7 @@ describe("MessagesView", () => {
       </>,
     );
     await screen.findByText("邮件一");
+    screen.getByRole("button", { name: "打开消息详情：邮件一" }).focus();
 
     fireEvent.keyDown(document, { key: "j" });
     expect(
@@ -225,6 +232,12 @@ describe("MessagesView", () => {
     vi.mocked(getMessageDetail).mockClear();
     const input = screen.getByRole("textbox", { name: "搜索输入" });
     input.focus();
+    fireEvent.keyDown(document, { key: "j" });
+    expect(
+      screen
+        .getByRole("button", { name: "打开消息详情：邮件一" })
+        .getAttribute("aria-current"),
+    ).toBe("true");
     fireEvent.keyDown(input, { key: "r" });
     fireEvent.keyDown(input, { key: "R", shiftKey: true });
     fireEvent.keyDown(input, { key: "Enter" });

@@ -45,7 +45,11 @@
 }
 
 .archive-live-region:empty { display: none; }
-.archive-live-region { color: var(--status-success); font-size: 13px; }
+.archive-live-region { color: var(--text-secondary); font-size: 13px; }
+.archive-live-region[data-tone="success"] { color: var(--status-success); }
+.archive-live-region[data-tone="warning"] { color: var(--status-warning); background: var(--status-warning-bg); padding: 9px 11px; border-radius: 6px; }
+.archive-live-region[data-tone="danger"] { color: var(--status-danger); }
+.archive-overwrite-action.aura-button { color: var(--status-danger); background: var(--status-danger-bg); border: 1px solid var(--status-danger); }
 
 .archive-banner {
   display: flex;

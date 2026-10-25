@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import itertools
 import os
 import re
 import stat
@@ -160,7 +161,9 @@ def normalize_term(value: str | None) -> str:
     return f"{match.group(1)}-{match.group(2)} {match.group(3).title()}"
 
 
-def sanitize_component(value: str, *, fallback: str, max_length: int = 120) -> str:
+def sanitize_component(
+    value: str, *, fallback: str, max_length: int = 120, max_bytes: int = 240
+) -> str:
     """清洗单个路径组件；绝不允许输入产生目录层级。"""
     cleaned = INVALID_PATH_CHARS.sub("_", str(value))
     cleaned = SPACE_RUN.sub(" ", cleaned).strip(" .")
@@ -176,6 +179,18 @@ def sanitize_component(value: str, *, fallback: str, max_length: int = 120) -> s
             extension = ""
         head = cleaned[: max_length - 13 - len(extension)].rstrip(" .")
         cleaned = f"{head} [{suffix}]{extension}"
+    if len(cleaned.encode("utf-8")) > max_bytes:
+        suffix = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+        suffix = "".join(itertools.islice(suffix, 10))
+        extension = Path(cleaned).suffix
+        if len(extension.encode("utf-8")) > 24:
+            extension = ""
+        marker = " " + chr(91) + suffix + chr(93) + extension
+        budget = max_bytes - len(marker.encode("utf-8"))
+        stem = cleaned.removesuffix(extension) if extension else cleaned
+        while len(stem.encode("utf-8")) > budget:
+            stem = "".join(itertools.islice(stem, max(0, len(stem) - 1)))
+        cleaned = stem.rstrip(" .") + marker
     return cleaned
 
 
@@ -1776,9 +1791,12 @@ class ArchiveService:
             # 上一轮已保留同一旧内容（如 Windows 上目标被 Word/Acrobat 占用导致
             # 替换失败、每轮同步重试）；不重复复制，避免 .versions 无限膨胀。
             return
+        version_stem = sanitize_component(
+            target.stem, fallback="version", max_length=80, max_bytes=100
+        )
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         version_name = add_source_id_suffix(
-            "%s (version %s)%s" % (target.stem, timestamp, target.suffix), source_id
+            "%s (version %s)%s" % (version_stem, timestamp, target.suffix), source_id
         )
         version_path = ensure_within_root(
             self.archive_root, versions_dir / version_name
@@ -1808,7 +1826,10 @@ class ArchiveService:
         self, target: Path, versions_dir: Path, source_id: str
     ) -> bool:
         safe_id = sanitize_component(source_id, fallback="unknown", max_length=48)
-        prefix = f"{target.stem} (version "
+        version_stem = sanitize_component(
+            target.stem, fallback="version", max_length=80, max_bytes=100
+        )
+        prefix = f"{version_stem} (version "
         marker = f" [{safe_id}]{target.suffix}"
         try:
             candidates = [
@@ -1820,8 +1841,9 @@ class ArchiveService:
             ]
             if not candidates:
                 return False
+            candidates.sort(key=lambda child: child.name, reverse=True)
             expected = self._file_digest(target)
-            for candidate in candidates:
+            for candidate in itertools.islice(candidates, 5):
                 if candidate.lstat().st_size != expected[0]:
                     continue
                 if self._file_digest(candidate) == expected:

@@ -160,7 +160,6 @@ export function VideoSynchronizedLearning({
   useEffect(() => {
     const controller = new AbortController();
     let timer: number | undefined;
-    let failures = 0;
     const generation = ++generationRef.current;
     if (loadedSourceRef.current !== video.id) setResult(undefined);
     loadedSourceRef.current = video.id;
@@ -182,7 +181,6 @@ export function VideoSynchronizedLearning({
           .sort((left, right) => left.startMs - right.startMs);
         setResult({ ...loaded, segments });
         setError("");
-        failures = 0;
         if (
           loaded.isProcessing ??
           (loaded.status === "processing" || refreshingRef.current)
@@ -197,7 +195,6 @@ export function VideoSynchronizedLearning({
         setError(
           reason instanceof Error ? reason.message : "学习材料读取失败。",
         );
-        failures += 1;
       }
     };
     void load();

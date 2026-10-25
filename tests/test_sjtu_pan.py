@@ -11,6 +11,8 @@ import httpx
 
 from sjtu_learning_assistant.cloud_storage import (
     CloudDirectoryPage,
+    CloudIntegrityError,
+    CloudItem,
     CloudRemoteApiError,
     CloudTimeoutError,
     SJTUCloudPanProvider,
@@ -167,6 +169,15 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(2, calls["directory"])
         sleeper.assert_called_once_with(0.0)
 
+    def test_retry_after_rejects_non_rfc_numeric_values(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        try:
+            for value in ("nan", "inf", "-5", "1e3", "2.5"):
+                response = httpx.Response(503, headers=(("Retry-After", value),))
+                self.assertEqual(0.25, provider._retry_delay(response, 0), value)
+        finally:
+            client.close()
+
     def test_stream_get_retries_before_yielding_bytes(self) -> None:
         calls = {"download": 0}
 
@@ -268,6 +279,8 @@ class SJTUCloudPanTests(unittest.TestCase):
                     return httpx.Response(409, json={"message": "SameNameDirectoryOrFileExists"}, request=request)
                 return httpx.Response(200, json={"status": 0}, request=request)
             if request.method == "GET":
+                if request.url.path.endswith("/a"):
+                    return httpx.Response(200, json={"name": "a", "type": "directory"}, request=request)
                 if request.url.path.endswith("/missing"):
                     return httpx.Response(404, request=request)
                 return httpx.Response(200, json={"name": request.url.path.rsplit("/", 1)[-1], "type": "file"}, request=request)
@@ -376,7 +389,7 @@ class SJTUCloudPanTests(unittest.TestCase):
 
         provider, client = self.provider(handler)
         try:
-            with self.assertRaisesRegex(CloudRemoteApiError, "大小"):
+            with self.assertRaisesRegex(CloudIntegrityError, "大小"):
                 provider.simple_upload(("dir", "file.txt"), b"payload")
         finally:
             client.close()
@@ -429,6 +442,29 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(1, len(renewed))
         self.assertEqual(1, len(confirmed))
         self.assertEqual(snapshot, UploadSession.from_dict(snapshot).to_dict())
+
+    def test_missing_confirmed_size_is_refetched(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        missing = CloudItem(name="file", path=("file",), is_directory=False)
+        confirmed = CloudItem(name="file", path=("file",), is_directory=False, size=3)
+        try:
+            with patch.object(provider, "get_info", return_value=confirmed) as getter:
+                self.assertIs(confirmed, provider._verify_uploaded_size(missing, 3))
+                getter.assert_called_once_with(("file",))
+        finally:
+            client.close()
+
+    def test_upload_session_rejects_duplicate_and_zero_size_parts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "重复"):
+            UploadSession.from_dict(dict(remote_path=("file.bin",), confirm_key="confirm", next_part=2, uploaded_parts=(1,), part_sizes=dict((("1", 3), ("01", 3))), bytes_uploaded=3))
+        with self.assertRaisesRegex(ValueError, "无效分片大小"):
+            UploadSession.from_dict(dict(remote_path=("file.bin",), confirm_key="confirm", next_part=2, uploaded_parts=(1,), part_sizes=dict((("1", 0),)), bytes_uploaded=0))
+
+    def test_unknown_total_full_page_may_have_more(self) -> None:
+        page = CloudDirectoryPage(items=(object(), object()), page=1, page_size=2, total=0)
+        self.assertTrue(page.has_more)
+        short = CloudDirectoryPage(items=(object(),), page=1, page_size=2, total=0)
+        self.assertFalse(short.has_more)
 
     def test_sjtu_jcloud_object_host_is_trusted(self) -> None:
         provider, client = self.provider(lambda request: httpx.Response(500, request=request))
@@ -562,7 +598,7 @@ class SJTUCloudPanTests(unittest.TestCase):
                 self.assertEqual("server-upload", request.url.params["uploadId"])
                 return httpx.Response(200, request=request)
             if "confirm" in request.url.params:
-                return httpx.Response(200, json={"name": "large.bin", "path": ["large.bin"], "type": "file"}, request=request)
+                return httpx.Response(200, json={"name": "large.bin", "path": ["large.bin"], "type": "file", "size": 6}, request=request)
             return httpx.Response(200, json={
                 "confirmKey": "confirm-key",
                 "domain": "cos.example.test",

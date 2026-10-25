@@ -356,7 +356,7 @@ export function GradesView({
                               </span>
                             )}
                             <span
-                              className={`status-tag ${cell?.status === "late" || cell?.status === "unsubmitted" ? "status-failed" : cell?.status === "graded" ? "status-downloaded" : ""}`}
+                              className={`status-tag ${cell?.status === "late" ? "status-failed" : cell?.status === "graded" ? "status-downloaded" : ""}`}
                             >
                               {cell?.status === "late"
                                 ? "迟交"

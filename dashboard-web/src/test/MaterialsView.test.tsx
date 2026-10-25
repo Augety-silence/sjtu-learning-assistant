@@ -157,7 +157,7 @@ async function renderFile() {
   );
   expect(folderTarget).toBeTruthy();
   fireEvent.click(folderTarget as HTMLElement);
-  return await screen.findByRole("listitem", { name: "拖动资料：讲义.pdf" });
+  return await screen.findByRole("listitem", { name: "讲义.pdf" });
 }
 
 beforeEach(() => {
@@ -199,6 +199,15 @@ afterEach(() => {
 });
 
 describe("MaterialsView manual filing", () => {
+  it("shows the empty state when the root has no children array", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      ...tree,
+      root: { ...tree.root, children: undefined },
+    });
+    render(<MaterialsView />);
+    expect(await screen.findByText("暂无课程资料")).toBeTruthy();
+  });
+
   it("supports same-course drag/drop and rejects cross-course drop with feedback", async () => {
     await renderFile();
     const secondCourse = screen.getByRole("treeitem", { name: "数据库" });
@@ -209,7 +218,7 @@ describe("MaterialsView manual filing", () => {
     expect(firstFolder).toBeTruthy();
     fireEvent.click(firstFolder as HTMLElement);
     const row = await screen.findByRole("listitem", {
-      name: "拖动资料：讲义.pdf",
+      name: "讲义.pdf",
     });
     const transfer = dataTransfer();
     const sameCourse = document.querySelector<HTMLElement>(
@@ -258,7 +267,7 @@ describe("MaterialsView manual filing", () => {
     fireEvent.click(categoryTarget);
 
     const row = await screen.findByRole("listitem", {
-      name: "拖动资料：概览.pdf",
+      name: "概览.pdf",
     });
     const folder = await screen.findByRole("listitem", {
       name: /Week 1.*可接收同课程资料拖放/,
@@ -274,6 +283,20 @@ describe("MaterialsView manual filing", () => {
         "folder:1:courseware:10",
       ),
     );
+  });
+
+  it("marks the current material breadcrumb and hides visual separators from assistive tech", async () => {
+    await renderFile();
+    const breadcrumbs = screen.getByRole("navigation", { name: "路径" });
+    const current = breadcrumbs.querySelector('[aria-current="page"]');
+    expect(current?.textContent).toBe("Week 1");
+    expect(
+      Array.from(breadcrumbs.querySelectorAll("span")).some(
+        (span) =>
+          span.textContent === "/" &&
+          span.getAttribute("aria-hidden") === "true",
+      ),
+    ).toBe(true);
   });
 
   it("provides keyboard-accessible category menu and restore-auto action", async () => {
@@ -324,8 +347,8 @@ describe("MaterialsView selection and responsive states", () => {
     render(<MaterialsView />);
     const search = await screen.findByRole("textbox", { name: "搜索文件名" });
     fireEvent.change(search, { target: { value: ".pdf" } });
-    const first = screen.getByRole("listitem", { name: "拖动资料：讲义.pdf" });
-    const second = screen.getByRole("listitem", { name: "拖动资料：概览.pdf" });
+    const first = screen.getByRole("listitem", { name: "讲义.pdf" });
+    const second = screen.getByRole("listitem", { name: "概览.pdf" });
 
     fireEvent.click(first);
     expect(
@@ -408,10 +431,10 @@ describe("MaterialsView selection and responsive states", () => {
     });
     fireEvent.click(category);
     const row = await screen.findByRole("listitem", {
-      name: "拖动资料：概览.pdf",
+      name: "概览.pdf",
     });
 
-    expect(screen.getByText("云端")).toBeTruthy();
+    expect(row.querySelector(".status-tag")?.textContent).toBe("仅云端");
     expect(screen.getByText(/交大云盘 · .*概览--hash\.pdf/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reveal" })).toBeNull();
     fireEvent.doubleClick(row);
@@ -451,7 +474,7 @@ describe("MaterialsView selection and responsive states", () => {
       }),
     );
     const row = await screen.findByRole("listitem", {
-      name: "拖动资料：课件.docx",
+      name: "课件.docx",
     });
 
     expect(screen.getByRole("button", { name: "打开" })).toBeTruthy();
@@ -463,6 +486,49 @@ describe("MaterialsView selection and responsive states", () => {
         source_id: "file-3",
       }),
     );
+  });
+  it("uses one availability state for labels, filters and retry actions", async () => {
+    const statusTree = structuredClone(tree);
+    const localCloudFile = findMaterial(statusTree.root, "file-3");
+    const failedFile = findMaterial(statusTree.root, "file-1");
+    expect(localCloudFile).toBeTruthy();
+    expect(failedFile).toBeTruthy();
+    Object.assign(localCloudFile as import("@/lib/types").MaterialNode, {
+      cloud_ready: true,
+      download_status: "downloaded",
+      local_path: String.raw`C:\Users\student-name\Downloads\概览.pdf`,
+      can_open: true,
+    });
+    Object.assign(failedFile as import("@/lib/types").MaterialNode, {
+      download_status: "failed",
+      can_open: false,
+    });
+    vi.mocked(invoke).mockResolvedValue(statusTree);
+
+    render(<MaterialsView />);
+    fireEvent.click(
+      await screen.findByRole("treeitem", { name: "自然语言处理" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("treeitem", {
+        name: "课件，可接收同课程资料拖放",
+      }),
+    );
+    const localRow = screen.getByRole("listitem", { name: "概览.pdf" });
+    expect(localRow.querySelector(".status-tag")?.textContent).toBe("已下载");
+    const compactPath = localRow.querySelector(".finder-local-path");
+    expect(compactPath?.textContent).toContain("Downloads");
+    expect(compactPath?.textContent).not.toContain("student-name");
+    expect(compactPath?.getAttribute("title")).toContain("student-name");
+
+    fireEvent.click(
+      document.querySelector(
+        '[data-material-target-id="folder:1:courseware:10"]',
+      ) as HTMLElement,
+    );
+    expect(
+      await screen.findByRole("button", { name: "重新下载" }),
+    ).toBeTruthy();
   });
 });
 

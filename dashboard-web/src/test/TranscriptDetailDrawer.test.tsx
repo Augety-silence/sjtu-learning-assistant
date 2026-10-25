@@ -649,6 +649,25 @@ describe("live artifact recovery", () => {
     expect(retry).toHaveBeenCalledWith(job);
   });
 
+  it("keeps task action failures visible while the AI review tab is selected", async () => {
+    getV2.mockResolvedValue(v2List());
+    const retry = vi.fn().mockRejectedValue(new Error("任务操作失败"));
+    render(
+      <TranscriptDetailDrawer
+        job={{ ...job, status: "partial" }}
+        onClose={vi.fn()}
+        onRetry={retry}
+      />,
+    );
+    openAiReview();
+    fireEvent.click(await screen.findByText("更多操作"));
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "任务操作失败",
+    );
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it("retries a failed V1 read without requiring task mutation permissions", async () => {
     readV1.mockRejectedValueOnce(new Error("读取失败")).mockResolvedValueOnce({
       id: `${job.id}:summary`,

@@ -218,6 +218,112 @@ describe("AIChatView", () => {
     expect(window.localStorage.getItem("ai-chat-pending-session")).toBeNull();
   });
 
+  it("keeps the last clicked session when earlier loads resolve later", async () => {
+    const session = (id: string, title: string) => ({
+      id,
+      title,
+      model: "auto",
+      thinking_depth: "standard" as const,
+      preset_id: "general",
+      messages: [],
+      traces: [],
+    });
+    vi.mocked(getAiChatSessions).mockResolvedValueOnce({
+      items: [
+        {
+          id: "session-a",
+          title: "会话 A",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+        {
+          id: "session-b",
+          title: "会话 B",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+      ],
+    });
+    vi.mocked(getAiChatSession).mockResolvedValueOnce(
+      session("session-a", "会话 A"),
+    );
+    let resolveA!: (value: ReturnType<typeof session>) => void;
+    let resolveB!: (value: ReturnType<typeof session>) => void;
+    vi.mocked(getAiChatSession)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveB = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveA = resolve;
+          }),
+      );
+    render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByRole("button", { name: "会话 A" });
+    fireEvent.click(screen.getByRole("button", { name: "会话 B" }));
+    fireEvent.click(screen.getByRole("button", { name: "会话 A" }));
+    resolveA(session("session-a", "会话 A"));
+    await waitFor(() =>
+      expect(
+        document.querySelector(".ai-history-item.active button")?.textContent,
+      ).toBe("会话 A"),
+    );
+    resolveB(session("session-b", "会话 B"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      screen
+        .getByRole("button", { name: "会话 A" })
+        .getAttribute("aria-current"),
+    ).toBe("true");
+  });
+
+  it("does not auto-send a pending prompt into a fallback session", async () => {
+    window.localStorage.setItem("ai-chat-pending-session", "missing-session");
+    window.localStorage.setItem("ai-chat-pending-prompt", "继续刚才的对话");
+    window.localStorage.setItem("ai-chat-auto-submit", "true");
+    vi.mocked(getAiChatSessions).mockResolvedValueOnce({
+      items: [
+        {
+          id: "session-fallback",
+          title: "最近对话",
+          model: "auto",
+          thinking_depth: "standard",
+          preset_id: "general",
+        },
+      ],
+    });
+    vi.mocked(getAiChatSession)
+      .mockRejectedValueOnce(new Error("会话不存在"))
+      .mockResolvedValueOnce({
+        id: "session-fallback",
+        title: "最近对话",
+        model: "auto",
+        thinking_depth: "standard",
+        preset_id: "general",
+        messages: [],
+        traces: [],
+      });
+
+    render(<AIChatView onBack={vi.fn()} />);
+    expect(
+      await screen.findByText(
+        "指定的对话无法读取，已打开最近对话；请确认后再发送消息。",
+        { exact: false },
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "输入问题" })).toHaveProperty(
+      "value",
+      "继续刚才的对话",
+    );
+    expect(sendAiChatMessage).not.toHaveBeenCalled();
+  });
+
   it("creates a fresh session when requested from the sidebar", async () => {
     window.localStorage.setItem("ai-chat-new-session", "true");
     vi.mocked(getAiChatSessions).mockResolvedValueOnce({
@@ -257,9 +363,62 @@ describe("AIChatView", () => {
         "auto",
         "standard",
         "general",
+        undefined,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
     expect(window.localStorage.getItem("ai-chat-auto-submit")).toBeNull();
+  });
+
+  it("requests soft cancellation from the composer while a task is running", async () => {
+    let signal: AbortSignal | undefined;
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        signal = options?.signal;
+        return new Promise(() => undefined);
+      },
+    );
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "检查本周任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const stop = await screen.findByRole("button", { name: "停止本次任务" });
+    expect(signal?.aborted).toBe(false);
+    fireEvent.click(stop);
+    expect(signal?.aborted).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "正在停止本次任务" }),
+    ).toHaveProperty("disabled", true);
+    expect(screen.getByText("正在停止")).toBeTruthy();
+  });
+
+  it("shows tool activity as soon as a streaming tool event arrives", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "查课程截止日期" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "tool",
+          session_id: "session-1",
+          task_id: "task-live",
+          run: {
+            tool_name: "get_deadlines",
+            phase: "prefetch",
+            status: "ok",
+            arguments_summary: { hours: 168 },
+            result_summary: { count: 2 },
+          },
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    expect(await screen.findByText(/调用 1 次/)).toBeTruthy();
   });
 
   it("supports arrow navigation, Escape, and focus return in compact choices", async () => {
@@ -302,6 +461,8 @@ describe("AIChatView", () => {
       "auto",
       "deep",
       "general",
+      undefined,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getAllByText("检索截止日期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("命中 3 项").length).toBeGreaterThan(0);
@@ -380,6 +541,7 @@ describe("AIChatView", () => {
       "standard",
       "general",
       [7],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.queryByLabelText("待发送附件")).toBeNull();
   });
@@ -585,7 +747,7 @@ describe("AIChatView", () => {
 
     fireEvent.dragEnter(workspace, { dataTransfer });
     expect(screen.getByText("将文件拖拽到这里")).toBeTruthy();
-    expect(screen.getByText(/单文件最大 2GB/)).toBeTruthy();
+    expect(screen.getByText(/2GB 是摄取上限/)).toBeTruthy();
     fireEvent.drop(workspace, { dataTransfer });
 
     expect(await screen.findByText("拖入笔记.md")).toBeTruthy();
@@ -599,6 +761,7 @@ describe("AIChatView", () => {
         "standard",
         "general",
         [8],
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
   });
@@ -619,6 +782,18 @@ describe("AIChatView", () => {
     expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/拖入笔记.md");
     expect(pickAiAttachment).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("explains how to add files when the native drop path event is missing", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "输入问题" });
+    const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+    fireEvent.drop(screen.getByRole("main"), {
+      dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
+    });
+    expect(
+      await screen.findByText(/桌面文件路径尚未就绪/, {}, { timeout: 1800 }),
+    ).toBeTruthy();
   });
 
   it("persists personalization and applies the Cmd+Enter shortcut", async () => {
@@ -748,6 +923,8 @@ describe("AIChatView", () => {
       "auto",
       "standard",
       "general",
+      undefined,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(await screen.findByText("已按补充要求处理")).toBeTruthy();
   });

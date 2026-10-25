@@ -74,6 +74,11 @@
   background: var(--aura-control-hover);
 }
 
+.sidebar-ai-heading > button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .sidebar-ai-composer {
   position: relative;
   min-width: 0;
@@ -135,7 +140,7 @@
 .sidebar-ai-history-label {
   min-height: 24px;
   color: var(--text-caption);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.02em;
 }
 

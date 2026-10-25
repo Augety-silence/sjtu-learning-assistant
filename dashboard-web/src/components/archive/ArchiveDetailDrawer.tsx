@@ -98,7 +98,7 @@ export function ArchiveDetailDrawer({
           <p className="archive-drawer-loading" role="status">
             正在读取版本信息…
           </p>
-        ) : (
+        ) : error ? null : (
           <ContentReveal variant="detail">
             <dl className="archive-detail-meta">
               <div>

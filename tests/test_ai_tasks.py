@@ -241,13 +241,6 @@ def test_stream_validates_assistant_tool_and_tool_result_messages_like_nonstream
         [messages[0], {**messages[2], "tool_calls": []}],
         [*messages[:-1], {**messages[-1], "tool_call_id": "x" * 129}],
         [*messages[:-1], {**messages[-1], "name": "x" * 81}],
-        [
-            messages[0],
-            {"role": "assistant", "content": "", "tool_calls": [{
-                "id": "", "type": "function",
-                "function": {"name": "list_courses", "arguments": "{}"},
-            }]},
-        ],
     ]
     for invalid in invalid_messages:
         no_request = []
@@ -363,4 +356,43 @@ def test_stream_options_unsupported_falls_back_without_changing_tool_messages():
         messages[2],
     ]
     assert requests[0]["tools"] == requests[1]["tools"] == definitions
-    assert requests[0]["tool_choice"] == requests[1]["tool_choice"] == "auto"
+
+
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        ('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', "response_format"),
+        ('data: {"error":{"message":"secret"}}\n\ndata: [DONE]\n\n', "upstream_stream_error"),
+    ],
+)
+def test_sse_requires_done_and_surfaces_provider_error_safely(body, category):
+    def handler(request):
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}, request=request)
+
+    client = OpenAIClassificationClient(api_key="fake", transport=httpx.MockTransport(handler), limiter=lambda: None)
+    try:
+        with pytest.raises(AIClassificationError) as raised:
+            client.chat_completion_stream([{"role": "user", "content": "问候"}])
+        assert raised.value.category == category
+        assert "secret" not in str(raised.value)
+    finally:
+        client.close()
+
+
+def test_stream_unexpected_client_exception_is_safely_classified():
+    def handler(_request):
+        raise RuntimeError("secret payload")
+
+    client = OpenAIClassificationClient(api_key="fake", transport=httpx.MockTransport(handler), limiter=lambda: None)
+    try:
+        with pytest.raises(AIClassificationError) as raised:
+            client.chat_completion_stream([{"role": "user", "content": "问候"}])
+        assert raised.value.category == "client_error"
+        assert "secret payload" not in str(raised.value)
+    finally:
+        client.close()
+
+
+def test_nonstream_tool_call_with_null_id_gets_generated_id():
+    parsed = OpenAIClassificationClient._parse_tool_calls([{"id": None, "function": {"name": "list_courses", "arguments": "{}"}}])
+    assert parsed[0]["id"] == "call-0"

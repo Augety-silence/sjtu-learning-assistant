@@ -53,6 +53,8 @@ class CloudDirectoryPage:
 
     @property
     def has_more(self) -> bool:
+        if self.total <= 0:
+            return self.page_size > 0 and len(self.items) >= self.page_size
         # A short page whose position exactly reaches total is the honoured last page.
         if (
             len(self.items) < self.page_size
@@ -92,7 +94,7 @@ class UploadSession:
         expected = list(range(1, self.next_part))
         if self.uploaded_parts != expected or set(self.part_sizes) != set(expected):
             raise ValueError("上传会话的已完成分片不是连续前缀。")
-        if any(size < 0 for size in self.part_sizes.values()):
+        if any(type(size) is not int or size <= 0 for size in self.part_sizes.values()):
             raise ValueError("上传会话包含无效分片大小。")
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,10 +153,12 @@ class UploadSession:
             raise ValueError("上传会话格式错误。")
 
         # JSON 对象键总是字符串，所以分片序号允许十进制数字串；分片大小必须是正整数（空分片不会被上传）。
-        part_sizes = {
-            strict_int(part, allow_digit_string=True): strict_int(size)
-            for part, size in part_sizes_value.items()
-        }
+        part_sizes = {}
+        for part, size in part_sizes_value.items():
+            index = strict_int(part, allow_digit_string=True)
+            if index in part_sizes:
+                raise ValueError("上传会话包含重复分片序号。")
+            part_sizes[index] = strict_int(size)
         if any(size <= 0 for size in part_sizes.values()):
             raise ValueError("上传会话包含无效分片大小。")
         session = cls(

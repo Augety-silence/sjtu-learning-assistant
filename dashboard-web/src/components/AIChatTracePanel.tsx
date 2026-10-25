@@ -14,6 +14,7 @@ import {
   toolLabel,
   traceFailed,
   traceHitCount,
+  traceRejectedCount,
 } from "@/components/AIExecutionCard";
 import { Button } from "@/components/ui/Button";
 import type { AIAgentPreset, AIAgentTrace } from "@/lib/types";
@@ -22,7 +23,7 @@ const traceStatusLabels: Record<string, string> = {
   completed: "已完成",
   complete: "已完成",
   ok: "已完成",
-  max_steps: "已达步骤上限",
+  max_steps: "本轮生成已达到上限",
   timeout: "已超时",
   failed: "未完成",
 };
@@ -41,6 +42,7 @@ function ActivityTraceStep({
 }) {
   const [open, setOpen] = useState(false);
   const hits = traceHitCount(trace.tool_runs);
+  const rejected = traceRejectedCount(trace.tool_runs);
   const failed = traceFailed(trace);
 
   return (
@@ -60,6 +62,7 @@ function ActivityTraceStep({
           <small>
             {traceStatusLabels[trace.status] ?? trace.status} · 调用{" "}
             {trace.tool_runs.length} 次 · 命中 {hits} 项
+            {rejected > 0 && ` · ${rejected} 项未执行`}
           </small>
         </span>
         <ChevronRight className="ai-trace-caret" aria-hidden="true" />
@@ -118,7 +121,7 @@ export function AIChatTracePanel({
     } else {
       setShowLatest(true);
     }
-  }, [open, traces.length, busy]);
+  }, [open, traces.length, traces.at(-1)?.tool_runs.length, busy]);
 
   return (
     <aside

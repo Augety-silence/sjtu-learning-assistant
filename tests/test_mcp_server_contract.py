@@ -12,6 +12,7 @@ from sjtu_learning_assistant.mcp_server import MCPServer
 @dataclass
 class FakeRegistry:
     fail_with_secret: bool = False
+    calls: int = 0
 
     @property
     def names(self):
@@ -36,9 +37,12 @@ class FakeRegistry:
         ]
 
     def execute(self, name, arguments, allowed_tools):
+        self.calls += 1
         if self.fail_with_secret:
             raise AgentToolError(
-                "token=super-secret path=/Users/alice/private and Bearer abc.def"
+                'token=super-secret path=/Users/alice/private and Bearer abc.def '
+                '{"password": "two word secret"}',
+                category="execution",
             )
         if name != "safe_query" or name not in allowed_tools:
             raise AgentToolError("未知工具。")
@@ -73,6 +77,30 @@ class MCPServerContractTests(unittest.TestCase):
         self.assertEqual("课程", called["result"]["structuredContent"]["items"][0]["title"])
         self.assertEqual({}, self.request("ping")["result"])
 
+    def test_unknown_tool_and_invalid_arguments_are_protocol_errors(self) -> None:
+        unknown = self.request("tools/call", {"name": "missing", "arguments": {}})
+        self.assertEqual(-32602, unknown["error"]["code"])
+        invalid = self.request("tools/call", {"name": "safe_query", "arguments": "bad"})
+        self.assertEqual(-32602, invalid["error"]["code"])
+
+    def test_tool_rate_limit_is_bounded_and_reports_retry(self) -> None:
+        server = MCPServer(FakeRegistry(), tool_call_limit=2, rate_window_seconds=30)
+        params = {"name": "safe_query", "arguments": {}}
+        self.assertFalse(server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})["result"]["isError"])
+        self.assertFalse(server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params})["result"]["isError"])
+        limited = server.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": params})
+        self.assertEqual(-32000, limited["error"]["code"])
+        self.assertGreater(limited["error"]["data"]["retryAfterSeconds"], 0)
+
+    def test_non_lifecycle_notification_never_executes_tools(self) -> None:
+        registry = FakeRegistry()
+        server = MCPServer(registry)
+        self.assertIsNone(server.handle_request({
+            "jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": "safe_query", "arguments": {}},
+        }))
+        self.assertEqual(0, registry.calls)
+
     def test_jsonrpc_errors_notifications_and_secret_redaction(self) -> None:
         unknown = self.request("unknown/method", request_id="x")
         self.assertEqual(-32601, unknown["error"]["code"])
@@ -97,6 +125,7 @@ class MCPServerContractTests(unittest.TestCase):
         self.assertNotIn("super-secret", encoded)
         self.assertNotIn("/Users/alice", encoded)
         self.assertNotIn("abc.def", encoded)
+        self.assertNotIn("two word secret", encoded)
 
     def test_stdio_emits_only_protocol_responses(self) -> None:
         source = io.StringIO(
@@ -112,6 +141,24 @@ class MCPServerContractTests(unittest.TestCase):
         self.assertEqual(2, len(lines))
         self.assertEqual(-32700, json.loads(lines[0])["error"]["code"])
         self.assertEqual({}, json.loads(lines[1])["result"])
+
+    def test_stdio_continues_after_invalid_utf8_line(self) -> None:
+        payload = (
+            b"\xff\xfe\n"
+            + json.dumps(
+                {"jsonrpc": "2.0", "id": 10, "method": "ping"}
+            ).encode("utf-8")
+            + b"\n"
+        )
+        # TextIOWrapper reproduces stdin's strict text decoder; serve must read its
+        # byte buffer so one malformed line cannot terminate the process loop.
+        source = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8", errors="strict")
+        sink = io.StringIO()
+        self.server.serve(source, sink)
+        lines = sink.getvalue().splitlines()
+        self.assertEqual(2, len(lines))
+        self.assertEqual(-32700, json.loads(lines[0])["error"]["code"])
+        self.assertEqual({"jsonrpc": "2.0", "id": 10, "result": {}}, json.loads(lines[1]))
 
     def test_invalid_params_and_batch(self) -> None:
         response = self.request("tools/call", [])

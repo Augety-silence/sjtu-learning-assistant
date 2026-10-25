@@ -123,6 +123,19 @@ class AIChatHistoryTests(unittest.TestCase):
                 chat["id"], "再次识别", "deepseek-chat", "standard", "general", [attachment["id"]]
             )
 
+    def test_auto_routes_image_attachment_to_qwen(self) -> None:
+        source = self.root / "auto-whiteboard.png"
+        Image.new("RGB", (32, 24), "white").save(source)
+        attachment = self.service.ai_attachment_ingest(source)
+        chat = self.service.ai_chat_new("auto", "standard", "general")
+
+        result = self.service.ai_chat_send(
+            chat["id"], "识别图片", "auto", "standard", "general", [attachment["id"]]
+        )
+
+        self.assertEqual("qwen3.8-27b", result["assistant_message"]["model"])
+        self.assertEqual("image_url", FakeAIClient.requested_messages[-1][-1]["content"][0]["type"])
+
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")
         self.assertTrue(self.service.ai_chat_delete(chat["id"])["deleted"])

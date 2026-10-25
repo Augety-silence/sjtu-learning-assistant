@@ -4,6 +4,7 @@ import errno
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -93,6 +94,36 @@ FINAL_STATES = frozenset(("completed", "completed_with_warnings", "partial", "fa
 # Manual ``retryable`` is independent of this state.
 _STORAGE_ERRNOS = frozenset(code for code in (errno.ENOSPC, errno.EROFS, errno.EACCES, errno.EPERM, getattr(errno, "EDQUOT", None)) if code is not None)
 _REVEAL_TIMEOUT_SECONDS = 10
+_WORKER_ERROR_LOG_INTERVAL_SECONDS = 60.0
+LOGGER = logging.getLogger(__name__)
+
+
+class _SynchronizedJob(dict[str, Any]):
+    """A batch job whose top-level writes cannot race batch serialization."""
+
+    def __init__(self, value: Mapping[str, Any], lock: threading.RLock) -> None:
+        dict.__init__(self, value)
+        self._lock = lock
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        with self._lock:
+            dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            dict.__delitem__(self, key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        with self._lock:
+            dict.update(self, *args, **kwargs)
+
+    def pop(self, key: str, *args: Any) -> Any:
+        with self._lock:
+            return dict.pop(self, key, *args)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return dict.setdefault(self, key, default)
 
 PROCESSING_STATES = (
     "not_started",
@@ -149,6 +180,10 @@ _V2_ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):v2:([0-9a-f]{32})$")
 
 class TranscriptError(RuntimeError):
     pass
+
+
+class TranscriptArtifactError(TranscriptError):
+    category = "local_subtitle_corrupt"
 
 
 class _PlaybackYield(BaseException):
@@ -334,6 +369,7 @@ class TranscriptService:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
+        self._last_worker_error_log = 0.0
         self._thread: threading.Thread | None = None
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
@@ -1074,7 +1110,13 @@ class TranscriptService:
         record = manifest.get("artifacts", {}).get("raw_vtt", {})
         if manifest.get("source", {}).get("source_id") != source_id or record.get("path") != "raw.vtt" or record.get("sha256") != manifest.get("raw_sha256") or not self._hashed_file_valid(video_dir / "raw.vtt", record.get("sha256")):
             return None
-        raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
+        try:
+            raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
+            parse_vtt(raw)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise TranscriptArtifactError(
+                "本地字幕文件已损坏或无法读取，请重新获取字幕。"
+            ) from exc
         return video_dir, manifest, raw
 
     def _corrected_cues(self, video_dir: Path, manifest: Mapping[str, Any], raw: str) -> list[Any] | None:
@@ -1386,6 +1428,14 @@ class TranscriptService:
         code = ((job.get("diagnostic") or {}).get("code") if type(job.get("diagnostic")) is dict else None)
         if code in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service"}:
             return "AI 服务暂时不可用；已保存原字幕，可在冷却后重试。"
+        if code in {"authentication", "endpoint_or_model", "request_parameters"}:
+            return "AI 鉴权或模型配置有误，请在设置中检查 API Key、Base URL 与模型名称后重试。"
+        if code == "file_locked":
+            return "字幕文件正被其他程序占用，稍后将自动重试。"
+        if code == "local_subtitle_corrupt":
+            return "本地字幕文件已损坏或无法读取，请重新获取字幕。"
+        if code == "prompt_too_long":
+            return "字幕分块超过 AI 单次处理长度，请缩短输入后重试。"
         if code == "storage":
             return "本地数据目录无法写入（磁盘已满、只读或无权限）；请释放空间或检查目录权限后手动重试。"
         if code == "content_uncertain":
@@ -1409,7 +1459,7 @@ class TranscriptService:
         if exc is None:
             return "ok"
         category = str(getattr(exc, "category", ""))
-        allowed = {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "authentication", "endpoint_or_model", "request_parameters", "response_format", "validation", "schema", "format", "unsupported_tools", "client_error"}
+        allowed = {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "authentication", "endpoint_or_model", "request_parameters", "response_format", "validation", "schema", "format", "prompt_too_long", "local_subtitle_corrupt", "unsupported_tools", "client_error"}
         if category in allowed:
             return category
         if isinstance(exc, TimeoutError):
@@ -1417,7 +1467,7 @@ class TranscriptService:
         if getattr(exc, "winerror", None) in {32, 33}:
             # Windows sharing / lock violation (file briefly held by a reader,
             # antivirus or backup) is transient; keep it auto-retryable.
-            return "network"
+            return "file_locked"
         if isinstance(exc, PermissionError) or (
             isinstance(exc, OSError)
             and not isinstance(exc, ConnectionError)
@@ -1439,14 +1489,14 @@ class TranscriptService:
             "code": self._diagnostic_code(exc),
             "attempt": max(1, min(1_000_000, cumulative_attempt)),
             "elapsed_ms": max(0, min(3_600_000, int((time.monotonic() - started) * 1000))),
-            "retryable": bool(exc is not None and self._diagnostic_code(exc) in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "response_format", "validation", "schema", "format"}),
+            "retryable": bool(exc is not None and self._diagnostic_code(exc) in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "file_locked", "response_format", "validation", "schema", "format"}),
         }
         status_code = getattr(exc, "status_code", None) if exc is not None else None
         if type(status_code) is int and 100 <= status_code <= 599:
             diagnosis["http_status"] = status_code
         error_code = getattr(exc, "error_code", None) if exc is not None else None
         if type(error_code) is str and re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", error_code):
-            diagnosis["code"] = error_code.lower()
+            diagnosis["provider_code"] = error_code.lower()
         exception_type = getattr(exc, "exception_type", None) if exc is not None else None
         if type(exception_type) is str and re.fullmatch(r"[A-Za-z0-9_]{1,80}", exception_type):
             diagnosis["exception_type"] = exception_type
@@ -1525,8 +1575,16 @@ class TranscriptService:
                 break
             try:
                 self.run_pending()
-            except Exception:
+            except Exception as exc:
                 # A malformed batch or unavailable storage must not kill the only worker.
+                now = time.monotonic()
+                if now - self._last_worker_error_log >= _WORKER_ERROR_LOG_INTERVAL_SECONDS:
+                    self._last_worker_error_log = now
+                    LOGGER.warning(
+                        "字幕后台任务执行失败；code=%s exception_type=%s",
+                        self._diagnostic_code(exc),
+                        type(exc).__name__,
+                    )
                 continue
 
     def _claim_batch(self, batch_id: str) -> dict[str, Any] | None:
@@ -1578,8 +1636,29 @@ class TranscriptService:
             except Exception as exc:
                 for job in batch.get("jobs", []):
                     if job.get("status") in ACTIVE_STATES:
-                        job.update(status="partial", stage="worker_failed", error=_safe_error(exc), message="任务暂时未完成，可重试并复用已保存内容。")
-                self._save_batch(batch)
+                        code = self._diagnostic_code(exc)
+                        self._schedule_retry(job, exc)
+                        job.update(
+                            diagnostic={
+                                "stage": "worker_failed",
+                                "code": code,
+                                "retryable": bool(job.get("retryable")),
+                            },
+                            status="partial", stage="worker_failed", error=_safe_error(exc),
+                            message="任务暂时未完成，可重试并复用已保存内容。",
+                        )
+                last_save_error: BaseException | None = None
+                for attempt in range(2):
+                    try:
+                        self._save_batch(batch)
+                        last_save_error = None
+                        break
+                    except (OSError, TranscriptError) as save_exc:
+                        last_save_error = save_exc
+                        if attempt == 0:
+                            time.sleep(0.05)
+                if last_save_error is not None:
+                    raise last_save_error
 
     def _create_playback_retry_locked(
         self,
@@ -1846,6 +1925,7 @@ class TranscriptService:
             return
         batch["status"] = "fetching"
         self._save_batch(batch)
+        self._synchronize_batch_jobs(batch)
         pending = [job for job in batch["jobs"] if job.get("status") == "queued"]
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="subtitle-fetch") as pool:
             futures = {pool.submit(self._fetch_and_store, batch, job): job for job in pending}
@@ -1899,9 +1979,17 @@ class TranscriptService:
             self._save_batch(batch)
         self._save_batch(batch)
 
+    def _synchronize_batch_jobs(self, batch: dict[str, Any]) -> None:
+        """Serialize fetch-worker job updates with the shared batch writer."""
+        with self._lock:
+            batch["jobs"] = [
+                job if isinstance(job, _SynchronizedJob) else _SynchronizedJob(job, self._lock)
+                for job in batch.get("jobs", [])
+            ]
+
     def _schedule_retry(self, job: dict[str, Any], exc: BaseException | None) -> None:
         code = self._diagnostic_code(exc)
-        auto_retryable = code in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "response_format", "validation", "schema", "format"}
+        auto_retryable = code in {"network", "connection", "timeout", "rate_limit", "rate_limit_or_quota", "service_unavailable", "upstream_service", "file_locked", "response_format", "validation", "schema", "format"}
         manual_retryable = auto_retryable or code in {"task_error", "storage"}
         job["retryable"] = manual_retryable
         job["auto_retryable"] = auto_retryable
@@ -2478,22 +2566,29 @@ class TranscriptService:
                 v2_dir.mkdir(exist_ok=True, mode=0o700)
                 os.chmod(v2_dir, 0o700)
             if not v2_dir.is_symlink() and v2_dir.is_dir():
-                self._write_json(v2_dir / "manifest.json", {
-                    "schema_version": V2_MANIFEST_SCHEMA_VERSION,
-                    "course_id": str(batch.get("course_id") or ""),
-                    "video_id": parse_remote_source_id(str(job.get("source_id")))[1],
-                    "raw_sha256": _sha256(raw.encode("utf-8")),
-                    "course_memory_version": None,
-                    "pipeline_version": COURSE_PIPELINE_VERSION,
-                    "prompt_version": COURSE_PROMPT_VERSION,
-                    "model_version": context.model,
-                    "cache_key": None,
-                    "status": "partial",
-                    "quality": None,
-                    "warnings": [warning],
-                    "artifacts": {},
-                    "updated_at": _now(),
-                })
+                raw_hash = _sha256(raw.encode("utf-8"))
+                previous = self._v2_manifest(video_dir)
+                if not (
+                    previous is not None
+                    and previous.get("raw_sha256") == raw_hash
+                    and self._v2_artifacts_valid(video_dir, previous)
+                ):
+                    self._write_json(v2_dir / "manifest.json", {
+                        "schema_version": V2_MANIFEST_SCHEMA_VERSION,
+                        "course_id": str(batch.get("course_id") or ""),
+                        "video_id": parse_remote_source_id(str(job.get("source_id")))[1],
+                        "raw_sha256": raw_hash,
+                        "course_memory_version": None,
+                        "pipeline_version": COURSE_PIPELINE_VERSION,
+                        "prompt_version": COURSE_PROMPT_VERSION,
+                        "model_version": context.model,
+                        "cache_key": None,
+                        "status": "partial",
+                        "quality": None,
+                        "warnings": [warning],
+                        "artifacts": {},
+                        "updated_at": _now(),
+                    })
         finally:
             if job.get("stage") == "reviewing":
                 job.update(status=final_state[0], stage=final_state[1], progress=final_state[2])

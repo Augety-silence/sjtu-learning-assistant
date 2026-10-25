@@ -7,13 +7,18 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
+import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, IO, Mapping, Sequence
 
 from sjtu_learning_assistant import __version__
-from sjtu_learning_assistant.agent_runtime.tools import AgentToolError, ReadOnlyToolRegistry
+from sjtu_learning_assistant.agent_runtime.tools import (
+    SENSITIVE_TEXT,
+    AgentToolError,
+    ReadOnlyToolRegistry,
+)
 
 JSONRPC_VERSION = "2.0"
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -27,14 +32,9 @@ _INVALID_REQUEST = -32600
 _METHOD_NOT_FOUND = -32601
 _INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
+_SERVER_ERROR = -32000
 
-_SENSITIVE_PATTERNS = (
-    re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9_.~+/=-]+"),
-    re.compile(r"(?i)\b(token|password|secret|api[_ -]?key)\s*[=:]\s*[^\s,;]+"),
-    re.compile(r"(?:/Users|/home)/[^\s]+"),
-    re.compile(r"\b[A-Za-z]:\\[^\s]+"),
-    re.compile(r"\w+://[^\s/:]+:[^\s]+@[^\s]+"),
-)
+_SENSITIVE_PATTERNS = SENSITIVE_TEXT
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,9 @@ class MCPServer:
         allowed_tools: Sequence[str] | None = None,
         server_name: str = SERVER_NAME,
         server_version: str = __version__,
+        tool_call_limit: int = 60,
+        rate_window_seconds: float = 60.0,
+        clock=time.monotonic,
     ) -> None:
         self.registry = registry
         known = registry.names
@@ -99,6 +102,12 @@ class MCPServer:
         self.allowed_tools = selected
         self.server_name = server_name
         self.server_version = server_version
+        if tool_call_limit < 1 or rate_window_seconds <= 0:
+            raise ValueError("工具调用限流参数无效。")
+        self.tool_call_limit = tool_call_limit
+        self.rate_window_seconds = rate_window_seconds
+        self.clock = clock
+        self._tool_call_times: deque[float] = deque()
 
     def _initialize(self, params: Mapping[str, Any]) -> dict[str, Any]:
         requested = params.get("protocolVersion")
@@ -134,13 +143,25 @@ class MCPServer:
         return {"tools": tools}
 
     def _call_tool(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        now = self.clock()
+        cutoff = now - self.rate_window_seconds
+        while self._tool_call_times and self._tool_call_times[0] <= cutoff:
+            self._tool_call_times.popleft()
+        if len(self._tool_call_times) >= self.tool_call_limit:
+            retry_after = max(1, int(self._tool_call_times[0] + self.rate_window_seconds - now))
+            raise JsonRpcError(_SERVER_ERROR, "工具调用过于频繁，请稍后重试。", {"retryAfterSeconds": retry_after})
+        self._tool_call_times.append(now)
         name = params.get("name")
         arguments = params.get("arguments", {})
         if type(name) is not str or not name or type(arguments) is not dict:
             raise JsonRpcError(_INVALID_PARAMS, "工具名称或参数格式无效。")
+        if name not in self.allowed_tools or name not in self.registry.names:
+            raise JsonRpcError(_INVALID_PARAMS, "工具名称无效或未获授权。")
         try:
             execution = self.registry.execute(name, arguments, self.allowed_tools)
         except AgentToolError as exc:
+            if getattr(exc, "category", "invalid_params") == "invalid_params":
+                raise JsonRpcError(_INVALID_PARAMS, redact_error_message(exc)) from None
             message = redact_error_message(exc, fallback="工具调用失败。")
             return {
                 "content": [{"type": "text", "text": message}],
@@ -206,10 +227,6 @@ class MCPServer:
         if is_notification:
             if method in {"notifications/initialized", "notifications/cancelled"}:
                 return None
-            try:
-                self._dispatch(method, request.get("params"))
-            except Exception:
-                pass
             return None
 
         try:
@@ -266,7 +283,12 @@ class MCPServer:
 
         source = input_stream or sys.stdin
         sink = output_stream or sys.stdout
-        for line in source:
+        # 优先按字节读取底层缓冲区：文本层（尤其 reconfigure 后 errors=strict）遇到
+        # 非 UTF-8 字节会在迭代时抛 UnicodeDecodeError 并终止服务；交给 process_line
+        # 解码即可把坏行映射为 Parse error 并继续处理后续请求。
+        reader = getattr(source, "buffer", None)
+        lines = reader if reader is not None and hasattr(reader, "readline") else source
+        for line in lines:
             response = self.process_line(line)
             if response is not None:
                 sink.write(response + "\n")

@@ -4,14 +4,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
 
+LOGGER = logging.getLogger(__name__)
+
 def _configure_keyring_backend(platform_name: str | None = None) -> None:
-    if (platform_name or sys.platform) == "darwin":
+    selected_platform = platform_name or sys.platform
+    if selected_platform == "darwin":
         os.environ.setdefault(
             "PYTHON_KEYRING_BACKEND", "keyring.backends.macOS.Keyring"
+        )
+    elif selected_platform == "win32":
+        os.environ.setdefault(
+            "PYTHON_KEYRING_BACKEND", "keyring.backends.Windows.WinVaultKeyring"
         )
 
 
@@ -46,10 +54,14 @@ from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.database import (
     APP_SUPPORT_DIR,
+    DatabaseConfigError,
     create_database_engine,
     database_recovery_result,
 )
-from sjtu_learning_assistant.desktop_database import initialize_desktop_database
+from sjtu_learning_assistant.desktop_database import (
+    DesktopDatabaseError,
+    initialize_desktop_database,
+)
 from sjtu_learning_assistant.diagnostic_bundle import (
     DiagnosticBundleError,
     DiagnosticBundleService,
@@ -122,6 +134,19 @@ def _bounded_id(value: object, *, limit: int, label: str) -> str:
     ):
         raise DashboardError(f"{label}不正确。")
     return value.strip()
+
+
+def _validated_local_attachment_path(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 4096
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or value.startswith(("\\", "//"))
+        or not Path(value).is_absolute()
+    ):
+        raise DashboardError("拖入文件路径无效，请改用回形针按钮选择文件。")
+    return value
 
 
 def _preset_id(value: object) -> str:
@@ -711,8 +736,10 @@ class DesktopBridge:
         selected = self._file_picker()
         if not selected:
             return {"cancelled": True}
-        if type(selected) is not str or not selected or len(selected) > 4096 or "\x00" in selected:
-            raise DashboardError("所选文件无效。")
+        try:
+            selected = _validated_local_attachment_path(selected)
+        except DashboardError:
+            raise DashboardError("所选文件无效。") from None
         return {
             "cancelled": False,
             "attachment": self._service.ai_attachment_ingest(selected),
@@ -721,16 +748,7 @@ class DesktopBridge:
     def _ai_attachment_ingest(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Ingest one dropped file without returning its original absolute path."""
         _only_keys(payload, {"path"})
-        raw_path = payload.get("path")
-        if (
-            type(raw_path) is not str
-            or not raw_path
-            or len(raw_path) > 4096
-            or "\x00" in raw_path
-            or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
-            or not Path(raw_path).is_absolute()
-        ):
-            raise DashboardError("拖入文件路径无效，请改用回形针按钮选择文件。")
+        raw_path = _validated_local_attachment_path(payload.get("path"))
         return self._service.ai_attachment_ingest(raw_path)
 
     def _ai_attachment_id(self, payload: Mapping[str, Any]) -> int:
@@ -1598,9 +1616,15 @@ def _macos_dragged_file_paths(
             absolute = str(url.filePathURL().absoluteString())
         except (AttributeError, RuntimeError):
             continue
-        value = unquote(absolute.removeprefix("file://"))
-        path = Path(value)
-        if path.is_file() and str(path) not in result:
+        parsed = urlparse(absolute)
+        if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+            continue
+        path = Path(unquote(parsed.path))
+        try:
+            is_file = path.is_file()
+        except OSError:
+            continue
+        if is_file and str(path) not in result:
             result.append(str(path))
     return tuple(result)
 
@@ -1663,7 +1687,11 @@ def _native_file_drop_paths(
         if type(value) is not str or not value or "\x00" in value:
             return
         path = Path(value)
-        if not path.is_file():
+        try:
+            is_file = path.is_file()
+        except OSError:
+            return
+        if not is_file:
             return
         normalized = str(path)
         if normalized not in result:
@@ -1691,10 +1719,20 @@ def _install_native_file_drop_bridge(window: object) -> None:
     """Forward native file paths from pywebview DOM events to the React app."""
     try:
         loaded = getattr(getattr(window, "events", None), "loaded", None)
-        if loaded is None or not loaded.wait(15):
+        if loaded is None or not loaded.wait(60):
+            LOGGER.warning("文件拖放桥接等待页面加载超时；本次启动不启用拖放。")
             return
         document = window.dom.document
     except (AttributeError, RuntimeError):
+        return
+
+    try:
+        window.evaluate_js(
+            "document.addEventListener('dragover', event => event.preventDefault(), {capture: true});"
+            "document.addEventListener('drop', event => event.preventDefault(), {capture: true});"
+        )
+    except Exception:
+        LOGGER.warning("文件拖放默认导航保护安装失败。")
         return
 
     def forward_drop(event: object) -> None:
@@ -1719,7 +1757,8 @@ def _install_native_file_drop_bridge(window: object) -> None:
             window.evaluate_js(
                 f"window.dispatchEvent(new CustomEvent({event_name}, {{detail: {detail}}}))"
             )
-        except (AttributeError, RuntimeError):
+        except Exception:
+            LOGGER.warning("文件拖放事件转发失败。")
             return
 
     try:
@@ -1765,7 +1804,6 @@ end run
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
             pass
@@ -1786,7 +1824,11 @@ def run_desktop_app() -> int:
         return 2
 
     _install_macos_native_file_drop_hook()
-    engine = create_database_engine()
+    try:
+        engine = create_database_engine()
+    except DatabaseConfigError as exc:
+        _report_startup_error(f"错误：{safe_message(exc)}")
+        return 2
     scheduler: DesktopScheduler | None = None
     service: DashboardService | None = None
     learning_service: DesktopLearningService | None = None
@@ -1794,7 +1836,11 @@ def run_desktop_app() -> int:
     try:
         if engine.dialect.name == "sqlite":
             # Desktop startup must never migrate/import a real legacy database implicitly.
-            initialize_desktop_database(engine, skip_import=True)
+            try:
+                initialize_desktop_database(engine, skip_import=True)
+            except DesktopDatabaseError as exc:
+                _report_startup_error(f"错误：{safe_message(exc)}")
+                return 2
             _notify_database_recovery(engine)
         def pick_folder() -> str | None:
             result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
@@ -1908,9 +1954,12 @@ def main() -> int:
         from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
         from sjtu_learning_assistant.mcp_server import run_stdio_server
 
+        if sys.stdin is None or sys.stdout is None:
+            _report_startup_error("错误：MCP stdio 模式需要可用的标准输入和标准输出。")
+            return 2
         for stream in (sys.stdin, sys.stdout):
             # MCP stdio 要求 UTF-8 + LF；Windows 无控制台时默认是本地代码页（如 cp936）。
-            if stream is not None and hasattr(stream, "reconfigure"):
+            if hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:

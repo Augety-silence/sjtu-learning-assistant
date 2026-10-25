@@ -95,14 +95,27 @@ function copySafeNode(node: Node, output: Document): Node | null {
   const safeElement = output.createElement(tag);
   if (tag === "a") {
     const href = node.getAttribute("href");
-    if (href && isHttpsUrl(href)) safeElement.setAttribute("href", href);
-    else if (href) safeElement.setAttribute("data-link-blocked", "true");
+    if (href && isHttpsUrl(href)) {
+      safeElement.setAttribute("href", href);
+    } else if (href) {
+      const blocked = output.createElement("span");
+      blocked.setAttribute("data-link-blocked", "true");
+      for (const child of Array.from(node.childNodes)) {
+        const safeChild = copySafeNode(child, output);
+        if (safeChild) blocked.append(safeChild);
+      }
+      blocked.append(output.createTextNode("（已拦截链接）"));
+      return blocked;
+    }
   } else if (tag === "img") {
     const resourceId = node.getAttribute("data-resource-id");
     const alt = node.getAttribute("alt");
-    if (resourceId) {
-      safeElement.setAttribute("data-resource-id", resourceId);
+    if (!resourceId) {
+      return output.createTextNode(
+        alt ? `[图片：${alt}]` : "[无可用来源的图片]",
+      );
     }
+    safeElement.setAttribute("data-resource-id", resourceId);
     if (alt !== null) safeElement.setAttribute("alt", alt);
   }
 
@@ -131,7 +144,13 @@ function isMailAttachment(
 }
 
 function fileManagerName() {
-  const platform = navigator.platform || navigator.userAgent;
+  const modernNavigator = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  const platform =
+    modernNavigator.userAgentData?.platform ||
+    modernNavigator.platform ||
+    modernNavigator.userAgent;
   return /Win/i.test(platform) ? "资源管理器" : "Finder";
 }
 
@@ -342,6 +361,7 @@ export function MessageDetailContent({
         retryButton.title = originalAlt
           ? `重新加载图片：${originalAlt}`
           : "重新加载图片";
+        retryButton.setAttribute("aria-label", retryButton.title);
         image.insertAdjacentElement("afterend", retryButton);
       };
       const loadRemoteImage = (force = false) => {

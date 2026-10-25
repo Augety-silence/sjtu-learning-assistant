@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.cloud_archive_service import CloudArchiveService, encode_remote_path
 from sjtu_learning_assistant.cloud_storage.models import CloudItem
-from sjtu_learning_assistant.models import ArchiveEntry, ArchiveJob, ArchiveVersion, Base
+from sjtu_learning_assistant.models import ArchiveEntry, ArchiveEvent, ArchiveJob, ArchiveVersion, Base
 import sjtu_learning_assistant.restore_service as restore_module
 from sjtu_learning_assistant.restore_service import RestoreError, RestoreService
 
@@ -148,7 +148,7 @@ def test_conflict_policies(restore_env, policy):
 
 
 def test_overwrite_failure_restores_same_directory_snapshot(restore_env, monkeypatch):
-    root, _engine, _provider, archive, restore = restore_env
+    root, engine, _provider, archive, restore = restore_env
     _source, entry_id = _archive_file(root, archive, name="rollback.txt")
     target_root = root / "rollback-target"
     target_root.mkdir()
@@ -174,6 +174,110 @@ def test_overwrite_failure_restores_same_directory_snapshot(restore_env, monkeyp
     assert target.read_bytes() == b"original-content"
     assert not list(target_root.glob(".sjtu-restore-overwrite-*"))
     assert not list(target_root.glob(".sjtu-restore-*"))
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, plan["job"]["id"])
+        assert "原文件已自动还原" in job.last_error
+        events = list(session.scalars(select(ArchiveEvent).where(ArchiveEvent.job_id == job.id)))
+        assert any(event.event_type == "restore_rolled_back" for event in events)
+
+
+def test_snapshot_move_failure_does_not_report_rollback_failure(restore_env, monkeypatch):
+    root, engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="snapshot-move.txt")
+    target_root = root / "snapshot-move-target"
+    target_root.mkdir()
+    target = target_root / "snapshot-move.txt"
+    target.write_bytes(b"original-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_replace = restore_module._replace_with_retry
+
+    def fail_snapshot_move(source: Path, destination: Path) -> None:
+        if source == target and destination.name.startswith(".sjtu-restore-overwrite-"):
+            raise OSError("forced snapshot move failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(restore_module, "_replace_with_retry", fail_snapshot_move)
+    with pytest.raises(RestoreError):
+        restore.execute(plan["job"]["id"], "overwrite")
+
+    assert target.read_bytes() == b"original-content"
+    assert not list(target_root.glob(".sjtu-restore-overwrite-*"))
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, plan["job"]["id"])
+        assert job.status == "failed"
+        assert "自动回滚失败" not in job.last_error
+
+
+def test_snapshot_cleanup_failure_keeps_completed_restore(restore_env, monkeypatch):
+    root, engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="cleanup-failure.txt")
+    target_root = root / "cleanup-failure-target"
+    target_root.mkdir()
+    target = target_root / "cleanup-failure.txt"
+    target.write_bytes(b"original-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_unlink = Path.unlink
+
+    def fail_snapshot_cleanup(path: Path, *args, **kwargs) -> None:
+        if (
+            path.name.startswith(".sjtu-restore-overwrite-")
+            and target.exists()
+            and target.read_bytes() == b"new-content"
+        ):
+            raise OSError("forced snapshot cleanup failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_snapshot_cleanup)
+    result = restore.execute(plan["job"]["id"], "overwrite")
+
+    assert result["status"] == "completed"
+    assert target.read_bytes() == b"new-content"
+    snapshots = list(target_root.glob(".sjtu-restore-overwrite-*"))
+    assert len(snapshots) == 1
+    assert snapshots[0].read_bytes() == b"original-content"
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, plan["job"]["id"]).status == "completed"
+
+
+def test_rollback_identity_restore_error_still_marks_job_failed(restore_env, monkeypatch):
+    root, engine, _provider, archive, restore = restore_env
+    _source, entry_id = _archive_file(root, archive, name="rollback-identity.txt")
+    target_root = root / "rollback-identity-target"
+    target_root.mkdir()
+    target = target_root / "rollback-identity.txt"
+    target.write_bytes(b"original-content")
+    authorized = restore.authorize_root(target_root)
+    plan = restore.plan(entry_id, mode="choose_location", authorized_root_id=authorized["id"])
+    original_add_event = restore_module.add_event
+    original_identity = restore_module._identity
+    completion_failed = False
+
+    def fail_completion_event(session, job, event_type, status, message=None, details=None):
+        nonlocal completion_failed
+        if event_type == "restore_completed":
+            completion_failed = True
+            raise OSError("forced completion failure")
+        return original_add_event(session, job, event_type, status, message, details)
+
+    def fail_rollback_identity(path: Path):
+        if completion_failed and path == target:
+            raise RestoreError("forced identity inspection failure")
+        return original_identity(path)
+
+    monkeypatch.setattr(restore_module, "add_event", fail_completion_event)
+    monkeypatch.setattr(restore_module, "_identity", fail_rollback_identity)
+    with pytest.raises(RestoreError, match="临时快照"):
+        restore.execute(plan["job"]["id"], "overwrite")
+
+    snapshots = list(target_root.glob(".sjtu-restore-overwrite-*"))
+    assert len(snapshots) == 1
+    assert snapshots[0].read_bytes() == b"original-content"
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, plan["job"]["id"])
+        assert job.status == "failed"
+        assert snapshots[0].name in job.last_error
 
 
 def test_overwrite_rollback_preserves_concurrent_replacement_and_snapshot(
@@ -200,7 +304,7 @@ def test_overwrite_rollback_preserves_concurrent_replacement_and_snapshot(
         )
 
     monkeypatch.setattr(restore_module, "add_event", fail_completion_event)
-    with pytest.raises(RestoreError, match="隐藏快照"):
+    with pytest.raises(RestoreError, match="临时快照"):
         restore.execute(plan["job"]["id"], "overwrite")
 
     assert target.read_bytes() == b"concurrent-content"

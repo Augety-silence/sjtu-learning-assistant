@@ -99,6 +99,7 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
   const [windowValue, setWindowValue] = useState("7d");
   const [items, setItems] = useState<Deadline[] | null>(null);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const compact = useCompactViewport();
   const { showToast } = useToast();
   const loadRequestRef = useRef(0);
@@ -120,7 +121,15 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
     void load();
   }, [load]);
 
-  const groups = useMemo(() => groupDeadlines(items ?? []), [items]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const groups = useMemo(
+    () => groupDeadlines(items ?? [], new Date(now)),
+    [items, now],
+  );
 
   const releaseText = (item: Deadline) =>
     formatDateTime(item.unlock_at ?? item.published_at ?? null);
@@ -145,10 +154,12 @@ export function DeadlinesView({ embedded = false }: { embedded?: boolean }) {
       ready={items !== null || Boolean(error)}
     >
       <div className="calm-deadline-toolbar">
-        <div>
-          <h2>待处理任务</h2>
-          <p>查看所选时间范围内任务的发布、开放与截止时间。</p>
-        </div>
+        {!embedded && (
+          <div>
+            <h2>待处理任务</h2>
+            <p>查看所选时间范围内任务的发布、开放与截止时间。</p>
+          </div>
+        )}
         <Tabs value={windowValue} onValueChange={setWindowValue}>
           <TabsList
             indicator

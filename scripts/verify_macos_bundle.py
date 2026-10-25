@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
 import plistlib
 import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 HIGH_CONFIDENCE_SECRET_PATTERNS = (
     re.compile(rb"AKIA[0-9A-Z]{16}"),
@@ -93,6 +95,13 @@ def _has_sensitive_value(payload: bytes, forbidden_path: bytes) -> bool:
     return False
 
 
+def _forbidden_path_bytes(value: str) -> bytes:
+    normalized = posixpath.normpath(value)
+    if normalized in {"", "/", "."}:
+        return b""
+    return os.fsencode(normalized.rstrip("/\\") + "/")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle", type=Path)
@@ -106,19 +115,23 @@ def main() -> int:
     if not plist_path.is_file():
         errors.append("缺少 Contents/Info.plist")
     else:
-        with plist_path.open("rb") as handle:
-            plist = plistlib.load(handle)
-        expected = {
-            "CFBundleIdentifier": "io.github.sjtu-learning-assistant",
-            "CFBundleName": "SJTU Learning Assistant",
-        }
-        for key, value in expected.items():
-            if plist.get(key) != value:
-                errors.append(f"Info.plist 的 {key} 不正确")
-        if not plist.get("CFBundleShortVersionString"):
-            errors.append("Info.plist 缺少版本")
+        try:
+            with plist_path.open("rb") as handle:
+                plist = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
+            errors.append("Info.plist 无法读取或格式无效")
+        else:
+            expected = {
+                "CFBundleIdentifier": "io.github.sjtu-learning-assistant",
+                "CFBundleName": "SJTU Learning Assistant",
+            }
+            for key, value in expected.items():
+                if plist.get(key) != value:
+                    errors.append(f"Info.plist 的 {key} 不正确")
+            if not plist.get("CFBundleShortVersionString"):
+                errors.append("Info.plist 缺少版本")
 
-    forbidden_path = os.fsencode(args.forbid_path.rstrip("/")) + b"/"
+    forbidden_path = _forbidden_path_bytes(args.forbid_path)
     seen: set[Path] = set()
     for file_path in _owned_scan_targets(app, executable_path, plist_path):
         if file_path in seen:

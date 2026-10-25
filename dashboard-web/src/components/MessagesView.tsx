@@ -56,6 +56,7 @@ export function MessagesView() {
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const allTabRef = useRef<HTMLButtonElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
   const { showToast } = useToast();
 
@@ -247,6 +248,13 @@ export function MessagesView() {
       ) {
         return;
       }
+      const activeElement = document.activeElement;
+      if (
+        !(activeElement instanceof Element) ||
+        !activeElement.closest(".messages-page")
+      ) {
+        return;
+      }
       const selectedIndex = Math.max(
         0,
         items.findIndex((item) => messageKey(item) === selectedKey),
@@ -312,7 +320,11 @@ export function MessagesView() {
           >
             <TabsList indicator aria-label="消息类型">
               {kinds.map((item) => (
-                <TabsTrigger key={item.value} value={item.value}>
+                <TabsTrigger
+                  key={item.value}
+                  value={item.value}
+                  ref={item.value === "all" ? allTabRef : undefined}
+                >
                   {item.label}
                 </TabsTrigger>
               ))}
@@ -353,7 +365,10 @@ export function MessagesView() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setKind("all")}
+                onClick={() => {
+                  setKind("all");
+                  window.setTimeout(() => allTabRef.current?.focus(), 0);
+                }}
               >
                 清除筛选
               </Button>
@@ -365,12 +380,13 @@ export function MessagesView() {
           }
         />
       ) : (
-        <div className="list-surface" aria-label="消息列表">
+        <div className="list-surface" role="list" aria-label="消息列表">
           {items.map((item) => {
             const key = messageKey(item);
             const selected = selectedKey === key;
             return (
               <div
+                role="listitem"
                 className={`list-row message-row${selected ? " message-row-selected" : ""}${item.is_unread ? " message-row-unread" : ""}`}
                 key={key}
               >

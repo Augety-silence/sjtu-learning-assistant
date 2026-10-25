@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeadlinesView, groupDeadlines } from "@/components/DeadlinesView";
 import { invoke, openExternal } from "@/lib/api";
 import type { Deadline } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   invoke: vi.fn(),
@@ -48,6 +55,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   Object.defineProperty(window, "innerWidth", {
     configurable: true,
@@ -86,6 +94,35 @@ describe("groupDeadlines", () => {
 });
 
 describe("DeadlinesView responsive semantics", () => {
+  it("updates relative deadline labels while the page stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-25T10:00:00+08:00"));
+    vi.mocked(invoke).mockResolvedValueOnce({
+      items: [
+        deadline(
+          "countdown",
+          "即将到期",
+          new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        ),
+      ],
+    });
+    render(<DeadlinesView />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("1 天后截止")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(61 * 60_000);
+    });
+    expect(screen.getByText("23 小时后截止")).toBeTruthy();
+  });
+
+  it("omits the standalone title when embedded in the calendar header", async () => {
+    render(<DeadlinesView embedded />);
+    await screen.findByRole("table");
+    expect(screen.queryByRole("heading", { name: "待处理任务" })).toBeNull();
+  });
+
   it("keeps the toolbar focused and the page reveal stable while a new range loads", async () => {
     const { container } = render(<DeadlinesView embedded />);
     await screen.findByRole("table");

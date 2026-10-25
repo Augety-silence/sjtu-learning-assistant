@@ -18,9 +18,32 @@ from sjtu_learning_assistant.canvas_sync import (
     fetch_course_modules,
     normalize_base_url,
 )
+from sjtu_learning_assistant.canvas_client import CanvasClient, CanvasNetworkError
 
 
 class CanvasClientTests(unittest.TestCase):
+    def test_unreadable_successful_write_responses_are_uncertain(self) -> None:
+        for operation in ("submit", "update"):
+            with self.subTest(operation=operation):
+                def handler(request: httpx.Request) -> httpx.Response:
+                    return httpx.Response(200, content=b"not-json", request=request)
+
+                with httpx.Client(
+                    base_url="https://oc.sjtu.edu.cn",
+                    transport=httpx.MockTransport(handler),
+                ) as http_client:
+                    canvas = CanvasClient(client=http_client)
+                    with self.assertRaises(CanvasNetworkError) as context:
+                        if operation == "submit":
+                            canvas.submit_assignment(1, 2, "online_text_entry", body="answer")
+                        else:
+                            canvas.update_user_submission(
+                                1, 2, 3, [("submission[posted_grade]", "9")]
+                            )
+
+                self.assertTrue(context.exception.operation_uncertain)
+                self.assertEqual(200, context.exception.status_code)
+
     def test_fetches_all_pages_and_deduplicates_courses(self) -> None:
         requests: list[httpx.Request] = []
 

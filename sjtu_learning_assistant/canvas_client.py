@@ -183,6 +183,20 @@ class CanvasClient:
             raise CanvasProtocolError("Canvas API 返回了无法识别的数据格式。")
         return payload
 
+    @classmethod
+    def _write_json(cls, response: httpx.Response) -> dict[str, Any]:
+        """Parse a 2xx write response; an unreadable body must not look like a plain failure."""
+        try:
+            return cls._json(response, dict)
+        except CanvasProtocolError as exc:
+            # 服务器已返回 2xx，写入很可能已生效；交由调用方回读验证，避免重复提交。
+            error = CanvasNetworkError(
+                "Canvas 已响应写入请求，但返回内容无法解析，服务器可能已处理该请求。",
+                operation_uncertain=True,
+            )
+            error.status_code = response.status_code
+            raise error from exc
+
     def _get_object(self, url: str, *, params: Any = None) -> dict[str, Any]:
         return self._json(self._request("GET", url, params=params), dict)
 
@@ -462,7 +476,7 @@ class CanvasClient:
             data=dict(normalized),
             uncertain_on_error=True,
         )
-        return self._json(response, dict)
+        return self._write_json(response)
 
     def grade_submission(
         self,
@@ -623,4 +637,4 @@ class CanvasClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             uncertain_on_error=True,
         )
-        return self._json(response, dict)
+        return self._write_json(response)

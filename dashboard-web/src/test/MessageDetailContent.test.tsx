@@ -63,6 +63,7 @@ describe("MessageDetailContent", () => {
         <a href="https://example.edu/path" style="color:red">安全链接</a>
         <img data-resource-id="image-1" alt="课程图片" src="https://evil.test/a.png"
           srcset="https://evil.test/b.png" style="width:999px" onerror="alert(1)">
+        <img alt="缺失来源">
       </div>`;
 
     render(
@@ -76,7 +77,7 @@ describe("MessageDetailContent", () => {
     expect(screen.getByRole("document").textContent).toContain("安全加粗");
     expect(document.querySelector("script")).toBeNull();
     expect(document.querySelector("style")).toBeNull();
-    const dangerous = screen.getByText("危险链接");
+    const dangerous = screen.getByText(/危险链接/);
     const safe = screen.getByText("安全链接");
     expect(dangerous.getAttribute("href")).toBeNull();
     expect(safe.getAttribute("href")).toBe("https://example.edu/path");
@@ -88,6 +89,8 @@ describe("MessageDetailContent", () => {
     expect(image.getAttribute("srcset")).toBeNull();
     expect(image.getAttribute("style")).toBeNull();
     expect(image.getAttribute("onerror")).toBeNull();
+    expect(screen.getByText("[图片：缺失来源]")).toBeTruthy();
+    expect(screen.queryByAltText("缺失来源")).toBeNull();
   });
 
   it("没有 HTML 时显示纯文本，pending 时仅显示同步提示", () => {
@@ -135,7 +138,7 @@ describe("MessageDetailContent", () => {
       expect(openExternal).toHaveBeenCalledWith("https://example.edu/page"),
     );
     vi.mocked(openExternal).mockClear();
-    expect(fireEvent.click(screen.getByText("危险页面"))).toBe(false);
+    fireEvent.click(screen.getByText(/危险页面/));
     expect(openExternal).not.toHaveBeenCalled();
   });
 
@@ -265,7 +268,9 @@ describe("MessageDetailContent", () => {
       />,
     );
 
-    const retry = await screen.findByRole("button", { name: "重试" });
+    const retry = await screen.findByRole("button", {
+      name: "重新加载图片",
+    });
     fireEvent.click(retry);
 
     await waitFor(() =>
@@ -274,7 +279,7 @@ describe("MessageDetailContent", () => {
       ),
     );
     expect(getMessageResource).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "重新加载图片" })).toBeNull();
   });
 
   it("显示邮件附件信息并执行打开、Finder 操作，未缓存附件禁用操作", async () => {

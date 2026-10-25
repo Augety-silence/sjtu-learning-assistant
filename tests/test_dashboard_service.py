@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from sjtu_learning_assistant.dashboard_service import (
     NotFoundError,
     _desktop_open_command,
 )
+from sjtu_learning_assistant.canvas_sync import CanvasCheckError
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.models import Assignment, Course, SyncState
 
@@ -80,6 +82,19 @@ class DashboardOverviewTests(unittest.TestCase):
             ],
             [item["source_id"] for item in overview["deadlines"]],
         )
+
+    def test_deadlines_rejects_invalid_service_level_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = create_database_engine(
+                default_sqlite_url(Path(directory) / "dashboard.db")
+            )
+            bootstrap_sqlite(engine)
+            service = DashboardService(engine)
+            for hours, limit in ((-1, 10), (8761, 10), (True, 10), (24, 0), (24, 501)):
+                with self.subTest(hours=hours, limit=limit):
+                    with self.assertRaises(DashboardError):
+                        service.deadlines(hours, limit=limit)
+            engine.dispose()
 
 
 class DashboardCalendarTests(unittest.TestCase):
@@ -264,6 +279,58 @@ class DashboardSettingsTests(unittest.TestCase):
                 "theme_mode",
             },
             set(status),
+        )
+
+    def test_invalid_saved_canvas_token_has_actionable_non_retryable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "archive"
+            root.mkdir()
+            service = DashboardService(SimpleNamespace(), archive_root=root)
+            with (
+                patch("sjtu_learning_assistant.canvas_sync.get_saved_token", return_value="bad\u200btoken"),
+                patch(
+                    "sjtu_learning_assistant.canvas_sync.build_http_client",
+                    side_effect=CanvasCheckError("Canvas Access Token 含有无效字符，请重新复制。"),
+                ),
+            ):
+                with self.assertRaises(DashboardError) as context:
+                    service._get_canvas_client()
+        self.assertIn("重新复制", str(context.exception))
+        self.assertFalse(context.exception.retryable)
+
+    def test_archive_root_changes_update_cloud_archive_service(self) -> None:
+        class Store:
+            def __init__(inner_self, root):
+                inner_self.root = str(root)
+
+            def resolve(inner_self, **_kwargs):
+                return SimpleNamespace(archive_root=inner_self.root)
+
+            def update(inner_self, payload):
+                inner_self.root = payload["archive_root"]
+                return SimpleNamespace(archive_root=inner_self.root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            initial = Path(directory) / "initial"
+            updated = Path(directory) / "updated"
+            picked = Path(directory) / "picked"
+            initial.mkdir()
+            updated.mkdir()
+            picked.mkdir()
+            store = Store(initial)
+            service = DashboardService(
+                SimpleNamespace(),
+                settings_store=store,
+                folder_picker=lambda: str(picked),
+            )
+            service.settings_status = lambda: {}
+
+            service.update_settings({"archive_root": str(updated)})
+            self.assertEqual(Path(os.path.abspath(updated)), service.cloud_archive.archive_root)
+            service.pick_archive_root()
+
+        self.assertEqual(
+            Path(os.path.abspath(picked)), service.cloud_archive.archive_root
         )
 
 

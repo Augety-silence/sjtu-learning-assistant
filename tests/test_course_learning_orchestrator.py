@@ -631,6 +631,19 @@ class CourseLearningOrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(SchemaValidationError, r"\$\.chunk_id"):
             _parse_correction_payload(edit, chunk, {"cue-1": chunk.current_text})
 
+    def test_correction_repair_may_fill_missing_empty_defaults(self):
+        from sjtu_learning_assistant.semantic_chunker import SemanticChunker
+
+        chunk = SemanticChunker().chunk(CUES, course_id="course-a", video_id="repair-defaults")[0]
+        original = {"chunk_id": chunk.chunk_id, "corrected_text": chunk.current_text}
+        repaired = _parse_correction_payload(
+            {"chunk_id": chunk.chunk_id, "changes": [], "uncertain": [], "confidence": 0.0},
+            chunk,
+            {"cue-1": chunk.current_text},
+        )
+
+        _validate_repair_preserves("correction", original, repaired)
+
     def test_unlocatable_or_unknown_change_becomes_uncertain_without_editing(self):
         from sjtu_learning_assistant.semantic_chunker import SemanticChunker
         cues = [dict(CUES[0], text="重复词和重复词。")]

@@ -60,7 +60,10 @@ _SECRET = re.compile(
     r"[^\s,;&\"'}]+"
 )
 _QUERY_SECRET = re.compile(r"(?i)([?&](?:access_)?token=)[^&#\s]+")
-_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@")
+# 用负向后顾代替 \b：\b 会在每个 "." "-" "+" 后重新起匹配，长串上呈二次复杂度（ReDoS）。
+_URL_USERINFO = re.compile(
+    r"(?i)(?<![a-z0-9+.\-])([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@"
+)
 
 
 class AcademicFeatureError(RuntimeError):
@@ -1111,6 +1114,8 @@ class AcademicFeatureService:
             numeric = Decimal(text)
         except InvalidOperation:
             return text
+        if not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", text):
+            raise AcademicValidationError("评分格式无效。")
         if not numeric.is_finite() or numeric < 0:
             raise AcademicValidationError("评分必须是非负有限数值。")
         return text

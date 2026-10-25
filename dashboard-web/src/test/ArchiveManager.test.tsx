@@ -2,7 +2,13 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ArchiveDetailDrawer } from "@/components/archive/ArchiveDetailDrawer";
+import { ArchiveJobsPanel } from "@/components/archive/ArchiveJobsPanel";
 import { ArchiveManager } from "@/components/archive/ArchiveManager";
+import {
+  archiveStatusLabel,
+  archiveStatusTone,
+} from "@/components/archive/archiveUtils";
 import { RestoreDialog } from "@/components/archive/RestoreDialog";
 import {
   authorizeArchiveRoot,
@@ -256,7 +262,7 @@ describe("ArchiveManager", () => {
     await waitFor(() => expect(document.activeElement).toBe(fileButton));
 
     fireEvent.click(screen.getAllByRole("button", { name: /任务/ })[0]);
-    expect(await screen.findByText("failed")).toBeTruthy();
+    expect(await screen.findByText("任务失败")).toBeTruthy();
     const jobsPanel = screen.getByRole("region", { name: "任务与事件" });
     const retryButtons = within(jobsPanel).getAllByRole("button", {
       name: /重试/,
@@ -408,7 +414,12 @@ describe("RestoreDialog", () => {
       fireEvent.click(screen.getByRole("checkbox", { name: /确认创建上述/ }));
       fireEvent.click(
         screen.getByRole("button", {
-          name: policy === "compare" ? "执行对照" : "开始恢复",
+          name:
+            policy === "compare"
+              ? "执行对照"
+              : policy === "overwrite"
+                ? "覆盖并恢复"
+                : "开始恢复",
         }),
       );
       await waitFor(() =>
@@ -453,5 +464,66 @@ describe("RestoreDialog", () => {
     );
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toMatch(/archive-job-toggle[\s\S]+transition: none/);
+  });
+});
+
+describe("归档故障反馈与事件刷新", () => {
+  it("running 使用进行中的中文标签与色调", () => {
+    expect(archiveStatusLabel("running")).toBe("处理中");
+    expect(archiveStatusTone("running")).toBe("info");
+  });
+
+  it("重新展开任务会读取新事件，折叠时不引用缺失的事件面板", async () => {
+    render(
+      <ArchiveJobsPanel jobs={[failedJob]} loading={false} onRetry={vi.fn()} />,
+    );
+    const toggle = screen.getByRole("button", { name: /^上传任务/ });
+    expect(toggle.hasAttribute("aria-controls")).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(getArchiveJobEvents).toHaveBeenCalledTimes(1));
+    await screen.findByText("任务失败");
+    fireEvent.click(toggle);
+    expect(toggle.hasAttribute("aria-controls")).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(getArchiveJobEvents).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: /^重试上传/ })).toBeTruthy();
+  });
+
+  it("详情读取失败不误报云端没有版本", async () => {
+    vi.mocked(getArchiveDetail).mockRejectedValueOnce(
+      new Error("版本读取失败"),
+    );
+    render(
+      <ArchiveDetailDrawer
+        entry={entry}
+        jobs={[]}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />,
+    );
+    await screen.findByRole("alert");
+    expect(screen.queryByText("暂无可用版本")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "版本" })).toBeNull();
+  });
+
+  it("回滚失败保留明确快照提示并通知父级刷新任务", async () => {
+    const onFailed = vi.fn();
+    const message = "恢复失败；原文件保留在临时快照中，请勿删除。";
+    vi.mocked(executeRestore).mockRejectedValueOnce(new Error(message));
+    render(
+      <RestoreDialog
+        entry={detailEntry}
+        onClose={vi.fn()}
+        onComplete={vi.fn()}
+        onFailed={onFailed}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "检查原路径" }));
+    await screen.findByText("目标冲突处理");
+    fireEvent.click(screen.getByRole("checkbox", { name: /确认创建上述/ }));
+    fireEvent.click(screen.getByRole("button", { name: "开始恢复" }));
+    await screen.findByText(message);
+    expect(screen.queryByText(/快照.*请重新检查目标后再恢复/)).toBeNull();
+    expect(onFailed).toHaveBeenCalledOnce();
   });
 });

@@ -118,4 +118,59 @@ describe("GradingView", () => {
       }),
     );
   });
+
+  it("switches to the attachment that the user chose to preview", async () => {
+    render(
+      <GradingView
+        submissions={[
+          {
+            ...submissions[0],
+            attachments: [
+              {
+                id: "file-1",
+                name: "first.txt",
+                preview: { kind: "text", content: "第一份预览" },
+              },
+              {
+                id: "file-2",
+                name: "second.txt",
+                preview: { kind: "text", content: "第二份预览" },
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("第一份预览")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "预览" })[1]);
+    expect(await screen.findByText("第二份预览")).toBeTruthy();
+    expect(screen.queryByText("第一份预览")).toBeNull();
+  });
+
+  it("shows an inline score error and neutralizes the empty pending summary", () => {
+    const saveScore = vi.fn(async () => undefined);
+    render(
+      <GradingView
+        submissions={[
+          {
+            ...submissions[0],
+            status: "graded",
+            score: 80,
+          },
+        ]}
+        onSaveScore={saveScore}
+      />,
+    );
+    const input = screen.getByLabelText("评分");
+    fireEvent.change(input, { target: { value: "-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存评分" }));
+
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(document.getElementById("grading-score-error")?.textContent).toBe(
+      "请输入不小于 0 的有效分数。",
+    );
+    const pending = screen.getByText("已全部处理").closest(".summary-item");
+    expect(pending?.classList.contains("summary-zero")).toBe(true);
+    expect(saveScore).not.toHaveBeenCalled();
+  });
 });

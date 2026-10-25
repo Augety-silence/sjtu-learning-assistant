@@ -31,7 +31,12 @@ jobs:
           test "$(node --version)" = "v22.22.0"
           test "$(npm --version)" = "10.9.4"
           VERSION="$(python -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
-          [[ "$GITHUB_REF_NAME" == "v$VERSION" || "$GITHUB_REF_NAME" == "v$VERSION-"* ]]
+          # macOS 自带 Bash 3.2 中失败的 [[ ]] 不受 set -e 约束，需显式 exit；
+          # 同时拒绝 "v1.2.3-" 这种空预发布后缀。
+          case "$GITHUB_REF_NAME" in
+            "v$VERSION" | "v$VERSION"-?*) ;;
+            *) echo "Tag 与项目版本不匹配" >&2; exit 1 ;;
+          esac
           if grep -n '"resolved": "https://' dashboard-web/package-lock.json | grep -v 'https://registry.npmjs.org/'; then
             echo "package-lock.json 包含非官方 registry 地址" >&2
             exit 1
@@ -71,7 +76,8 @@ jobs:
           if ((node --version) -ne "v22.22.0") { throw "Node 版本不匹配" }
           if ((npm --version) -ne "10.9.4") { throw "npm 版本不匹配" }
           $Version = (& python -c "from sjtu_learning_assistant import __version__; print(__version__)").Trim()
-          if ($env:GITHUB_REF_NAME -ne "v$Version" -and -not $env:GITHUB_REF_NAME.StartsWith("v$Version-")) {
+          $PrereleasePrefix = "v$Version-"
+          if ($env:GITHUB_REF_NAME -ne "v$Version" -and (-not $env:GITHUB_REF_NAME.StartsWith($PrereleasePrefix) -or $env:GITHUB_REF_NAME.Length -eq $PrereleasePrefix.Length)) {
             throw "Tag 与项目版本不匹配"
           }
       - name: 安装 Inno Setup

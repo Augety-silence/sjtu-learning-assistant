@@ -9,7 +9,14 @@ import {
   importTimetableIcs,
 } from "@/lib/api";
 import { mergeCalendarEvents } from "@/lib/calendarEvents";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -63,7 +70,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("ScheduleView", () => {
   it("对缺少 ID 或时间的运行时事件仍按旧的严格身份规则去重", () => {
@@ -244,10 +254,12 @@ describe("ScheduleView", () => {
     );
     await waitFor(() => expect(getTimetableSchedule).toHaveBeenCalled());
     const [startAt, endAt] = vi.mocked(getTimetableSchedule).mock.calls[0];
-    expect(new Date(startAt).getDate()).toBe(28);
-    expect(new Date(startAt).getMonth()).toBe(8);
-    expect(new Date(endAt).getDate()).toBe(9);
-    expect(new Date(endAt).getMonth()).toBe(10);
+    expect(startAt).toBe("2026-09-27T16:00:00.000Z");
+    expect(endAt).toBe("2026-11-08T16:00:00.000Z");
+    expect(new Date(startAt).getUTCDate()).toBe(27);
+    expect(new Date(startAt).getUTCMonth()).toBe(8);
+    expect(new Date(endAt).getUTCDate()).toBe(8);
+    expect(new Date(endAt).getUTCMonth()).toBe(10);
     fireEvent.click(screen.getByRole("button", { name: "9月28日" }));
     const agenda = await screen.findByLabelText("当日安排");
     expect(within(agenda).findByText("本地课程")).toBeTruthy();
@@ -262,6 +274,31 @@ describe("ScheduleView", () => {
     );
     await waitFor(() => expect(importTimetableIcs).toHaveBeenCalledOnce());
     expect(await screen.findByText("已导入 2 门课程、18 节课。")).toBeTruthy();
+  });
+
+  it("clears an ICS status notice so the same result can be announced again", async () => {
+    vi.useFakeTimers();
+    renderView();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const importButton = screen.getByRole("button", { name: "导入 ICS 日历" });
+    fireEvent.click(importButton);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/已导入 2 门课程/)).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.queryByText(/已导入 2 门课程/)).toBeNull();
+    fireEvent.click(importButton);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/已导入 2 门课程/)).toBeTruthy();
   });
 
   it("shows ICS import errors without opening the legacy dialog", async () => {
@@ -287,6 +324,56 @@ describe("ScheduleView", () => {
 
     expect(await screen.findByText("offline")).toBeTruthy();
     expect(localStorage.getItem("sjtu-learning-timetable-cache-v1")).toBeNull();
+  });
+
+  it("does not display the previous month's local events when no matching cache exists", async () => {
+    const visibleMonth = new Date(2026, 9, 1);
+    const staleTitle = "上个月的课程";
+    vi.mocked(getTimetableStatus).mockResolvedValue({
+      ...awaitingStatus,
+      state: "local",
+      hasLocalData: true,
+    });
+    vi.mocked(getTimetableSchedule).mockResolvedValueOnce({
+      events: [
+        {
+          id: "stale-course",
+          title: staleTitle,
+          courseName: staleTitle,
+          startAt: "2026-10-25T10:00:00+08:00",
+          endAt: null,
+          location: null,
+          periodLabel: null,
+          eventType: "course",
+          source: "local",
+          canonicalCourseId: null,
+        },
+      ],
+    });
+    const view = render(
+      <ScheduleView
+        canvasEvents={[]}
+        month={visibleMonth}
+        onMonthChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /10月25日/ }));
+    expect((await screen.findAllByText(staleTitle)).length).toBeGreaterThan(0);
+    vi.mocked(getTimetableSchedule).mockRejectedValueOnce(
+      new Error("当前月份离线"),
+    );
+    view.rerender(
+      <ScheduleView
+        canvasEvents={[]}
+        month={
+          new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1)
+        }
+        onMonthChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("当前月份离线");
+    expect(screen.queryByText(staleTitle)).toBeNull();
+    expect(screen.queryByText("离线日历")).toBeNull();
   });
 
   it("does nothing when the ICS picker is cancelled", async () => {

@@ -256,6 +256,12 @@ class BackupServiceTests(unittest.TestCase):
         self.assertNotIn("/", cleaned)
         self.assertNotIn("\\", cleaned)
         self.assertTrue(all(ord(character) >= 32 for character in cleaned))
+        unsafe = "".join(map(chr, (34, 42, 58, 60, 62, 63, 124)))
+        windows_safe = safe_path_component(unsafe)
+        self.assertFalse(any(character in windows_safe for character in unsafe))
+        chinese = safe_path_component("课".ljust(200, "课") + ".pdf")
+        self.assertLessEqual(len(chinese.encode("utf-8")), 220)
+        self.assertTrue(chinese.endswith(".pdf"))
         self.assertLessEqual(len(cleaned), 120)
         reserved = safe_path_component("NUL." + "x" * 116)
         self.assertLessEqual(len(reserved), 120)
@@ -846,6 +852,7 @@ class BackupServiceTests(unittest.TestCase):
                 "uploaded",
                 "skipped_existing",
                 "skipped_missing_local",
+                "skipped_changed",
                 "local_removed",
                 "failed",
                 "failures",
@@ -937,6 +944,7 @@ class BackupServiceTests(unittest.TestCase):
                 "uploaded",
                 "skipped_existing",
                 "skipped_missing_local",
+                "skipped_changed",
                 "local_removed",
                 "failed",
                 "failures",

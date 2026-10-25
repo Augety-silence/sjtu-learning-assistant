@@ -32,13 +32,16 @@ function messageFrom(reason: unknown, fallback: string) {
 }
 
 function visibleCalendarRange(month: Date) {
-  const first = new Date(month.getFullYear(), month.getMonth(), 1);
-  const start = new Date(first);
-  start.setDate(first.getDate() - ((first.getDay() + 6) % 7));
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 42);
-  return { startAt: start.toISOString(), endAt: end.toISOString() };
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const firstDay = new Date(Date.UTC(year, monthIndex, 1));
+  const mondayOffset = (firstDay.getUTCDay() + 6) % 7;
+  const startUtc = Date.UTC(year, monthIndex, 1 - mondayOffset);
+  const shanghaiOffset = 8 * 60 * 60 * 1000;
+  return {
+    startAt: new Date(startUtc - shanghaiOffset).toISOString(),
+    endAt: new Date(startUtc + 42 * 86_400_000 - shanghaiOffset).toISOString(),
+  };
 }
 
 export function ScheduleView({
@@ -113,6 +116,9 @@ export function ScheduleView({
           ) {
             // A valid cache for another month is not corrupt: keep it so returning
             // to that month while still offline can show it again.
+            setStatus(null);
+            setCourseEvents([]);
+            setOffline(false);
             setLoadError(messageFrom(reason, "课表加载失败"));
             return;
           }
@@ -125,6 +131,9 @@ export function ScheduleView({
           setCourseEvents(parsed.events);
           setOffline(true);
         } catch {
+          setStatus(null);
+          setCourseEvents([]);
+          setOffline(false);
           setLoadError(messageFrom(reason, "课表加载失败"));
           try {
             localStorage.removeItem(CACHE_KEY);
@@ -133,12 +142,21 @@ export function ScheduleView({
           }
         }
       } else {
+        setStatus(null);
+        setCourseEvents([]);
+        setOffline(false);
         setLoadError(messageFrom(reason, "课表加载失败"));
       }
     }
   }, [month]);
 
   useEffect(() => void load(), [load]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const importIcs = async () => {
     setImporting(true);

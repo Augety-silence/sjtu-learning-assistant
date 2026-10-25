@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.cloud_archive_service import CloudArchiveError, CloudArchiveService
+from sjtu_learning_assistant.cloud_storage import CloudNetworkError
 from sjtu_learning_assistant.cloud_storage.models import CloudItem
 from sjtu_learning_assistant.models import (
     AIManagedFile, ArchiveEntry, ArchiveEvent, ArchiveJob, ArchiveVersion, Base,
@@ -22,6 +24,9 @@ class FakeProvider:
         self.objects = {}
         self.uploads = 0
         self.fail_upload = False
+        self.fail_download = False
+        self.fail_delete = False
+        self.reported_size = None
 
     def ensure_directory(self, _path):
         return None
@@ -31,7 +36,10 @@ class FakeProvider:
 
     def get_info(self, path):
         data = self.objects[tuple(path)]
-        return CloudItem(name=path[-1], path=tuple(path), is_directory=False, size=len(data), etag="fake-etag")
+        size = len(data) if self.reported_size is None else self.reported_size
+        return CloudItem(
+            name=path[-1], path=tuple(path), is_directory=False, size=size, etag="fake-etag"
+        )
 
     def simple_upload(self, path, source, overwrite=False):
         if overwrite:
@@ -50,12 +58,16 @@ class FakeProvider:
         return self.simple_upload(path, source, overwrite=overwrite)
 
     def download_stream(self, path, chunk_size=65536, start=None, end=None):
+        if self.fail_download:
+            raise OSError("fake download failure")
         data = self.objects[tuple(path)]
         for index in range(0, len(data), chunk_size):
             yield data[index:index + chunk_size]
 
     def delete(self, path, *, permanent=False, missing_ok=True):
         assert permanent is True
+        if self.fail_delete:
+            raise OSError("fake delete failure")
         key = tuple(path)
         if not missing_ok and key not in self.objects:
             raise FileNotFoundError(key)
@@ -243,6 +255,138 @@ def test_strong_verification_claims_job_and_cleans_conflict_for_retry(archive_en
     service._mark_reconcile(job_id, "late failure")
     with Session(engine) as session:
         assert session.get(ArchiveJob, job_id).status == "completed"
+
+
+def _create_reconcile_job(root, provider, service, contents=b"expected-content"):
+    path = root / "reconcile-conflict.txt"
+    path.write_bytes(contents)
+    service.after_upload_hook = lambda _job, _item: (_ for _ in ()).throw(
+        RuntimeError("forced db failure")
+    )
+    with pytest.raises(CloudArchiveError):
+        service.archive_file(path)
+    service.after_upload_hook = None
+    job_id = service.reconcile()["items"][0]["id"]
+    return path, job_id, next(iter(provider.objects))
+
+
+def test_reconcile_content_hash_overrides_stale_remote_size_metadata(archive_env):
+    root, engine, provider, service = archive_env
+    _path, job_id, _remote_path = _create_reconcile_job(root, provider, service)
+    provider.reported_size = 1
+
+    result = service.retry(job_id)
+
+    assert result["status"] == "completed"
+    assert result["reconciled"] is True
+    assert provider.uploads == 1
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).status == "completed"
+        assert session.scalar(select(ArchiveVersion)).status == "archived"
+
+
+def test_archiving_unverified_file_again_performs_strong_reconciliation(archive_env):
+    root, engine, provider, service = archive_env
+    path, job_id, _remote_path = _create_reconcile_job(root, provider, service)
+
+    result = service.archive_file(path)
+
+    assert result["id"] == job_id
+    assert result["status"] == "completed"
+    assert provider.uploads == 1
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).attempt_count == 1
+
+
+def test_public_redaction_covers_full_headers_and_sensitive_mapping_keys():
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text, redact_public_value
+
+    text = "Authorization: Token S6\nCookie: a=1; sid=S7\nother: useful"
+    redacted = redact_public_text(text)
+    assert "S6" not in redacted
+    assert "S7" not in redacted
+    assert "other: useful" in redacted
+    assert redact_public_value({"q-signature": "S1", "api_key": "S2", "Credential": "S3"}) == {
+        "q-signature": "<redacted>", "api_key": "<redacted>", "Credential": "<redacted>"
+    }
+
+
+def test_reconcile_cleans_different_size_content_and_allows_retry(archive_env):
+    root, engine, provider, service = archive_env
+    path, job_id, remote_path = _create_reconcile_job(root, provider, service)
+    provider.objects[remote_path] = b"foreign object with different size"
+
+    conflict = service.retry(job_id)
+
+    assert conflict["status"] == "failed"
+    assert remote_path not in provider.objects
+    assert provider.uploads == 1
+    completed = service.retry(job_id)
+    assert completed["status"] == "completed"
+    assert provider.uploads == 2
+    assert provider.objects[remote_path] == path.read_bytes()
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).status == "completed"
+
+
+@pytest.mark.parametrize("failure", ["download", "delete"])
+def test_reconcile_download_or_delete_failure_never_records_success(archive_env, failure):
+    root, engine, provider, service = archive_env
+    _path, job_id, remote_path = _create_reconcile_job(root, provider, service)
+    provider.objects[remote_path] = b"different size conflict"
+    setattr(provider, f"fail_{failure}", True)
+
+    result = service.reconcile(job_id)["items"][0]
+
+    assert result["status"] == "needs_reconcile"
+    assert remote_path in provider.objects
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).status == "needs_reconcile"
+        assert session.scalar(select(ArchiveVersion)).status != "archived"
+
+
+def test_reconcile_network_failure_preserves_verification_state(archive_env):
+    root, engine, provider, service = archive_env
+    _path, job_id, remote_path = _create_reconcile_job(root, provider, service)
+
+    def fail_network(_path, chunk_size=65536, start=None, end=None):
+        raise CloudNetworkError("offline")
+        yield b""
+
+    provider.download_stream = fail_network
+    result = service.reconcile(job_id).get("items").pop()
+
+    assert result.get("status") == "needs_verification"
+    assert remote_path in provider.objects
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, job_id)
+        assert job.status == "needs_verification"
+        assert "检查网络" in job.last_error
+
+
+def test_normal_upload_still_rejects_existing_conflict_without_deleting_it(archive_env):
+    root, engine, provider, service = archive_env
+    path = root / "ordinary-conflict.txt"
+    path.write_bytes(b"expected upload")
+    provider.fail_upload = True
+    with pytest.raises(CloudArchiveError):
+        service.archive_file(path)
+    provider.fail_upload = False
+    with Session(engine) as session:
+        job = session.scalar(select(ArchiveJob))
+        job_id = job.id
+        remote_path = tuple(
+            json.loads(session.get(ArchiveVersion, job.version_id).cloud_remote_path)
+        )
+    provider.objects[remote_path] = b"foreign"
+
+    with pytest.raises(CloudArchiveError, match="拒绝覆盖"):
+        service.retry(job_id)
+
+    assert provider.objects[remote_path] == b"foreign"
+    with Session(engine) as session:
+        assert session.get(ArchiveJob, job_id).status == "failed"
+        assert session.scalar(select(ArchiveVersion)).status != "archived"
 
 
 def test_manager_initialization_marks_running_jobs_interrupted(archive_env):

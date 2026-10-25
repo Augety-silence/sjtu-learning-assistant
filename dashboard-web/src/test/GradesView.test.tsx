@@ -30,6 +30,28 @@ describe("GradesView", () => {
     ).toContain("88.0");
   });
 
+  it("keeps a not-yet-due unsubmitted grade out of the failure color", () => {
+    render(
+      <GradesView
+        assignments={assignments}
+        students={[
+          {
+            ...students[0],
+            grades: {
+              a1: {
+                score: null,
+                status: "unsubmitted" as const,
+                editable: true,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+    const status = screen.getByText("未提交");
+    expect(status.classList.contains("status-failed")).toBe(false);
+  });
+
   it("validates and saves an edited score with typed identifiers", async () => {
     const save = vi.fn(async () => undefined);
     render(

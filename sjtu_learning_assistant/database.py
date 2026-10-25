@@ -200,6 +200,10 @@ def sqlite_database_path(database_url: str) -> Path | None:
     parsed = make_url(database_url)
     if parsed.get_backend_name() != "sqlite" or parsed.database in {None, ":memory:"}:
         return None
+    if str(parsed.query.get("uri", "")).casefold() in {"1", "true", "yes"}:
+        # SQLite URI filenames have their own path/query grammar. Do not hand
+        # ``file:...`` to filesystem recovery as though it were a local path.
+        return None
     return Path(parsed.database).expanduser()
 
 

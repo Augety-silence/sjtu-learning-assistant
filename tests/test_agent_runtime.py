@@ -19,6 +19,8 @@ from sjtu_learning_assistant.agent_runtime import (
     PresetLoader,
     ReadOnlyToolRegistry,
 )
+from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
+from sjtu_learning_assistant.agent_runtime.tools import _clip
 from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
@@ -161,12 +163,31 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("abc-secret", detail_text)
         self.assertNotIn("top-secret", detail_text)
         self.assertNotIn("/Users/", detail_text)
-        with self.assertRaises(AgentToolError):
+        with self.assertRaises(AgentToolError) as invalid_tool_args:
             self.registry.execute("get_deadlines", {"limit": 999}, ALL_TOOLS)
+        self.assertEqual("invalid_params", invalid_tool_args.exception.category)
+        self.assertFalse(invalid_tool_args.exception.retryable)
+        self.assertEqual(0, self.registry.execute("list_courses", {"query": "%"}, ALL_TOOLS).result["count"])
+
+    def test_quoted_json_credentials_are_redacted_with_adjacent_chinese(self) -> None:
+        text = '{"password":"two word secret","api_key":"key-secret"}密码：相邻秘密'
+        clipped = _clip(text, 500)
+        for secret in ("two word secret", "key-secret", "相邻秘密"):
+            self.assertNotIn(secret, clipped)
+        self.assertGreaterEqual(clipped.count("[已隐藏]"), 3)
+
+    def test_email_detail_rejects_inactive_unified_item(self) -> None:
+        result = self.registry.execute("search_messages", {"kind": "email"}, ALL_TOOLS).result
+        ref = result["items"][0]["ref"]
+        with Session(self.engine) as session, session.begin():
+            row = session.scalar(select(UnifiedItem).where(UnifiedItem.email_id.is_not(None)))
+            row.is_active = False
+        with self.assertRaisesRegex(AgentToolError, "消息不存在"):
+            self.registry.execute("get_message_detail", {"kind": "email", "ref": ref}, ALL_TOOLS)
 
     def test_attachment_tools_search_first_read_by_id_and_enforce_scope(self) -> None:
         first_source = self.root / "first.txt"
-        first_source.write_text("量子计算课程重点 " + "细节" * 3000, encoding="utf-8")
+        first_source.write_text('{"password":"attachment-secret"} 量子计算课程重点 ' + "细节" * 3000, encoding="utf-8")
         second_source = self.root / "second.txt"
         second_source.write_text("不应越权读取", encoding="utf-8")
         files = AIManagedFileService(self.engine, archive_root=self.root / "archive")
@@ -194,8 +215,9 @@ class AgentRuntimeTests(unittest.TestCase):
             {"attachment_id": first["id"], "max_chars": 100},
             allowed,
         ).result
-        self.assertEqual(100, len(read["text"]))
+        self.assertLessEqual(len(read["text"]), 100)
         self.assertTrue(read["truncated"])
+        self.assertNotIn("attachment-secret", read["text"])
         with self.assertRaisesRegex(AgentToolError, "不属于本轮消息"):
             registry.execute(
                 "read_ai_attachment_text", {"attachment_id": second["id"]}, allowed
@@ -219,6 +241,52 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("get_material_tree", [run["tool_name"] for run in result.tool_runs])
         request_text = json.dumps(client.requests[0][0], ensure_ascii=False)
         self.assertIn("lecture.pdf", request_text)
+
+    def test_prefetch_uses_only_system_budget_left_after_caller_context(self) -> None:
+        client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])
+        loop = AgentLoop(client, self.registry, preset(*ALL_TOOLS))
+        base_system = loop.system_prompt + "\n\n" + loop._time_hint()
+        caller_room = SYSTEM_MESSAGE_CHAR_BUDGET - len(base_system) - len("\n\n")
+        caller_context = "CALLER_CONTEXT_SENTINEL " + "x" * (caller_room - 50 - 24)
+        result = loop.run(
+            [{"role": "system", "content": caller_context}, {"role": "user", "content": "有哪些课程？"}],
+            user_text="有哪些课程？",
+            max_tokens=500,
+            temperature=0,
+        )
+
+        self.assertEqual("completed", result.status)
+        request_messages = client.requests[0][0]
+        system_messages = [item for item in request_messages if item["role"] == "system"]
+        self.assertEqual(1, len(system_messages))
+        system_content = system_messages[0]["content"]
+        self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
+        self.assertTrue(system_content.endswith(caller_context))
+        self.assertTrue(
+            any(
+                run["phase"] == "prefetch" and run["status"] == "rejected"
+                for run in result.tool_runs
+            )
+        )
+
+    def test_oversized_system_context_is_marked_and_bounded(self) -> None:
+        client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [
+                {"role": "system", "content": "CALLER_CONTEXT_SENTINEL " + "x" * 15_000},
+                {"role": "user", "content": "你好"},
+            ],
+            user_text="你好",
+            max_tokens=500,
+            temperature=0,
+        )
+
+        self.assertEqual("completed", result.status)
+        system_messages = [item for item in client.requests[0][0] if item["role"] == "system"]
+        self.assertEqual(1, len(system_messages))
+        system_content = system_messages[0]["content"]
+        self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
+        self.assertIn("上下文过长，已截断", system_content)
 
     def test_model_tool_calls_loop_and_reasoning(self) -> None:
         client = ScriptedClient(
@@ -338,6 +406,70 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(1, sum(item["role"] == "system" for item in request_messages))
         self.assertIn("附件摘要", request_messages[0]["content"])
         self.assertIn("页面上下文", request_messages[0]["content"])
+
+    def test_text_attachment_can_keep_streaming_enabled(self) -> None:
+        class TextAttachmentClient:
+            supports_streaming = True
+
+            def __init__(self):
+                self.stream_calls = 0
+
+            def chat_completion_stream(self, messages, **kwargs):
+                self.stream_calls += 1
+                return {"content": "文本附件已读取。", "tool_calls": []}
+
+        client = TextAttachmentClient()
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [{"role": "user", "content": "总结文本附件"}],
+            user_text="总结文本附件",
+            max_tokens=500,
+            temperature=0,
+            attachment_ids=[1],
+        )
+        self.assertEqual("文本附件已读取。", result.content)
+        self.assertEqual(1, client.stream_calls)
+
+    def test_finish_reason_length_marks_answer_incomplete(self) -> None:
+        client = ScriptedClient([{
+            "content": "这是被截断的回答",
+            "tool_calls": [],
+            "response_metadata": {"finish_reason": "length"},
+        }])
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [{"role": "user", "content": "总结"}], user_text="总结", max_tokens=5, temperature=0
+        )
+        self.assertEqual("max_steps", result.status)
+        self.assertIn("可能因长度限制未完成", result.content)
+
+    def test_tool_context_omission_is_reflected_in_trace(self) -> None:
+        class LargeResultRegistry:
+            def definitions(self, _allowed):
+                return [{"type": "function", "function": {"name": "list_courses", "parameters": {"type": "object"}}}]
+
+            def execute(self, name, arguments, allowed):
+                from sjtu_learning_assistant.agent_runtime.tools import ToolExecution
+                return ToolExecution(name, {"text": "课程"}, {}, {"status": "ok", "count": 1})
+
+        call = {"content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_courses", "arguments": "{}"}}]}
+        client = ScriptedClient([call, {"content": "已完成", "tool_calls": []}])
+        history = [{"role": "user", "content": "甲" * 13_500} for _ in range(4)]
+        result = AgentLoop(client, LargeResultRegistry(), preset("list_courses")).run(
+            history, user_text="甲" * 13_500, max_tokens=100, temperature=0
+        )
+        self.assertEqual("omitted", result.tool_runs[0]["result_summary"]["status"])
+        self.assertEqual("context_budget", result.tool_runs[0]["result_summary"]["reason"])
+
+    def test_tool_exchange_never_exceeds_classifier_message_limit(self) -> None:
+        calls = [{"id": f"c{i}", "type": "function", "function": {"name": "list_courses", "arguments": "{}"}} for i in range(16)]
+        reply = {"content": "", "tool_calls": calls}
+        client = ScriptedClient([reply, reply, {"content": "完成", "tool_calls": []}])
+        history = [{"role": "user", "content": "历史消息"} for _ in range(40)]
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            history, user_text="现在查询", max_tokens=100, temperature=0
+        )
+        self.assertEqual("completed", result.status)
+        self.assertLessEqual(max(len(request[0]) for request in client.requests), 64)
+        self.assertTrue(any(run.get("result_summary", {}).get("category") == "context_limit" for run in result.tool_runs))
 
     def test_real_sse_client_streams_two_turn_tool_exchange_to_final_delta(self) -> None:
         requests = []

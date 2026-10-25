@@ -14,6 +14,13 @@ from typing import Any, Callable, Iterable, Mapping
 
 import httpx
 
+from sjtu_learning_assistant.ai_limits import (
+    MAX_CHAT_CONTEXT_CHARS,
+    MAX_CHAT_MESSAGE_CHARS,
+    MAX_CHAT_MESSAGES,
+    MAX_SSE_RESPONSE_BYTES,
+    MAX_SSE_STREAM_SECONDS,
+)
 from sjtu_learning_assistant.material_classifier import CATEGORY_ORDER
 
 DEFAULT_AI_BASE_URL = "https://models.sjtu.edu.cn/api/v1"
@@ -244,8 +251,8 @@ class OpenAIClassificationClient:
         cls, messages: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], int]:
         """Validate and normalize OpenAI chat history for both request modes."""
-        if not messages or len(messages) > 64:
-            raise AIClassificationError("AI 对话消息数量无效。")
+        if not messages or len(messages) > MAX_CHAT_MESSAGES:
+            raise AIClassificationError("AI 对话消息数量无效。", category="context_too_long")
         clean_messages: list[dict[str, Any]] = []
         total_length = 0
         for message in messages:
@@ -268,47 +275,47 @@ class OpenAIClassificationClient:
             clean_content: Any
             content_length = 0
             if type(content) is str:
-                if len(content) > 14_000 or (role in {"user", "system"} and not content.strip()):
-                    raise AIClassificationError("单条消息不能为空或超过长度限制。")
+                if len(content) > MAX_CHAT_MESSAGE_CHARS or (role in {"user", "system"} and not content.strip()):
+                    raise AIClassificationError("单条消息不能为空或超过长度限制。", category="context_too_long")
                 clean_content = content.strip()
                 content_length = len(content)
-            elif role == "user" and type(content) is list and 1 <= len(content) <= 5:
+            elif role == "user" and type(content) is list and 1 <= len(content) <= 6:
                 clean_parts: list[dict[str, Any]] = []
                 image_count = 0
                 for part in content:
                     if type(part) is not dict or part.get("type") not in {"text", "image_url"}:
-                        raise AIClassificationError("AI 多模态消息格式无效。")
+                        raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
                     if part["type"] == "text":
                         if set(part) != {"type", "text"}:
-                            raise AIClassificationError("AI 多模态消息格式无效。")
+                            raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
                         text = part.get("text")
-                        if type(text) is not str or not text.strip() or len(text) > 14_000:
-                            raise AIClassificationError("AI 多模态文字无效。")
+                        if type(text) is not str or not text.strip() or len(text) > MAX_CHAT_MESSAGE_CHARS:
+                            raise AIClassificationError("AI 多模态文字无效。", category="multimodal_invalid")
                         clean_parts.append({"type": "text", "text": text.strip()})
                         content_length += len(text)
                         continue
                     if set(part) != {"type", "image_url"}:
-                        raise AIClassificationError("AI 多模态消息格式无效。")
+                        raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
                     image_url = part.get("image_url")
                     if type(image_url) is not dict or set(image_url) - {"url", "detail"}:
-                        raise AIClassificationError("AI 图片消息格式无效。")
+                        raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     url = image_url.get("url")
                     detail = image_url.get("detail", "auto")
                     prefix = "data:image/jpeg;base64,"
                     if type(url) is not str or not url.startswith(prefix) or detail not in {"auto", "low", "high"}:
-                        raise AIClassificationError("AI 图片消息格式无效。")
+                        raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     encoded = url[len(prefix):]
                     if not encoded or len(encoded) > 6 * 1024**2:
-                        raise AIClassificationError("AI 图片超过大小限制。")
+                        raise AIClassificationError("AI 图片超过大小限制。", category="image_too_large")
                     try:
                         decoded = base64.b64decode(encoded, validate=True)
                     except (ValueError, TypeError):
-                        raise AIClassificationError("AI 图片编码无效。") from None
+                        raise AIClassificationError("AI 图片编码无效。", category="image_encoding") from None
                     if not decoded or len(decoded) > 4 * 1024**2:
-                        raise AIClassificationError("AI 图片超过大小限制。")
+                        raise AIClassificationError("AI 图片超过大小限制。", category="image_too_large")
                     image_count += 1
                     if image_count > 4:
-                        raise AIClassificationError("单次最多识别 4 张图片。")
+                        raise AIClassificationError("单次最多识别 4 张图片。", category="image_count_limit")
                     clean_image_url: dict[str, str] = {"url": url}
                     if "detail" in image_url:
                         clean_image_url["detail"] = detail
@@ -316,8 +323,10 @@ class OpenAIClassificationClient:
                         {"type": "image_url", "image_url": clean_image_url}
                     )
                 if not any(part["type"] == "text" for part in clean_parts) or image_count == 0:
-                    raise AIClassificationError("AI 多模态消息必须同时包含问题和图片。")
+                    raise AIClassificationError("AI 多模态消息必须同时包含问题和图片。", category="multimodal_invalid")
                 clean_content = clean_parts
+            elif role == "user" and type(content) is list:
+                raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
             else:
                 raise AIClassificationError("单条消息不能为空或超过长度限制。")
             clean: dict[str, Any] = {"role": role, "content": clean_content}
@@ -373,8 +382,29 @@ class OpenAIClassificationClient:
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
             parsed = _loads_model_json(content)
-        except Exception:
-            raise AIClassificationError("AI 分类请求失败。") from None
+        except AIClassificationError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in (401, 403):
+                message, category = "AI 认证或访问权限失败，请检查 API key。", "authentication"
+            elif status_code == 429:
+                message, category = "AI 请求受限或配额不足，请稍后重试。", "rate_limit_or_quota"
+            elif status_code == 404:
+                message, category = "AI 接口路径或模型不存在，请检查 Base URL 与模型。", "endpoint_or_model"
+            elif status_code >= 500:
+                message, category = "AI 服务暂时不可用，请稍后重试。", "upstream_service"
+            else:
+                message, category = "AI 分类请求不被上游接口接受。", "request_parameters"
+            raise AIClassificationError(message, category=category, status_code=status_code, error_code=f"http_{status_code}", exception_type=type(exc).__name__) from None
+        except httpx.TimeoutException as exc:
+            raise AIClassificationError("AI 分类请求超时，请稍后重试。", category="timeout", error_code="request_timeout", exception_type=type(exc).__name__) from None
+        except httpx.RequestError as exc:
+            raise AIClassificationError("无法连接 AI 服务，请检查网络与 Base URL。", category="network", error_code=type(exc).__name__.lower(), exception_type=type(exc).__name__) from None
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+            raise AIClassificationError("AI 服务返回格式不兼容，请检查模型接口兼容性。", category="response_format") from None
+        except Exception as exc:
+            raise AIClassificationError("AI 分类请求失败，请稍后重试。", category="client_error", error_code="client_error", exception_type=type(exc).__name__) from None
         return self._parse_result(parsed, expected_ids)
 
     @staticmethod
@@ -420,8 +450,8 @@ class OpenAIClassificationClient:
         ):
             raise AIClassificationError("AI response_format 仅支持 json_object。")
         clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > 60_000 or len(context) > 12_000:
-            raise AIClassificationError("AI 对话内容过长，请开始新对话。")
+        if total_length > MAX_CHAT_CONTEXT_CHARS or len(context) > 12_000:
+            raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:
             request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
@@ -573,8 +603,8 @@ class OpenAIClassificationClient:
     ) -> dict[str, Any]:
         """Consume an OpenAI-compatible SSE response, including tool continuations."""
         clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > 60_000:
-            raise AIClassificationError("AI 对话内容过长，请开始新对话。")
+        if total_length > MAX_CHAT_CONTEXT_CHARS:
+            raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:
             request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
@@ -620,17 +650,28 @@ class OpenAIClassificationClient:
             tool_call_parts: dict[int, dict[str, str]] = {}
             usage: dict[str, int] = {}
             finish_reason: str | None = None
+            stream_started_at = time.monotonic()
+            stream_bytes = 0
+            received_done = False
             with self._client.stream("POST", "chat/completions", json=dict(request_body)) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
+                    stream_bytes += len(line.encode("utf-8", errors="replace")) + 1
+                    if stream_bytes > MAX_SSE_RESPONSE_BYTES:
+                        raise AIClassificationError("AI 流式响应超过大小限制。", category="stream_limit")
+                    if time.monotonic() - stream_started_at > MAX_SSE_STREAM_SECONDS:
+                        raise AIClassificationError("AI 流式响应超过时间限制。", category="stream_limit")
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        received_done = True
                         break
                     payload = json.loads(data)
                     if not isinstance(payload, Mapping):
                         continue
+                    if payload.get("error") is not None:
+                        raise AIClassificationError("AI 上游返回流式错误。", category="upstream_stream_error")
                     reported = normalize_token_usage(payload.get("usage"))
                     if reported:
                         usage = reported
@@ -714,6 +755,8 @@ class OpenAIClassificationClient:
                                     if len(current["arguments"]) + len(arguments) > 8_000:
                                         raise ValueError("streamed tool arguments too long")
                                     current["arguments"] += arguments
+            if not received_done:
+                raise AIClassificationError("AI 流式响应意外结束。", category="response_format")
             tool_calls = []
             for index in sorted(tool_call_parts):
                 item = tool_call_parts[index]
@@ -794,6 +837,13 @@ class OpenAIClassificationClient:
             ) from None
         except (json.JSONDecodeError, TypeError, ValueError):
             raise AIClassificationError("AI 流式响应格式不兼容。", category="response_format") from None
+        except Exception as exc:
+            raise AIClassificationError(
+                "AI 流式请求失败，请稍后重试。",
+                category="client_error",
+                error_code="client_error",
+                exception_type=type(exc).__name__,
+            ) from None
 
     @staticmethod
     def _parse_tool_calls(value: object) -> list[dict[str, Any]]:
@@ -808,7 +858,7 @@ class OpenAIClassificationClient:
             function = call["function"]
             name = function.get("name")
             arguments = function.get("arguments", "{}")
-            call_id = call.get("id", f"call-{index}")
+            call_id = call.get("id") or f"call-{index}"
             if (
                 type(name) is not str
                 or not name

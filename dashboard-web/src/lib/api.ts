@@ -371,6 +371,10 @@ export async function sendAiChatMessage(
   thinkingDepth: import("@/lib/types").AIThinkingDepth,
   presetId: string,
   attachmentIds?: number[],
+  options: {
+    signal?: AbortSignal;
+    onTaskStart?: (taskId: string) => void;
+  } = {},
 ) {
   const pageContext = activeAIPageContext();
   let snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
@@ -386,6 +390,7 @@ export async function sendAiChatMessage(
     },
   );
   const taskId = snapshot.task.id;
+  options.onTaskStart?.(taskId);
   let sequence = snapshot.next_sequence;
   emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
   // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
@@ -398,6 +403,14 @@ export async function sendAiChatMessage(
   // 先处理最近一次快照的终态，再判断截止：截止前最后一次轮询若已 completed/failed，
   // 不能被当作超时丢弃（否则已入库的回答会被前端回滚、用户重发造成重复）。
   for (;;) {
+    if (options.signal?.aborted) {
+      await invoke("ai_task_cancel", { task_id: taskId }).catch(
+        () => undefined,
+      );
+      throw new Error(
+        "已请求停止本次任务。正在进行的模型或工具请求返回后才会停止。",
+      );
+    }
     if (snapshot.task.status === "completed") {
       const result = snapshot.task.result?.chat_result;
       if (!result) throw new Error("AI 任务完成但没有返回对话结果。");
