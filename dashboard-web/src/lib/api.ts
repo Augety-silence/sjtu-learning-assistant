@@ -674,6 +674,12 @@ export function pickAssignmentLocalFile() {
   return invoke<import("@/lib/types").PickedLocalFile>("pick_local_file");
 }
 
+export function registerAssignmentLocalFile(path: string) {
+  return invoke<import("@/lib/types").PickedLocalFile>("register_local_file", {
+    path,
+  });
+}
+
 export function submitAssignmentLocalFile(
   courseId: number,
   assignmentId: number,

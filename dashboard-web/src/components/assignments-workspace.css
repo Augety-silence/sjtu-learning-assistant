@@ -232,6 +232,34 @@
   box-shadow: inset 0 1px 0 var(--aura-border-highlight);
 }
 
+.assignments-page .assignment-file-dropzone {
+  border-style: solid;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.assignments-page .assignment-file-dropzone-active {
+  border-style: dashed;
+  border-color: var(--assignment-accent);
+  background: color-mix(
+    in srgb,
+    var(--assignment-accent) 9%,
+    var(--aura-panel-strong)
+  );
+}
+
+.assignment-file-drop-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.assignment-file-dropzone-active .assignment-file-drop-hint {
+  color: var(--assignment-accent);
+  font-weight: 650;
+}
+
 .assignments-page .submission-forms label,
 .assignment-method-title {
   display: inline-flex;

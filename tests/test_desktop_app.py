@@ -359,6 +359,7 @@ class DesktopBridgeTests(unittest.TestCase):
             "submit_text",
             "submit_url",
             "pick_local_file",
+            "register_local_file",
             "submit_local_file",
             "pan_list",
             "submit_cloud_file",
@@ -522,9 +523,24 @@ class DesktopBridgeTests(unittest.TestCase):
             bridge = DesktopBridge(FakeService(), FakeLearningService(), file_picker=lambda: str(selected))
             picked = bridge.invoke("pick_local_file")["data"]
             self.assertEqual("answer.txt", picked["name"])
-            payload = {"course_id": 1, "assignment_id": 2, "path": picked["path"]}
-            self.assertTrue(bridge.invoke("submit_local_file", payload)["data"]["verified"])
-            self.assertEqual("operation_failed", bridge.invoke("submit_local_file", payload)["error"]["code"])
+            picked_payload = {"course_id": 1, "assignment_id": 2, "path": picked["path"]}
+            self.assertTrue(bridge.invoke("submit_local_file", picked_payload)["data"]["verified"])
+            self.assertEqual("operation_failed", bridge.invoke("submit_local_file", picked_payload)["error"]["code"])
+
+            dropped = Path(directory) / "中文答案.txt"
+            dropped.write_text("answer")
+            registered = bridge.invoke("register_local_file", {"path": str(dropped)})["data"]
+            self.assertEqual("中文答案.txt", registered["name"])
+            dropped_payload = {"course_id": 1, "assignment_id": 2, "path": registered["path"]}
+            self.assertTrue(bridge.invoke("submit_local_file", dropped_payload)["data"]["verified"])
+            self.assertEqual("operation_failed", bridge.invoke("submit_local_file", dropped_payload)["error"]["code"])
+
+            for invalid in ("relative.txt", str(Path(directory)), str(dropped) + "\x00"):
+                with self.subTest(path=invalid):
+                    self.assertEqual(
+                        "operation_failed",
+                        bridge.invoke("register_local_file", {"path": invalid})["error"]["code"],
+                    )
 
     def test_errors_are_sanitized_or_hidden(self):
         text = safe_message("postgresql://user:password@db/token=placeholder /Users/example/private/file")

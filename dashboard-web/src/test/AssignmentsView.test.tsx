@@ -12,6 +12,7 @@ vi.mock("@/lib/api", () => ({
   getAssignmentDetail: vi.fn(),
   openExternalAssignment: vi.fn(),
   pickAssignmentLocalFile: vi.fn(),
+  registerAssignmentLocalFile: vi.fn(),
   submitAssignmentCloudFile: vi.fn(),
   submitAssignmentLocalFile: vi.fn(),
   submitAssignmentText: vi.fn(),
@@ -378,6 +379,100 @@ describe("AssignmentsView", () => {
     );
     expect(api.submitAssignmentCloudFile).not.toHaveBeenCalled();
     expect(screen.getByRole("alertdialog").textContent).toContain("cloud.pdf");
+  });
+
+  it("registers a dropped assignment file and keeps the confirmation step", async () => {
+    const uploadAssignment = {
+      ...assignment,
+      submission_types: ["online_upload"],
+    };
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: [uploadAssignment],
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(uploadAssignment);
+    vi.mocked(api.registerAssignmentLocalFile).mockResolvedValue({
+      cancelled: false,
+      path: "/safe/HW1 中宏.docx",
+      name: "HW1 中宏.docx",
+      size: 12,
+    });
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+    const dropzone = (await screen.findByText("文件作答")).closest(
+      ".assignment-file-dropzone",
+    ) as HTMLDivElement;
+    const file = new File(["answer"], "HW1 中宏.docx");
+    Object.defineProperty(file, "path", { value: "/safe/HW1 中宏.docx" });
+    const dataTransfer = {
+      types: ["Files"],
+      files: [file],
+      dropEffect: "none",
+    };
+
+    fireEvent.dragEnter(dropzone, { dataTransfer });
+    expect(dropzone.className).toContain("assignment-file-dropzone-active");
+    expect(screen.getByText("松开即可添加文件")).toBeTruthy();
+    fireEvent.drop(dropzone, { dataTransfer });
+
+    await waitFor(() =>
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
+        "/safe/HW1 中宏.docx",
+      ),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "准备提交本地文件" }),
+    );
+    expect(api.submitAssignmentLocalFile).not.toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "HW1 中宏.docx",
+    );
+  });
+
+  it("uses native paths only for a drop on the file answer area", async () => {
+    const uploadAssignment = {
+      ...assignment,
+      submission_types: ["online_upload"],
+    };
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: [uploadAssignment],
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(uploadAssignment);
+    vi.mocked(api.registerAssignmentLocalFile).mockResolvedValue({
+      cancelled: false,
+      path: "/safe/first.pdf",
+      name: "first.pdf",
+      size: 12,
+    });
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/safe/outside.pdf"] },
+      }),
+    );
+    expect(api.registerAssignmentLocalFile).not.toHaveBeenCalled();
+
+    const dropzone = (await screen.findByText("文件作答")).closest(
+      ".assignment-file-dropzone",
+    ) as HTMLDivElement;
+    const file = new File(["answer"], "first.pdf");
+    fireEvent.drop(dropzone, {
+      dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
+    });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/safe/first.pdf", "/safe/second.pdf"] },
+      }),
+    );
+    await waitFor(() =>
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
+        "/safe/first.pdf",
+      ),
+    );
+    expect(await screen.findByText(/已使用拖入的第一个文件/)).toBeTruthy();
   });
 
   it("does not show success when verification is false", async () => {
