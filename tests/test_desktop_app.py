@@ -504,6 +504,14 @@ class DesktopBridgeTests(unittest.TestCase):
                     self.bridge.invoke("ai_attachment_ingest", payload)["error"]["code"],
                 )
 
+        if sys.platform != "win32":
+            posix_path_with_backslash = "/\\lecture-notes.md"
+            result = self.bridge.invoke(
+                "ai_attachment_ingest", {"path": posix_path_with_backslash}
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual("\\lecture-notes.md", result["data"]["name"])
+
     def test_local_file_must_come_from_native_picker(self):
         import tempfile
         from pathlib import Path

@@ -52,12 +52,22 @@ _URL_CREDENTIAL_PATTERN = re.compile(
     r"(?i)(?<![a-z0-9+.%])([a-z][a-z0-9+.%]*://)[^\s/:]{0,256}:[^\s@]{1,512}@"
 )
 _BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[a-z0-9_.~+/=-]+")
+# 认证头的 Digest/自定义方案可能包含多个逗号分隔字段。通用键值规则只能安全
+# 识别单个值，因此先将整段头值脱敏；JSON 中带引号的头值只替换该字符串，
+# 普通日志头则替换到行尾，避免 realm/nonce/response 等后续字段泄漏。
+_AUTHORIZATION_HEADER_PATTERN = re.compile(
+    r"(?im)\b(authorization|proxy-authorization)\b[\"']?[ \t]*"
+    r"(?::|=|%3d)[ \t]*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|"
+    r"[^\r\n]*?(?=(?:[ \t]+(?:authorization|proxy-authorization|token|"
+    r"access_token|refresh_token|password|passwd|secret|api[_ -]?key|cookie|"
+    r"set-cookie|database_url)\b[\"']?[ \t]*(?::|=|%3d)|\r?$)))"
+)
 _SECRET_VALUE_PATTERN = re.compile(
     r"(?i)\b(authorization|proxy-authorization|token|access_token|refresh_token|"
     r"password|passwd|secret|api[_ -]?key|cookie|set-cookie|database_url)\b[\"']?"
     # 认证头的值形如 "Basic <凭据>"：只吞掉方案名会把真正的凭据原样留下，
     # 因此无引号分支允许可选的认证方案前缀（起点受关键字锚定，仍为线性）。
-    r"\s*[:=]\s*(\"[^\"\n]*\"|'[^'\n]*'|"
+    r"\s*(?::|=|%3d)\s*(\"[^\"\n]*\"|'[^'\n]*'|"
     r"(?:(?:basic|digest|bearer|token|negotiate|ntlm)[ \t]+)?[^\s,;}]+)"
 )
 # 后顾断言必须覆盖本地部分字符集的全部字符（含 %），否则 "%%%%..." 这类
@@ -115,6 +125,9 @@ def sanitize_text(value: object, *, limit: int = MAX_ENTRY_BYTES) -> str:
     text_value = _URL_CREDENTIAL_PATTERN.sub(r"\1[redacted]@", text_value)
     text_value = _BEARER_PATTERN.sub(r"\1[redacted]", text_value)
     text_value = _URL_PATTERN.sub(_sanitize_url, text_value)
+    text_value = _AUTHORIZATION_HEADER_PATTERN.sub(
+        lambda match: f"{match.group(1)}=[redacted]", text_value
+    )
     text_value = _SECRET_VALUE_PATTERN.sub(
         lambda match: f"{match.group(1)}=[redacted]", text_value
     )

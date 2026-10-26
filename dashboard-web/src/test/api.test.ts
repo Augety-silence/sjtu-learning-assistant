@@ -298,6 +298,53 @@ describe("pywebview bridge client", () => {
     });
   });
 
+  it("does not report cancellation when the cancel bridge call fails", async () => {
+    const controller = new AbortController();
+    const bridge = vi.fn(async (action: string) => {
+      if (action === "ai_chat_stream_start") {
+        return {
+          ok: true,
+          data: {
+            task: { id: "task-cancel-fails", status: "running" },
+            events: [],
+            next_sequence: 1,
+          },
+        };
+      }
+      if (action === "ai_task_cancel") {
+        return {
+          ok: false,
+          error: { code: "cancel_rejected", message: "停止请求失败" },
+        };
+      }
+      return { ok: true, data: {} };
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    const result = sendAiChatMessage(
+      "session-1",
+      "停止这个任务",
+      "auto",
+      "standard",
+      "general",
+      undefined,
+      {
+        signal: controller.signal,
+        onTaskStart: () => controller.abort(),
+      },
+    ).catch((error: unknown) => error);
+
+    const error = await result;
+    expect(error).toMatchObject({
+      name: "BridgeInvocationError",
+      message: "停止请求失败",
+    });
+    expect(error).not.toMatchObject({ category: "cancelled" });
+    expect(bridge).toHaveBeenCalledWith("ai_task_cancel", {
+      task_id: "task-cancel-fails",
+    });
+  });
+
   it("sends a dropped path only to the attachment ingest bridge action", async () => {
     const bridge = vi.fn().mockResolvedValue({
       ok: true,

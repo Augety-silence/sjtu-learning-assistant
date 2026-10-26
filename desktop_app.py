@@ -143,8 +143,14 @@ def _validated_local_attachment_path(value: object) -> str:
         or len(value) > 4096
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
         # Windows treats "/" like "\", so "/\server\share" is UNC and "/\.\pipe" a device.
-        or value.startswith("\\")
-        or (len(value) > 1 and value[0] in "\\/" and value[1] in "\\/")
+        # On POSIX, however, a path such as "/\lecture-notes.md" is a valid absolute path.
+        or (
+            sys.platform == "win32"
+            and (
+                value.startswith("\\")
+                or (len(value) > 1 and value[0] in "\\/" and value[1] in "\\/")
+            )
+        )
         or not Path(value).is_absolute()
     ):
         raise DashboardError("拖入文件路径无效，请改用回形针按钮选择文件。")

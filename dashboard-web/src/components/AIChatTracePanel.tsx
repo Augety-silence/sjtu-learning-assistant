@@ -100,19 +100,26 @@ export function AIChatTracePanel({
   preset,
   traces,
   busy,
+  runningTaskId,
 }: {
   open: boolean;
   onClose: () => void;
   preset: AIAgentPreset | null;
   traces: AIAgentTrace[];
   busy: boolean;
+  runningTaskId: string | null;
 }) {
   const shouldReduceMotion = useReducedMotion();
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToLatestRef = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   // 已有流式轨迹在展示时，不再额外渲染“等待”占位，也不重复计入轮数。
-  const liveTrace = traces.at(-1)?.status === "running";
+  const lastTrace = traces.at(-1);
+  const liveTrace = Boolean(
+    runningTaskId &&
+      lastTrace?.id === `stream-${runningTaskId}` &&
+      lastTrace.status === "running",
+  );
   const pending = busy && !liveTrace;
 
   const scrollToLatest = () => {

@@ -949,6 +949,12 @@ class CloudArchiveService:
                 job = session.get(ArchiveJob, job_id)
                 if job is not None:
                     result = job_data(job)
+                    # 状态写回本身也可能失败（例如 SQLite busy）。此时数据库仍会
+                    # 停在本次对账认领时写入的 verifying，但调用方已经知道本次
+                    # 操作应返回的终态/可重试态。只覆盖这个陈旧的中间态，避免
+                    # 掩盖另一个调用并发写入的真实结果。
+                    if job.status == "verifying":
+                        result["status"] = fallback_status
                     result["job_id"] = job_id
                     result["reconciled"] = False
                     return result

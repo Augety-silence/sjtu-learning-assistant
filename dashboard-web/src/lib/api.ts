@@ -376,37 +376,74 @@ function aiTaskCancelledError(
   });
 }
 
-export async function sendAiChatMessage(
+function aiTaskDetachedError() {
+  return Object.assign(new Error("AI 任务轮询已转交给新的页面实例。"), {
+    name: "AbortError",
+    category: "detached",
+    retryable: false,
+  });
+}
+
+async function requestAiTaskCancel(taskId: string) {
+  let transientFailures = 0;
+  for (;;) {
+    try {
+      return await invoke<import("@/lib/types").AITaskSnapshot>(
+        "ai_task_cancel",
+        { task_id: taskId },
+      );
+    } catch (error) {
+      if (
+        isTransientTaskPollError(error) &&
+        transientFailures < MAX_TRANSIENT_TASK_POLL_FAILURES
+      ) {
+        transientFailures += 1;
+        await waitForTaskPoll(250 * transientFailures);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+function emitAIStreamEvents(
+  snapshot: import("@/lib/types").AITaskSnapshot,
+  taskId: string,
   sessionId: string,
-  content: string,
-  model: import("@/lib/types").AIModel,
-  thinkingDepth: import("@/lib/types").AIThinkingDepth,
-  presetId: string,
-  attachmentIds?: number[],
+) {
+  for (const event of snapshot.events) {
+    if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
+      emitAIStream({
+        type: event.kind,
+        task_id: taskId,
+        session_id: sessionId,
+        delta: event.payload.delta,
+      });
+    }
+    if (event.kind === "tool") {
+      emitAIStream({
+        type: "tool",
+        task_id: taskId,
+        session_id: sessionId,
+        run: event.payload,
+      });
+    }
+  }
+}
+
+async function pollAiChatTask(
+  sessionId: string,
+  initialSnapshot: import("@/lib/types").AITaskSnapshot,
   options: {
     signal?: AbortSignal;
-    onTaskStart?: (taskId: string) => void;
-  } = {},
-) {
-  // 已中止的 signal 不再启动后端任务（避免白白创建再取消）。
-  if (options.signal?.aborted) throw aiTaskCancelledError();
-  const pageContext = activeAIPageContext();
-  let snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
-    "ai_chat_stream_start",
-    {
-      session_id: sessionId,
-      content,
-      model,
-      thinking_depth: thinkingDepth,
-      preset_id: presetId,
-      ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
-      ...(pageContext ? { page_context: pageContext } : {}),
-    },
-  );
+    pollSignal?: AbortSignal;
+  },
+): Promise<import("@/lib/types").AIChatSendResult> {
+  let snapshot = initialSnapshot;
   const taskId = snapshot.task.id;
-  options.onTaskStart?.(taskId);
   let sequence = snapshot.next_sequence;
   emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
+  emitAIStreamEvents(snapshot, taskId, sessionId);
   // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
   // 另设绝对上限防止任务永久挂起。
   const idleTimeoutMs = 180_000;
@@ -414,9 +451,11 @@ export async function sendAiChatMessage(
   let deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
   let lastStatus = snapshot.task.status;
   let transientPollFailures = 0;
+  let cancelRequested = Boolean(snapshot.task.cancel_requested);
   // 先处理最近一次快照的终态，再判断截止：截止前最后一次轮询若已 completed/failed，
   // 不能被当作超时丢弃（否则已入库的回答会被前端回滚、用户重发造成重复）。
   for (;;) {
+    if (options.pollSignal?.aborted) throw aiTaskDetachedError();
     if (snapshot.task.status === "completed") {
       const result = snapshot.task.result?.chat_result;
       if (!result) throw new Error("AI 任务完成但没有返回对话结果。");
@@ -446,27 +485,23 @@ export async function sendAiChatMessage(
       });
       throw aiTaskCancelledError("AI 任务已取消。");
     }
-    // 中止检查放在终态之后：最近一次快照已 completed 时必须交付结果，
-    // 否则已入库的回答会被前端回滚、用户重发造成重复。
-    if (options.signal?.aborted) {
-      const cancelled = await invoke<import("@/lib/types").AITaskSnapshot>(
-        "ai_task_cancel",
-        { task_id: taskId },
-      ).catch(() => null);
-      // 取消请求到达前任务可能已完成（回答已写入对话），此时按完成处理。
-      if (cancelled?.task?.status === "completed") {
-        snapshot = cancelled;
-        continue;
+    // 取消请求必须由后端确认；RPC 失败时保留真实错误，不能误报“已取消”。
+    if (options.signal?.aborted && !cancelRequested) {
+      snapshot = await requestAiTaskCancel(taskId);
+      cancelRequested = Boolean(snapshot.task.cancel_requested);
+      if (
+        !cancelRequested &&
+        snapshot.task.status !== "completed" &&
+        snapshot.task.status !== "failed" &&
+        snapshot.task.status !== "cancelled"
+      ) {
+        throw new Error("停止请求未被后端确认，请稍后重试。");
       }
-      emitAIStream({
-        type: "cancelled",
-        task_id: taskId,
-        session_id: sessionId,
-      });
-      throw aiTaskCancelledError();
+      continue;
     }
     if (Date.now() >= deadline) break;
     await waitForTaskPoll();
+    if (options.pollSignal?.aborted) throw aiTaskDetachedError();
     try {
       snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
         "ai_task_status",
@@ -483,37 +518,73 @@ export async function sendAiChatMessage(
         await waitForTaskPoll(250 * transientPollFailures);
         continue;
       }
-      await invoke("ai_task_cancel", { task_id: taskId }).catch(
-        () => undefined,
-      );
+      await requestAiTaskCancel(taskId).catch(() => undefined);
       throw error;
     }
+    if (options.pollSignal?.aborted) throw aiTaskDetachedError();
     sequence = snapshot.next_sequence;
     if (snapshot.events.length > 0 || snapshot.task.status !== lastStatus) {
       deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
       lastStatus = snapshot.task.status;
     }
-    for (const event of snapshot.events) {
-      if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
-        emitAIStream({
-          type: event.kind,
-          task_id: taskId,
-          session_id: sessionId,
-          delta: event.payload.delta,
-        });
-      }
-      if (event.kind === "tool") {
-        emitAIStream({
-          type: "tool",
-          task_id: taskId,
-          session_id: sessionId,
-          run: event.payload,
-        });
-      }
-    }
+    emitAIStreamEvents(snapshot, taskId, sessionId);
   }
-  await invoke("ai_task_cancel", { task_id: taskId }).catch(() => undefined);
+  try {
+    const cancelled = await requestAiTaskCancel(taskId);
+    if (["completed", "failed", "cancelled"].includes(cancelled.task.status)) {
+      return await pollAiChatTask(sessionId, cancelled, options);
+    }
+  } catch (error) {
+    throw new Error(
+      `AI 任务等待超时，停止请求失败：${error instanceof Error ? error.message : "未知错误"}`,
+    );
+  }
   throw new Error("AI 任务等待超时，已请求停止。");
+}
+
+export async function sendAiChatMessage(
+  sessionId: string,
+  content: string,
+  model: import("@/lib/types").AIModel,
+  thinkingDepth: import("@/lib/types").AIThinkingDepth,
+  presetId: string,
+  attachmentIds?: number[],
+  options: {
+    signal?: AbortSignal;
+    pollSignal?: AbortSignal;
+    onTaskStart?: (taskId: string) => void;
+  } = {},
+) {
+  // 已中止的 signal 不再启动后端任务（避免白白创建再取消）。
+  if (options.signal?.aborted) throw aiTaskCancelledError();
+  const pageContext = activeAIPageContext();
+  const snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+    "ai_chat_stream_start",
+    {
+      session_id: sessionId,
+      content,
+      model,
+      thinking_depth: thinkingDepth,
+      preset_id: presetId,
+      ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
+      ...(pageContext ? { page_context: pageContext } : {}),
+    },
+  );
+  const taskId = snapshot.task.id;
+  options.onTaskStart?.(taskId);
+  return pollAiChatTask(sessionId, snapshot, options);
+}
+
+export async function resumeAiChatMessageTask(
+  sessionId: string,
+  taskId: string,
+  options: { signal?: AbortSignal; pollSignal?: AbortSignal } = {},
+) {
+  const snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+    "ai_task_status",
+    { task_id: taskId, after_sequence: 0 },
+  );
+  return pollAiChatTask(sessionId, snapshot, options);
 }
 
 export function pickAiAttachment() {

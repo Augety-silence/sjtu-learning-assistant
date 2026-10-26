@@ -364,6 +364,44 @@ def test_reconcile_network_failure_preserves_verification_state(archive_env):
         assert "检查网络" in job.last_error
 
 
+def test_job_result_uses_fallback_for_stale_verifying_snapshot(archive_env):
+    _root, engine, _provider, service = archive_env
+    with Session(engine) as session:
+        entry = ArchiveEntry(
+            id="stale-entry", path_identity="a" * 64, volume_identity="dev:1",
+            original_abs_path=None, filename="stale.txt",
+            restore_capability="choose_location", source_kind="user_file", status="active",
+        )
+        version = ArchiveVersion(
+            id="stale-version", entry=entry, version_number=1, size=7, mtime_ns=0,
+            sha256="b" * 64, status="pending",
+        )
+        job = ArchiveJob(
+            id="stale-job", idempotency_key="stale", kind="archive", entry=entry,
+            version=version, status="verifying", bytes_total=7, bytes_done=7,
+            plan_data={},
+        )
+        session.add(job)
+        session.commit()
+
+    result = service._job_result("stale-job", "needs_reconcile")
+
+    assert result["status"] == "needs_reconcile"
+    assert result["id"] == "stale-job"
+    assert result["job_id"] == "stale-job"
+    assert result["kind"] == "archive"
+    assert result["entry_id"] == "stale-entry"
+    assert result["version_id"] == "stale-version"
+    assert result["bytes_total"] == 7
+    assert result["bytes_done"] == 7
+    assert result["reconciled"] is False
+
+    with Session(engine) as session:
+        session.get(ArchiveJob, "stale-job").status = "completed"
+        session.commit()
+    assert service._job_result("stale-job", "failed")["status"] == "completed"
+
+
 def test_normal_upload_still_rejects_existing_conflict_without_deleting_it(archive_env):
     root, engine, provider, service = archive_env
     path = root / "ordinary-conflict.txt"

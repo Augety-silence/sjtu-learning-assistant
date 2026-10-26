@@ -32,6 +32,7 @@ import {
   getSettings,
   ingestAiAttachment,
   pickAiAttachment,
+  resumeAiChatMessageTask,
   revealAiAttachment,
   sendAiChatMessage,
   updateSettings,
@@ -101,6 +102,50 @@ interface FailedChatRequest {
   retryable: boolean;
 }
 
+interface PersistedChatTask {
+  taskId: string;
+  request: PendingChatRequest;
+}
+
+const ACTIVE_CHAT_TASK_PREFIX = "ai-chat-running-task:";
+
+function readPersistedChatTask(sessionId: string): PersistedChatTask | null {
+  const key = `${ACTIVE_CHAT_TASK_PREFIX}${sessionId}`;
+  const raw = window.localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedChatTask>;
+    if (
+      typeof parsed.taskId !== "string" ||
+      !parsed.taskId ||
+      !parsed.request ||
+      parsed.request.sessionId !== sessionId
+    ) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return parsed as PersistedChatTask;
+  } catch {
+    window.localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function persistChatTask(taskId: string, request: PendingChatRequest) {
+  window.localStorage.setItem(
+    `${ACTIVE_CHAT_TASK_PREFIX}${request.sessionId}`,
+    JSON.stringify({ taskId, request } satisfies PersistedChatTask),
+  );
+}
+
+function clearPersistedChatTask(sessionId: string, taskId: string | null) {
+  if (!taskId) return;
+  const current = readPersistedChatTask(sessionId);
+  if (current?.taskId === taskId) {
+    window.localStorage.removeItem(`${ACTIVE_CHAT_TASK_PREFIX}${sessionId}`);
+  }
+}
+
 function chatPreferences(settings: AIChatPreferences): AIChatPreferences {
   return {
     ai_chat_send_shortcut: settings.ai_chat_send_shortcut,
@@ -123,6 +168,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -156,6 +202,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const lastThreadScrollTopRef = useRef(0);
   const pendingComposerFocusRef = useRef(false);
   const taskAbortRef = useRef<AbortController | null>(null);
+  const taskPollAbortRef = useRef<AbortController | null>(null);
   const restoredFailedRequestIdsRef = useRef(new Set<string>());
   const sessionLoadSequenceRef = useRef(0);
   const nativeDropTimerRef = useRef<number | null>(null);
@@ -184,6 +231,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       // notice, so aborting here would silently drop the user's question.
       // The backend task finishes and persists; only explicit "停止" cancels.
       pendingQueueRef.current.splice(0);
+      // Stop only this component's poller. The backend task remains active and
+      // the next AIChatView instance resumes it from the persisted task id.
+      taskPollAbortRef.current?.abort();
     },
     [],
   );
@@ -222,6 +272,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       const taskId = detail.task_id;
       if (typeof sessionId !== "string" || typeof taskId !== "string") return;
       const streamId = `stream-${taskId}`;
+      if (detail.type === "start") {
+        setRunningTaskId(taskId);
+        return;
+      }
       if (
         detail.type === "tool" &&
         detail.run &&
@@ -725,7 +779,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     );
   }, []);
 
-  async function runSubmission(request: PendingChatRequest) {
+  async function runSubmission(
+    request: PendingChatRequest,
+    resumeTaskId: string | null = null,
+  ) {
     const attachmentIds = request.attachments.map(
       (attachment) => attachment.id,
     );
@@ -736,11 +793,42 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setStopping(false);
     setRunningSessionId(request.sessionId);
     const controller = new AbortController();
+    const pollController = new AbortController();
     taskAbortRef.current = controller;
+    taskPollAbortRef.current = pollController;
+    let trackedTaskId = resumeTaskId;
+    setRunningTaskId(resumeTaskId);
     setCanRetry(false);
+    if (resumeTaskId) {
+      setActive((current) => {
+        if (
+          current?.id !== request.sessionId ||
+          current.messages.some(
+            (message) => message.id === request.optimisticId,
+          )
+        )
+          return current;
+        return {
+          ...current,
+          messages: [
+            ...current.messages,
+            {
+              id: request.optimisticId,
+              role: "user",
+              content: request.text,
+              attachments: request.attachments,
+            },
+          ],
+        };
+      });
+    }
     try {
-      const result =
-        attachmentIds.length > 0
+      const result = resumeTaskId
+        ? await resumeAiChatMessageTask(request.sessionId, resumeTaskId, {
+            signal: controller.signal,
+            pollSignal: pollController.signal,
+          })
+        : attachmentIds.length > 0
           ? await sendAiChatMessage(
               request.sessionId,
               request.text,
@@ -748,7 +836,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               request.depth,
               request.presetId,
               attachmentIds,
-              { signal: controller.signal },
+              {
+                signal: controller.signal,
+                pollSignal: pollController.signal,
+                onTaskStart: (taskId) => {
+                  trackedTaskId = taskId;
+                  setRunningTaskId(taskId);
+                  persistChatTask(taskId, request);
+                },
+              },
             )
           : await sendAiChatMessage(
               request.sessionId,
@@ -757,8 +853,17 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               request.depth,
               request.presetId,
               undefined,
-              { signal: controller.signal },
+              {
+                signal: controller.signal,
+                pollSignal: pollController.signal,
+                onTaskStart: (taskId) => {
+                  trackedTaskId = taskId;
+                  setRunningTaskId(taskId);
+                  persistChatTask(taskId, request);
+                },
+              },
             );
+      clearPersistedChatTask(request.sessionId, trackedTaskId);
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
@@ -792,6 +897,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       });
       await refreshSessions();
     } catch (reason) {
+      const category =
+        reason instanceof Error
+          ? (reason as Error & { category?: string }).category
+          : undefined;
+      if (category === "detached") return;
+      clearPersistedChatTask(request.sessionId, trackedTaskId);
       setMotionMessageIds([]);
       setActive((current) =>
         current?.id === request.sessionId
@@ -801,6 +912,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                 (item) =>
                   item.id !== request.optimisticId &&
                   !item.id.startsWith("stream-"),
+              ),
+              traces: current.traces.filter(
+                (item) => !item.id.startsWith("stream-"),
               ),
             }
           : current,
@@ -832,6 +946,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       }
     } finally {
       if (taskAbortRef.current === controller) taskAbortRef.current = null;
+      if (taskPollAbortRef.current === pollController)
+        taskPollAbortRef.current = null;
       setStopping(false);
       const next = pendingQueueRef.current.shift();
       if (next) {
@@ -839,16 +955,28 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       } else {
         setBusy(false);
         setRunningSessionId(null);
+        setRunningTaskId(null);
         window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
       }
     }
   }
+
+  useEffect(() => {
+    if (loading || !active || busy) return;
+    const persisted = readPersistedChatTask(active.id);
+    if (!persisted) return;
+    void runSubmission(persisted.request, persisted.taskId);
+  }, [active?.id, loading]);
 
   const submit = (content: string) => {
     const text =
       content.trim() ||
       (attachments.length > 0 ? "请总结并分析这些附件。" : "");
     if (!text || attachmentBusy || !active || !selectedPresetId) return;
+    if (!busy && readPersistedChatTask(active.id)) {
+      setError("这段对话仍有任务在运行，正在重新连接，请稍候。");
+      return;
+    }
     pendingMessageCounterRef.current += 1;
     const optimisticId = `pending-${Date.now()}-${pendingMessageCounterRef.current}`;
     const selectedAttachments = attachments;
@@ -1267,6 +1395,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           preset={selectedPreset}
           traces={active?.traces ?? []}
           busy={visibleBusy}
+          runningTaskId={visibleBusy ? runningTaskId : null}
         />
       </div>
     </ContentReveal>
