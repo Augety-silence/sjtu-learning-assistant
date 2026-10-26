@@ -26,6 +26,7 @@ const traceStatusLabels: Record<string, string> = {
   max_steps: "本轮生成已达到上限",
   timeout: "已超时",
   failed: "未完成",
+  running: "进行中",
 };
 
 function traceTitle(trace: AIAgentTrace) {
@@ -43,7 +44,9 @@ function ActivityTraceStep({
   const [open, setOpen] = useState(false);
   const hits = traceHitCount(trace.tool_runs);
   const rejected = traceRejectedCount(trace.tool_runs);
-  const failed = traceFailed(trace);
+  // 流式过程中 AIChatView 会先插入 status="running" 的临时轨迹；它不是失败轮次。
+  const live = trace.status === "running";
+  const failed = !live && traceFailed(trace);
 
   return (
     <details
@@ -53,7 +56,13 @@ function ActivityTraceStep({
     >
       <summary>
         <span className="ai-trace-node" aria-hidden="true">
-          {failed ? <CircleSlash2 /> : <CheckCircle2 />}
+          {live ? (
+            <LoaderCircle className="animate-spin" />
+          ) : failed ? (
+            <CircleSlash2 />
+          ) : (
+            <CheckCircle2 />
+          )}
         </span>
         <span className="ai-trace-summary-copy">
           <strong>
@@ -102,6 +111,9 @@ export function AIChatTracePanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToLatestRef = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
+  // 已有流式轨迹在展示时，不再额外渲染“等待”占位，也不重复计入轮数。
+  const liveTrace = traces.at(-1)?.status === "running";
+  const pending = busy && !liveTrace;
 
   const scrollToLatest = () => {
     const scroller = scrollRef.current;
@@ -164,7 +176,7 @@ export function AIChatTracePanel({
           <span>Agent 工作过程</span>
           <small>
             {traces.length > 0 || busy
-              ? `${traces.length + (busy ? 1 : 0)} 轮`
+              ? `${traces.length + (pending ? 1 : 0)} 轮`
               : "等待任务"}
           </small>
         </div>
@@ -184,7 +196,7 @@ export function AIChatTracePanel({
             <ActivityTraceStep key={trace.id} trace={trace} index={index} />
           ))}
 
-          {busy && (
+          {pending && (
             <article className="ai-trace-step is-running" role="status">
               <span className="ai-trace-node" aria-hidden="true">
                 <LoaderCircle className="animate-spin" />

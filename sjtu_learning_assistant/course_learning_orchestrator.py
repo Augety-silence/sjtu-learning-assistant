@@ -560,6 +560,17 @@ def _repair_messages(messages: Sequence[Mapping[str, str]], payload: object) -> 
     return result
 
 
+def _same_json(left: object, right: object) -> bool:
+    """Type-strict JSON equality: bool is never equal to 1/1.0 (unlike ``==``)."""
+    if type(left) is dict and type(right) is dict:
+        return set(left) == set(right) and all(_same_json(left[key], right[key]) for key in left)
+    if type(left) is list and type(right) is list:
+        return len(left) == len(right) and all(_same_json(a, b) for a, b in zip(left, right))
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    return type(left) is type(right) and left == right
+
+
 def _validate_repair_preserves(role: str, original: object, repaired: object) -> None:
     """A schema retry may repair structure, never discard a cue or erase an issue."""
     try:
@@ -595,17 +606,8 @@ def _validate_repair_preserves(role: str, original: object, repaired: object) ->
         # validation and independent cue-anchor verification. Keep their
         # repair check tied to that legacy shape, separate from the new wire
         # contract in ROLE_SCHEMAS.
-        def same_json(left: object, right: object) -> bool:
-            if type(left) is dict and type(right) is dict:
-                return set(left) == set(right) and all(same_json(left[key], right[key]) for key in left)
-            if type(left) is list and type(right) is list:
-                return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right))
-            if type(left) in (int, float) and type(left) is not bool and type(right) in (int, float) and type(right) is not bool:
-                return left == right
-            return type(left) is type(right) and left == right
-
         for name, old_value in before.items():
-            if name not in after or not same_json(old_value, after[name]):
+            if name not in after or not _same_json(old_value, after[name]):
                 raise SchemaValidationError("$: correction repair changed legacy proposal content")
         for name in set(after) - set(before):
             default = after[name]
@@ -627,8 +629,8 @@ def _validate_repair_preserves(role: str, original: object, repaired: object) ->
         before_changes = before.get("changes", [])
         if (
             ("chunk_id" in before and before.get("chunk_id") != after.get("chunk_id") and not empty_noop)
-            or before.get("confidence", 0.0) != after.get("confidence")
-            or before.get("uncertain", []) != projected_uncertain
+            or not _same_json(before.get("confidence", 0.0), after.get("confidence"))
+            or not _same_json(before.get("uncertain", []), projected_uncertain)
             or type(before_changes) is not list
             or len(before_changes) != len(after.get("changes", []))
             or ("corrected_text" in before and before["corrected_text"] != after.get("corrected_text"))
@@ -643,7 +645,7 @@ def _validate_repair_preserves(role: str, original: object, repaired: object) ->
                 "type": current["type"], "confidence": current["confidence"],
                 "reason": current["reason"], "evidence": current["evidence"],
             }
-            if previous != projected:
+            if not _same_json(previous, projected):
                 raise SchemaValidationError("$.changes: correction repair changed proposal content")
         return
 

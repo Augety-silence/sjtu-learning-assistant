@@ -129,12 +129,19 @@ def _uid_validity(client: imaplib.IMAP4_SSL) -> str:
 def _extract_fetch_parts(fetch_data: list[object]) -> tuple[bytes, bytes]:
     metadata = b""
     message_bytes = b""
+    after_literal = False
     for item in fetch_data:
         if isinstance(item, tuple) and len(item) >= 2:
             if isinstance(item[0], bytes):
                 metadata += item[0]
             if isinstance(item[1], bytes):
                 message_bytes += item[1]
+            after_literal = True
+            continue
+        if after_literal and isinstance(item, bytes):
+            # Zimbra returns FLAGS after the BODY[] literal; imaplib yields that tail as a bare bytes item.
+            metadata += b" " + item
+        after_literal = False
     if not message_bytes:
         raise MailCheckError("服务器返回了无法识别的邮件数据。")
     return metadata, message_bytes
@@ -145,11 +152,12 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return None
     try:
         parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        # astimezone can overflow for edge dates such as year 9999 with a negative offset.
+        return parsed.astimezone(timezone.utc)
     except (TypeError, ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _parse_internal_date(metadata: bytes) -> datetime | None:
@@ -240,7 +248,7 @@ def _decode_part_payload(part: Message) -> bytes:
         charset = part.get_content_charset() or "utf-8"
         try:
             return payload.encode(charset, errors="replace")
-        except LookupError:
+        except (LookupError, UnicodeError):  # e.g. idna rejects errors="replace"
             return payload.encode("utf-8", errors="replace")
     # message/rfc822 attachments do not always expose a decoded byte payload.
     return part.as_bytes(policy=policy.default)
@@ -252,7 +260,7 @@ def _decode_text_part(part: Message) -> str | None:
     if charset:
         try:
             return payload.decode(charset, errors="replace")
-        except LookupError:
+        except (LookupError, UnicodeError):  # e.g. idna rejects errors="replace"
             pass
     for fallback in ("utf-8", "gb18030"):
         try:

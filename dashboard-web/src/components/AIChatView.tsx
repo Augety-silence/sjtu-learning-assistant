@@ -179,8 +179,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   }, [isPresent]);
   useEffect(
     () => () => {
+      // Leaving the workspace must not cancel the in-flight Agent task: after
+      // unmount there is no composer to restore the prompt or show the stop
+      // notice, so aborting here would silently drop the user's question.
+      // The backend task finishes and persists; only explicit "停止" cancels.
       pendingQueueRef.current.splice(0);
-      taskAbortRef.current?.abort();
     },
     [],
   );

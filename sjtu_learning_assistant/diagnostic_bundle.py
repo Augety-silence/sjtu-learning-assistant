@@ -55,7 +55,10 @@ _BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[a-z0-9_.~+/=-]+")
 _SECRET_VALUE_PATTERN = re.compile(
     r"(?i)\b(authorization|proxy-authorization|token|access_token|refresh_token|"
     r"password|passwd|secret|api[_ -]?key|cookie|set-cookie|database_url)\b[\"']?"
-    r"\s*[:=]\s*(\"[^\"\n]*\"|'[^'\n]*'|[^\s,;}]+)"
+    # 认证头的值形如 "Basic <凭据>"：只吞掉方案名会把真正的凭据原样留下，
+    # 因此无引号分支允许可选的认证方案前缀（起点受关键字锚定，仍为线性）。
+    r"\s*[:=]\s*(\"[^\"\n]*\"|'[^'\n]*'|"
+    r"(?:(?:basic|digest|bearer|token|negotiate|ntlm)[ \t]+)?[^\s,;}]+)"
 )
 # 后顾断言必须覆盖本地部分字符集的全部字符（含 %），否则 "%%%%..." 这类
 # 输入每个位置都会重新起扫，2 MB 时退化为 O(n^2)。

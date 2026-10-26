@@ -143,6 +143,9 @@ export function GradingView({
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const detailHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const previousSelectedIdRef = useRef(selectedId);
+  // Only a row activation (click/Enter/Space) moves focus to the detail heading;
+  // arrow-key roving and background fallback selection must keep focus where it is.
+  const focusDetailOnSelectRef = useRef(false);
   const { showToast } = useToast();
   const selected =
     submissions.find((item) => item.id === selectedId) ??
@@ -173,12 +176,14 @@ export function GradingView({
   }, [selected?.id]);
   useEffect(() => {
     if (
+      focusDetailOnSelectRef.current &&
       previousSelectedIdRef.current &&
       selected?.id &&
       previousSelectedIdRef.current !== selected.id
     ) {
       window.setTimeout(() => detailHeadingRef.current?.focus(), 0);
     }
+    focusDetailOnSelectRef.current = false;
     previousSelectedIdRef.current = selected?.id ?? null;
   }, [selected?.id]);
   useEffect(() => {
@@ -387,7 +392,11 @@ export function GradingView({
                         aria-current={
                           submission.id === selected?.id ? "true" : undefined
                         }
-                        onClick={() => setSelectedId(submission.id)}
+                        onClick={() => {
+                          if (submission.id !== selected?.id)
+                            focusDetailOnSelectRef.current = true;
+                          setSelectedId(submission.id);
+                        }}
                         onKeyDown={(event) => {
                           if (
                             event.key === "ArrowDown" ||

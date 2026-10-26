@@ -5,7 +5,16 @@ export const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement>
 >(({ className, ...props }, ref) => (
-  <div className="w-full overflow-x-auto">
+  // 横向滚动区需可聚焦：WKWebView 不会自动让滚动容器获得焦点，只读宽表否则无法用方向键滚动
+  // （WCAG 2.1.1 / axe scrollable-region-focusable）。
+  <div
+    className="w-full overflow-x-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary focus-visible:[outline-style:solid]"
+    role={props["aria-label"] ? "region" : undefined}
+    aria-label={
+      props["aria-label"] ? `${props["aria-label"]}，可横向滚动` : undefined
+    }
+    tabIndex={0}
+  >
     <table
       ref={ref}
       className={cn("w-full table-fixed border-collapse text-sm", className)}

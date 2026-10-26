@@ -364,6 +364,18 @@ function isTransientTaskPollError(error: unknown) {
   );
 }
 
+// 用户主动停止/任务被取消：仍是 Error 子类且 message 不变，但带 name/category，
+// 调用方可据此与真实失败区分（例如不弹错误提示）。
+function aiTaskCancelledError(
+  message = "已请求停止本次任务。正在进行的模型或工具请求返回后才会停止。",
+) {
+  return Object.assign(new Error(message), {
+    name: "AbortError",
+    category: "cancelled",
+    retryable: true,
+  });
+}
+
 export async function sendAiChatMessage(
   sessionId: string,
   content: string,
@@ -376,6 +388,8 @@ export async function sendAiChatMessage(
     onTaskStart?: (taskId: string) => void;
   } = {},
 ) {
+  // 已中止的 signal 不再启动后端任务（避免白白创建再取消）。
+  if (options.signal?.aborted) throw aiTaskCancelledError();
   const pageContext = activeAIPageContext();
   let snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
     "ai_chat_stream_start",
@@ -403,14 +417,6 @@ export async function sendAiChatMessage(
   // 先处理最近一次快照的终态，再判断截止：截止前最后一次轮询若已 completed/failed，
   // 不能被当作超时丢弃（否则已入库的回答会被前端回滚、用户重发造成重复）。
   for (;;) {
-    if (options.signal?.aborted) {
-      await invoke("ai_task_cancel", { task_id: taskId }).catch(
-        () => undefined,
-      );
-      throw new Error(
-        "已请求停止本次任务。正在进行的模型或工具请求返回后才会停止。",
-      );
-    }
     if (snapshot.task.status === "completed") {
       const result = snapshot.task.result?.chat_result;
       if (!result) throw new Error("AI 任务完成但没有返回对话结果。");
@@ -433,7 +439,31 @@ export async function sendAiChatMessage(
       throw error;
     }
     if (snapshot.task.status === "cancelled") {
-      throw new Error("AI 任务已取消。");
+      emitAIStream({
+        type: "cancelled",
+        task_id: taskId,
+        session_id: sessionId,
+      });
+      throw aiTaskCancelledError("AI 任务已取消。");
+    }
+    // 中止检查放在终态之后：最近一次快照已 completed 时必须交付结果，
+    // 否则已入库的回答会被前端回滚、用户重发造成重复。
+    if (options.signal?.aborted) {
+      const cancelled = await invoke<import("@/lib/types").AITaskSnapshot>(
+        "ai_task_cancel",
+        { task_id: taskId },
+      ).catch(() => null);
+      // 取消请求到达前任务可能已完成（回答已写入对话），此时按完成处理。
+      if (cancelled?.task?.status === "completed") {
+        snapshot = cancelled;
+        continue;
+      }
+      emitAIStream({
+        type: "cancelled",
+        task_id: taskId,
+        session_id: sessionId,
+      });
+      throw aiTaskCancelledError();
     }
     if (Date.now() >= deadline) break;
     await waitForTaskPoll();
