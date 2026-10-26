@@ -329,6 +329,7 @@ export function AssignmentsView({
   const detailRequestRef = useRef(0);
   const fileDragDepthRef = useRef(0);
   const awaitingNativeDropRef = useRef(false);
+  const pendingNativeDropPathsRef = useRef<string[] | null>(null);
   const nativeDropTimerRef = useRef<number | null>(null);
   const onInitialTargetHandledRef = useRef(onInitialTargetHandled);
   categoryRef.current = category;
@@ -529,7 +530,6 @@ export function AssignmentsView({
 
   useEffect(() => {
     const handleNativeDrop = (event: Event) => {
-      if (!awaitingNativeDropRef.current) return;
       const detail = (event as CustomEvent<unknown>).detail;
       if (
         typeof detail !== "object" ||
@@ -539,6 +539,11 @@ export function AssignmentsView({
         detail.paths.some((path) => typeof path !== "string")
       )
         return;
+      if (!awaitingNativeDropRef.current) {
+        if (fileDragDepthRef.current > 0)
+          pendingNativeDropPathsRef.current = detail.paths;
+        return;
+      }
       awaitingNativeDropRef.current = false;
       if (nativeDropTimerRef.current !== null) {
         window.clearTimeout(nativeDropTimerRef.current);
@@ -551,6 +556,7 @@ export function AssignmentsView({
       window.removeEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
       if (nativeDropTimerRef.current !== null)
         window.clearTimeout(nativeDropTimerRef.current);
+      pendingNativeDropPathsRef.current = null;
     };
   }, [registerDroppedPaths]);
 
@@ -560,6 +566,8 @@ export function AssignmentsView({
   const handleFileDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!isFileDrag(event)) return;
     event.preventDefault();
+    if (fileDragDepthRef.current === 0)
+      pendingNativeDropPathsRef.current = null;
     fileDragDepthRef.current += 1;
     setFileDragActive(true);
   };
@@ -575,6 +583,8 @@ export function AssignmentsView({
     event.preventDefault();
     fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
     if (fileDragDepthRef.current === 0) setFileDragActive(false);
+    if (fileDragDepthRef.current === 0)
+      pendingNativeDropPathsRef.current = null;
   };
 
   const handleFileDrop = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -582,6 +592,8 @@ export function AssignmentsView({
     event.preventDefault();
     event.stopPropagation();
     fileDragDepthRef.current = 0;
+    const pendingNativePaths = pendingNativeDropPathsRef.current;
+    pendingNativeDropPathsRef.current = null;
     setFileDragActive(false);
     const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
       const path = (file as File & { path?: string }).path;
@@ -589,6 +601,10 @@ export function AssignmentsView({
     });
     if (paths.length > 0) {
       void registerDroppedPaths(paths);
+      return;
+    }
+    if (pendingNativePaths) {
+      void registerDroppedPaths(pendingNativePaths);
       return;
     }
     awaitingNativeDropRef.current = true;

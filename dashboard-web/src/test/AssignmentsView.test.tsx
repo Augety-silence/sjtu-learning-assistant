@@ -475,6 +475,49 @@ describe("AssignmentsView", () => {
     expect(await screen.findByText(/已使用拖入的第一个文件/)).toBeTruthy();
   });
 
+  it("uses a native path that arrives before the WebKit drop event", async () => {
+    const uploadAssignment = {
+      ...assignment,
+      submission_types: ["online_upload"],
+    };
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: [uploadAssignment],
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(uploadAssignment);
+    vi.mocked(api.registerAssignmentLocalFile).mockResolvedValue({
+      cancelled: false,
+      path: "/safe/early.pdf",
+      name: "early.pdf",
+      size: 12,
+    });
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+
+    const dropzone = (await screen.findByText("文件作答")).closest(
+      ".assignment-file-dropzone",
+    ) as HTMLDivElement;
+    const dataTransfer = {
+      types: ["Files"],
+      files: [new File(["answer"], "early.pdf")],
+      dropEffect: "none",
+    };
+    fireEvent.dragEnter(dropzone, { dataTransfer });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/safe/early.pdf"] },
+      }),
+    );
+    fireEvent.drop(dropzone, { dataTransfer });
+
+    await waitFor(() =>
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
+        "/safe/early.pdf",
+      ),
+    );
+    expect(screen.queryByText(/无法读取拖入文件的本地路径/)).toBeNull();
+  });
+
   it("does not show success when verification is false", async () => {
     vi.mocked(api.submitAssignmentText).mockResolvedValue({
       verified: false,
