@@ -1265,7 +1265,9 @@ export default function App() {
   const learnerCourses = courseCapabilities(capabilities).filter((course) =>
     course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
   );
-  const [staffCourseId, setStaffCourseId] = useState<number | null>(null);
+  const [selectedStaffCourseId, setStaffCourseId] = useState<number | null>(
+    null,
+  );
   const [selectedLearnerCourseId, setSelectedLearnerCourseId] = useState<
     number | null
   >(null);
@@ -1279,14 +1281,16 @@ export default function App() {
       ? selectedLearnerCourseId
       : (learnerCourseIds[0] ?? null);
 
-  useEffect(() => {
-    const available = staffCourses.flatMap((course) => {
-      const id = courseNumber(course);
-      return id ? [id] : [];
-    });
-    if (!staffCourseId || !available.includes(staffCourseId))
-      setStaffCourseId(available[0] ?? null);
-  }, [capabilities, staffCourseId]);
+  // 与 learnerCourseId 一样在渲染期派生：effect 同步会在能力解析后多提交一帧
+  // courseResolved=true 且 courseId=null，闪现并播报“无访问权限”后再重挂。
+  const staffCourseIds = staffCourses.flatMap((course) => {
+    const id = courseNumber(course);
+    return id ? [id] : [];
+  });
+  const staffCourseId =
+    selectedStaffCourseId && staffCourseIds.includes(selectedStaffCourseId)
+      ? selectedStaffCourseId
+      : (staffCourseIds[0] ?? null);
 
   const coursePicker = (
     courses: CourseCapabilities[],

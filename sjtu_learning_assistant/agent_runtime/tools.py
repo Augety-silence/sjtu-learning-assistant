@@ -111,6 +111,18 @@ def _clip(value: object, limit: int) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _redact_body(value: str, limit: int) -> tuple[str, bool]:
+    """脱敏附件正文但保留换行/缩进（代码、CSV、Markdown 依赖行结构）。
+
+    SENSITIVE_TEXT 各模式的值部分都不含空白/换行，不会跨行吞内容，因此直接
+    替换与 _clip 折叠空白后再替换的脱敏范围一致；返回 (正文, 是否因长度被截断)。
+    """
+    text = value
+    for pattern in SENSITIVE_TEXT:
+        text = pattern.sub("[已隐藏]", text)
+    return text[:limit], len(text) > limit
+
+
 def _like_pattern(value: str) -> str:
     escaped = value.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
@@ -524,8 +536,13 @@ class ReadOnlyToolRegistry:
         except AIFileError as exc:
             raise AgentToolError(str(exc), category="execution") from None
         if isinstance(result.get("text"), str):
-            result["text"] = _clip(result["text"], max_chars)
-            result["returned_chars"] = len(result["text"])
+            # 不用 _clip：它会把全部空白折叠成单个空格并追加“…”，
+            # 让代码/表格附件失去行结构且可能超出 max_chars。
+            text, clipped = _redact_body(result["text"], max_chars)
+            result["text"] = text
+            result["returned_chars"] = len(text)
+            if clipped:
+                result["truncated"] = True
         if isinstance(result.get("name"), str):
             result["name"] = _clip(result["name"], 255)
         return result, {

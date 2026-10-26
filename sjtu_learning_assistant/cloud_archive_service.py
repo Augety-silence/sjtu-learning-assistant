@@ -941,6 +941,27 @@ class CloudArchiveService:
         except Exception:
             LOGGER.exception("无法更新归档任务对账状态", extra={"job_id": job_id})
 
+    def _job_result(self, job_id: str, fallback_status: str) -> dict[str, Any]:
+        # 对账失败分支同样返回完整任务快照：retry/archive_file 会把它当作 ArchiveJob 交给前端，
+        # 缺 kind/id/last_error/retryable 时界面会把归档任务误报为“恢复任务”且看不到原因。
+        try:
+            with Session(self.engine) as session:
+                job = session.get(ArchiveJob, job_id)
+                if job is not None:
+                    result = job_data(job)
+                    # 状态写回本身也可能失败（例如 SQLite busy）。此时数据库仍会
+                    # 停在本次对账认领时写入的 verifying，但调用方已经知道本次
+                    # 操作应返回的终态/可重试态。只覆盖这个陈旧的中间态，避免
+                    # 掩盖另一个调用并发写入的真实结果。
+                    if job.status == "verifying":
+                        result["status"] = fallback_status
+                    result["job_id"] = job_id
+                    result["reconciled"] = False
+                    return result
+        except Exception:
+            LOGGER.exception("无法读取归档任务状态", extra={"job_id": job_id})
+        return {"job_id": job_id, "status": fallback_status, "reconciled": False}
+
     def retry(self, job_id: str) -> dict[str, Any]:
         with Session(self.engine) as session:
             job = session.get(ArchiveJob, job_id)
@@ -1035,7 +1056,7 @@ class CloudArchiveService:
                 provider = self.provider_factory()
                 if not provider.exists(remote_path):
                     self._mark_failed(identifier, "云端对象不存在，需要重新上传。")
-                    results.append({"job_id": identifier, "status": "failed"})
+                    results.append(self._job_result(identifier, "failed"))
                 else:
                     results.append(
                         self._reconcile_remote(
@@ -1048,7 +1069,7 @@ class CloudArchiveService:
                     )
             except CloudArchiveError as exc:
                 self._mark_failed(identifier, str(exc))
-                results.append(dict(job_id=identifier, status="failed"))
+                results.append(self._job_result(identifier, "failed"))
             except CloudCleanupError as exc:
                 self._mark_reconcile(
                     identifier,
@@ -1056,7 +1077,7 @@ class CloudArchiveService:
                     event_type="remote_cleanup_failed",
                     target_status="needs_reconcile",
                 )
-                results.append(dict(job_id=identifier, status="needs_reconcile"))
+                results.append(self._job_result(identifier, "needs_reconcile"))
             except (CloudAuthError, CloudNetworkError) as exc:
                 if isinstance(exc, CloudAuthError):
                     message = "交大云盘凭据无效或已过期，请更新 UserToken 后重试。"
@@ -1068,12 +1089,12 @@ class CloudArchiveService:
                     event_type="reconcile_retryable",
                     target_status=original_status,
                 )
-                results.append(dict(job_id=identifier, status=original_status))
+                results.append(self._job_result(identifier, original_status))
             except Exception as exc:
                 self._mark_reconcile(
                     identifier, safe_failure("对账", exc), event_type="reconcile_failed"
                 )
-                results.append(dict(job_id=identifier, status="needs_reconcile"))
+                results.append(self._job_result(identifier, "needs_reconcile"))
             finally:
                 close = getattr(provider, "close", None) if provider is not None else None
                 if callable(close):

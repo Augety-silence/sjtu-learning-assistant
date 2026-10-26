@@ -9,6 +9,7 @@ import {
   getSettings,
   ingestAiAttachment,
   pickAiAttachment,
+  resumeAiChatMessageTask,
   sendAiChatMessage,
   updateSettings,
 } from "@/lib/api";
@@ -142,6 +143,7 @@ vi.mock("@/lib/api", () => ({
   })),
   revealAiAttachment: vi.fn(async () => ({ status: "revealed" })),
   deleteAiChatSession: vi.fn(async () => ({ deleted: true })),
+  resumeAiChatMessageTask: vi.fn(),
 }));
 
 afterEach(() => {
@@ -392,6 +394,57 @@ describe("AIChatView", () => {
     expect(screen.getByText("正在停止")).toBeTruthy();
   });
 
+  it("detaches on unmount and resumes the same task before allowing another send", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-reconnect");
+        return new Promise((_resolve, reject) => {
+          options?.pollSignal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                Object.assign(new Error("detached"), {
+                  category: "detached",
+                  retryable: false,
+                }),
+              ),
+            { once: true },
+          );
+        });
+      },
+    );
+    vi.mocked(resumeAiChatMessageTask).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+
+    const first = render(<AIChatView onBack={vi.fn()} />);
+    const firstInput = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(firstInput, { target: { value: "继续后台检索" } });
+    fireEvent.keyDown(firstInput, { key: "Enter" });
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("ai-chat-running-task:session-1"),
+      ).toContain("task-reconnect"),
+    );
+    first.unmount();
+
+    render(<AIChatView onBack={vi.fn()} />);
+    await waitFor(() =>
+      expect(resumeAiChatMessageTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-reconnect",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          pollSignal: expect.any(AbortSignal),
+        }),
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "停止本次任务" }),
+    ).toBeTruthy();
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("shows tool activity as soon as a streaming tool event arrives", async () => {
     vi.mocked(sendAiChatMessage).mockImplementationOnce(
       () => new Promise(() => undefined),
@@ -419,6 +472,48 @@ describe("AIChatView", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
     expect(await screen.findByText(/调用 1 次/)).toBeTruthy();
+  });
+
+  it("removes a failed task's temporary running trace before the retry", async () => {
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    vi.mocked(sendAiChatMessage)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementationOnce(() => new Promise(() => undefined));
+
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "先检索再失败" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "tool",
+          session_id: "session-1",
+          task_id: "task-failed",
+          run: {
+            tool_name: "get_deadlines",
+            phase: "prefetch",
+            status: "ok",
+            arguments_summary: {},
+            result_summary: { count: 1 },
+          },
+        },
+      }),
+    );
+    rejectFirst?.(new Error("检索失败"));
+    expect(await screen.findByText("检索失败")).toBeTruthy();
+    expect(screen.queryByText(/进行中 · 调用 1 次/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试本次" }));
+    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
+    expect(await screen.findByText("等待 Agent 返回")).toBeTruthy();
+    expect(screen.queryByText(/调用 1 次/)).toBeNull();
   });
 
   it("supports arrow navigation, Escape, and focus return in compact choices", async () => {

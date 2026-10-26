@@ -809,7 +809,17 @@ class ArchiveService:
                     if item.source_id not in categories:
                         continue
                     category = categories[item.source_id]
-                    output[item.source_id] = replace(context, category=category)
+                    # folder_names 由分类派生（只有课程作业保留 Canvas 层级）；必须与
+                    # _load_contexts 下一轮按缓存分类重算的结果一致，否则首轮规划路径
+                    # 与之后不同，导致文件被重复下载/移动。
+                    output[item.source_id] = replace(
+                        context,
+                        category=category,
+                        folder_names=archive_folder_names(
+                            category,
+                            context.canvas_folder_names or context.folder_names,
+                        ),
+                    )
                     session.execute(
                         update(CourseFile)
                         .where(CourseFile.id == context.file_id)
@@ -1288,7 +1298,9 @@ class ArchiveService:
             raise ArchiveError("已下载文件 SHA-256 与数据库记录不一致。")
         return size, digest
 
-    def _conflict_target(self, target: Path, context: ArchiveFileContext) -> Path:
+    def _conflict_target(
+        self, target: Path, context: ArchiveFileContext, source: Path | None = None
+    ) -> Path:
         safe_id = sanitize_component(context.source_id, fallback="unknown", max_length=48)
         marker = f" [{safe_id}]"
         candidate = (
@@ -1299,6 +1311,18 @@ class ArchiveService:
         candidate = ensure_within_root(self.archive_root, candidate)
         if _path_mode(candidate) is None:
             return candidate
+        if source is not None:
+            # 上一轮已因冲突落在本记录的冲突名上：原地保留，避免每次整理都换名。
+            if _same_physical_file(source, candidate):
+                return candidate
+            if (
+                source.name.startswith(f"{candidate.stem} (version ")
+                and source.suffix == candidate.suffix
+                and _same_physical_file(source.parent, candidate.parent)
+            ):
+                return ensure_within_root(
+                    self.archive_root, candidate.parent / source.name
+                )
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         return ensure_within_root(
             self.archive_root,
@@ -1444,7 +1468,7 @@ class ArchiveService:
                 return DownloadResult(
                     context.source_id, "moved", str(final_target), size, digest
                 )
-            next_target = self._conflict_target(target, context)
+            next_target = self._conflict_target(target, context, source)
             if next_target == final_target:
                 raise ArchiveError("无法生成安全的冲突文件名。")
             final_target = next_target

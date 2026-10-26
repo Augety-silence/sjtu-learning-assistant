@@ -116,6 +116,16 @@ class AIClassificationError(RuntimeError):
         self.exception_type = exception_type
 
 
+class _DeltaCallbackAbort(Exception):
+    """Carry an exception raised by a caller's on_delta callback past the
+    stream error mapping, so cancellation (e.g. AITaskCancelled) is not
+    rewritten into a retryable ``client_error``."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(type(original).__name__)
+        self.original = original
+
+
 class AIToolsUnsupportedError(AIClassificationError):
     """The selected OpenAI-compatible endpoint rejected tool calling."""
 
@@ -644,6 +654,14 @@ class OpenAIClassificationClient:
 
         defined_tool_names = frozenset(item["function"]["name"] for item in tools or ())
 
+        def emit_delta(kind: str, value: str) -> None:
+            # 回调异常（取消、调用方错误）必须原样冒泡，不能被下方的
+            # TypeError/ValueError/Exception 映射成 response_format/client_error。
+            try:
+                on_delta(kind, value)  # type: ignore[misc]
+            except Exception as exc:
+                raise _DeltaCallbackAbort(exc) from None
+
         def consume(request_body: Mapping[str, object]) -> dict[str, Any]:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -691,12 +709,12 @@ class OpenAIClassificationClient:
                     if type(content) is str and content:
                         content_parts.append(content)
                         if on_delta is not None:
-                            on_delta("content", content)
+                            emit_delta("content", content)
                     reasoning = delta.get("reasoning_content")
                     if type(reasoning) is str and reasoning:
                         reasoning_parts.append(reasoning)
                         if on_delta is not None:
-                            on_delta("reasoning", reasoning)
+                            emit_delta("reasoning", reasoning)
                     raw_tool_calls = delta.get("tool_calls")
                     # 部分代理/网关在纯文本帧上发送 "tool_calls": null，与其它字段一致视为缺省。
                     if raw_tool_calls is not None and type(raw_tool_calls) is not list:
@@ -801,6 +819,8 @@ class OpenAIClassificationClient:
                 fallback.pop("stream_options", None)
                 self._limiter()  # 回退请求同样计入全局 6 秒限流
                 return consume(fallback)
+        except _DeltaCallbackAbort as abort:
+            raise abort.original from None
         except AIClassificationError:
             raise
         except httpx.HTTPStatusError as exc:

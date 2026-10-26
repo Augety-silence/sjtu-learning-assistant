@@ -148,12 +148,28 @@ CANVAS_ORIGIN = ("https", "oc.sjtu.edu.cn", 443)
 CANVAS_REDIRECT_LIMIT = 5
 CANVAS_FILE_API_PATH = re.compile(r"/api/v1/courses/[0-9]+/files/[0-9]+")
 INLINE_IMAGE_LIMIT = 5 * 1024 * 1024
+# Attachment types that may run code or mount content on Windows when opened
+# directly (Outlook's blocked-attachment list plus MSIX bundles/.psm1).
 WINDOWS_EXECUTABLE_ATTACHMENT_SUFFIXES = frozenset({
     ".bat", ".cmd", ".com", ".cpl", ".exe", ".hta", ".inf", ".ins",
     ".isp", ".jar", ".js", ".jse", ".lnk", ".msc", ".msi", ".msp",
     ".ocx", ".pif", ".ps1", ".ps1xml", ".ps2", ".ps2xml", ".psc1",
     ".psc2", ".reg", ".scf", ".scr", ".sct", ".shb", ".shs", ".vbe",
     ".vbs", ".ws", ".wsc", ".wsf", ".wsh",
+    ".ade", ".adp", ".app", ".appcontent-ms", ".application", ".appref-ms",
+    ".appx", ".appxbundle", ".asx", ".bas", ".cab", ".cdxml", ".cer",
+    ".chm", ".cnt", ".crt", ".der", ".diagcab", ".fxp", ".gadget", ".grp",
+    ".hlp", ".hpj", ".htc", ".img", ".iso", ".its", ".jnlp", ".library-ms",
+    ".mad", ".maf",
+    ".mag", ".mam", ".maq", ".mar", ".mas", ".mat", ".mau", ".mav",
+    ".maw", ".mcf", ".mda", ".mdb", ".mde", ".mdt", ".mdw", ".mdz",
+    ".mht", ".mhtml", ".msh", ".msh1", ".msh1xml", ".msh2", ".msh2xml",
+    ".mshxml", ".msix", ".msixbundle", ".mst", ".msu", ".ops", ".osd",
+    ".pcd", ".pl", ".plg", ".prf", ".prg", ".printerexport", ".psd1",
+    ".psdm1", ".psm1", ".pssc", ".pst", ".py", ".pyc", ".pyo", ".pyw",
+    ".pyz", ".pyzw", ".search-ms", ".settingcontent-ms", ".theme", ".tmp",
+    ".udl", ".url", ".vb", ".vbp", ".vhd", ".vhdx", ".vsmacros", ".vsw",
+    ".webpnp", ".website", ".wsb", ".xbap", ".xll", ".xnk",
 })
 MATERIAL_IMAGE_LIMIT = 15 * 1024 * 1024
 MATERIAL_PDF_LIMIT = 30 * 1024 * 1024

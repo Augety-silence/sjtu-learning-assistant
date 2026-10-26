@@ -1032,10 +1032,13 @@ class AcademicFeatureService:
 
     @staticmethod
     def _grade_matches(submission: Mapping[str, Any], expected: str) -> bool:
+        # Canvas 迟交策略会从 score/grade 中扣分；entered_* 才是教师实际录入的值。
         observed_values = [
             submission.get("posted_grade"),
             submission.get("grade"),
             submission.get("score"),
+            submission.get("entered_grade"),
+            submission.get("entered_score"),
         ]
         if expected == "":
             return all(value in (None, "") for value in observed_values)

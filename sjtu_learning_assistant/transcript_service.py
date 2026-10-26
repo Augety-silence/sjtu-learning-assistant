@@ -1137,7 +1137,11 @@ class TranscriptService:
             return None
 
     def corrected_subtitles(self, source_id: str) -> dict[str, Any] | None:
-        stored = self._stored_learning_input(source_id)
+        try:
+            stored = self._stored_learning_input(source_id)
+        except TranscriptArtifactError:
+            # Corrupt local raw.vtt: let the caller fall back to remote subtitles instead of failing playback.
+            return None
         if stored is None:
             return None
         video_dir, manifest, raw = stored
@@ -1850,7 +1854,12 @@ class TranscriptService:
     def _heartbeat_loop(self, batch_id: str, stopped: threading.Event) -> None:
         interval = max(1.0, min(30.0, self.lease_seconds / 3))
         while not stopped.wait(interval):
-            if not self._heartbeat_batch(batch_id):
+            try:
+                alive = self._heartbeat_batch(batch_id)
+            except (OSError, TranscriptError):
+                # Transient lock/write failure (e.g. msvcrt LK_LOCK timeout): keep the lease thread alive and retry.
+                continue
+            if not alive:
                 return
 
     @contextmanager

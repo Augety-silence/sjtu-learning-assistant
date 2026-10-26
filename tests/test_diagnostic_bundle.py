@@ -100,6 +100,38 @@ class DiagnosticBundleTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - started, 2.0)
         self.assertTrue(all(0 < len(result) <= 256 * 1024 for result in results))
 
+    def test_sanitizer_redacts_complete_auth_headers_and_encoded_values(self) -> None:
+        source = "\n".join(
+            (
+                'Authorization: Digest username="alice", realm="private-realm", '
+                'nonce="private-nonce", response="private-response"',
+                "Proxy-Authorization: Custom private-proxy, realm=proxy-realm",
+                "Authorization: Basic cHJpdmF0ZS1iYXNpYw==",
+                '{"access_token": "private-json", "safe": "kept"}',
+                "refresh_token%3Dprivate-encoded",
+                "safe-line: kept",
+            )
+        )
+
+        result = sanitize_text(source)
+
+        for forbidden in (
+            "alice",
+            "private-realm",
+            "private-nonce",
+            "private-response",
+            "private-proxy",
+            "proxy-realm",
+            "cHJpdmF0ZS1iYXNpYw==",
+            "private-json",
+            "private-encoded",
+        ):
+            self.assertNotIn(forbidden, result)
+        self.assertIn("Authorization=[redacted]", result)
+        self.assertIn("Proxy-Authorization=[redacted]", result)
+        self.assertIn('"safe": "kept"', result)
+        self.assertIn("safe-line: kept", result)
+
     def test_bundle_uses_exact_allowlist_and_safe_aggregates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

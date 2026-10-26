@@ -86,12 +86,15 @@ function SegmentedChoice<T extends string>({
 }) {
   const indicatorId = useSelectionIndicatorId("ai-preference");
   return (
-    <fieldset className="ai-preference-group" disabled={disabled}>
+    // 保存期间不禁用 fieldset：Chromium/WebView2 会把已聚焦的禁用按钮焦点移到 <body>，
+    // 方向键切换一次后键盘导航即失效。改为 aria-disabled 并在处理函数中忽略输入。
+    <fieldset className="ai-preference-group">
       <legend>{label}</legend>
       <div
         className="ai-preference-options"
         role="radiogroup"
         aria-label={label}
+        aria-disabled={disabled || undefined}
         onKeyDown={(event) => {
           const current = choices.findIndex((choice) => choice.value === value);
           const delta =
@@ -110,6 +113,7 @@ function SegmentedChoice<T extends string>({
                   : -1;
           if (index < 0) return;
           event.preventDefault();
+          if (disabled) return;
           const next = choices[index];
           onChange(next.value);
           event.currentTarget
@@ -131,7 +135,9 @@ function SegmentedChoice<T extends string>({
                 : "selection-host"
             }
             title={choice.detail}
-            onClick={() => onChange(choice.value)}
+            onClick={() => {
+              if (!disabled) onChange(choice.value);
+            }}
           >
             {choice.value === value && (
               <SelectionIndicator
