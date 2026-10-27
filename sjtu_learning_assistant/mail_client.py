@@ -467,6 +467,8 @@ def fetch_email_body_backfill(
                             attachments=attachments,
                         )
                     )
+                except imaplib.IMAP4.abort:
+                    raise
                 except Exception:
                     # One malformed or unavailable legacy message must not stop the batch.
                     failed += 1

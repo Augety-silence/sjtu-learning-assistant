@@ -877,3 +877,23 @@ interface FilePreviewer {
 - 等待 PR 的 Linux、Windows、macOS CI 与双平台构建全部成功后再合并到 `main`；本轮不自动发布或部署本机 App。
 - `macos-15` runner 与 Windows 行为由 GitHub 干净 runner 覆盖，但不等同于 Windows 10/11 真机交互验收。
 - 审阅摘要中没有导出补丁、需要产品决策或外部环境验证的 P1/P2 不在本轮机械实现；本轮未连接真实学习数据、交大云盘或付费模型。
+
+## 40. 作业拖拽、10-27 全模块夜审与 1.8.4 发布
+
+已完成：
+
+- 基于 `main@aea8d23` 合入作业中文附件名与桌面拖拽上传修复，并修正 macOS 原生拖放事件先后顺序。
+- 复核并应用 10-27 审计包中 14 个可落地补丁，覆盖 M2、M4、M5、M7、M8、M9；M1、M3、M6 本次无代码补丁。
+- PR 前结构化复审继续修复拖拽异步响应覆盖、旧 native fallback 干扰、非法 UTF-8 文件名静默替换和 IMAP 回填中断被吞四项边界问题。
+- 版本推进至 1.8.4，并补充正式发布说明。
+
+验证结果：
+
+- Python 完整回归 830 项通过、1 项跳过，另有 324 个子测试通过；前端 49 个测试文件、506 项通过。
+- 审查补修定向回归 Python 14 项、前端 15 项通过；Biome、TypeScript/Vite production build、许可证、秘密扫描与 Python 编译通过。
+
+发布边界：
+
+- 从 PR 合并后的精确 `main` 提交重新构建、签名并部署 macOS App，保留旧 bundle 回退副本，再创建正式 `v1.8.4` 标签。
+- Windows portable 与安装器由 Release workflow 在干净 Windows runner 构建并验证；真实 Windows 拖拽仍需后续真机验收。
+- 本轮未连接真实学习数据、交大云盘或付费模型执行写入测试。

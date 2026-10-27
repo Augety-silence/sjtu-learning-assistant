@@ -331,8 +331,11 @@ export function AssignmentsView({
   const awaitingNativeDropRef = useRef(false);
   const pendingNativeDropPathsRef = useRef<string[] | null>(null);
   const nativeDropTimerRef = useRef<number | null>(null);
+  const droppedFileRequestRef = useRef(0);
+  const selectedRef = useRef(selected);
   const onInitialTargetHandledRef = useRef(onInitialTargetHandled);
   categoryRef.current = category;
+  selectedRef.current = selected;
   onInitialTargetHandledRef.current = onInitialTargetHandled;
   const { showToast } = useToast();
 
@@ -363,6 +366,7 @@ export function AssignmentsView({
     void getAssignmentDetail(initialTarget.courseId, initialTarget.assignmentId)
       .then((detail) => {
         if (!active) return;
+        droppedFileRequestRef.current += 1;
         setSelected(detail);
         setItems((current) => {
           if (
@@ -402,6 +406,7 @@ export function AssignmentsView({
   }, [initialTarget]);
 
   const selectAssignment = async (item: AssignmentItem) => {
+    droppedFileRequestRef.current += 1;
     const request = ++detailRequestRef.current;
     setError("");
     setResult(null);
@@ -508,6 +513,15 @@ export function AssignmentsView({
   const registerDroppedPaths = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) return;
+      const request = ++droppedFileRequestRef.current;
+      const assignmentKey = selectedRef.current
+        ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
+        : null;
+      const isCurrentRequest = () =>
+        droppedFileRequestRef.current === request &&
+        (selectedRef.current
+          ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
+          : null) === assignmentKey;
       if (paths.length > 1) {
         showToast({
           kind: "info",
@@ -516,8 +530,10 @@ export function AssignmentsView({
       }
       try {
         const registered = await registerAssignmentLocalFile(paths[0]);
-        if (!registered.cancelled) setLocalFile(registered);
+        if (isCurrentRequest() && !registered.cancelled)
+          setLocalFile(registered);
       } catch (reason) {
+        if (!isCurrentRequest()) return;
         showToast({
           kind: "error",
           message:
@@ -595,6 +611,12 @@ export function AssignmentsView({
     const pendingNativePaths = pendingNativeDropPathsRef.current;
     pendingNativeDropPathsRef.current = null;
     setFileDragActive(false);
+    // A new WebKit drop supersedes any unresolved native fallback from the previous gesture.
+    awaitingNativeDropRef.current = false;
+    if (nativeDropTimerRef.current !== null) {
+      window.clearTimeout(nativeDropTimerRef.current);
+      nativeDropTimerRef.current = null;
+    }
     const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
       const path = (file as File & { path?: string }).path;
       return path ? [path] : [];
@@ -608,8 +630,6 @@ export function AssignmentsView({
       return;
     }
     awaitingNativeDropRef.current = true;
-    if (nativeDropTimerRef.current !== null)
-      window.clearTimeout(nativeDropTimerRef.current);
     nativeDropTimerRef.current = window.setTimeout(() => {
       nativeDropTimerRef.current = null;
       if (!awaitingNativeDropRef.current) return;
@@ -680,6 +700,7 @@ export function AssignmentsView({
           if (next < 0) return;
           event.preventDefault();
           if (next !== current) {
+            droppedFileRequestRef.current += 1;
             setSelected(null);
             setCategory(filters[next].value);
           }
@@ -702,6 +723,7 @@ export function AssignmentsView({
                 : "selection-host"
             }
             onClick={() => {
+              droppedFileRequestRef.current += 1;
               setSelected(null);
               setCategory(filter.value);
             }}

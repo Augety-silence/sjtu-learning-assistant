@@ -134,6 +134,20 @@ class DesktopLearningServiceTests(unittest.TestCase):
             [item["name"] for item in result["attachments"]],
         )
 
+    def test_invalid_utf8_escaped_attachment_name_is_preserved(self):
+        result = DesktopLearningService._result(
+            SubmissionResult(
+                "verified",
+                "online_upload",
+                {"attachments": [{"id": 1, "filename": "report%FF.pdf"}]},
+            )
+        )
+
+        self.assertEqual(
+            "report%FF.pdf",
+            result["attachments"][0]["name"],
+        )
+
     def test_pan_pagination_shape(self):
         item = SimpleNamespace(path=("课程", "a.pdf"), name="a.pdf", is_directory=False, size=12, modified_at="now")
         self.pan.list_directory.return_value = SimpleNamespace(

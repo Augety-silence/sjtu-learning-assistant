@@ -5,7 +5,14 @@ import { AssignmentsView } from "@/components/AssignmentsView";
 import { PanFilePicker } from "@/components/PanFilePicker";
 import * as api from "@/lib/api";
 import type { AssignmentItem, SubmissionResult } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   getAssignments: vi.fn(),
@@ -516,6 +523,132 @@ describe("AssignmentsView", () => {
       ),
     );
     expect(screen.queryByText(/无法读取拖入文件的本地路径/)).toBeNull();
+  });
+
+  it("ignores a stale dropped-file registration result", async () => {
+    const uploadAssignment = {
+      ...assignment,
+      submission_types: ["online_upload"],
+    };
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: [uploadAssignment],
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(uploadAssignment);
+    type Registration = Awaited<
+      ReturnType<typeof api.registerAssignmentLocalFile>
+    >;
+    let resolveFirst: (value: Registration) => void = () => undefined;
+    let resolveSecond: (value: Registration) => void = () => undefined;
+    vi.mocked(api.registerAssignmentLocalFile)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+    const dropzone = (await screen.findByText("文件作答")).closest(
+      ".assignment-file-dropzone",
+    ) as HTMLDivElement;
+    const drop = (path: string) => {
+      const file = new File(["answer"], path.split("/").at(-1) || "file");
+      Object.defineProperty(file, "path", { value: path });
+      fireEvent.drop(dropzone, {
+        dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
+      });
+    };
+
+    drop("/safe/first.pdf");
+    drop("/safe/second.pdf");
+    await waitFor(() =>
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(2),
+    );
+    await act(async () => {
+      resolveSecond({
+        cancelled: false,
+        path: "/safe/second.pdf",
+        name: "second.pdf",
+        size: 12,
+      });
+    });
+    expect(await screen.findByText("second.pdf")).toBeTruthy();
+
+    await act(async () => {
+      resolveFirst({
+        cancelled: false,
+        path: "/safe/first.pdf",
+        name: "first.pdf",
+        size: 12,
+      });
+    });
+    expect(screen.queryByText("first.pdf")).toBeNull();
+    expect(screen.getByText("second.pdf")).toBeTruthy();
+  });
+
+  it("clears an older native fallback when a direct-path retry succeeds", async () => {
+    const uploadAssignment = {
+      ...assignment,
+      submission_types: ["online_upload"],
+    };
+    vi.mocked(api.getAssignments).mockResolvedValue({
+      category: "today",
+      items: [uploadAssignment],
+    });
+    vi.mocked(api.getAssignmentDetail).mockResolvedValue(uploadAssignment);
+    vi.mocked(api.registerAssignmentLocalFile).mockResolvedValue({
+      cancelled: false,
+      path: "/safe/retry.pdf",
+      name: "retry.pdf",
+      size: 12,
+    });
+    render(<AssignmentsView />);
+    fireEvent.click(await screen.findByRole("button", { name: /项目报告/ }));
+    const dropzone = (await screen.findByText("文件作答")).closest(
+      ".assignment-file-dropzone",
+    ) as HTMLDivElement;
+    vi.useFakeTimers();
+    try {
+      fireEvent.drop(dropzone, {
+        dataTransfer: {
+          types: ["Files"],
+          files: [new File(["answer"], "missing-path.pdf")],
+          dropEffect: "none",
+        },
+      });
+      const retry = new File(["answer"], "retry.pdf");
+      Object.defineProperty(retry, "path", { value: "/safe/retry.pdf" });
+      fireEvent.drop(dropzone, {
+        dataTransfer: {
+          types: ["Files"],
+          files: [retry],
+          dropEffect: "none",
+        },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(1);
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
+        "/safe/retry.pdf",
+      );
+      expect(screen.queryByText(/无法读取拖入文件的本地路径/)).toBeNull();
+      window.dispatchEvent(
+        new CustomEvent("sjtu-native-file-drop", {
+          detail: { paths: ["/safe/stale.pdf"] },
+        }),
+      );
+      expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not show success when verification is false", async () => {

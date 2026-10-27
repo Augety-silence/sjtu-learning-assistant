@@ -54,7 +54,7 @@ def _attachment_name(value: Mapping[str, Any]) -> str:
     filename = str(value.get("filename") or "")
     if re.search(r"%[0-9A-Fa-f]{2}", filename):
         try:
-            return unquote_plus(filename)
+            return unquote_plus(filename, errors="strict")
         except (UnicodeDecodeError, ValueError):
             pass
     return filename or str(value.get("name") or "")
