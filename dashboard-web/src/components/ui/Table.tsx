@@ -4,24 +4,41 @@ import { cn } from "@/lib/utils";
 export const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => (
-  // 横向滚动区需可聚焦：WKWebView 不会自动让滚动容器获得焦点，只读宽表否则无法用方向键滚动
-  // （WCAG 2.1.1 / axe scrollable-region-focusable）。
-  <div
-    className="w-full overflow-x-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary focus-visible:[outline-style:solid]"
-    role={props["aria-label"] ? "region" : undefined}
-    aria-label={
-      props["aria-label"] ? `${props["aria-label"]}，可横向滚动` : undefined
-    }
-    tabIndex={0}
-  >
-    <table
-      ref={ref}
-      className={cn("w-full table-fixed border-collapse text-sm", className)}
-      {...props}
-    />
-  </div>
-));
+>(({ className, ...props }, ref) => {
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const [scrollable, setScrollable] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const update = () =>
+      setScrollable(element.scrollWidth > element.clientWidth + 1);
+    update();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    if (element.firstElementChild) observer.observe(element.firstElementChild);
+    return () => observer.disconnect();
+  }, []);
+  const label = props["aria-label"];
+  return (
+    // 横向滚动区需可聚焦：WKWebView 不会自动让滚动容器获得焦点，只读宽表否则无法用方向键滚动
+    // （WCAG 2.1.1 / axe scrollable-region-focusable）。仅在确实溢出时成为带名称的 Tab 停靠点，
+    // 避免出现无名称的可聚焦元素（WCAG 4.1.2）和多余的停靠点。
+    <div
+      ref={scrollRef}
+      className="w-full overflow-x-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary focus-visible:[outline-style:solid]"
+      role={scrollable ? "region" : undefined}
+      aria-label={scrollable ? `${label ?? "表格"}，可横向滚动` : undefined}
+      tabIndex={scrollable ? 0 : undefined}
+    >
+      <table
+        ref={ref}
+        className={cn("w-full table-fixed border-collapse text-sm", className)}
+        {...props}
+      />
+    </div>
+  );
+});
 Table.displayName = "Table";
 export const TableHeader = React.forwardRef<
   HTMLTableSectionElement,

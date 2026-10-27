@@ -867,8 +867,16 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
+        // A resumed task may already be persisted and loaded with the session
+        // (it finished while this view was unmounted); drop those copies so the
+        // result is not rendered twice with duplicate React keys.
+        const resultIds = new Set([
+          result.user_message.id,
+          result.assistant_message.id,
+        ]);
         const messages = current.messages.filter(
-          (message) => !message.id.startsWith("stream-"),
+          (message) =>
+            !message.id.startsWith("stream-") && !resultIds.has(message.id),
         );
         const optimisticIndex = messages.findIndex(
           (item) => item.id === request.optimisticId,
@@ -889,7 +897,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           messages,
           traces: [
             ...current.traces.filter(
-              (trace) => !trace.id.startsWith("stream-"),
+              (trace) =>
+                !trace.id.startsWith("stream-") && trace.id !== result.trace.id,
             ),
             result.trace,
           ],
@@ -966,7 +975,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     const persisted = readPersistedChatTask(active.id);
     if (!persisted) return;
     void runSubmission(persisted.request, persisted.taskId);
-  }, [active?.id, loading]);
+    // Re-check when busy clears: a session opened while another task was
+    // running must still reconnect, otherwise submit() stays blocked.
+  }, [active?.id, loading, busy]);
 
   const submit = (content: string) => {
     const text =

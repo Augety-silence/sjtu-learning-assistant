@@ -100,6 +100,16 @@ class DiagnosticBundleTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - started, 2.0)
         self.assertTrue(all(0 < len(result) <= 256 * 1024 for result in results))
 
+    def test_sanitizer_handles_long_auth_header_whitespace_in_linear_time(self) -> None:
+        secret = "private-value"
+        source = "Authorization:" + (" " * 40_000) + secret + "\rx"
+        started = time.perf_counter()
+
+        result = sanitize_text(source)
+
+        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertNotIn(secret, result)
+
     def test_sanitizer_redacts_complete_auth_headers_and_encoded_values(self) -> None:
         source = "\n".join(
             (

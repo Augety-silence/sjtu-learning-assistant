@@ -395,7 +395,19 @@ def _record_failure(engine, stage: str | None, message: str) -> None:
     record_sync_failure(engine, source=stage, resource="run", error=message)
 
 
+def _tolerate_unencodable_output() -> None:
+    # Windows 下 stdout/stderr 被重定向到管道或 DEVNULL 时使用 ANSI 代码页（如 cp936）
+    # 且 errors="strict"；课程名/邮件主题中的生僻字符不应让 print 抛错中断整轮同步。
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _tolerate_unencodable_output()
     args = parse_args(argv)
     engine = None
     stage: str | None = None

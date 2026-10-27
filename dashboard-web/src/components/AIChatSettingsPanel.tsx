@@ -275,13 +275,16 @@ export function AIChatSettingsPanel({
                   <strong>代码块行号</strong>
                   <small>在多行代码旁显示行号</small>
                 </span>
+                {/* 与上方单选组相同：保存期间不用 disabled，否则 WebView2 会把已聚焦的
+                    checkbox 焦点丢到 <body>；受控 checkbox 忽略 onChange 时保持原值。 */}
                 <input
                   type="checkbox"
                   checked={preferences.ai_code_line_numbers}
-                  disabled={saving}
-                  onChange={(event) =>
-                    onChange({ ai_code_line_numbers: event.target.checked })
-                  }
+                  aria-disabled={saving || undefined}
+                  onChange={(event) => {
+                    if (!saving)
+                      onChange({ ai_code_line_numbers: event.target.checked });
+                  }}
                 />
               </label>
             </div>

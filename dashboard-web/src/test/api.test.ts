@@ -345,6 +345,52 @@ describe("pywebview bridge client", () => {
     });
   });
 
+  it("does not cancel a task after polling ownership is transferred", async () => {
+    vi.useFakeTimers();
+    try {
+      const pollController = new AbortController();
+      const bridge = vi.fn(async (action: string) => {
+        if (action === "ai_chat_stream_start") {
+          return {
+            ok: true,
+            data: {
+              task: { id: "task-detached", status: "running" },
+              events: [],
+              next_sequence: 1,
+            },
+          };
+        }
+        if (action === "ai_task_status") {
+          pollController.abort();
+          return {
+            ok: false,
+            error: { code: "poll_failed", message: "轮询失败" },
+          };
+        }
+        return { ok: true, data: {} };
+      });
+      vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+      const result = sendAiChatMessage(
+        "session-1",
+        "接管任务",
+        "auto",
+        "standard",
+        "general",
+        undefined,
+        { pollSignal: pollController.signal },
+      ).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(result).resolves.toMatchObject({ category: "detached" });
+      expect(bridge).not.toHaveBeenCalledWith("ai_task_cancel", {
+        task_id: "task-detached",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends a dropped path only to the attachment ingest bridge action", async () => {
     const bridge = vi.fn().mockResolvedValue({
       ok: true,

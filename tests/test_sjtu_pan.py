@@ -178,6 +178,14 @@ class SJTUCloudPanTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_retry_after_caps_oversized_numeric_value(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        try:
+            response = httpx.Response(503, headers={"Retry-After": "9" * 400})
+            self.assertEqual(5.0, provider._retry_delay(response, 0))
+        finally:
+            client.close()
+
     def test_stream_get_retries_before_yielding_bytes(self) -> None:
         calls = {"download": 0}
 

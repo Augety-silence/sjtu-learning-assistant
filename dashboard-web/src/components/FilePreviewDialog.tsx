@@ -187,8 +187,11 @@ export function FilePreviewDialog({
         }}
       >
         <header className="material-preview-header">
-          <div className="material-preview-heading">
-            <h3 id="material-preview-title">{preview.name}</h3>
+          {/* min-w-0 lets the nowrap title ellipsize instead of pushing the close button out of the clipped dialog. */}
+          <div className="material-preview-heading min-w-0">
+            <h3 id="material-preview-title" title={preview.name}>
+              {preview.name}
+            </h3>
             <span>{previewerLabels[previewer]}</span>
           </div>
           <Button

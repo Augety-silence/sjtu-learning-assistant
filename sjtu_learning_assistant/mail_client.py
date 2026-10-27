@@ -478,6 +478,11 @@ def fetch_email_body_backfill(
                 failed=failed,
                 uid_validity_mismatched=mismatched,
             )
+    except imaplib.IMAP4.abort as exc:
+        # abort 是 IMAP4.error 的子类：超时或服务器断开后的协议错乱/logout 失败，不是凭据问题。
+        raise MailCheckError(
+            "IMAP 连接被中断（网络不稳定、超时或服务器主动断开），请稍后重试。"
+        ) from exc
     except imaplib.IMAP4.error as exc:
         raise MailCheckError("IMAP 登录或旧邮件正文回填失败。") from exc
     except UnicodeEncodeError:
@@ -586,6 +591,11 @@ def fetch_incremental_mail(
                 highest_uid=highest_uid,
                 bootstrap_truncated=bootstrap_truncated,
             )
+    except imaplib.IMAP4.abort as exc:
+        # abort 是 IMAP4.error 的子类：超时或服务器断开后的协议错乱/logout 失败，不是凭据问题。
+        raise MailCheckError(
+            "IMAP 连接被中断（网络不稳定、超时或服务器主动断开），请稍后重试。"
+        ) from exc
     except imaplib.IMAP4.error as exc:
         raise MailCheckError("IMAP 登录或增量读取失败，请检查账号和密码。") from exc
     except UnicodeEncodeError:

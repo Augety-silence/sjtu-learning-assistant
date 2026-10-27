@@ -526,4 +526,24 @@ describe("归档故障反馈与事件刷新", () => {
     expect(screen.queryByText(/快照.*请重新检查目标后再恢复/)).toBeNull();
     expect(onFailed).toHaveBeenCalledOnce();
   });
+
+  it("不可恢复错误不追加检查本地目标的误导提示", async () => {
+    const message = "云端对象已删除，当前版本无法恢复。";
+    vi.mocked(executeRestore).mockRejectedValueOnce(new Error(message));
+    render(
+      <RestoreDialog
+        entry={detailEntry}
+        onClose={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "检查原路径" }));
+    await screen.findByText("目标冲突处理");
+    fireEvent.click(screen.getByRole("checkbox", { name: /确认创建上述/ }));
+    fireEvent.click(screen.getByRole("button", { name: "开始恢复" }));
+
+    await screen.findByText(message);
+    expect(screen.queryByText(/无法恢复.*请重新检查目标后再恢复/)).toBeNull();
+  });
 });
