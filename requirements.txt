@@ -4,6 +4,6 @@ keyring>=25.6,<26
 platformdirs>=4.3,<5
 pywebview>=5.4,<6
 pypdf>=6,<7
-Pillow>=12,<13
+Pillow>=13,<14
 imageio-ffmpeg>=0.6,<1
 SQLAlchemy>=2.0,<3

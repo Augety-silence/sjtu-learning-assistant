@@ -5,9 +5,11 @@ JavaScript, or included in exceptions.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import unquote_plus
 
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
@@ -45,6 +47,19 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
+def _attachment_name(value: Mapping[str, Any]) -> str:
+    display_name = value.get("display_name")
+    if display_name:
+        return str(display_name)
+    filename = str(value.get("filename") or "")
+    if re.search(r"%[0-9A-Fa-f]{2}", filename):
+        try:
+            return unquote_plus(filename, errors="strict")
+        except (UnicodeDecodeError, ValueError):
+            pass
+    return filename or str(value.get("name") or "")
+
+
 def _submission_summary(value: object) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -52,7 +67,7 @@ def _submission_summary(value: object) -> dict[str, Any] | None:
     safe_attachments = []
     if isinstance(attachments, list):
         safe_attachments = [
-            {"id": item.get("id"), "name": str(item.get("filename") or item.get("display_name") or item.get("name") or "")}
+            {"id": item.get("id"), "name": _attachment_name(item)}
             for item in attachments
             if isinstance(item, Mapping)
         ]

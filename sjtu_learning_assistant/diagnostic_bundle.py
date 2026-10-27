@@ -55,12 +55,16 @@ _BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[a-z0-9_.~+/=-]+")
 # 认证头的 Digest/自定义方案可能包含多个逗号分隔字段。通用键值规则只能安全
 # 识别单个值，因此先将整段头值脱敏；JSON 中带引号的头值只替换该字符串，
 # 普通日志头则替换到行尾，避免 realm/nonce/response 等后续字段泄漏。
+# 线性复杂度要点：(1) 前瞻里 `(?<![ \t])` 只允许在空白段起点展开 `[ \t]+`，
+# 否则懒惰量词每前进一格都重扫整段空白（O(n^2)）；(2) 终止条件用 `[\r\n]|$`
+# 而非 `\r?$`：孤立的 \r 后接非换行字符时旧写法整体匹配失败，叠加前导
+# `[ \t]*` 回溯后退化为 O(n^3)（约 1 KB 空白 + "\rx" 即需 12 s）。
 _AUTHORIZATION_HEADER_PATTERN = re.compile(
     r"(?im)\b(authorization|proxy-authorization)\b[\"']?[ \t]*"
     r"(?::|=|%3d)[ \t]*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|"
-    r"[^\r\n]*?(?=(?:[ \t]+(?:authorization|proxy-authorization|token|"
+    r"[^\r\n]*?(?=(?<![ \t])[ \t]+(?:authorization|proxy-authorization|token|"
     r"access_token|refresh_token|password|passwd|secret|api[_ -]?key|cookie|"
-    r"set-cookie|database_url)\b[\"']?[ \t]*(?::|=|%3d)|\r?$)))"
+    r"set-cookie|database_url)\b[\"']?[ \t]*(?::|=|%3d)|[\r\n]|$))"
 )
 _SECRET_VALUE_PATTERN = re.compile(
     r"(?i)\b(authorization|proxy-authorization|token|access_token|refresh_token|"

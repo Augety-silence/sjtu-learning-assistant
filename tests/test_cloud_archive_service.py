@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import json
 import os
 import tempfile
@@ -309,6 +310,20 @@ def test_public_redaction_covers_full_headers_and_sensitive_mapping_keys():
     assert redact_public_value({"q-signature": "S1", "api_key": "S2", "Credential": "S3"}) == {
         "q-signature": "<redacted>", "api_key": "<redacted>", "Credential": "<redacted>"
     }
+
+
+def test_public_redaction_handles_long_hyphenated_prefix_in_linear_time():
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text
+
+    secret = "private-value"
+    source = ("a-" * 20_000) + f'access_token: "{secret}"'
+    started = time.perf_counter()
+
+    redacted = redact_public_text(source)
+
+    assert time.perf_counter() - started < 1.0
+    assert secret not in redacted
+    assert redacted.endswith("access_token: <redacted>")
 
 
 def test_reconcile_cleans_different_size_content_and_allows_retry(archive_env):

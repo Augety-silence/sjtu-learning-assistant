@@ -11,7 +11,13 @@ import {
   useIsPresent,
   useReducedMotion,
 } from "motion/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type DragEvent as ReactDragEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import assignmentSubmittedIllustration from "@/assets/empty-states/assignment-submitted.webp";
 import { ContentReveal } from "@/components/ContentReveal";
@@ -30,6 +36,7 @@ import {
   getAssignments,
   openExternalAssignment,
   pickAssignmentLocalFile,
+  registerAssignmentLocalFile,
   submitAssignmentCloudFile,
   submitAssignmentLocalFile,
   submitAssignmentText,
@@ -69,6 +76,8 @@ const filters: Array<{ value: AssignmentCategory; label: string }> = [
   { value: "pending_review", label: "待批改" },
   { value: "graded", label: "已评分" },
 ];
+
+const NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop";
 
 const typeLabels: Record<string, string> = {
   online_text_entry: "文本提交",
@@ -307,6 +316,7 @@ export function AssignmentsView({
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const [localFile, setLocalFile] = useState<PickedLocalFile | null>(null);
+  const [fileDragActive, setFileDragActive] = useState(false);
   const [showPan, setShowPan] = useState(false);
   const [pending, setPending] = useState<PendingSubmission | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -317,8 +327,15 @@ export function AssignmentsView({
   const handledTargetRef = useRef("");
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const fileDragDepthRef = useRef(0);
+  const awaitingNativeDropRef = useRef(false);
+  const pendingNativeDropPathsRef = useRef<string[] | null>(null);
+  const nativeDropTimerRef = useRef<number | null>(null);
+  const droppedFileRequestRef = useRef(0);
+  const selectedRef = useRef(selected);
   const onInitialTargetHandledRef = useRef(onInitialTargetHandled);
   categoryRef.current = category;
+  selectedRef.current = selected;
   onInitialTargetHandledRef.current = onInitialTargetHandled;
   const { showToast } = useToast();
 
@@ -349,6 +366,7 @@ export function AssignmentsView({
     void getAssignmentDetail(initialTarget.courseId, initialTarget.assignmentId)
       .then((detail) => {
         if (!active) return;
+        droppedFileRequestRef.current += 1;
         setSelected(detail);
         setItems((current) => {
           if (
@@ -388,6 +406,7 @@ export function AssignmentsView({
   }, [initialTarget]);
 
   const selectAssignment = async (item: AssignmentItem) => {
+    droppedFileRequestRef.current += 1;
     const request = ++detailRequestRef.current;
     setError("");
     setResult(null);
@@ -491,6 +510,137 @@ export function AssignmentsView({
     }
   };
 
+  const registerDroppedPaths = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      const request = ++droppedFileRequestRef.current;
+      const assignmentKey = selectedRef.current
+        ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
+        : null;
+      const isCurrentRequest = () =>
+        droppedFileRequestRef.current === request &&
+        (selectedRef.current
+          ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
+          : null) === assignmentKey;
+      if (paths.length > 1) {
+        showToast({
+          kind: "info",
+          message: "一次只能提交一个文件，已使用拖入的第一个文件。",
+        });
+      }
+      try {
+        const registered = await registerAssignmentLocalFile(paths[0]);
+        if (isCurrentRequest() && !registered.cancelled)
+          setLocalFile(registered);
+      } catch (reason) {
+        if (!isCurrentRequest()) return;
+        showToast({
+          kind: "error",
+          message:
+            reason instanceof Error ? reason.message : "拖入文件登记失败",
+        });
+      }
+    },
+    [showToast],
+  );
+
+  useEffect(() => {
+    const handleNativeDrop = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (
+        typeof detail !== "object" ||
+        detail === null ||
+        !("paths" in detail) ||
+        !Array.isArray(detail.paths) ||
+        detail.paths.some((path) => typeof path !== "string")
+      )
+        return;
+      if (!awaitingNativeDropRef.current) {
+        if (fileDragDepthRef.current > 0)
+          pendingNativeDropPathsRef.current = detail.paths;
+        return;
+      }
+      awaitingNativeDropRef.current = false;
+      if (nativeDropTimerRef.current !== null) {
+        window.clearTimeout(nativeDropTimerRef.current);
+        nativeDropTimerRef.current = null;
+      }
+      void registerDroppedPaths(detail.paths);
+    };
+    window.addEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
+    return () => {
+      window.removeEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
+      if (nativeDropTimerRef.current !== null)
+        window.clearTimeout(nativeDropTimerRef.current);
+      pendingNativeDropPathsRef.current = null;
+    };
+  }, [registerDroppedPaths]);
+
+  const isFileDrag = (event: ReactDragEvent<HTMLElement>) =>
+    Array.from(event.dataTransfer.types).includes("Files");
+
+  const handleFileDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    if (fileDragDepthRef.current === 0)
+      pendingNativeDropPathsRef.current = null;
+    fileDragDepthRef.current += 1;
+    setFileDragActive(true);
+  };
+
+  const handleFileDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleFileDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) setFileDragActive(false);
+    if (fileDragDepthRef.current === 0)
+      pendingNativeDropPathsRef.current = null;
+  };
+
+  const handleFileDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    fileDragDepthRef.current = 0;
+    const pendingNativePaths = pendingNativeDropPathsRef.current;
+    pendingNativeDropPathsRef.current = null;
+    setFileDragActive(false);
+    // A new WebKit drop supersedes any unresolved native fallback from the previous gesture.
+    awaitingNativeDropRef.current = false;
+    if (nativeDropTimerRef.current !== null) {
+      window.clearTimeout(nativeDropTimerRef.current);
+      nativeDropTimerRef.current = null;
+    }
+    const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
+      const path = (file as File & { path?: string }).path;
+      return path ? [path] : [];
+    });
+    if (paths.length > 0) {
+      void registerDroppedPaths(paths);
+      return;
+    }
+    if (pendingNativePaths) {
+      void registerDroppedPaths(pendingNativePaths);
+      return;
+    }
+    awaitingNativeDropRef.current = true;
+    nativeDropTimerRef.current = window.setTimeout(() => {
+      nativeDropTimerRef.current = null;
+      if (!awaitingNativeDropRef.current) return;
+      awaitingNativeDropRef.current = false;
+      showToast({
+        kind: "error",
+        message: "无法读取拖入文件的本地路径，请改用“选择本地文件”。",
+      });
+    }, 900);
+  };
+
   const openExternal = async () => {
     if (!selected) return;
     try {
@@ -550,6 +700,7 @@ export function AssignmentsView({
           if (next < 0) return;
           event.preventDefault();
           if (next !== current) {
+            droppedFileRequestRef.current += 1;
             setSelected(null);
             setCategory(filters[next].value);
           }
@@ -572,6 +723,7 @@ export function AssignmentsView({
                 : "selection-host"
             }
             onClick={() => {
+              droppedFileRequestRef.current += 1;
               setSelected(null);
               setCategory(filter.value);
             }}
@@ -793,11 +945,26 @@ export function AssignmentsView({
                         </form>
                       )}
                       {hasType("online_upload") && (
-                        <div className="file-actions">
+                        <div
+                          className={
+                            fileDragActive
+                              ? "file-actions assignment-file-dropzone assignment-file-dropzone-active"
+                              : "file-actions assignment-file-dropzone"
+                          }
+                          onDragEnter={handleFileDragEnter}
+                          onDragOver={handleFileDragOver}
+                          onDragLeave={handleFileDragLeave}
+                          onDrop={handleFileDrop}
+                        >
                           <div className="assignment-method-title">
                             <Upload aria-hidden="true" />
                             <strong>文件作答</strong>
                           </div>
+                          <p className="assignment-file-drop-hint">
+                            {fileDragActive
+                              ? "松开即可添加文件"
+                              : "可将本地文件拖到此处"}
+                          </p>
                           <Button
                             type="button"
                             variant="outline"

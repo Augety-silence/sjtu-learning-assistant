@@ -312,6 +312,8 @@ export function RichPreviewContent({
     return (
       <pre
         className={kind === "code" ? "material-preview-code" : undefined}
+        // aria-label is prohibited on a role-less <pre>; region keeps the focusable scroller named.
+        role="region"
         aria-label={language ? `${title}，${language}` : title}
         tabIndex={0}
       >

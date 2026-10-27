@@ -69,8 +69,10 @@ def redact_public_text(value: str) -> str:
     )
     # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名；
     # 键名后允许 JSON/repr 的收尾引号（含转义 \"）与 URL 编码的 %3D，Authorization 值允许 Basic 方案。
+    # 不再用 \b[\w-]* 匹配键名前缀：前缀原样保留在匹配之外，输出不变；否则 "a-a-a-…" 这类
+    # 长输入会在每个起点重扫整段，二次方回溯（40KB 约 38 秒，repository 同步失败路径也会调用）。
     return re.sub(
-        r"(?i)\b([\w-]*(?:token|cookie|authorization|password|secret|signature|api[_-]?key))"
+        r"(?i)((?:token|cookie|authorization|password|secret|signature|api[_-]?key))"
         r"(\\?[\"']?\s*(?:[:=]|%3d)\s*)(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)",
         r"\1\2<redacted>",
         redacted,

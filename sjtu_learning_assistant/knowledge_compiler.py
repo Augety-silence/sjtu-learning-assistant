@@ -271,7 +271,15 @@ class KnowledgeCompilerService:
                                 "started_at": _now(), "updated_at": _now()})
             self._state["counts"]["markdown_files"] = len(files)
             self._event("info", f"已接收 {len(files)} 个 Markdown，准备开始编译。")
-            self._persist()
+            try:
+                self._persist()
+            except OSError:
+                # No worker exists yet: never leave a phantom "running" job that the UI
+                # would poll forever with Start/Cancel unusable until an app restart.
+                self._state = self._idle_state()
+                raise KnowledgeCompilerError(
+                    "输出目录无法写入，请检查权限、磁盘空间或是否被其他程序占用。"
+                ) from None
             self._thread = threading.Thread(target=self._run,
                 args=(source, target, files, phases), name="knowledge-compiler", daemon=True)
             self._thread.start()

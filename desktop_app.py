@@ -442,6 +442,7 @@ class DesktopBridge:
             "submit_text": self._assignment_submit_text,
             "submit_url": self._assignment_submit_url,
             "pick_local_file": self._assignment_pick_local_file,
+            "register_local_file": self._assignment_register_local_file,
             "submit_local_file": self._assignment_submit_local_file,
             "pan_list": self._assignment_pan_list,
             "submit_cloud_file": self._assignment_submit_cloud_file,
@@ -1013,6 +1014,20 @@ class DesktopBridge:
         course_id, assignment_id = self._assignment_ids(payload, {"url"})
         return self._learning().submit_url(course_id, assignment_id, _safe_http_url(payload.get("url")))
 
+    def _register_assignment_local_file(self, value: object) -> dict[str, Any]:
+        raw = _validated_local_attachment_path(value)
+        path = Path(raw).expanduser().resolve()
+        try:
+            is_file = path.is_file()
+            size = path.stat().st_size if is_file else -1
+        except OSError:
+            raise DashboardError("拖入文件无效或无法读取。") from None
+        if not is_file or size < 0 or size > 2 * 1024**3:
+            raise DashboardError("拖入文件无效或超过 2 GiB。")
+        normalized = str(path)
+        self._picked_files.add(normalized)
+        return {"cancelled": False, "path": normalized, "name": path.name, "size": size}
+
     def _assignment_pick_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         if self._file_picker is None:
@@ -1020,12 +1035,14 @@ class DesktopBridge:
         selected = self._file_picker()
         if not selected:
             return {"cancelled": True}
-        path = Path(selected).expanduser().resolve()
-        if not path.is_file() or len(str(path)) > 4096 or path.stat().st_size > 2 * 1024**3:
+        try:
+            return self._register_assignment_local_file(selected)
+        except DashboardError:
             raise DashboardError("所选文件无效或超过 2 GiB。")
-        normalized = str(path)
-        self._picked_files.add(normalized)
-        return {"cancelled": False, "path": normalized, "name": path.name, "size": path.stat().st_size}
+
+    def _assignment_register_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path"})
+        return self._register_assignment_local_file(payload.get("path"))
 
     def _assignment_submit_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         course_id, assignment_id = self._assignment_ids(payload, {"path"})

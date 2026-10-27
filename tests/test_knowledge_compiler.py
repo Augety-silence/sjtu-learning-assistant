@@ -94,6 +94,17 @@ class KnowledgeCompilerServiceTests(unittest.TestCase):
         self.assertTrue((self.target / "02_Concepts" / "函数依赖.md").is_file())
         self.assertTrue(any(call[0] == "deepseek-chat" for call in self.calls))
 
+    def test_initial_state_persist_failure_restores_idle_without_worker(self) -> None:
+        service = KnowledgeCompilerService(ai_runner=self.runner)
+        service._persist = Mock(side_effect=OSError("disk full"))
+
+        with self.assertRaisesRegex(KnowledgeCompilerError, "输出目录无法写入"):
+            service.start(str(self.source), str(self.target), "foundation")
+
+        self.assertEqual("idle", service._state["status"])
+        self.assertIsNone(service._thread)
+        self.assertEqual(0, service._state["counts"]["markdown_files"])
+
     def test_rejects_nonempty_unmanaged_target_and_nested_roots(self) -> None:
         service = KnowledgeCompilerService(ai_runner=self.runner)
         (self.target / "personal.md").write_text("do not overwrite", encoding="utf-8")

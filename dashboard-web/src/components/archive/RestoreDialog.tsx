@@ -125,8 +125,9 @@ export function RestoreDialog({
       setPlan(null);
       const message =
         reason instanceof Error ? reason.message : "恢复执行失败。";
+      // 云端对象已被移除等不可恢复错误再提示“重新检查目标”会误导用户反复检查本地目录。
       setError(
-        /重新|重试|快照|回滚/.test(message)
+        /重新|重试|快照|回滚|无法恢复/.test(message)
           ? message
           : message + "请重新检查目标后再恢复。",
       );

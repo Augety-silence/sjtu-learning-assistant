@@ -289,7 +289,11 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         if not value:
             return fallback
         if value.isascii() and value.isdigit():
-            return min(float(int(value)), MAX_RETRY_DELAY_SECONDS)
+            # 超长数字串会让 int()/float() 抛 ValueError/OverflowError 并跳出重试循环；按上限截断。
+            digits = value.lstrip("0") or "0"
+            if len(digits) > 6:
+                return MAX_RETRY_DELAY_SECONDS
+            return min(float(int(digits)), MAX_RETRY_DELAY_SECONDS)
         try:
             retry_at = parsedate_to_datetime(value)
             if retry_at.tzinfo is None:

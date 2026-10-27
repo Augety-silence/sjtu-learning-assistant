@@ -111,6 +111,43 @@ class DesktopLearningServiceTests(unittest.TestCase):
         self.assertEqual("report.pdf", result["attachments"][0]["name"])
         self.assertEqual((1, 2, self.pan, "课程/report.pdf"), self.assignment_service.cloud_call)
 
+    def test_attachment_names_prefer_display_name_and_decode_escaped_filename(self):
+        result = DesktopLearningService._result(
+            SubmissionResult(
+                "verified",
+                "online_upload",
+                {
+                    "attachments": [
+                        {
+                            "id": 1,
+                            "filename": "HW1+%E4%B8%AD%E5%AE%8F.docx",
+                            "display_name": "HW1 中宏.docx",
+                        },
+                        {"id": 2, "filename": "HW2+%E6%8A%A5%E5%91%8A.pdf"},
+                        {"id": 3, "filename": "C++ notes.txt"},
+                    ]
+                },
+            )
+        )
+        self.assertEqual(
+            ["HW1 中宏.docx", "HW2 报告.pdf", "C++ notes.txt"],
+            [item["name"] for item in result["attachments"]],
+        )
+
+    def test_invalid_utf8_escaped_attachment_name_is_preserved(self):
+        result = DesktopLearningService._result(
+            SubmissionResult(
+                "verified",
+                "online_upload",
+                {"attachments": [{"id": 1, "filename": "report%FF.pdf"}]},
+            )
+        )
+
+        self.assertEqual(
+            "report%FF.pdf",
+            result["attachments"][0]["name"],
+        )
+
     def test_pan_pagination_shape(self):
         item = SimpleNamespace(path=("课程", "a.pdf"), name="a.pdf", is_directory=False, size=12, modified_at="now")
         self.pan.list_directory.return_value = SimpleNamespace(

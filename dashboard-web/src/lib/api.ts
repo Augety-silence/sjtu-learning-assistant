@@ -518,6 +518,8 @@ async function pollAiChatTask(
         await waitForTaskPoll(250 * transientPollFailures);
         continue;
       }
+      // 轮询已转交新页面实例时不能代为取消：新实例正在接管同一任务。
+      if (options.pollSignal?.aborted) throw aiTaskDetachedError();
       await requestAiTaskCancel(taskId).catch(() => undefined);
       throw error;
     }
@@ -672,6 +674,12 @@ export function submitAssignmentUrl(
 
 export function pickAssignmentLocalFile() {
   return invoke<import("@/lib/types").PickedLocalFile>("pick_local_file");
+}
+
+export function registerAssignmentLocalFile(path: string) {
+  return invoke<import("@/lib/types").PickedLocalFile>("register_local_file", {
+    path,
+  });
 }
 
 export function submitAssignmentLocalFile(
