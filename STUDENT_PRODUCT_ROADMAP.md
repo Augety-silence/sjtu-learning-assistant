@@ -897,3 +897,23 @@ interface FilePreviewer {
 - 从 PR 合并后的精确 `main` 提交重新构建、签名并部署 macOS App，保留旧 bundle 回退副本，再创建正式 `v1.8.4` 标签。
 - Windows portable 与安装器由 Release workflow 在干净 Windows runner 构建并验证；真实 Windows 拖拽仍需后续真机验收。
 - 本轮未连接真实学习数据、交大云盘或付费模型执行写入测试。
+
+## 41. 2026-10-29 全模块夜审与 1.8.5 发布
+
+已完成：
+
+- 以 `main@7a6b97f` / v1.8.4 为基线，复核并应用 M2、M4、M5、M6、M7、M8、M9 共 17 个有效补丁；M1、M3 本次无代码补丁。
+- 独立代码审查补修结构化云凭据脱敏和英文否定词分类边界；CI 复现后修复短启动 runner 吞掉后台 worker 首条错误日志的问题。
+- 版本推进至 1.8.5，并补充正式发布说明。
+
+验证结果：
+
+- 本地 pytest 841 项通过、1 项跳过，另有 324 个子测试通过；CI 同款 unittest 771 项通过、1 项跳过。
+- 前端 49 个测试文件、511 项通过；Biome、TypeScript/Vite production build、许可证与秘密扫描通过。
+- PR #40 的 Linux、Windows、macOS 双平台测试与应用构建全部通过。
+
+发布边界：
+
+- 从发布元数据 PR 合并后的精确 `main` 重新构建、签名并部署 macOS App，保留 v1.8.4 bundle 回退副本，再创建正式 `v1.8.5` 标签。
+- Windows portable 与安装器由 Release workflow 在干净 Windows runner 构建并校验 SHA-256；不以 macOS 本机模拟 Windows 行为。
+- 本轮未连接真实学习数据、交大云盘或付费模型执行写入测试。
