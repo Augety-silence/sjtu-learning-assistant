@@ -369,7 +369,7 @@ class TranscriptService:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
-        self._last_worker_error_log = 0.0
+        self._last_worker_error_log: float | None = None
         self._thread: threading.Thread | None = None
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
@@ -1591,7 +1591,10 @@ class TranscriptService:
             except Exception as exc:
                 # A malformed batch or unavailable storage must not kill the only worker.
                 now = time.monotonic()
-                if now - self._last_worker_error_log >= _WORKER_ERROR_LOG_INTERVAL_SECONDS:
+                if (
+                    self._last_worker_error_log is None
+                    or now - self._last_worker_error_log >= _WORKER_ERROR_LOG_INTERVAL_SECONDS
+                ):
                     self._last_worker_error_log = now
                     LOGGER.warning(
                         "字幕后台任务执行失败；code=%s exception_type=%s",
