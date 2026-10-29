@@ -1793,6 +1793,31 @@ def _install_native_file_drop_bridge(window: object) -> None:
         setattr(window, "_sjtu_drop_handler", forward_drop)
     except (AttributeError, RuntimeError):
         return
+    _promote_drop_listener_to_capture(window, document, forward_drop)
+
+
+def _promote_drop_listener_to_capture(window: object, document: object, handler: object) -> None:
+    """Run pywebview's document drop listener in the capture phase.
+
+    pywebview registers DOM listeners in the bubble phase, and on WebView2 the
+    native file paths are only posted from inside that listener. React 17+
+    dispatches from the root container, so a drop zone calling
+    ``event.stopPropagation()`` would otherwise stop the native path bridge.
+    """
+    handler_ids = getattr(document, "_event_handler_ids", None)
+    handler_id = handler_ids.get(handler) if isinstance(handler_ids, dict) else None
+    if type(handler_id) is not str or re.fullmatch(r"[A-Za-z0-9]{1,32}", handler_id) is None:
+        return
+    key = json.dumps(handler_id)
+    try:
+        window.evaluate_js(
+            "(function(){var p=window.pywebview,h=p&&p._eventHandlers&&"
+            f"p._eventHandlers[{key}];if(!h)return;"
+            "document.removeEventListener('drop',h);"
+            "document.addEventListener('drop',h,{capture:true});})();"
+        )
+    except Exception:
+        LOGGER.warning("文件拖放监听切换到捕获阶段失败。")
 
 
 def _initialize_desktop_window(window: object) -> None:

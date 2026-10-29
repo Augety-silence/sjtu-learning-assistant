@@ -141,6 +141,16 @@ class CanvasClient:
         self._assert_same_origin(url)
         try:
             response = self._client.request(method, url, follow_redirects=False, **kwargs)
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            httpx.LocalProtocolError,
+            httpx.UnsupportedProtocol,
+        ) as exc:
+            # 连接未建立或请求未发出：写入不可能到达服务器，不能标记为“结果不确定”，
+            # 否则界面会提示“勿重复提交”而阻止离线恢复后的正常重试。
+            raise CanvasNetworkError("Canvas 请求未能发出（无法建立连接），请检查网络后重试。") from exc
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise CanvasNetworkError(
                 "Canvas API 网络请求失败。", operation_uncertain=uncertain_on_error

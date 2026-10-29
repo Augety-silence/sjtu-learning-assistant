@@ -32,6 +32,8 @@ function Harness({
   initiallyOpen = false,
   onOpenAI = vi.fn(),
   navigateOnAI = false,
+  syncing = false,
+  onSync = vi.fn(),
 }: {
   initiallyOpen?: boolean;
   onOpenAI?: (request?: {
@@ -40,6 +42,8 @@ function Harness({
     newSession?: boolean;
   }) => void;
   navigateOnAI?: boolean;
+  syncing?: boolean;
+  onSync?: () => void;
 }) {
   const [view, setView] = useState<ViewName>("overview");
   const [drawerOpen, setDrawerOpen] = useState(initiallyOpen);
@@ -61,8 +65,8 @@ function Harness({
       drawerOpen={drawerOpen}
       setDrawerOpen={setDrawerOpen}
       syncStatus={null}
-      syncing={false}
-      onSync={vi.fn()}
+      syncing={syncing}
+      onSync={onSync}
       onOpenAI={handleOpenAI}
     >
       <div>content</div>
@@ -109,6 +113,21 @@ afterEach(() => {
 });
 
 describe("AppShell 侧栏滑动指示器", () => {
+  it("同步中保留按钮焦点并阻止重复触发", () => {
+    emitViewport(1024);
+    const onSync = vi.fn();
+    render(<Harness syncing onSync={onSync} />);
+    const button = screen.getByRole("button", { name: "同步中" });
+
+    button.focus();
+    fireEvent.click(button);
+
+    expect(document.activeElement).toBe(button);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(onSync).not.toHaveBeenCalled();
+  });
+
   it("只渲染一个指示矩形，并随选中项移动到新按钮内", () => {
     emitViewport(1024);
     render(<Harness />);

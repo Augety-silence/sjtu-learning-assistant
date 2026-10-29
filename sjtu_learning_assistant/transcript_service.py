@@ -369,7 +369,7 @@ class TranscriptService:
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
-        self._last_worker_error_log = 0.0
+        self._last_worker_error_log: float | None = None
         self._thread: threading.Thread | None = None
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
@@ -1167,6 +1167,15 @@ class TranscriptService:
             )
             v1_diagnostic = self._v1_recovery_diagnostic(video_dir, manifest) if video_dir is not None else None
             v1_unresolved = self._v1_has_unresolved_failure(manifest)
+            job_code_wins = bool(
+                v1_diagnostic
+                and v1_diagnostic.get("code") == "v1_incomplete"
+                and diagnosis.get("code") not in (None, "", "ok")
+            )
+            if job_code_wins:
+                # The generic V1 fallback must not mask the job's concrete
+                # failure (e.g. authentication) or its manual-retry verdict.
+                v1_diagnostic = None
             content_uncertain = self._phase1_content_uncertain(quality) and not v1_unresolved
             failed = (
                 job.get("status") in {"partial", "failed", "interrupted"}
@@ -1199,7 +1208,7 @@ class TranscriptService:
                 "stage": error_stage,
                 "error_code": error_code,
                 "error_message": error_message,
-                "retryable": bool(failed and (v1_unresolved or job.get("retryable", job.get("status") != "cancelled"))),
+                "retryable": bool(failed and ((v1_unresolved and not job_code_wins) or job.get("retryable", job.get("status") != "cancelled"))),
                 # Only a real pending automatic retry counts; a V1 diagnostic
                 # code alone cannot outlive the job's retry limit or cancellation.
                 "auto_retryable": state == "recovering",
@@ -1582,7 +1591,10 @@ class TranscriptService:
             except Exception as exc:
                 # A malformed batch or unavailable storage must not kill the only worker.
                 now = time.monotonic()
-                if now - self._last_worker_error_log >= _WORKER_ERROR_LOG_INTERVAL_SECONDS:
+                if (
+                    self._last_worker_error_log is None
+                    or now - self._last_worker_error_log >= _WORKER_ERROR_LOG_INTERVAL_SECONDS
+                ):
                     self._last_worker_error_log = now
                     LOGGER.warning(
                         "字幕后台任务执行失败；code=%s exception_type=%s",
@@ -3038,6 +3050,15 @@ class TranscriptService:
             if isinstance(exc, TranscriptAIFormatError):
                 manifest["ai_error"] = dict(category=exc.category, diagnostics=exc.diagnostics)
             job.update(dict(status="partial", stage="ai_failed", progress=manifest["progress"], message="原始字幕已保存；AI 规整失败，可重试。", error=_safe_error(exc)))
+            # Like every other failure path: classify the error so transient AI
+            # failures get auto_retryable/next_retry_at and the UI can recover.
+            self._schedule_retry(job, exc)
+            # A successful earlier AI call leaves diagnostic code "ok"; a later
+            # storage/lock failure must not keep that stale classification.
+            failure_code = self._diagnostic_code(exc)
+            current_diagnostic = job.get("diagnostic")
+            if not isinstance(current_diagnostic, dict) or current_diagnostic.get("code") != failure_code:
+                job["diagnostic"] = {"stage": "ai_failed", "code": failure_code, "retryable": bool(job.get("retryable"))}
         if (
             manifest.get("status") in {"completed", "completed_with_warnings"}
             and self._completed_artifacts_valid(video_dir, manifest)

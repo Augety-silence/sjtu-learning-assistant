@@ -442,7 +442,18 @@ export function AIChatComposer({
                       type="button"
                       aria-label={`移除附件 ${attachment.name}`}
                       disabled={attachmentBusy}
-                      onClick={() => onRemoveAttachment(attachment.id)}
+                      onClick={(event) => {
+                        // 被点击的按钮会随 chip 卸载，焦点会掉到 <body>；先移到相邻 chip 的移除按钮，没有则回到输入框。
+                        const chip = event.currentTarget.closest(
+                          ".ai-attachment-chip",
+                        );
+                        const sibling = (
+                          chip?.nextElementSibling ??
+                          chip?.previousElementSibling
+                        )?.querySelector<HTMLButtonElement>("button");
+                        onRemoveAttachment(attachment.id);
+                        (sibling ?? textareaRef.current)?.focus();
+                      }}
                     >
                       <X aria-hidden="true" />
                     </button>

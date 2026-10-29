@@ -268,6 +268,10 @@ class AgentRuntimeTests(unittest.TestCase):
                 for run in result.tool_runs
             )
         )
+        self.assertTrue(
+            client.requests[0][1]["tools"],
+            "预取因预算被拒绝时必须保留工具定义供模型补查",
+        )
 
     def test_oversized_system_context_is_marked_and_bounded(self) -> None:
         client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])

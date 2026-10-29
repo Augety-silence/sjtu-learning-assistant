@@ -19,6 +19,7 @@ from desktop_app import (
     _install_native_file_drop_bridge,
     _macos_dragged_file_paths,
     _native_file_drop_paths,
+    _promote_drop_listener_to_capture,
     _notify_database_recovery,
     _report_startup_error,
     main,
@@ -799,6 +800,18 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         event = {"dataTransfer": {"files": [{"pywebviewFullPath": "/restricted/file.pdf"}]}}
         with patch.object(Path, "is_file", side_effect=PermissionError("denied")):
             self.assertEqual((), _native_file_drop_paths(event))
+
+    def test_native_drop_listener_is_promoted_to_capture_phase(self):
+        handler = object()
+        document = SimpleNamespace(_event_handler_ids={handler: "handler123"})
+        window = SimpleNamespace(evaluate_js=Mock())
+
+        _promote_drop_listener_to_capture(window, document, handler)
+
+        script = window.evaluate_js.call_args.args[0]
+        self.assertIn("removeEventListener('drop',h)", script)
+        self.assertIn("addEventListener('drop',h,{capture:true})", script)
+        self.assertIn('p._eventHandlers["handler123"]', script)
 
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()

@@ -605,6 +605,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
     if (!isFileDrag(event)) return;
     event.preventDefault();
+    // A new drag gesture starts: forget native paths seen by a previous drop.
+    if (dragDepthRef.current === 0) nativeDropSeenRef.current = false;
     dragDepthRef.current += 1;
     setDragActive(true);
   };
@@ -729,10 +731,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     });
     // Native pywebview drops omit File.path in JavaScript. Its DOM bridge emits
     // NATIVE_FILE_DROP_EVENT with OS-validated paths immediately after this event.
+    // On macOS the native event can also arrive *before* this DOM drop (see
+    // AssignmentsView); those paths are already being ingested, so do not arm
+    // the "path not ready" timer that would report a false error.
     if (paths.length > 0) {
       void ingestDroppedPaths(paths);
-    } else {
-      nativeDropSeenRef.current = false;
+    } else if (!nativeDropSeenRef.current) {
       nativeDropTimerRef.current = window.setTimeout(() => {
         nativeDropTimerRef.current = null;
         if (!nativeDropSeenRef.current) {

@@ -486,7 +486,9 @@ def _validated_json(
     for fragment in fragments:
         try:
             parsed = json.loads(fragment)
-        except (json.JSONDecodeError, TypeError, RecursionError):
+        # ValueError covers JSONDecodeError and the plain ValueError raised for
+        # integer literals beyond sys.get_int_max_str_digits() (Python 3.11+).
+        except (ValueError, TypeError, RecursionError):
             continue
         if type(parsed) is not dict:
             continue
@@ -709,7 +711,7 @@ def _source_only_repair_guard(
         return None
     try:
         first_value = json.loads(fragment)
-    except (json.JSONDecodeError, TypeError, RecursionError):
+    except (ValueError, TypeError, RecursionError):
         return None
     if type(first_value) is not dict:
         return None
@@ -800,7 +802,7 @@ def _json_content(
         if guide_source_repair and fragment:
             try:
                 guide_fragment = _guide_root(json.loads(fragment))
-            except (json.JSONDecodeError, TypeError, RecursionError):
+            except (ValueError, TypeError, RecursionError):
                 pass
         if (
             guide_source_repair

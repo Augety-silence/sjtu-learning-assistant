@@ -854,7 +854,9 @@ class TranscriptServiceTests(unittest.TestCase):
 
         service.run_pending = fail_pending
         service._wake = SimpleNamespace(wait=lambda _timeout: True, clear=lambda: None, set=lambda: None)
-        with patch("sjtu_learning_assistant.transcript_service.LOGGER.warning") as warning:
+        with patch("sjtu_learning_assistant.transcript_service.time.monotonic", return_value=5.0), patch(
+            "sjtu_learning_assistant.transcript_service.LOGGER.warning"
+        ) as warning:
             service._worker()
         self.assertEqual(2, calls)
         warning.assert_called_once()
