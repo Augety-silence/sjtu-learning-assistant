@@ -274,6 +274,19 @@ class ArchiveDownloadTests(unittest.TestCase):
         self.assertEqual(("42", "42", "42"), tuple(service.attempts))
         self.assertEqual("failed", service.statuses[-1][1]["status"])
 
+    def test_batch_download_skips_files_intentionally_kept_cloud_only(self) -> None:
+        service = self.make_service()
+        context = replace(self.context(), download_status="cloud_only")
+        service._download_one = lambda *_args: self.fail(
+            "批量归档不应重新下载仅云端文件"
+        )
+
+        results = service._download_contexts([context])
+
+        self.assertEqual(["unchanged"], [item.status for item in results])
+        self.assertEqual([], service.attempts)
+        self.assertEqual([], self.api_requests)
+
     def test_existing_file_requires_matching_sha256(self) -> None:
         service = self.make_service()
         context = self.context()

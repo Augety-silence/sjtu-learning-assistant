@@ -537,6 +537,17 @@ class TranscriptPipelineTests(unittest.TestCase):
         result = _validated_json(content, lambda value: value, {"response_metadata": {"finish_reason": "stop"}})
         self.assertEqual(payload, result)
 
+    def test_skips_json_fragment_with_overlong_integer_literal(self):
+        content = '{"bad":' + ("9" * 5000) + '}\n{"ok":true}'
+
+        result = _validated_json(
+            content,
+            lambda value: value if value.get("ok") is True else (_ for _ in ()).throw(ValueError("not ok")),
+            {"response_metadata": {"finish_reason": "stop"}},
+        )
+
+        self.assertEqual({"ok": True}, result)
+
     def test_truncation_is_classified_with_safe_structural_diagnostics(self):
         sensitive = "不得出现在错误对象中的字幕"
         with self.assertRaises(TranscriptAIFormatError) as raised:

@@ -22,6 +22,21 @@ from sjtu_learning_assistant.canvas_client import CanvasClient, CanvasNetworkErr
 
 
 class CanvasClientTests(unittest.TestCase):
+    def test_connection_failure_before_send_is_not_marked_uncertain(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("offline", request=request)
+
+        with httpx.Client(
+            base_url="https://oc.sjtu.edu.cn",
+            transport=httpx.MockTransport(handler),
+        ) as http_client:
+            canvas = CanvasClient(client=http_client)
+            with self.assertRaises(CanvasNetworkError) as context:
+                canvas.submit_assignment(1, 2, "online_text_entry", body="answer")
+
+        self.assertFalse(context.exception.operation_uncertain)
+        self.assertIn("无法建立连接", str(context.exception))
+
     def test_unreadable_successful_write_responses_are_uncertain(self) -> None:
         for operation in ("submit", "update"):
             with self.subTest(operation=operation):

@@ -15,7 +15,13 @@ import httpx
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
-from sjtu_learning_assistant.ai_classifier import AIClassificationError, ClassificationInput, OpenAIClassificationClient, classification_fingerprint
+from sjtu_learning_assistant.ai_classifier import (
+    AIClassificationError,
+    ClassificationInput,
+    OpenAIClassificationClient,
+    _iter_sse_lines,
+    classification_fingerprint,
+)
 from sjtu_learning_assistant.ai_keychain import AI_KEYCHAIN_ACCOUNT, AI_KEYCHAIN_SERVICE, get_ai_api_key, save_ai_api_key
 from sjtu_learning_assistant.archive_service import ArchiveFileContext, ArchiveService
 from sjtu_learning_assistant.dashboard_service import DashboardService
@@ -31,6 +37,20 @@ NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
 
 
 class AIClientTests(unittest.TestCase):
+    def test_sse_lines_only_split_on_protocol_line_endings(self):
+        chunks = [
+            b"\xef\xbb\xbfdata: {\"content\":\"before",
+            "\u2028\u2029\u0085after\"}\r".encode(),
+            b"\ndata: [DONE]\n",
+        ]
+
+        lines = list(_iter_sse_lines(chunks, started_at=0, clock=lambda: 0))
+
+        self.assertEqual(
+            ['data: {"content":"before\u2028\u2029\u0085after"}', "data: [DONE]"],
+            lines,
+        )
+
     def test_request_contract_batch_json_whitelist_and_redaction(self):
         seen = []
         def handler(request):

@@ -312,6 +312,21 @@ def test_public_redaction_covers_full_headers_and_sensitive_mapping_keys():
     }
 
 
+def test_public_redaction_covers_cloud_temporary_credentials():
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text
+
+    source = (
+        "tmpSecretKey=secret-a secretId=secret-b Credential=secret-c "
+        "AccessKeyId=secret-d access_key_secret=secret-e"
+    )
+
+    redacted = redact_public_text(source)
+
+    for secret in ("secret-a", "secret-b", "secret-c", "secret-d", "secret-e"):
+        assert secret not in redacted
+    assert redacted.count("<redacted>") == 5
+
+
 def test_public_redaction_handles_long_hyphenated_prefix_in_linear_time():
     from sjtu_learning_assistant.cloud_archive_service import redact_public_text
 
@@ -465,6 +480,38 @@ def test_manager_initialization_marks_running_jobs_interrupted(archive_env):
         job = session.get(ArchiveJob, "job")
         assert job.status == "interrupted"
         assert session.scalar(select(func.count(ArchiveEvent.id)).where(ArchiveEvent.job_id == "job")) == 1
+
+
+def test_manager_initialization_returns_verifying_job_to_verification_queue(archive_env):
+    _root, engine, provider, _service = archive_env
+    with Session(engine) as session:
+        entry = ArchiveEntry(
+            id="verify-entry", path_identity="c" * 64, volume_identity="dev:1",
+            original_abs_path=None, filename="x", restore_capability="choose_location",
+            source_kind="legacy", status="legacy",
+        )
+        version = ArchiveVersion(
+            id="verify-version", entry=entry, version_number=1, size=1, mtime_ns=0,
+            sha256="d" * 64, status="needs_verification",
+        )
+        job = ArchiveJob(
+            id="verify-job", idempotency_key="verifying-job", kind="archive", entry=entry,
+            version=version, status="verifying", bytes_total=1, bytes_done=1, plan_data={},
+        )
+        session.add(job)
+        session.commit()
+
+    CloudArchiveService(engine, provider_factory=lambda: provider)
+
+    with Session(engine) as session:
+        job = session.get(ArchiveJob, "verify-job")
+        assert job.status == "needs_verification"
+        assert job.finished_at is None
+        assert "重新校验" in job.last_error
+        event = session.scalar(
+            select(ArchiveEvent).where(ArchiveEvent.job_id == "verify-job")
+        )
+        assert event.status == "needs_verification"
 
 
 def test_explicit_legacy_mapping_never_treats_local_path_as_original(archive_env):

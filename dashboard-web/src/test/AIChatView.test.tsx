@@ -623,6 +623,7 @@ describe("AIChatView", () => {
       screen.getByRole("button", { name: "移除附件 复习提纲.txt" }),
     );
     expect(screen.queryByText("复习提纲.txt")).toBeNull();
+    expect(document.activeElement).toBe(input);
 
     fireEvent.click(attach);
     await screen.findByText("复习提纲.txt");
@@ -877,6 +878,33 @@ describe("AIChatView", () => {
     expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/拖入笔记.md");
     expect(pickAiAttachment).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("accepts a native path that arrives before the DOM drop event", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByRole("textbox", { name: "输入问题" });
+    const workspace = screen.getByRole("main");
+    const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+    const dataTransfer = {
+      types: ["Files"],
+      files: [file],
+      dropEffect: "none",
+    };
+
+    fireEvent.dragEnter(workspace, { dataTransfer });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: { paths: ["/tmp/提前到达.md"] },
+      }),
+    );
+    fireEvent.drop(workspace, { dataTransfer });
+
+    expect(await screen.findByText("拖入笔记.md")).toBeTruthy();
+    expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/提前到达.md");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(
+      screen.queryByText(/桌面文件路径尚未就绪/),
+    ).toBeNull();
   });
 
   it("explains how to add files when the native drop path event is missing", async () => {

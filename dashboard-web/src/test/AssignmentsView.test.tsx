@@ -420,7 +420,11 @@ describe("AssignmentsView", () => {
     fireEvent.dragEnter(dropzone, { dataTransfer });
     expect(dropzone.className).toContain("assignment-file-dropzone-active");
     expect(screen.getByText("松开即可添加文件")).toBeTruthy();
+    const documentDrop = vi.fn();
+    document.addEventListener("drop", documentDrop);
     fireEvent.drop(dropzone, { dataTransfer });
+    document.removeEventListener("drop", documentDrop);
+    expect(documentDrop).toHaveBeenCalledTimes(1);
 
     await waitFor(() =>
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(

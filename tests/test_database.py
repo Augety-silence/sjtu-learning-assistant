@@ -89,6 +89,18 @@ class DatabaseConfigTests(unittest.TestCase):
         self.assertNotIn("secret", rendered)
         self.assertIn("***", rendered)
 
+    def test_redacts_passwords_in_query_parameters_case_insensitively(self) -> None:
+        rendered = redact_database_url(
+            "postgresql+psycopg://localhost/app"
+            "?Password=query-secret&sslpassword=tls-secret&sslmode=require"
+        )
+
+        self.assertNotIn("query-secret", rendered)
+        self.assertNotIn("tls-secret", rendered)
+        self.assertIn("Password=%2A%2A%2A", rendered)
+        self.assertIn("sslpassword=%2A%2A%2A", rendered)
+        self.assertIn("sslmode=require", rendered)
+
     def test_environment_variable_name_is_stable(self) -> None:
         with patch.dict(os.environ, {DATABASE_URL_ENV: "value"}):
             self.assertEqual("value", os.environ[DATABASE_URL_ENV])

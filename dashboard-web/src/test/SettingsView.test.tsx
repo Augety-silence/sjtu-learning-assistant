@@ -144,6 +144,27 @@ describe("SettingsView", () => {
     expect(screen.getByLabelText("Canvas Access Token")).toBeTruthy();
   });
 
+  it("disables configuration dialogs while a long-running task is active", async () => {
+    vi.mocked(organizeArchive).mockReturnValueOnce(
+      new Promise<never>(() => undefined),
+    );
+    render(<SettingsView />);
+    await screen.findAllByRole("button", { name: "修改配置" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "AI 归档分类/整理" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("button", { name: "修改配置" })
+          .every((button) => (button as HTMLButtonElement).disabled),
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("traps focus, closes with Escape, and restores the edit trigger", async () => {
     render(<SettingsView />);
     const trigger = (

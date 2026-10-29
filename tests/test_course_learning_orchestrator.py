@@ -10,6 +10,7 @@ from sjtu_learning_assistant.course_learning_orchestrator import (
     CourseLearningOrchestrator,
     OrchestratorPolicy,
     RawTranscriptConflictError,
+    _NEGATIONS,
     _data_messages,
     _parse_correction_payload,
     _validate_repair_preserves,
@@ -479,6 +480,12 @@ class CourseLearningOrchestratorTests(unittest.TestCase):
         self.assertEqual(1, result.quality.numeric_change_count)
         self.assertEqual(1, result.quality.unsupported_change_count)
         self.assertTrue(result.uncertain)
+
+    def test_english_negations_do_not_match_inside_ordinary_words(self):
+        for text in ("knowledge", "node", "normal", "technology"):
+            self.assertIsNone(_NEGATIONS.search(text), text)
+        for text in ("no change", "never change", "这个not成立", "isn't valid"):
+            self.assertIsNotNone(_NEGATIONS.search(text), text)
 
     def test_programmatic_diff_rejects_out_of_range_and_unknown_cue(self):
         def out_of_range(data):
