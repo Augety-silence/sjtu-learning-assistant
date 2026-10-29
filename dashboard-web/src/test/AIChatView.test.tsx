@@ -902,9 +902,7 @@ describe("AIChatView", () => {
     expect(await screen.findByText("拖入笔记.md")).toBeTruthy();
     expect(ingestAiAttachment).toHaveBeenCalledWith("/tmp/提前到达.md");
     await new Promise((resolve) => setTimeout(resolve, 1_000));
-    expect(
-      screen.queryByText(/桌面文件路径尚未就绪/),
-    ).toBeNull();
+    expect(screen.queryByText(/桌面文件路径尚未就绪/)).toBeNull();
   });
 
   it("explains how to add files when the native drop path event is missing", async () => {

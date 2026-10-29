@@ -151,9 +151,7 @@ describe("SettingsView", () => {
     render(<SettingsView />);
     await screen.findAllByRole("button", { name: "修改配置" });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "AI 归档分类/整理" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "AI 归档分类/整理" }));
 
     await waitFor(() =>
       expect(
