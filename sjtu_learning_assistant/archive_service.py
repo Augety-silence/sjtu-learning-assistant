@@ -1539,6 +1539,11 @@ class ArchiveService:
         planned = self._planned_paths(values)
         results: list[DownloadResult] = []
         for context in values:
+            if context.download_status == "cloud_only":
+                # 用户已通过云端归档释放本地副本；批量归档不得悄悄重新下载，
+                # 仅显式 download_file_by_source_id 才恢复本地文件。
+                results.append(DownloadResult(context.source_id, "unchanged"))
+                continue
             results.append(
                 self._download_with_terminal_status(
                     context, planned[context.source_id]

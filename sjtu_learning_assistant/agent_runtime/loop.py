@@ -263,10 +263,12 @@ class AgentLoop:
         reasoning_parts: list[str] = []
         # 关键词命中时，本地预检索已经完成。此时直接让模型基于结果作答，
         # 避免部分兼容接口重复发起同一工具调用并造成额外延迟；没有命中时
-        # 仍启用完整 tool_calls 循环处理复合或隐含意图。
+        # 仍启用完整 tool_calls 循环处理复合或隐含意图。部分预检索失败或因预算
+        # 被跳过时也要保留 tools，否则模型拿不到缺失的数据，只能凭空作答。
+        prefetch_incomplete = any(run.get("status") != "ok" for run in runs)
         definitions = (
             self.tools.definitions(self.preset.allowed_tools)
-            if attachment_ids or not prefetch_messages
+            if attachment_ids or not prefetch_messages or prefetch_incomplete
             else []
         )
         if event_callback is not None:

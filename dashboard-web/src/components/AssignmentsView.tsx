@@ -606,7 +606,9 @@ export function AssignmentsView({
   const handleFileDrop = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!isFileDrag(event)) return;
     event.preventDefault();
-    event.stopPropagation();
+    // Do not stopPropagation(): React 17+ handles this at the root container, so
+    // stopping here keeps the native drop from reaching pywebview's `document`
+    // drop listener, which is the only source of file paths on WebView2/GTK/Qt.
     fileDragDepthRef.current = 0;
     const pendingNativePaths = pendingNativeDropPathsRef.current;
     pendingNativeDropPathsRef.current = null;

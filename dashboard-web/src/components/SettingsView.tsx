@@ -571,6 +571,8 @@ export function SettingsView({
                   variant="outline"
                   size="sm"
                   className="configuration-edit-button"
+                  // 弹窗在 busy 时不可关闭；长任务（如 AI 归档整理）进行中打开会把用户困在弹窗里。
+                  disabled={Boolean(busy)}
                   onClick={(event) => {
                     configTriggerRef.current = event.currentTarget;
                     setSecret("");

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 import httpx
 
@@ -178,6 +180,55 @@ def _loads_model_json(content: object) -> object:
         if start < 0 or end <= start:
             raise
         return json.loads(content[start : end + 1])
+
+
+# SSE 只以 CRLF / LF / CR 断行（WHATWG HTML §9.2.5）。httpx.Response.iter_lines
+# 按 str.splitlines 语义还会在 U+2028/U+2029/U+0085 等字符处断行，而 JSON 不要求
+# 转义这些字符：模型输出一旦包含它们，data 帧会被截成两半并以 response_format
+# 失败。这里按字节流自行切行，并按块统计大小/时长，避免超长单行无界缓冲。
+_SSE_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def _iter_sse_lines(
+    chunks: Iterable[bytes],
+    *,
+    started_at: float,
+    max_bytes: int = MAX_SSE_RESPONSE_BYTES,
+    max_seconds: float = MAX_SSE_STREAM_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> Iterator[str]:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buffer = ""
+    received = 0
+    first = True
+    for chunk in chunks:
+        received += len(chunk)
+        if received > max_bytes:
+            raise AIClassificationError("AI 流式响应超过大小限制。", category="stream_limit")
+        if clock() - started_at > max_seconds:
+            raise AIClassificationError("AI 流式响应超过时间限制。", category="stream_limit")
+        text = decoder.decode(chunk)
+        if first and text:
+            first = False
+            if text.startswith("\ufeff"):
+                text = text[1:]
+        # 残留 buffer 内除末尾可能的 CR 外不含断行，只需从新数据前一位开始扫描，
+        # 避免超长单行跨多块时反复全量扫描。
+        scan_from = max(len(buffer) - 1, 0)
+        buffer += text
+        start = 0
+        while True:
+            match = _SSE_LINE_BREAK.search(buffer, max(start, scan_from))
+            # 块末尾的单独 CR 可能是跨块 CRLF 的前半，留待下一块判断。
+            if match is None or (match.group() == "\r" and match.end() == len(buffer)):
+                break
+            yield buffer[start : match.start()]
+            start = match.end()
+        buffer = buffer[start:]
+    buffer += decoder.decode(b"", final=True)
+    for line in _SSE_LINE_BREAK.split(buffer):
+        if line:
+            yield line
 
 
 class SixSecondRateLimiter:
@@ -669,19 +720,15 @@ class OpenAIClassificationClient:
             usage: dict[str, int] = {}
             finish_reason: str | None = None
             stream_started_at = time.monotonic()
-            stream_bytes = 0
             received_done = False
             with self._client.stream("POST", "chat/completions", json=dict(request_body)) as response:
                 response.raise_for_status()
-                for line in response.iter_lines():
-                    stream_bytes += len(line.encode("utf-8", errors="replace")) + 1
-                    if stream_bytes > MAX_SSE_RESPONSE_BYTES:
-                        raise AIClassificationError("AI 流式响应超过大小限制。", category="stream_limit")
-                    if time.monotonic() - stream_started_at > MAX_SSE_STREAM_SECONDS:
-                        raise AIClassificationError("AI 流式响应超过时间限制。", category="stream_limit")
+                for line in _iter_sse_lines(response.iter_bytes(), started_at=stream_started_at):
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
+                    if not data:
+                        continue
                     if data == "[DONE]":
                         received_done = True
                         break

@@ -547,7 +547,8 @@ function adaptGradingSubmission(
     submission.user && typeof submission.user === "object"
       ? submission.user
       : {};
-  const studentId = String(submission.user_id ?? user.id ?? index + 1);
+  // 缺少真实学生 id 时不再用下标冒充，避免把评分写给另一位学生。
+  const studentId = String(submission.user_id ?? user.id ?? "");
   const attachments = Array.isArray(submission.attachments)
     ? submission.attachments
     : [];
@@ -569,7 +570,7 @@ function adaptGradingSubmission(
     studentName:
       (typeof user.name === "string" && user.name) ||
       (typeof user.display_name === "string" && user.display_name) ||
-      `学生 ${studentId}`,
+      (studentId ? `学生 ${studentId}` : "学生（缺少标识）"),
     loginId: typeof user.login_id === "string" ? user.login_id : null,
     submittedAt: submission.submitted_at,
     status,
@@ -671,10 +672,14 @@ function GradingAdapter({
     payload: { grade?: number | null; comment?: string },
   ) => {
     if (!courseId || !assignment) return;
+    const studentNumber = positiveInteger(studentId);
+    if (studentNumber === null) {
+      throw new Error("该提交缺少学生标识，无法写入评分或评论。");
+    }
     await updateGrading(
       courseId,
       Number(assignment.id),
-      Number(studentId),
+      studentNumber,
       payload,
     );
     await load(true);

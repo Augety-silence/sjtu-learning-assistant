@@ -383,7 +383,15 @@ export function AppShell({
           </div>
           <div className="page-header-actions">
             {headerActions}
-            <Button onClick={onSync} disabled={syncing}>
+            {/* 用 aria-disabled 代替 disabled：Chromium/WebView2 会把已聚焦的禁用按钮的焦点丢到 <body>。 */}
+            <Button
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              aria-disabled={syncing || undefined}
+              aria-busy={syncing || undefined}
+              onClick={() => {
+                if (!syncing) onSync();
+              }}
+            >
               <RefreshCw
                 aria-hidden="true"
                 className={syncing ? "animate-spin" : ""}

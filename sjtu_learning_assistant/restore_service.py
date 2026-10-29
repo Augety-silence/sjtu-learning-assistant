@@ -663,6 +663,13 @@ class RestoreService:
                 result["target"] = str(target)
             if overwrite_snapshot is not None:
                 snapshot_path, overwrite_snapshot = overwrite_snapshot, None
+                if os.name == "nt":
+                    # 原文件带只读属性时快照继承该属性，Windows 上 DeleteFile 会 ACCESS_DENIED，
+                    # 每次覆盖恢复都会残留一个 .sjtu-restore-overwrite-* 副本；先清除只读位。
+                    try:
+                        os.chmod(snapshot_path, stat.S_IWRITE)
+                    except OSError:
+                        pass
                 try:
                     snapshot_path.unlink(missing_ok=True)
                 except OSError:

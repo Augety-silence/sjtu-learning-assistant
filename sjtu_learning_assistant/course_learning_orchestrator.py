@@ -60,7 +60,16 @@ PIPELINE_VERSION = "course-learning-orchestrator-v1"
 PROMPT_VERSION = "course-learning-prompts-v6-critic-source-evidence-scope"
 MAX_CRITIC_LOOPS = 3
 _EMPTY_DELTA = MemoryDelta((), (), (), (), ())
-_NEGATIONS = re.compile(r"(?:不|没|无|未|非|否|勿|莫|not|no|never|without|cannot|can't|isn't|aren't)", re.I)
+# English negations need letter boundaries: a bare "no" would protect every term
+# containing it (knowledge, node, normal, technology).  ASCII lookarounds, not \b,
+# because CJK characters are \w and "这个not成立" must still match.
+_NEGATIONS = re.compile(
+    r"(?:不|没|无|未|非|否|勿|莫"
+    r"|(?<![A-Za-z])(?:not|no|never|nothing|nobody|nowhere|neither|nor|without|cannot)(?![A-Za-z])"
+    r"|(?<![A-Za-z])non"
+    r"|[A-Za-z]n['’]t(?![A-Za-z]))",
+    re.I,
+)
 _NUMBER = re.compile(r"(?<![0-9A-Za-z_])[-+]?\d+(?:[.,]\d+)*(?:%|e[-+]?\d+)?", re.I)
 _FORMULA = re.compile(r"(?:[=<>±×÷∑∫√^]|\b(?:sin|cos|log|ln|exp)\s*\()", re.I)
 _PERSON_TYPE = frozenset({"person", "person_name", "name", "人名", "姓名"})

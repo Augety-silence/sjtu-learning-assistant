@@ -188,8 +188,16 @@ def delete_database_url() -> bool:
     return True
 
 
+_SENSITIVE_QUERY_KEYS = frozenset({"password", "sslpassword"})
+
+
 def redact_database_url(database_url: str) -> str:
-    return make_url(database_url).render_as_string(hide_password=True)
+    parsed = make_url(database_url)
+    # libpq/psycopg also accept ?password= and ?sslpassword=; hide_password only covers userinfo.
+    sensitive = [key for key in parsed.query if key.casefold() in _SENSITIVE_QUERY_KEYS]
+    if sensitive:
+        parsed = parsed.update_query_dict({key: "***" for key in sensitive})
+    return parsed.render_as_string(hide_password=True)
 
 
 def is_sqlite_url(database_url: str) -> bool:

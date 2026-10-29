@@ -71,8 +71,11 @@ def redact_public_text(value: str) -> str:
     # 键名后允许 JSON/repr 的收尾引号（含转义 \"）与 URL 编码的 %3D，Authorization 值允许 Basic 方案。
     # 不再用 \b[\w-]* 匹配键名前缀：前缀原样保留在匹配之外，输出不变；否则 "a-a-a-…" 这类
     # 长输入会在每个起点重扫整段，二次方回溯（40KB 约 38 秒，repository 同步失败路径也会调用）。
+    # 云存储 STS 凭据常见 tmpSecretKey / secretId / SecretKey / AccessKeyId / credential 键名，
+    # 关键字后紧跟可选的固定后缀，仍是线性匹配。
     return re.sub(
-        r"(?i)((?:token|cookie|authorization|password|secret|signature|api[_-]?key))"
+        r"(?i)((?:token|cookie|authorization|password|secret(?:[_-]?(?:key|id))?|signature"
+        r"|api[_-]?key|credentials?|access[_-]?key(?:[_-]?(?:id|secret))?))"
         r"(\\?[\"']?\s*(?:[:=]|%3d)\s*)(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)",
         r"\1\2<redacted>",
         redacted,
@@ -430,8 +433,20 @@ class CloudArchiveService:
                     job.last_error = "应用上次退出时恢复任务尚未完成。"
                     _discard_reservation(job)
                 else:
-                    job.last_error = "应用上次退出时任务尚未完成。"
-                add_event(session, job, "interrupted", "interrupted", details={"previous_status": previous})
+                    version = session.get(ArchiveVersion, job.version_id) if job.version_id else None
+                    if (
+                        job.kind == "archive"
+                        and version is not None
+                        and version.status in ("needs_reconcile", "needs_verification")
+                    ):
+                        # 对账/强校验（verifying）期间退出：退回原对账态，否则 reconcile() 选不到该任务，
+                        # 而 retry 又要求本地源文件仍在，云端已存在的对象将无法再被确认。
+                        job.status = version.status
+                        job.finished_at = None
+                        job.last_error = "应用上次退出时云端校验尚未完成，可重新校验。"
+                    else:
+                        job.last_error = "应用上次退出时任务尚未完成。"
+                add_event(session, job, "interrupted", job.status, details={"previous_status": previous})
             session.commit()
             return len(jobs)
 
