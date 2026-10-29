@@ -310,6 +310,13 @@ def test_public_redaction_covers_full_headers_and_sensitive_mapping_keys():
     assert redact_public_value({"q-signature": "S1", "api_key": "S2", "Credential": "S3"}) == {
         "q-signature": "<redacted>", "api_key": "<redacted>", "Credential": "<redacted>"
     }
+    assert redact_public_value(
+        {"AccessKeyId": "S4", "access_key_secret": "S5", "safe": "visible"}
+    ) == {
+        "AccessKeyId": "<redacted>",
+        "access_key_secret": "<redacted>",
+        "safe": "visible",
+    }
 
 
 def test_public_redaction_covers_cloud_temporary_credentials():

@@ -42,7 +42,17 @@ REMOTE_ROOT = ("SJTU Learning Assistant", "Archive")
 ACTIVE_STATES = ("running", "uploading", "verifying", "downloading")
 PROGRESS_MIN_BYTES = 5 * 1024 * 1024
 SOURCE_CHANGED_DURING_UPLOAD = "文件在上传期间发生变化，云端副本需要重新校验；请在文件保存完成后重新归档。"
-_SENSITIVE_KEY_PARTS = ("token", "cookie", "authorization", "password", "secret", "signature", "apikey", "credential")
+_SENSITIVE_KEY_PARTS = (
+    "token",
+    "cookie",
+    "authorization",
+    "password",
+    "secret",
+    "signature",
+    "apikey",
+    "accesskey",
+    "credential",
+)
 
 
 def redact_public_text(value: str) -> str:

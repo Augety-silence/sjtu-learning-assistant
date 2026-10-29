@@ -65,7 +65,7 @@ _EMPTY_DELTA = MemoryDelta((), (), (), (), ())
 # because CJK characters are \w and "这个not成立" must still match.
 _NEGATIONS = re.compile(
     r"(?:不|没|无|未|非|否|勿|莫"
-    r"|(?<![A-Za-z])(?:not|no|never|nothing|nobody|nowhere|neither|nor|without|cannot)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:not|no|none|never|nothing|nobody|nowhere|neither|nor|without|cannot)(?![A-Za-z])"
     r"|(?<![A-Za-z])non"
     r"|[A-Za-z]n['’]t(?![A-Za-z]))",
     re.I,

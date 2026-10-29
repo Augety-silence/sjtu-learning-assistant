@@ -484,7 +484,7 @@ class CourseLearningOrchestratorTests(unittest.TestCase):
     def test_english_negations_do_not_match_inside_ordinary_words(self):
         for text in ("knowledge", "node", "normal", "technology"):
             self.assertIsNone(_NEGATIONS.search(text), text)
-        for text in ("no change", "never change", "这个not成立", "isn't valid"):
+        for text in ("no change", "none", "never change", "这个not成立", "isn't valid"):
             self.assertIsNotNone(_NEGATIONS.search(text), text)
 
     def test_programmatic_diff_rejects_out_of_range_and_unknown_cue(self):
