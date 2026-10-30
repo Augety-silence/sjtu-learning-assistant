@@ -183,6 +183,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
   const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() => false);
+  const [resumeRetryTick, setResumeRetryTick] = useState(0);
   const pendingQueueRef = useRef<PendingChatRequest[]>([]);
   // Failed requests whose session was no longer active; restored on reopen.
   const failedRequestsRef = useRef(new Map<string, FailedChatRequest[]>());
@@ -208,6 +209,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const nativeDropTimerRef = useRef<number | null>(null);
   const nativeDropSeenRef = useRef(false);
   const sidebarAutoSubmitRef = useRef<string | null>(null);
+  const resumeRetryRef = useRef<{
+    sessionId: string;
+    failures: number;
+    notBefore: number;
+  } | null>(null);
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
       !isPresentRef.current ||
@@ -868,6 +874,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               },
             );
       clearPersistedChatTask(request.sessionId, trackedTaskId);
+      resumeRetryRef.current = null;
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
@@ -914,7 +921,27 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         reason instanceof Error
           ? (reason as Error & { category?: string }).category
           : undefined;
-      if (category === "detached") return;
+      if (category === "detached") {
+        // The backend may still own and complete this task. Keep its persisted
+        // identity and optimistic message so the view can resume polling it.
+        return;
+      }
+      if (
+        category === "cancel_unconfirmed" ||
+        category === "resume_unconfirmed"
+      ) {
+        const previous = resumeRetryRef.current;
+        const failures =
+          previous?.sessionId === request.sessionId ? previous.failures + 1 : 1;
+        resumeRetryRef.current = {
+          sessionId: request.sessionId,
+          failures,
+          notBefore:
+            Date.now() + Math.min(5_000, 500 * 2 ** Math.min(failures - 1, 4)),
+        };
+        return;
+      }
+      resumeRetryRef.current = null;
       clearPersistedChatTask(request.sessionId, trackedTaskId);
       setMotionMessageIds([]);
       setActive((current) =>
@@ -978,10 +1005,18 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (loading || !active || busy) return;
     const persisted = readPersistedChatTask(active.id);
     if (!persisted) return;
+    const retry = resumeRetryRef.current;
+    if (retry?.sessionId === active.id && retry.notBefore > Date.now()) {
+      const timer = window.setTimeout(
+        () => setResumeRetryTick((value) => value + 1),
+        retry.notBefore - Date.now(),
+      );
+      return () => window.clearTimeout(timer);
+    }
     void runSubmission(persisted.request, persisted.taskId);
     // Re-check when busy clears: a session opened while another task was
     // running must still reconnect, otherwise submit() stays blocked.
-  }, [active?.id, loading, busy]);
+  }, [active?.id, loading, busy, resumeRetryTick]);
 
   const submit = (content: string) => {
     const text =
@@ -1086,6 +1121,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       if (sessionId !== active?.id) return;
       if (remaining[0]) await openSession(remaining[0].id);
       else await newSession();
+      window.requestAnimationFrame(() => focusIfPresent(textareaRef.current));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "删除对话失败");
     }

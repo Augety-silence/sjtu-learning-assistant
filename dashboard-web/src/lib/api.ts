@@ -384,6 +384,24 @@ function aiTaskDetachedError() {
   });
 }
 
+// 停止请求未被后端确认（RPC 失败或快照未置 cancel_requested）：后台任务可能仍在运行。
+// 保留原错误的 name/message/code/retryable，只补 category，调用方据此不要按“已停止”回滚。
+function aiTaskCancelUnconfirmedError(error: unknown) {
+  const base =
+    error instanceof Error
+      ? error
+      : new Error("停止请求未被后端确认，请稍后重试。");
+  return Object.assign(base, { category: "cancel_unconfirmed" });
+}
+
+function aiTaskResumeUnconfirmedError(error: unknown) {
+  const base =
+    error instanceof Error
+      ? error
+      : new Error("AI 任务状态暂时无法确认，请稍后重试。");
+  return Object.assign(base, { category: "resume_unconfirmed" });
+}
+
 async function requestAiTaskCancel(taskId: string) {
   let transientFailures = 0;
   for (;;) {
@@ -487,7 +505,11 @@ async function pollAiChatTask(
     }
     // 取消请求必须由后端确认；RPC 失败时保留真实错误，不能误报“已取消”。
     if (options.signal?.aborted && !cancelRequested) {
-      snapshot = await requestAiTaskCancel(taskId);
+      try {
+        snapshot = await requestAiTaskCancel(taskId);
+      } catch (error) {
+        throw aiTaskCancelUnconfirmedError(error);
+      }
       cancelRequested = Boolean(snapshot.task.cancel_requested);
       if (
         !cancelRequested &&
@@ -495,7 +517,7 @@ async function pollAiChatTask(
         snapshot.task.status !== "failed" &&
         snapshot.task.status !== "cancelled"
       ) {
-        throw new Error("停止请求未被后端确认，请稍后重试。");
+        throw aiTaskCancelUnconfirmedError(undefined);
       }
       continue;
     }
@@ -531,17 +553,27 @@ async function pollAiChatTask(
     }
     emitAIStreamEvents(snapshot, taskId, sessionId);
   }
+  // 只包住停止 RPC：递归轮询抛出的终态错误（已取消/失败分类）必须原样上抛，
+  // 不能被改写成“停止请求失败”。
+  let cancelled: import("@/lib/types").AITaskSnapshot;
   try {
-    const cancelled = await requestAiTaskCancel(taskId);
-    if (["completed", "failed", "cancelled"].includes(cancelled.task.status)) {
-      return await pollAiChatTask(sessionId, cancelled, options);
-    }
+    cancelled = await requestAiTaskCancel(taskId);
   } catch (error) {
-    throw new Error(
-      `AI 任务等待超时，停止请求失败：${error instanceof Error ? error.message : "未知错误"}`,
+    throw aiTaskCancelUnconfirmedError(
+      new Error(
+        `AI 任务等待超时，停止请求失败：${error instanceof Error ? error.message : "未知错误"}`,
+      ),
     );
   }
-  throw new Error("AI 任务等待超时，已请求停止。");
+  if (["completed", "failed", "cancelled"].includes(cancelled.task.status)) {
+    return await pollAiChatTask(sessionId, cancelled, options);
+  }
+  if (!cancelled.task.cancel_requested) {
+    throw aiTaskCancelUnconfirmedError(undefined);
+  }
+  throw Object.assign(new Error("AI 任务等待超时，已请求停止。"), {
+    category: "timeout",
+  });
 }
 
 export async function sendAiChatMessage(
@@ -582,10 +614,27 @@ export async function resumeAiChatMessageTask(
   taskId: string,
   options: { signal?: AbortSignal; pollSignal?: AbortSignal } = {},
 ) {
-  const snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
-    "ai_task_status",
-    { task_id: taskId, after_sequence: 0 },
-  );
+  let snapshot: import("@/lib/types").AITaskSnapshot;
+  let transientFailures = 0;
+  for (;;) {
+    try {
+      snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
+        "ai_task_status",
+        { task_id: taskId, after_sequence: 0 },
+      );
+      break;
+    } catch (error) {
+      if (isTransientTaskPollError(error)) {
+        if (transientFailures < MAX_TRANSIENT_TASK_POLL_FAILURES) {
+          transientFailures += 1;
+          await waitForTaskPoll(250 * transientFailures);
+          continue;
+        }
+        throw aiTaskResumeUnconfirmedError(error);
+      }
+      throw error;
+    }
+  }
   return pollAiChatTask(sessionId, snapshot, options);
 }
 
@@ -676,9 +725,10 @@ export function pickAssignmentLocalFile() {
   return invoke<import("@/lib/types").PickedLocalFile>("pick_local_file");
 }
 
-export function registerAssignmentLocalFile(path: string) {
+export function registerAssignmentLocalFile(path: string, dropToken: string) {
   return invoke<import("@/lib/types").PickedLocalFile>("register_local_file", {
     path,
+    drop_token: dropToken,
   });
 }
 

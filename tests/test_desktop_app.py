@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 from desktop_app import (
     DesktopBridge,
     DesktopScheduler,
+    _authorize_native_drop_paths,
     _enable_macos_window_material,
     _initialize_desktop_window,
     _install_native_file_drop_bridge,
@@ -530,17 +531,30 @@ class DesktopBridgeTests(unittest.TestCase):
 
             dropped = Path(directory) / "中文答案.txt"
             dropped.write_text("answer")
-            registered = bridge.invoke("register_local_file", {"path": str(dropped)})["data"]
+            unauthorized = bridge.invoke(
+                "register_local_file",
+                {"path": str(dropped), "drop_token": "forged"},
+            )
+            self.assertEqual("operation_failed", unauthorized["error"]["code"])
+            capability = _authorize_native_drop_paths((str(dropped),))[0]
+            registered = bridge.invoke("register_local_file", capability)["data"]
             self.assertEqual("中文答案.txt", registered["name"])
             dropped_payload = {"course_id": 1, "assignment_id": 2, "path": registered["path"]}
             self.assertTrue(bridge.invoke("submit_local_file", dropped_payload)["data"]["verified"])
             self.assertEqual("operation_failed", bridge.invoke("submit_local_file", dropped_payload)["error"]["code"])
+            self.assertEqual(
+                "operation_failed",
+                bridge.invoke("register_local_file", capability)["error"]["code"],
+            )
 
             for invalid in ("relative.txt", str(Path(directory)), str(dropped) + "\x00"):
                 with self.subTest(path=invalid):
                     self.assertEqual(
                         "operation_failed",
-                        bridge.invoke("register_local_file", {"path": invalid})["error"]["code"],
+                        bridge.invoke(
+                            "register_local_file",
+                            {"path": invalid, "drop_token": "forged"},
+                        )["error"]["code"],
                     )
 
     def test_errors_are_sanitized_or_hidden(self):
@@ -793,8 +807,10 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             drop.callback(event)
             script = window.evaluate_js.call_args.args[0]
             self.assertIn("sjtu-native-file-drop", script)
-            self.assertIn(json.dumps(str(first), ensure_ascii=False), script)
-            self.assertIn(json.dumps(str(second), ensure_ascii=False), script)
+            self.assertIn(json.dumps(str(first.resolve()), ensure_ascii=False), script)
+            self.assertIn(json.dumps(str(second.resolve()), ensure_ascii=False), script)
+            self.assertIn("drop_token", script)
+            self.assertIn('"paths"', script)
 
     def test_native_drop_ignores_path_probe_permission_error(self):
         event = {"dataTransfer": {"files": [{"pywebviewFullPath": "/restricted/file.pdf"}]}}

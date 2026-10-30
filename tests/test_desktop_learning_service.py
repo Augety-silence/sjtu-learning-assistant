@@ -187,6 +187,57 @@ class DesktopLearningServiceTests(unittest.TestCase):
         canvas.close.assert_called_once_with()
         pan.close.assert_called_once_with()
 
+    def test_owned_canvas_client_refreshes_after_token_change(self):
+        first_canvas = Mock()
+        first_canvas.courses.return_value = []
+        second_canvas = Mock()
+        second_canvas.courses.return_value = []
+        token_loader = Mock(side_effect=["old-token", "new-token"])
+
+        with patch(
+            "sjtu_learning_assistant.desktop_learning_service.CanvasClient",
+            side_effect=[first_canvas, second_canvas],
+        ) as canvas_type:
+            service = DesktopLearningService(token_loader=token_loader)
+            service.assignments_list("all")
+            service.assignments_list("all")
+            service.close()
+
+        self.assertEqual(
+            [
+                (("https://oc.sjtu.edu.cn", "old-token"), {}),
+                (("https://oc.sjtu.edu.cn", "new-token"), {}),
+            ],
+            canvas_type.call_args_list,
+        )
+        first_canvas.close.assert_called_once_with()
+        second_canvas.close.assert_called_once_with()
+
+    def test_owned_pan_provider_refreshes_and_clears_changed_token(self):
+        pan = Mock()
+        pan.list_directory.return_value = SimpleNamespace(
+            path=(), page=1, page_size=20, total=0, has_more=False, items=()
+        )
+        with (
+            patch(
+                "sjtu_learning_assistant.desktop_learning_service.SJTUCloudPanProvider",
+                return_value=pan,
+            ),
+            patch(
+                "sjtu_learning_assistant.desktop_learning_service.load_user_token",
+                side_effect=["old-token", "new-token", None],
+            ),
+        ):
+            service = DesktopLearningService()
+            service.pan_list("", 1, 20)
+            service.pan_list("", 1, 20)
+            service.pan_list("", 1, 20)
+            service.close()
+
+        pan.set_user_token.assert_called_once_with("new-token", persist=False)
+        pan.clear_user_token.assert_called_once_with(delete_from_keychain=False)
+        pan.close.assert_called_once_with()
+
     def test_injected_clients_are_not_closed_by_service(self):
         canvas = Mock()
         pan = Mock()

@@ -217,17 +217,26 @@ export function KnowledgeCompilerView() {
 
   const start = async () => {
     if (!sourceRoot || !targetRoot || !aiReady) return;
-    // 已有任务记录时重新开始会从第 1 轮重写输出目录，用户在 Vault 中的手动修改可能被覆盖。
-    if (
-      terminal &&
-      !window.confirm(
-        "重新开始会从第 1 轮重新生成，输出目录中由本功能生成的笔记将被覆盖更新。确定继续？",
-      )
-    )
-      return;
     setWorking(true);
     setError("");
     try {
+      // 已有任务记录时重新开始会从第 1 轮重写输出目录，用户在 Vault 中的手动修改可能被覆盖。
+      // 按发起时的输出目录重读状态：刚切换目录时 task 仍是旧目录的，历史状态损坏时
+      // 初始化会回退到全局空闲状态，仅凭 terminal 会漏掉覆盖确认。读取失败按"已有记录"处理。
+      let existing = true;
+      try {
+        const latest = await getKnowledgeCompilerStatus(targetRoot);
+        existing = !["idle", "running"].includes(latest.status);
+      } catch {
+        // 保持 existing = true：宁可多问一次，也不静默覆盖。
+      }
+      if (
+        existing &&
+        !window.confirm(
+          "重新开始会从第 1 轮重新生成，输出目录中由本功能生成的笔记将被覆盖更新。确定继续？",
+        )
+      )
+        return;
       const result = await startKnowledgeCompiler(sourceRoot, targetRoot, mode);
       setTask(result.task);
     } catch (reason) {

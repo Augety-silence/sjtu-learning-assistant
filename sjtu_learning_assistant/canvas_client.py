@@ -141,6 +141,11 @@ class CanvasClient:
         self._assert_same_origin(url)
         try:
             response = self._client.request(method, url, follow_redirects=False, **kwargs)
+        except httpx.ProxyError as exc:
+            # 代理 CONNECT/SOCKS 握手失败发生在请求发往 Canvas 之前，写入不可能已到达服务器。
+            raise CanvasNetworkError(
+                "Canvas 请求未能发出（代理连接失败），请检查系统代理设置后重试。"
+            ) from exc
         except (
             httpx.ConnectError,
             httpx.ConnectTimeout,

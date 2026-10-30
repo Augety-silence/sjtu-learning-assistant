@@ -942,29 +942,35 @@ def _coerce_time(value, path):
         return int(value)
     if type(value) is str:
         text = value.strip().lower()
-        if text.endswith("ms") and text.removesuffix("ms").strip().isdigit():
-            return int(text.removesuffix("ms").strip())
-        if text.endswith("s"):
-            try:
-                seconds = float(text.removesuffix("s").strip())
-            except ValueError:
-                seconds = -1
-            if 0 <= seconds < 1e12:
-                return round(seconds.__mul__(1000))
-        if text.isdigit():
-            return int(text)
-        parts = text.replace(",", ".").split(":")
-        if len(parts) in (2, 3):
-            try:
-                seconds = float(parts.pop())
-                minutes = int(parts.pop())
-                hours = int(parts.pop()) if parts else 0
-            except ValueError:
-                seconds = -1
-                minutes = -1
-                hours = -1
-            if hours >= 0 and 0 <= minutes < 60 and 0 <= seconds < 60:
-                return round((hours.__mul__(3600) + minutes.__mul__(60) + seconds).__mul__(1000))
+        # Model-supplied digits can exceed int_max_str_digits (ValueError),
+        # be non-ASCII "digits" int() rejects, or overflow int+float
+        # (OverflowError); all must stay schema failures, never escape run().
+        try:
+            if text.endswith("ms") and text.removesuffix("ms").strip().isdigit():
+                return int(text.removesuffix("ms").strip())
+            if text.endswith("s"):
+                try:
+                    seconds = float(text.removesuffix("s").strip())
+                except ValueError:
+                    seconds = -1
+                if 0 <= seconds < 1e12:
+                    return round(seconds.__mul__(1000))
+            if text.isdigit():
+                return int(text)
+            parts = text.replace(",", ".").split(":")
+            if len(parts) in (2, 3):
+                try:
+                    seconds = float(parts.pop())
+                    minutes = int(parts.pop())
+                    hours = int(parts.pop()) if parts else 0
+                except ValueError:
+                    seconds = -1
+                    minutes = -1
+                    hours = -1
+                if hours >= 0 and 0 <= minutes < 60 and 0 <= seconds < 60:
+                    return round((hours.__mul__(3600) + minutes.__mul__(60) + seconds).__mul__(1000))
+        except (ValueError, OverflowError):
+            pass
     _schema_fail(path, "milliseconds or timestamp string", value)
 
 

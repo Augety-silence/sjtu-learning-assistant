@@ -423,12 +423,22 @@ describe("AssignmentsView", () => {
     const documentDrop = vi.fn();
     document.addEventListener("drop", documentDrop);
     fireEvent.drop(dropzone, { dataTransfer });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: {
+          files: [
+            { path: "/safe/HW1 中宏.docx", drop_token: "drop-token-hw1" },
+          ],
+        },
+      }),
+    );
     document.removeEventListener("drop", documentDrop);
     expect(documentDrop).toHaveBeenCalledTimes(1);
 
     await waitFor(() =>
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
         "/safe/HW1 中宏.docx",
+        "drop-token-hw1",
       ),
     );
     fireEvent.click(
@@ -461,7 +471,9 @@ describe("AssignmentsView", () => {
 
     window.dispatchEvent(
       new CustomEvent("sjtu-native-file-drop", {
-        detail: { paths: ["/safe/outside.pdf"] },
+        detail: {
+          files: [{ path: "/safe/outside.pdf", drop_token: "outside" }],
+        },
       }),
     );
     expect(api.registerAssignmentLocalFile).not.toHaveBeenCalled();
@@ -475,12 +487,18 @@ describe("AssignmentsView", () => {
     });
     window.dispatchEvent(
       new CustomEvent("sjtu-native-file-drop", {
-        detail: { paths: ["/safe/first.pdf", "/safe/second.pdf"] },
+        detail: {
+          files: [
+            { path: "/safe/first.pdf", drop_token: "first-token" },
+            { path: "/safe/second.pdf", drop_token: "second-token" },
+          ],
+        },
       }),
     );
     await waitFor(() =>
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
         "/safe/first.pdf",
+        "first-token",
       ),
     );
     expect(await screen.findByText(/已使用拖入的第一个文件/)).toBeTruthy();
@@ -516,7 +534,9 @@ describe("AssignmentsView", () => {
     fireEvent.dragEnter(dropzone, { dataTransfer });
     window.dispatchEvent(
       new CustomEvent("sjtu-native-file-drop", {
-        detail: { paths: ["/safe/early.pdf"] },
+        detail: {
+          files: [{ path: "/safe/early.pdf", drop_token: "early-token" }],
+        },
       }),
     );
     fireEvent.drop(dropzone, { dataTransfer });
@@ -524,6 +544,7 @@ describe("AssignmentsView", () => {
     await waitFor(() =>
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
         "/safe/early.pdf",
+        "early-token",
       ),
     );
     expect(screen.queryByText(/无法读取拖入文件的本地路径/)).toBeNull();
@@ -562,16 +583,20 @@ describe("AssignmentsView", () => {
     const dropzone = (await screen.findByText("文件作答")).closest(
       ".assignment-file-dropzone",
     ) as HTMLDivElement;
-    const drop = (path: string) => {
+    const drop = (path: string, dropToken: string) => {
       const file = new File(["answer"], path.split("/").at(-1) || "file");
-      Object.defineProperty(file, "path", { value: path });
       fireEvent.drop(dropzone, {
         dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
       });
+      window.dispatchEvent(
+        new CustomEvent("sjtu-native-file-drop", {
+          detail: { files: [{ path, drop_token: dropToken }] },
+        }),
+      );
     };
 
-    drop("/safe/first.pdf");
-    drop("/safe/second.pdf");
+    drop("/safe/first.pdf", "first-token");
+    drop("/safe/second.pdf", "second-token");
     await waitFor(() =>
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(2),
     );
@@ -597,7 +622,7 @@ describe("AssignmentsView", () => {
     expect(screen.getByText("second.pdf")).toBeTruthy();
   });
 
-  it("clears an older native fallback when a direct-path retry succeeds", async () => {
+  it("clears an older native fallback when a later native drop succeeds", async () => {
     const uploadAssignment = {
       ...assignment,
       submission_types: ["online_upload"],
@@ -628,7 +653,6 @@ describe("AssignmentsView", () => {
         },
       });
       const retry = new File(["answer"], "retry.pdf");
-      Object.defineProperty(retry, "path", { value: "/safe/retry.pdf" });
       fireEvent.drop(dropzone, {
         dataTransfer: {
           types: ["Files"],
@@ -636,17 +660,27 @@ describe("AssignmentsView", () => {
           dropEffect: "none",
         },
       });
+      window.dispatchEvent(
+        new CustomEvent("sjtu-native-file-drop", {
+          detail: {
+            files: [{ path: "/safe/retry.pdf", drop_token: "retry-token" }],
+          },
+        }),
+      );
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_000);
       });
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(1);
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledWith(
         "/safe/retry.pdf",
+        "retry-token",
       );
       expect(screen.queryByText(/无法读取拖入文件的本地路径/)).toBeNull();
       window.dispatchEvent(
         new CustomEvent("sjtu-native-file-drop", {
-          detail: { paths: ["/safe/stale.pdf"] },
+          detail: {
+            files: [{ path: "/safe/stale.pdf", drop_token: "stale-token" }],
+          },
         }),
       );
       expect(api.registerAssignmentLocalFile).toHaveBeenCalledTimes(1);

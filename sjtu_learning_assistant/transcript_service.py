@@ -1981,6 +1981,7 @@ class TranscriptService:
                     except Exception as exc:
                         job.update(status="partial", stage="organize_failed", error=_safe_error(exc), message="已保留字幕，整理暂时失败，可重试。")
                         self._schedule_retry(job, exc)
+                        self._record_organize_failure(job, exc)
                     self._save_batch(batch)
         remaining_saved = [job for job in batch["jobs"] if job.get("status") == "saved"]
         remaining_saved.sort(key=lambda item: item.get("source_id") != self._foreground_source)
@@ -1997,8 +1998,16 @@ class TranscriptService:
             except Exception as exc:
                 job.update(status="partial", stage="organize_failed", error=_safe_error(exc), message="已保留字幕，整理暂时失败，可重试。")
                 self._schedule_retry(job, exc)
+                self._record_organize_failure(job, exc)
             self._save_batch(batch)
         self._save_batch(batch)
+
+    def _record_organize_failure(self, job: dict[str, Any], exc: BaseException) -> None:
+        """Replace stale/absent diagnostics so the UI shows the real failure category."""
+        code = self._diagnostic_code(exc)
+        current = job.get("diagnostic")
+        if not isinstance(current, dict) or current.get("code") != code:
+            job["diagnostic"] = {"stage": "organize_failed", "code": code, "retryable": bool(job.get("retryable"))}
 
     def _synchronize_batch_jobs(self, batch: dict[str, Any]) -> None:
         """Serialize fetch-worker job updates with the shared batch writer."""

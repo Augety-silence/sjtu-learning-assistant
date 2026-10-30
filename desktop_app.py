@@ -6,8 +6,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import subprocess
 import sys
+import time
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1041,8 +1043,15 @@ class DesktopBridge:
             raise DashboardError("所选文件无效或超过 2 GiB。")
 
     def _assignment_register_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"path"})
-        return self._register_assignment_local_file(payload.get("path"))
+        _only_keys(payload, {"path", "drop_token"})
+        raw = _validated_local_attachment_path(payload.get("path"))
+        normalized = str(Path(raw).expanduser().resolve())
+        drop_token = _bounded_text(
+            payload.get("drop_token"), limit=128, label="拖放凭证"
+        )
+        if not _consume_native_drop_capability(normalized, drop_token):
+            raise DashboardError("拖入文件凭证无效或已过期，请重新拖入文件。")
+        return self._register_assignment_local_file(normalized)
 
     def _assignment_submit_local_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         course_id, assignment_id = self._assignment_ids(payload, {"path"})
@@ -1615,7 +1624,40 @@ def _enable_macos_window_material(window: object) -> None:
 
 
 NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop"
+NATIVE_DROP_CAPABILITY_TTL_SECONDS = 15.0
 _MACOS_NATIVE_DROP_HOOK_INSTALLED = False
+_NATIVE_DROP_CAPABILITY_LOCK = threading.Lock()
+_NATIVE_DROP_CAPABILITIES: dict[str, tuple[str, float]] = {}
+
+
+def _authorize_native_drop_paths(paths: tuple[str, ...]) -> list[dict[str, str]]:
+    """Mint short-lived, single-use capabilities for OS-validated drop paths."""
+    now = time.monotonic()
+    result: list[dict[str, str]] = []
+    with _NATIVE_DROP_CAPABILITY_LOCK:
+        for token, (_path, expires_at) in tuple(_NATIVE_DROP_CAPABILITIES.items()):
+            if expires_at < now:
+                _NATIVE_DROP_CAPABILITIES.pop(token, None)
+        for raw in paths:
+            normalized = str(Path(raw).expanduser().resolve())
+            token = secrets.token_urlsafe(32)
+            _NATIVE_DROP_CAPABILITIES[token] = (
+                normalized,
+                now + NATIVE_DROP_CAPABILITY_TTL_SECONDS,
+            )
+            result.append({"path": normalized, "drop_token": token})
+    return result
+
+
+def _consume_native_drop_capability(path: str, token: str) -> bool:
+    """Consume a capability only when it authorizes this exact local path."""
+    now = time.monotonic()
+    with _NATIVE_DROP_CAPABILITY_LOCK:
+        authorization = _NATIVE_DROP_CAPABILITIES.pop(token, None)
+    if authorization is None:
+        return False
+    authorized_path, expires_at = authorization
+    return expires_at >= now and authorized_path == path
 
 
 def _macos_dragged_file_paths(
@@ -1680,7 +1722,8 @@ def _install_macos_native_file_drop_hook() -> bool:
         result = original(host, sender)
         if paths:
             event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
-            detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+            files = _authorize_native_drop_paths(paths)
+            detail = json.dumps({"files": files}, ensure_ascii=False)
             script = (
                 "window.setTimeout(function(){window.dispatchEvent(new CustomEvent("
                 f"{event_name}, {{detail: {detail}}}));}}, 0);"
@@ -1776,7 +1819,10 @@ def _install_native_file_drop_bridge(window: object) -> None:
             dnd_state["paths"] = []
         if not paths:
             return
-        detail = json.dumps({"paths": list(paths)}, ensure_ascii=False)
+        files = _authorize_native_drop_paths(paths)
+        # AIChatView still consumes the historical paths contract, while the
+        # assignment workspace requires the per-drop capability tokens.
+        detail = json.dumps({"paths": paths, "files": files}, ensure_ascii=False)
         event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
         try:
             window.evaluate_js(
