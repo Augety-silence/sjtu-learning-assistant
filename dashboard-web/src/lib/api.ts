@@ -866,6 +866,13 @@ export function uploadDriveFile(options: {
   });
 }
 
+export function prepareDriveDownload(path: string[], transferId: string) {
+  return invoke<{ transfer_id: string }>("drive_prepare_download", {
+    path,
+    transfer_id: transferId,
+  });
+}
+
 export function downloadDriveItem(path: string[], transferId?: string) {
   return invoke<import("@/lib/types").DriveDownloadResult>("drive_download", {
     path,

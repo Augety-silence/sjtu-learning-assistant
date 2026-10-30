@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -51,6 +52,7 @@ from sjtu_learning_assistant.cloud_storage import (
 )
 from sjtu_learning_assistant.cloud_drive_service import (
     CloudDriveService,
+    TransferCancelled,
     cloud_error_code,
     iter_folder_files,
     safe_local_filename,
@@ -366,8 +368,10 @@ class DesktopBridge:
         self._drive_lock = threading.Lock()
         # Opaque, single-use renderer capabilities -> (absolute local path, size).
         # Never expose the local path itself to the web view.
-        self._drive_uploads: dict[str, tuple[str, int]] = {}
+        self._drive_uploads: dict[str, tuple[str, int, int, int]] = {}
+        self._drive_uploads_in_progress: set[str] = set()
         self._drive_downloads: dict[str, str] = {}
+        self._drive_pending_downloads: dict[str, tuple[Any, tuple[str, ...], float]] = {}
         self._command_runner = command_runner or subprocess.run
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "health": lambda payload: self._without_payload(
@@ -520,6 +524,7 @@ class DesktopBridge:
             "drive_upload_register": self._drive_upload_register,
             "drive_upload_release": self._drive_upload_release,
             "drive_upload": self._drive_upload,
+            "drive_prepare_download": self._drive_prepare_download,
             "drive_download": self._drive_download,
             "drive_reveal_download": self._drive_reveal_download,
             "drive_transfers": self._drive_transfers,
@@ -1228,11 +1233,11 @@ class DesktopBridge:
         raw = _validated_local_attachment_path(value)
         path = Path(raw).expanduser().resolve()
         try:
-            is_file = path.is_file()
-            size = path.stat().st_size if is_file else -1
+            metadata = path.stat()
+            size = metadata.st_size
         except OSError:
             raise DashboardError("所选文件无效或无法读取。") from None
-        if not is_file or size < 0:
+        if not stat.S_ISREG(metadata.st_mode) or size < 0:
             raise DashboardError("所选文件无效或无法读取。")
         normalized = str(path)
         with self._drive_lock:
@@ -1241,7 +1246,7 @@ class DesktopBridge:
             token = secrets.token_urlsafe(24)
             while token in self._drive_uploads:
                 token = secrets.token_urlsafe(24)
-            self._drive_uploads[token] = (normalized, size)
+            self._drive_uploads[token] = (normalized, size, metadata.st_dev, metadata.st_ino)
         return {
             "path": token,
             "name": path.name,
@@ -1322,11 +1327,6 @@ class DesktopBridge:
     def _drive_upload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"path", "parent", "conflict", "transfer_id", "relative_dir"})
         token = _bounded_text(payload.get("path"), limit=128, label="上传凭证")
-        with self._drive_lock:
-            authorization = self._drive_uploads.get(token)
-        if authorization is None:
-            raise DashboardError("请先通过上传按钮或拖放选择本地文件。")
-        local, _registered_size = authorization
         parent = _remote_segments(payload.get("parent", []))
         relative = _remote_segments(payload.get("relative_dir", []))
         conflict = payload.get("conflict", "ask")
@@ -1334,26 +1334,96 @@ class DesktopBridge:
             raise DashboardError("同名处理方式不正确。")
         if len(parent) + len(relative) > 128:
             raise DashboardError("云盘路径过长。")
-        result = self._drive().upload(
-            local, parent + relative, conflict=conflict,
-            transfer_id=_transfer_id(payload.get("transfer_id")),
-            ensure_parent=bool(relative),
-        )
+        transfer_id = _transfer_id(payload.get("transfer_id"))
         with self._drive_lock:
-            self._drive_uploads.pop(token, None)
-        return result
+            authorization = self._drive_uploads.get(token)
+            if authorization is None or token in self._drive_uploads_in_progress:
+                raise DashboardError("请先通过上传按钮或拖放选择本地文件。")
+            self._drive_uploads_in_progress.add(token)
+        local, _registered_size, device, inode = authorization
+        succeeded = False
+        try:
+            try:
+                source_handle = open(local, "rb")
+            except OSError:
+                raise DashboardError("所选文件已变化或无法读取，请重新选择。") from None
+            with source_handle:
+                try:
+                    metadata = os.fstat(source_handle.fileno())
+                except OSError:
+                    raise DashboardError("所选文件已变化或无法读取，请重新选择。") from None
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or (metadata.st_dev, metadata.st_ino) != (device, inode)):
+                    raise DashboardError("所选文件已变化或无法读取，请重新选择。")
+                result = self._drive().upload(
+                    local, parent + relative, conflict=conflict,
+                    transfer_id=transfer_id, ensure_parent=bool(relative),
+                    source_handle=source_handle,
+                )
+            succeeded = True
+            return result
+        finally:
+            with self._drive_lock:
+                self._drive_uploads_in_progress.discard(token)
+                if succeeded:
+                    self._drive_uploads.pop(token, None)
+
+    def _drive_prepare_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "transfer_id"})
+        path = _remote_segments(payload.get("path"), allow_root=False)
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        if transfer_id is None:
+            raise DashboardError("传输任务标识不正确。")
+        drive = self._drive()
+        with self._drive_lock:
+            now = time.monotonic()
+            for key, (pending, _path, created) in tuple(self._drive_pending_downloads.items()):
+                if now - created > 300:
+                    self._drive_pending_downloads.pop(key, None)
+                    drive.transfers.finish(pending, "cancelled", "已取消")
+            if len(self._drive_pending_downloads) >= 200:
+                raise DashboardError("待下载任务过多，请稍后重试。")
+            transfer = drive.transfers.start(transfer_id, kind="download", name=path[-1], total=None)
+            self._drive_pending_downloads[transfer_id] = (transfer, path, now)
+        return {"transfer_id": transfer_id}
 
     def _drive_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"path", "transfer_id"})
         path = _remote_segments(payload.get("path"), allow_root=False)
         transfer_id = _transfer_id(payload.get("transfer_id"))
-        if self._save_file_picker is None:
-            raise LearningServiceError("当前环境不支持选择下载位置。")
-        destination = self._save_file_picker(safe_local_filename(path[-1]))
-        if not destination:
-            return {"status": "cancelled"}
-        target = Path(_validated_local_attachment_path(str(destination))).expanduser().resolve()
-        result = self._drive().download(path, str(target), transfer_id=transfer_id)
+        drive = self._drive()
+        with self._drive_lock:
+            pending = self._drive_pending_downloads.get(transfer_id or "")
+            if pending is not None:
+                transfer, pending_path, _created = pending
+                if path != pending_path:
+                    raise DashboardError("下载任务与选择的文件不匹配。")
+                self._drive_pending_downloads.pop(transfer_id, None)
+            elif transfer_id is not None:
+                raise DashboardError("下载任务未准备或已过期，请重试。")
+            else:
+                transfer = drive.transfers.start(None, kind="download", name=path[-1], total=None)
+        try:
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            if self._save_file_picker is None:
+                raise LearningServiceError("当前环境不支持选择下载位置。")
+            destination = self._save_file_picker(safe_local_filename(path[-1]))
+            if not destination:
+                drive.transfers.finish(transfer, "cancelled", "已取消")
+                return {"status": "cancelled"}
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            selected = Path(_validated_local_attachment_path(str(destination))).expanduser()
+            # Resolve the parent only. Following the final component would allow a
+            # selected symlink to redirect the download to a different file.
+            target = selected.parent.resolve() / selected.name
+            result = drive.download(path, str(target), transfer_id=transfer_id, transfer=transfer)
+        except BaseException as exc:
+            if transfer.status == "running":
+                status = "cancelled" if isinstance(exc, TransferCancelled) else "failed"
+                drive.transfers.finish(transfer, status, "已取消" if status == "cancelled" else "下载失败")
+            raise
         with self._drive_lock:
             self._drive_downloads[result["transfer_id"]] = str(target)
             while len(self._drive_downloads) > 50:

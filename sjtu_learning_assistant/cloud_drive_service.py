@@ -231,6 +231,13 @@ class TransferRegistry:
         with self._lock:
             transfer.done += amount
 
+    def prepare_download(self, transfer: Transfer, *, name: str, total: int | None) -> None:
+        with self._lock:
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            transfer.name = name
+            transfer.total = total
+
     def finish(self, transfer: Transfer, status: str, message: str | None = None) -> None:
         with self._lock:
             transfer.status = status
@@ -240,10 +247,28 @@ class TransferRegistry:
     def cancel(self, transfer_id: str) -> bool:
         with self._lock:
             transfer = self._items.get(transfer_id)
-        if transfer is None or transfer.status != "running":
-            return False
-        transfer.cancel_event.set()
-        return True
+            if transfer is None or transfer.status != "running":
+                return False
+            transfer.cancel_event.set()
+            return True
+
+    def commit_download(self, transfer: Transfer, temporary: Path, target: Path) -> None:
+        # Link into place without replacing any existing file or symlink, even
+        # if another process created it after the save dialog was dismissed.
+        with self._lock:
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                raise CloudDriveError("保存位置已有同名文件，请选择其他名称。") from None
+            transfer.status = "done"
+            transfer.finished_at = time.monotonic()
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            # The destination is already committed; do not report it as failed.
+            pass
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -265,12 +290,18 @@ class _ProgressReader:
         self._remaining = limit
 
     def read(self, size: int = -1) -> bytes:
+        self._on_read(0)
+        read_all = size < 0
         if self._remaining is not None:
             if self._remaining <= 0:
                 return b""
             if size < 0 or size > self._remaining:
                 size = self._remaining
         data = self._handle.read(size)
+        if self._remaining is not None and self._remaining > 0 and (
+            not data or (read_all and len(data) < self._remaining)
+        ):
+            raise CloudDriveError("本地文件在上传期间变短，请重新选择后重试。")
         if data:
             if self._remaining is not None:
                 self._remaining -= len(data)
@@ -304,6 +335,7 @@ class CloudDriveService:
         self._clock = clock
         self._cache_lock = threading.Lock()
         self._listings: dict[tuple[str, ...], _Listing] = {}
+        self._cache_generation = 0
         self.transfers = TransferRegistry()
 
     # ------------------------------------------------------------------ helpers
@@ -312,6 +344,7 @@ class CloudDriveService:
 
     def _invalidate(self, *paths: Sequence[str]) -> None:
         with self._cache_lock:
+            self._cache_generation += 1
             for path in paths:
                 key = tuple(path)
                 # Drop the folder itself and anything nested below it.
@@ -323,12 +356,15 @@ class CloudDriveService:
         now = self._clock()
         with self._cache_lock:
             cached = self._listings.get(path)
+            generation = self._cache_generation
         if cached is not None and not refresh and now - cached.fetched_at < LISTING_CACHE_SECONDS:
             return cached
         iterator: Iterator[CloudItem] = self._provider().iter_directory(path, page_size=LISTING_PAGE_SIZE)
         items = tuple(islice(iterator, MAX_LISTING_ITEMS + 1))
         listing = _Listing(items[:MAX_LISTING_ITEMS], len(items) > MAX_LISTING_ITEMS, now)
         with self._cache_lock:
+            if generation != self._cache_generation:
+                return listing
             self._listings[path] = listing
             if len(self._listings) > 64:
                 oldest = min(self._listings, key=lambda key: self._listings[key].fetched_at)
@@ -520,20 +556,24 @@ class CloudDriveService:
         conflict: str = "ask",
         transfer_id: str | None = None,
         ensure_parent: bool = False,
+        source_handle: BinaryIO | None = None,
     ) -> dict[str, Any]:
         if conflict not in CONFLICT_STRATEGIES:
             raise CloudDriveError("同名处理方式不正确。")
         source = Path(local_path)
         try:
-            if not source.is_file():
-                raise CloudDriveError("待上传的本地文件不存在。")
-            handle = source.open("rb")
+            if source_handle is None:
+                if not source.is_file():
+                    raise CloudDriveError("待上传的本地文件不存在。")
+                handle = source.open("rb")
+            else:
+                handle = source_handle
         except OSError:
             raise CloudDriveError("无法读取待上传的本地文件。") from None
-        name = validate_item_name(source.name, label="文件名")
-        parent_path = tuple(parent)
-        provider = self._provider()
         with handle:
+            name = validate_item_name(source.name, label="文件名")
+            parent_path = tuple(parent)
+            provider = self._provider()
             try:
                 size = os.fstat(handle.fileno()).st_size
             except OSError:
@@ -571,6 +611,9 @@ class CloudDriveService:
             except CloudStorageError as exc:
                 self.transfers.finish(transfer, "failed", str(exc) or "上传失败")
                 raise
+            except Exception:
+                self.transfers.finish(transfer, "failed", "上传失败")
+                raise
             finally:
                 self._invalidate(parent_path)
         self.transfers.finish(transfer, "done")
@@ -582,10 +625,13 @@ class CloudDriveService:
         destination: str,
         *,
         transfer_id: str | None = None,
+        transfer: Transfer | None = None,
     ) -> dict[str, Any]:
         source = tuple(remote_path)
         if not source:
             raise CloudDriveError("请选择要下载的文件。")
+        if transfer is not None:
+            self.transfers.advance(transfer, 0)
         provider = self._provider()
         item = provider.get_info(source)
         if item.is_directory:
@@ -593,11 +639,13 @@ class CloudDriveService:
         target = Path(destination)
         if not target.parent.is_dir():
             raise CloudDriveError("下载目标文件夹不存在。")
-        transfer = self.transfers.start(transfer_id, kind="download", name=item.name, total=item.size)
+        if transfer is None:
+            transfer = self.transfers.start(transfer_id, kind="download", name=item.name, total=item.size)
         descriptor: int | None = None
         temporary: Path | None = None
         written = 0
         try:
+            self.transfers.prepare_download(transfer, name=item.name, total=item.size)
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=".sjtu-pan-", suffix=".part", dir=str(target.parent)
             )
@@ -612,7 +660,7 @@ class CloudDriveService:
                 os.fsync(output.fileno())
             if item.size is not None and written != item.size:
                 raise CloudDriveError("下载的文件大小与云端不一致，请重试。")
-            os.replace(temporary, target)
+            self.transfers.commit_download(transfer, temporary, target)
         except TransferCancelled:
             if descriptor is not None:
                 os.close(descriptor)
@@ -635,7 +683,6 @@ class CloudDriveService:
             message = str(exc) if isinstance(exc, CloudStorageError) else "下载失败"
             self.transfers.finish(transfer, "failed", message or "下载失败")
             raise
-        self.transfers.finish(transfer, "done")
         return {
             "transfer_id": transfer.transfer_id,
             "name": target.name,

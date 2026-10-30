@@ -9,6 +9,7 @@ import {
 } from "@/components/cloud-drive/driveTransfers";
 import {
   BridgeInvocationError,
+  cancelDriveTransfer,
   createDriveFolder,
   deleteDriveItems,
   downloadDriveItem,
@@ -17,6 +18,9 @@ import {
   getDriveTransfers,
   listDrive,
   pickDriveUploadFiles,
+  prepareDriveDownload,
+  registerDriveDropFile,
+  releaseDriveUploads,
   renameDriveItem,
   uploadDriveFile,
 } from "@/lib/api";
@@ -48,6 +52,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
     registerDriveDropFile: vi.fn(),
     releaseDriveUploads: vi.fn(async () => ({ released: 0 })),
     uploadDriveFile: vi.fn(),
+    prepareDriveDownload: vi.fn(async (_path, transferId) => ({
+      transfer_id: transferId,
+    })),
     downloadDriveItem: vi.fn(),
     revealDriveDownload: vi.fn(),
     getDriveTransfers: vi.fn(),
@@ -338,6 +345,155 @@ describe("CloudDriveView", () => {
         ?.closest("li")
         ?.getAttribute("data-status"),
     ).toBe("cancelled");
+  });
+
+  it("登记期间取消下载后先通知后端再完成清理", async () => {
+    let finishPrepare!: (result: { transfer_id: string }) => void;
+    vi.mocked(prepareDriveDownload).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPrepare = resolve;
+        }),
+    );
+    vi.mocked(cancelDriveTransfer).mockResolvedValue({
+      transfer_id: "d",
+      cancelled: true,
+    });
+    vi.mocked(downloadDriveItem).mockResolvedValue({ status: "cancelled" });
+    const download = driveTransfers.download(item(["文件.pdf"]));
+    await waitFor(() => expect(prepareDriveDownload).toHaveBeenCalledOnce());
+    const id = driveTransfers.getState().tasks[0].id;
+    await driveTransfers.cancel(id);
+    expect(cancelDriveTransfer).not.toHaveBeenCalled();
+    finishPrepare({ transfer_id: id });
+    expect((await download).status).toBe("cancelled");
+    expect(cancelDriveTransfer).toHaveBeenCalledWith(id);
+    expect(downloadDriveItem).toHaveBeenCalledWith(["文件.pdf"], id);
+    expect(
+      vi.mocked(cancelDriveTransfer).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(downloadDriveItem).mock.invocationCallOrder[0]);
+  });
+
+  it("保存对话框已启动时将取消发送给后端", async () => {
+    let finishDownload!: (result: { status: "cancelled" }) => void;
+    vi.mocked(downloadDriveItem).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishDownload = resolve;
+        }),
+    );
+    vi.mocked(cancelDriveTransfer).mockResolvedValue({
+      transfer_id: "d",
+      cancelled: true,
+    });
+    const download = driveTransfers.download(item(["文件.pdf"]));
+    await waitFor(() => expect(downloadDriveItem).toHaveBeenCalledOnce());
+    const id = driveTransfers.getState().tasks[0].id;
+    await driveTransfers.cancel(id);
+    expect(cancelDriveTransfer).toHaveBeenCalledWith(id);
+    expect(driveTransfers.getState().tasks[0].message).toBe("正在取消…");
+    finishDownload({ status: "cancelled" });
+    expect((await download).status).toBe("cancelled");
+  });
+
+  it("丢弃超出记录上限的失败上传时释放凭证", async () => {
+    vi.mocked(uploadDriveFile).mockRejectedValue(new Error("网络错误"));
+    driveTransfers.enqueueUploads(
+      Array.from({ length: 65 }, (_, index) => ({
+        path: `token-${index}`,
+        name: `file-${index}`,
+        size: 1,
+        too_large: false,
+        relative_dir: [],
+      })),
+      [],
+    );
+    await waitFor(() =>
+      expect(driveTransfers.getState().completion.seq).toBe(1),
+    );
+    expect(driveTransfers.getState().tasks).toHaveLength(60);
+    expect(releaseDriveUploads).toHaveBeenCalledWith([
+      "token-0",
+      "token-1",
+      "token-2",
+      "token-3",
+      "token-4",
+    ]);
+  });
+
+  it("拖放后切换目录仍上传到发生拖放的目录", async () => {
+    vi.mocked(registerDriveDropFile).mockResolvedValue({
+      path: "drop-capability",
+      name: "拖入.txt",
+      size: 1,
+      too_large: false,
+      relative_dir: [],
+    });
+    vi.mocked(uploadDriveFile).mockResolvedValue({
+      transfer_id: "upload",
+      item: item(["拖入.txt"]),
+    });
+    render();
+    const area = await screen.findByRole("region", {
+      name: "“个人空间”中的内容",
+    });
+    const dataTransfer = { types: ["Files"], dropEffect: "none" };
+    fireEvent.dragEnter(area, { dataTransfer });
+    fireEvent.drop(area, { dataTransfer });
+    fireEvent.click(screen.getByRole("button", { name: "课程资料" }));
+    await screen.findByText("第一讲.pptx");
+    window.dispatchEvent(
+      new CustomEvent("sjtu-native-file-drop", {
+        detail: {
+          files: [{ path: "/tmp/拖入.txt", drop_token: "native-token" }],
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(uploadDriveFile).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "drop-capability", parent: [] }),
+      ),
+    );
+  });
+
+  it("清理完成记录时保留正在等待处理的同名冲突", async () => {
+    vi.mocked(uploadDriveFile).mockRejectedValue(
+      new BridgeInvocationError("drive_upload", {
+        code: "conflict",
+        message: "同名",
+      }),
+    );
+    driveTransfers.enqueueUploads(
+      [
+        {
+          path: "conflict-token",
+          name: "重复文件",
+          size: 1,
+          too_large: false,
+          relative_dir: [],
+        },
+      ],
+      [],
+    );
+    await waitFor(() =>
+      expect(driveTransfers.getState().conflict).not.toBeNull(),
+    );
+    vi.mocked(downloadDriveItem).mockResolvedValue({
+      status: "downloaded",
+      transfer_id: "download",
+      name: "文件.pdf",
+      size: 1,
+    });
+    await Promise.all(
+      Array.from({ length: 61 }, (_, index) =>
+        driveTransfers.download(item([`文件-${index}.pdf`])),
+      ),
+    );
+    expect(driveTransfers.getState().tasks).toHaveLength(61);
+    expect(driveTransfers.getState().tasks[0].status).toBe("conflict");
+    expect(releaseDriveUploads).not.toHaveBeenCalledWith(["conflict-token"]);
+    driveTransfers.resolveConflict("skip");
+    await waitFor(() => expect(driveTransfers.getState().conflict).toBeNull());
   });
 
   it("上传遇到同名冲突时询问处理方式，选择保留两者后重新上传", async () => {

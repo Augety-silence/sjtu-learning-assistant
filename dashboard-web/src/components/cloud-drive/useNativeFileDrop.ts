@@ -52,6 +52,7 @@ export function useNativeFileDrop({
   const depthRef = useRef(0);
   const pendingRef = useRef<NativeDroppedFile[] | null>(null);
   const awaitingRef = useRef(false);
+  const awaitingHandlerRef = useRef<typeof onFiles | null>(null);
   const timerRef = useRef<number | null>(null);
   const onFilesRef = useRef(onFiles);
   const onUnavailableRef = useRef(onUnavailable);
@@ -75,13 +76,16 @@ export function useNativeFileDrop({
       }
       awaitingRef.current = false;
       clearTimer();
-      if (files.length > 0) onFilesRef.current(files);
+      const handler = awaitingHandlerRef.current;
+      awaitingHandlerRef.current = null;
+      if (files.length > 0) handler?.(files);
     };
     window.addEventListener(NATIVE_FILE_DROP_EVENT, handle);
     return () => {
       window.removeEventListener(NATIVE_FILE_DROP_EVENT, handle);
       clearTimer();
       pendingRef.current = null;
+      awaitingHandlerRef.current = null;
     };
   }, [clearTimer]);
 
@@ -119,16 +123,21 @@ export function useNativeFileDrop({
       const pending = pendingRef.current;
       pendingRef.current = null;
       awaitingRef.current = false;
+      awaitingHandlerRef.current = null;
       clearTimer();
       if (pending) {
         if (pending.length > 0) onFilesRef.current(pending);
         return;
       }
       awaitingRef.current = true;
+      // Bind the destination to the DOM drop, even if navigation occurs before
+      // the corresponding native event delivers the file capabilities.
+      awaitingHandlerRef.current = onFilesRef.current;
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null;
         if (!awaitingRef.current) return;
         awaitingRef.current = false;
+        awaitingHandlerRef.current = null;
         onUnavailableRef.current();
       }, 900);
     },

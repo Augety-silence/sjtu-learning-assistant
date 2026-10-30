@@ -372,7 +372,7 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(1, len(confirms))
         self.assertEqual("ask", confirms[0].url.params["conflict_resolution_strategy"])
 
-    def test_simple_upload_size_mismatch_cleans_remote_object(self) -> None:
+    def test_simple_upload_size_mismatch_does_not_delete_remote_path(self) -> None:
         requests: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -412,8 +412,37 @@ class SJTUCloudPanTests(unittest.TestCase):
         finally:
             client.close()
         deletes = [request for request in requests if request.method == "DELETE"]
-        self.assertEqual(1, len(deletes))
-        self.assertEqual("1", deletes[0].url.params["permanent"])
+        self.assertEqual([], deletes)
+
+    def test_multipart_size_mismatch_does_not_delete_remote_path(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        session = UploadSession(
+            remote_path=("file.bin",), confirm_key="confirm", next_part=2,
+            uploaded_parts=[1], part_sizes={1: 3},
+        )
+        try:
+            with patch.object(provider, "_api_request", return_value={
+                "name": "file.bin", "path": ["file.bin"], "type": "file", "size": 1,
+            }), patch.object(provider, "delete") as delete:
+                with self.assertRaisesRegex(CloudIntegrityError, "未自动删除"):
+                    provider.confirm_upload(session)
+                delete.assert_not_called()
+        finally:
+            client.close()
+
+    def test_multipart_failure_discards_cached_signatures(self) -> None:
+        provider, client = self.provider(lambda request: httpx.Response(500, request=request))
+        session = UploadSession(remote_path=("file.bin",), confirm_key="confirm", upload_id="upload")
+        provider._part_credentials["upload"] = {1: {"authorization": "test-signature"}}
+        try:
+            with patch.object(provider, "init_multipart", return_value=session), patch.object(
+                provider, "resume_upload", side_effect=CloudRemoteApiError("failed")
+            ):
+                with self.assertRaises(CloudRemoteApiError):
+                    provider.multipart_upload("file.bin", b"data")
+            self.assertNotIn("upload", provider._part_credentials)
+        finally:
+            client.close()
 
     def test_multipart_renew_resume_confirm_and_safe_serialization(self) -> None:
         requests: list[httpx.Request] = []

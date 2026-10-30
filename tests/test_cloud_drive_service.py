@@ -245,6 +245,30 @@ class CloudDriveServiceTests(unittest.TestCase):
         with self.assertRaises(CloudNotFoundError):
             self.drive.list(("不存在",))
 
+    def test_concurrent_invalidation_does_not_cache_old_listing(self):
+        fetched = threading.Event()
+        resume = threading.Event()
+        original = self.pan.iter_directory
+
+        def delayed(path, *, page_size):
+            snapshot = list(original(path, page_size=page_size))
+            fetched.set()
+            self.assertTrue(resume.wait(5))
+            yield from snapshot
+
+        self.pan.iter_directory = delayed
+        worker = threading.Thread(target=lambda: self.drive.list(()))
+        worker.start()
+        try:
+            self.assertTrue(fetched.wait(5))
+            self.drive.create_folder((), "新目录")
+        finally:
+            resume.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.pan.iter_directory = original
+        self.assertIn("新目录", [item["name"] for item in self.drive.list(())["items"]])
+
     def test_create_folder_and_conflict(self):
         created = self.drive.create_folder((), "实验报告")
         self.assertTrue(created["is_directory"])
@@ -319,6 +343,19 @@ class CloudDriveServiceTests(unittest.TestCase):
             with self.assertRaises(CloudDriveError):
                 self.drive.upload(str(local), (), conflict="nuke")
 
+    def test_upload_size_boundary_without_allocating_file_contents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "large.bin"
+            local.write_bytes(b"x")
+            self.pan.multipart_upload = Mock(return_value=item(("large.bin",), size=2 * 1024**3))
+            with patch("sjtu_learning_assistant.cloud_drive_service.os.fstat") as fstat:
+                fstat.return_value.st_size = 2 * 1024**3
+                self.drive.upload(str(local), ())
+                fstat.return_value.st_size += 1
+                with self.assertRaisesRegex(CloudDriveError, "2 GiB"):
+                    self.drive.upload(str(local), ())
+            self.pan.multipart_upload.assert_called_once()
+
     def test_upload_cancel(self):
         with tempfile.TemporaryDirectory() as directory:
             local = Path(directory) / "big.bin"
@@ -334,6 +371,62 @@ class CloudDriveServiceTests(unittest.TestCase):
                 self.drive.upload(str(local), (), transfer_id="cancel-0001")
             snapshot = {entry["id"]: entry for entry in self.drive.transfers.snapshot()}
             self.assertEqual("cancelled", snapshot["cancel-0001"]["status"])
+
+    def test_upload_rejects_source_truncated_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "file.bin"
+            local.write_bytes(b"original bytes")
+            original = self.pan.simple_upload
+
+            def truncated(path, source, *, overwrite=False):
+                local.write_bytes(b"short")
+                return original(path, source, overwrite=overwrite)
+
+            self.pan.simple_upload = truncated
+            with self.assertRaisesRegex(CloudDriveError, "变短"):
+                self.drive.upload(str(local), (), transfer_id="short-file")
+            self.assertNotIn(("file.bin",), self.pan.nodes)
+            self.assertEqual("failed", self.drive.transfers.snapshot()[-1]["status"])
+
+    def test_simple_upload_rejects_truncated_read_all(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "file.bin"
+            local.write_bytes(b"original bytes")
+
+            def truncated(path, source, *, overwrite=False):
+                local.write_bytes(b"short")
+                source.read()
+                self.fail("a shortened source must not be committed")
+
+            self.pan.simple_upload = truncated
+            with self.assertRaisesRegex(CloudDriveError, "变短"):
+                self.drive.upload(str(local), ())
+
+    def test_multipart_cancel_after_last_chunk_before_confirm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "file.bin"
+            local.write_bytes(b"last chunk")
+
+            def multipart(path, source, *, overwrite=False, chunk_size):
+                self.assertEqual(b"last chunk", source.read(chunk_size))
+                self.assertTrue(self.drive.cancel("last-chunk")["cancelled"])
+                source.read(chunk_size)
+                self.fail("cancelled upload must not be confirmed")
+
+            self.pan.multipart_upload = multipart
+            with patch("sjtu_learning_assistant.cloud_drive_service.SIMPLE_UPLOAD_LIMIT", 1):
+                with self.assertRaises(TransferCancelled):
+                    self.drive.upload(str(local), (), transfer_id="last-chunk")
+            self.assertEqual("cancelled", self.drive.transfers.snapshot()[-1]["status"])
+
+    def test_unexpected_upload_error_finishes_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / "file.bin"
+            local.write_bytes(b"x")
+            self.pan.simple_upload = Mock(side_effect=RuntimeError("unexpected"))
+            with self.assertRaises(RuntimeError):
+                self.drive.upload(str(local), (), transfer_id="upload-error")
+            self.assertEqual("failed", self.drive.transfers.snapshot()[-1]["status"])
 
     def test_download_atomic_and_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -366,6 +459,28 @@ class CloudDriveServiceTests(unittest.TestCase):
                     )
             snapshot = {item["id"]: item for item in self.drive.transfers.snapshot()}
             self.assertEqual("failed", snapshot["download-fail"]["status"])
+
+    def test_cancel_before_download_commit_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target.pdf"
+            target.write_bytes(b"existing")
+            with patch("sjtu_learning_assistant.cloud_drive_service.os.fsync") as fsync:
+                fsync.side_effect = lambda _: self.assertTrue(self.drive.cancel("download-cancel")["cancelled"])
+                with self.assertRaises(TransferCancelled):
+                    self.drive.download(("课程", "第1周.pdf"), str(target), transfer_id="download-cancel")
+            self.assertEqual(b"existing", target.read_bytes())
+            self.assertEqual(["target.pdf"], [p.name for p in Path(directory).iterdir()])
+            self.assertEqual("cancelled", self.drive.transfers.snapshot()[-1]["status"])
+
+    def test_download_does_not_overwrite_file_created_during_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target.pdf"
+            with patch("sjtu_learning_assistant.cloud_drive_service.os.fsync") as fsync:
+                fsync.side_effect = lambda _: target.write_bytes(b"other process")
+                with self.assertRaisesRegex(CloudDriveError, "同名文件"):
+                    self.drive.download(("课程", "第1周.pdf"), str(target), transfer_id="download-race")
+            self.assertEqual(b"other process", target.read_bytes())
+            self.assertEqual(["target.pdf"], [p.name for p in Path(directory).iterdir()])
 
     def test_duplicate_running_transfer_is_rejected(self):
         transfer = self.drive.transfers.start("same-id-01", kind="upload", name="a", total=1)
@@ -474,6 +589,71 @@ class DriveBridgeTests(unittest.TestCase):
         self.assertEqual("上传 (1).txt", renamed["data"]["item"]["name"])
         self.assertEqual("operation_failed", self.call("drive_upload", {"path": registered["path"], "parent": [], "conflict": "x"})["error"]["code"])
 
+    def test_upload_capability_cannot_be_used_concurrently(self):
+        token = self.call("drive_upload_pick")["data"]["files"][0]["path"]
+        entered, proceed = threading.Event(), threading.Event()
+        drive = self.bridge._drive()
+        original = drive.upload
+
+        def blocking_upload(*args, **kwargs):
+            entered.set()
+            self.assertTrue(proceed.wait(5))
+            return original(*args, **kwargs)
+
+        results = []
+        with patch.object(drive, "upload", side_effect=blocking_upload):
+            thread = threading.Thread(target=lambda: results.append(self.call("drive_upload", {"path": token, "parent": []})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            second = self.call("drive_upload", {"path": token, "parent": ["课程"]})
+            proceed.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(results[0]["ok"])
+        self.assertFalse(second["ok"])
+
+    def test_upload_rejects_file_or_parent_replaced_after_registration(self):
+        target = self.root / "unselected.txt"
+        target.write_bytes(b"other")
+        token = self.call("drive_upload_pick")["data"]["files"][0]["path"]
+        self.local.unlink()
+        try:
+            self.local.symlink_to(target)
+        except OSError as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        result = self.call("drive_upload", {"path": token, "parent": []})
+        self.assertFalse(result["ok"])
+        self.assertNotIn(("上传.txt",), self.pan.nodes)
+
+        original = self.root / "selected"
+        original.mkdir()
+        selected = original / "item.txt"
+        selected.write_bytes(b"selected")
+        other = self.root / "other"
+        other.mkdir()
+        (other / "item.txt").write_bytes(b"other")
+        token = self.bridge._drive_register_upload(str(selected))["path"]
+        original.rename(self.root / "moved")
+        original.symlink_to(other, target_is_directory=True)
+        self.assertFalse(self.call("drive_upload", {"path": token, "parent": []})["ok"])
+
+    def test_upload_uses_verified_handle_after_path_changes(self):
+        token = self.call("drive_upload_pick")["data"]["files"][0]["path"]
+        target = self.root / "unselected.txt"
+        target.write_bytes(b"other")
+        drive = self.bridge._drive()
+        original_upload = drive.upload
+
+        def swap_then_upload(*args, **kwargs):
+            self.local.unlink()
+            self.local.symlink_to(target)
+            return original_upload(*args, **kwargs)
+
+        with patch.object(drive, "upload", side_effect=swap_then_upload):
+            result = self.call("drive_upload", {"path": token, "parent": []})
+        self.assertTrue(result["ok"])
+        self.assertEqual(b"payload", self.pan.blobs[("上传.txt",)])
+
     def test_upload_capability_can_be_released(self):
         token = self.call("drive_upload_pick")["data"]["files"][0]["path"]
         released = self.call("drive_upload_release", {"tokens": [token]})
@@ -492,7 +672,45 @@ class DriveBridgeTests(unittest.TestCase):
         result = self.call("drive_upload", {"path": entry["path"], "parent": ["课程"], "relative_dir": entry["relative_dir"]})
         self.assertEqual(["课程", self.root.name, "子目录", "a.md"], result["data"]["item"]["path"])
 
+    def test_download_cancel_before_or_during_save_picker(self):
+        transfer_id = "download-cancel-1"
+        path = ["课程", "第1周.pdf"]
+        self.assertTrue(self.call("drive_prepare_download", {"path": path, "transfer_id": transfer_id})["ok"])
+        self.assertTrue(self.call("drive_cancel", {"transfer_id": transfer_id})["data"]["cancelled"])
+        picker = Mock(return_value=str(self.saved))
+        self.bridge._save_file_picker = picker
+        self.assertEqual("cancelled", self.call("drive_download", {"path": path, "transfer_id": transfer_id})["error"]["code"])
+        picker.assert_not_called()
+        self.assertFalse(self.saved.exists())
+
+        entered, proceed = threading.Event(), threading.Event()
+        def wait_picker(_name):
+            entered.set()
+            self.assertTrue(proceed.wait(5))
+            return str(self.saved)
+        self.bridge._save_file_picker = wait_picker
+        results = []
+        self.assertTrue(self.call("drive_prepare_download", {"path": path, "transfer_id": "download-cancel-2"})["ok"])
+        thread = threading.Thread(target=lambda: results.append(self.call("drive_download", {"path": path, "transfer_id": "download-cancel-2"})))
+        thread.start()
+        self.assertTrue(entered.wait(5))
+        self.assertTrue(self.call("drive_cancel", {"transfer_id": "download-cancel-2"})["data"]["cancelled"])
+        proceed.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual("cancelled", results[0]["error"]["code"])
+        self.assertFalse(self.saved.exists())
+
+    def test_prepared_download_is_bound_to_path_and_cannot_be_reused(self):
+        payload = {"path": ["课程", "第1周.pdf"], "transfer_id": "download-bound"}
+        self.assertTrue(self.call("drive_prepare_download", payload)["ok"])
+        self.assertFalse(self.call("drive_prepare_download", payload)["ok"])
+        self.assertFalse(self.call("drive_download", {**payload, "path": ["other.pdf"]})["ok"])
+        self.assertTrue(self.call("drive_download", payload)["ok"])
+        self.assertFalse(self.call("drive_download", payload)["ok"])
+
     def test_download_and_reveal(self):
+        self.assertTrue(self.call("drive_prepare_download", {"path": ["课程", "第1周.pdf"], "transfer_id": "dl-000001"})["ok"])
         result = self.call("drive_download", {"path": ["课程", "第1周.pdf"], "transfer_id": "dl-000001"})
         self.assertEqual("downloaded", result["data"]["status"])
         self.assertNotIn(str(self.root), str(result))
@@ -506,6 +724,19 @@ class DriveBridgeTests(unittest.TestCase):
         self.assertFalse(self.call("drive_cancel", {"transfer_id": "dl-000001"})["data"]["cancelled"])
         cancelled = DesktopBridge(Mock(), FakeLearning(self.pan), save_file_picker=lambda name: None)
         self.assertEqual("cancelled", cancelled.invoke("drive_download", {"path": ["课程", "第1周.pdf"]})["data"]["status"])
+
+    def test_save_target_symlink_does_not_overwrite_its_destination(self):
+        victim = self.root / "victim.pdf"
+        victim.write_bytes(b"original")
+        try:
+            self.saved.symlink_to(victim)
+        except OSError:
+            self.skipTest("当前环境不允许创建符号链接")
+        result = self.call("drive_download", {"path": ["课程", "第1周.pdf"]})
+        self.assertFalse(result["ok"])
+        self.assertIn("同名文件", result["error"]["message"])
+        self.assertEqual(b"original", victim.read_bytes())
+        self.assertTrue(self.saved.is_symlink())
 
     def test_missing_learning_service_or_pickers(self):
         bare = DesktopBridge(Mock())

@@ -9,6 +9,7 @@ import {
   cancelDriveTransfer,
   downloadDriveItem,
   getDriveTransfers,
+  prepareDriveDownload,
   releaseDriveUploads,
   uploadDriveFile,
 } from "@/lib/api";
@@ -85,6 +86,8 @@ let conflictResolver:
 const batchPolicy = new Map<string, Exclude<ConflictChoice, "cancel">>();
 const cancelledBatches = new Set<string>();
 const cancelledDownloads = new Set<string>();
+const startedDownloads = new Set<string>();
+const registeredDownloads = new Set<string>();
 
 function releaseCapabilities(items: LocalTransfer[]) {
   const tokens = [
@@ -94,8 +97,13 @@ function releaseCapabilities(items: LocalTransfer[]) {
         .map((item) => item.localPath as string),
     ),
   ];
-  if (tokens.length > 0)
-    void releaseDriveUploads(tokens).catch(() => undefined);
+  // The bridge bounds each release request; a long-running queue can retain
+  // more finished records than that limit before it is trimmed.
+  for (let offset = 0; offset < tokens.length; offset += 200) {
+    void releaseDriveUploads(tokens.slice(offset, offset + 200)).catch(
+      () => undefined,
+    );
+  }
 }
 
 function emit(next: Partial<StoreState>) {
@@ -117,11 +125,11 @@ function task(id: string) {
 }
 
 function trimFinished(tasks: LocalTransfer[]) {
-  const finished = tasks.filter((item) => !ACTIVE.includes(item.status));
+  const finished = tasks.filter((item) => !isActiveTransfer(item));
   if (finished.length <= MAX_FINISHED) return tasks;
-  const drop = new Set(
-    finished.slice(0, finished.length - MAX_FINISHED).map((item) => item.id),
-  );
+  const dropped = finished.slice(0, finished.length - MAX_FINISHED);
+  releaseCapabilities(dropped);
+  const drop = new Set(dropped.map((item) => item.id));
   return tasks.filter((item) => !drop.has(item.id));
 }
 
@@ -390,7 +398,7 @@ export const driveTransfers = {
     return { queued: queued.length, rejected: created.length - queued.length };
   },
 
-  /** 串行下载：每个文件先弹出系统保存对话框，再写入临时文件并原子替换。 */
+  /** 串行下载：每个文件先弹出系统保存对话框，再以不覆盖方式提交临时文件。 */
   download(item: DriveItem) {
     const id = newTransferId("d");
     emit({
@@ -412,10 +420,17 @@ export const driveTransfers = {
       ],
     });
     const run = async () => {
+      startedDownloads.add(id);
       try {
         if (cancelledDownloads.delete(id)) {
           patchTask(id, { status: "cancelled", message: "已取消" });
           return { status: "cancelled" as const, id };
+        }
+        await prepareDriveDownload(item.path, id);
+        registeredDownloads.add(id);
+        if (cancelledDownloads.delete(id)) {
+          const result = await cancelDriveTransfer(id);
+          if (!result.cancelled) throw new Error("取消下载失败，请重试");
         }
         const result = await downloadDriveItem(item.path, id);
         if (result.status === "cancelled") {
@@ -447,6 +462,9 @@ export const driveTransfers = {
           message: errorMessage(reason, "下载失败"),
         };
       } finally {
+        startedDownloads.delete(id);
+        registeredDownloads.delete(id);
+        cancelledDownloads.delete(id);
         emit({ tasks: trimFinished(state.tasks) });
       }
     };
@@ -469,16 +487,26 @@ export const driveTransfers = {
       return;
     }
     if (current.kind === "download" && current.status === "preparing") {
-      cancelledDownloads.add(id);
-      patchTask(id, { status: "cancelled", message: "已取消" });
-      return;
+      if (!registeredDownloads.has(id)) {
+        cancelledDownloads.add(id);
+        patchTask(
+          id,
+          startedDownloads.has(id)
+            ? { message: "正在取消…" }
+            : { status: "cancelled", message: "已取消" },
+        );
+        return;
+      }
     }
-    if (current.status !== "running") return;
+    if (current.status !== "running" && current.status !== "preparing") return;
     patchTask(id, { message: "正在取消…" });
     try {
-      await cancelDriveTransfer(id);
+      const result = await cancelDriveTransfer(id);
+      if (!result.cancelled && task(id)?.status === current.status)
+        patchTask(id, { message: "无法取消，传输可能已结束" });
     } catch {
-      patchTask(id, { message: null });
+      if (task(id)?.status === current.status)
+        patchTask(id, { message: "取消失败，请重试" });
     }
   },
 
@@ -540,6 +568,8 @@ export function resetDriveTransfersForTest() {
   batchPolicy.clear();
   cancelledBatches.clear();
   cancelledDownloads.clear();
+  startedDownloads.clear();
+  registeredDownloads.clear();
   state = {
     tasks: [],
     conflict: null,
