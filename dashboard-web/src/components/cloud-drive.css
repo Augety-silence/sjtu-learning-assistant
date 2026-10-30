@@ -1,0 +1,1398 @@
+/* 交大云盘文件管理器。仅使用 Aura 语义令牌，暗色模式随 :root[data-theme] 自动切换。 */
+
+.drive-page {
+  --drive-row-height: 48px;
+  --drive-accent: var(--action-primary);
+  --drive-accent-soft: color-mix(in srgb, var(--drive-accent) 10%, transparent);
+  --drive-selected: color-mix(in srgb, var(--drive-accent) 12%, var(--surface-elevated));
+  gap: 14px;
+  padding-bottom: 96px;
+}
+
+.drive-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.drive-tab-icon {
+  width: 15px;
+  height: 15px;
+  margin-right: 6px;
+}
+
+.drive-tab-panel:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.drive-tab-panel[data-state="inactive"][hidden] {
+  display: none;
+}
+
+.drive-browser {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--aura-border);
+  border-radius: var(--aura-radius-card);
+  background: var(--aura-panel-strong);
+  box-shadow: var(--aura-shadow-soft);
+}
+
+.drive-browser[hidden] {
+  display: none;
+}
+
+/* ---------- 空间栏 ---------- */
+.drive-space-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 14px 18px 10px;
+}
+
+.drive-space-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.drive-space-title svg {
+  width: 18px;
+  height: 18px;
+  color: var(--drive-accent);
+}
+
+.drive-space-usage {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-caption);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.drive-space-divider {
+  margin-inline: 8px;
+  color: var(--border-default);
+}
+
+.drive-meter {
+  position: relative;
+  display: inline-block;
+  width: 120px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-control);
+}
+
+.drive-meter > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--drive-accent);
+  transition: width var(--motion-enter) var(--ease-motion-out);
+}
+
+.drive-meter[data-level="mid"] > span {
+  background: var(--status-warning);
+}
+
+.drive-meter[data-level="high"] > span {
+  background: var(--status-danger);
+}
+
+/* ---------- 工具栏 ---------- */
+.drive-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 18px 12px;
+}
+
+.drive-toolbar-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+}
+
+.drive-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: min(320px, 100%);
+}
+
+.drive-search > svg {
+  position: absolute;
+  left: 10px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.drive-search input {
+  width: 100%;
+  height: 34px;
+  padding: 0 32px 0 32px;
+  border: 1px solid var(--border-component, var(--border-default));
+  border-radius: var(--aura-radius-control);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 13px;
+  transition:
+    border-color var(--motion-control) var(--ease-motion-out),
+    box-shadow var(--motion-control) var(--ease-motion-out);
+}
+
+.drive-search input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.drive-search input:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px var(--border-focus-soft);
+}
+
+.drive-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.drive-search-clear {
+  position: absolute;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-caption);
+  cursor: pointer;
+}
+
+.drive-search-clear:hover {
+  background: var(--surface-hover);
+}
+
+.drive-search-clear svg {
+  width: 13px;
+  height: 13px;
+}
+
+.drive-spin {
+  animation: drive-spin 900ms linear infinite;
+}
+
+@keyframes drive-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 面包屑 ---------- */
+.drive-location {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drive-crumbs {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.drive-crumbs ol {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.drive-crumbs li {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-width: 0;
+}
+
+.drive-crumbs li > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+}
+
+.drive-crumbs button,
+.drive-picker-crumbs button {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-caption);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.drive-crumbs button:hover,
+.drive-picker-crumbs button:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.drive-crumbs button[aria-current="page"],
+.drive-picker-crumbs button[aria-current="location"] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.drive-search-note {
+  flex: none;
+  color: var(--text-caption);
+  font-size: 12px;
+}
+
+/* ---------- 批量操作栏 ---------- */
+.drive-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 4px 6px 4px 14px;
+  border: 1px solid color-mix(in srgb, var(--drive-accent) 24%, transparent);
+  border-radius: 10px;
+  background: var(--drive-accent-soft);
+  color: var(--text-primary);
+  font-size: 13px;
+  animation: drive-fade-in var(--motion-enter) var(--ease-motion-out);
+}
+
+.drive-selection-bar > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.drive-danger-text,
+.drive-danger-text:hover {
+  color: var(--status-danger);
+}
+
+/* ---------- 工作区：列表 + 详情 ---------- */
+.drive-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 420px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drive-workspace.has-details {
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+.drive-list-area {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 420px;
+}
+
+.drive-list-area > .state-box {
+  flex: 1;
+  border: 0;
+  background: transparent;
+}
+
+.drive-list-area .state-illustration svg {
+  width: 40px;
+  height: 40px;
+  color: var(--text-tertiary);
+}
+
+.drive-table-scroll {
+  flex: 1;
+  overflow: auto;
+}
+
+.drive-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.drive-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 40px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--aura-panel-strong);
+  color: var(--text-caption);
+  font-weight: 500;
+  text-align: left;
+  backdrop-filter: blur(12px);
+}
+
+.drive-col-check {
+  width: 44px;
+  text-align: center !important;
+}
+
+.drive-col-modified {
+  width: 170px;
+}
+
+.drive-col-size {
+  width: 110px;
+}
+
+.drive-col-actions {
+  width: 52px;
+}
+
+.drive-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  margin-left: -6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.drive-sort svg {
+  width: 13px;
+  height: 13px;
+  opacity: 0.45;
+}
+
+.drive-sort:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.drive-sort.is-active {
+  color: var(--text-primary);
+}
+
+.drive-sort.is-active svg {
+  opacity: 1;
+}
+
+.drive-check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--drive-accent);
+  cursor: pointer;
+}
+
+.drive-row td {
+  height: var(--drive-row-height);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.drive-row {
+  cursor: default;
+  user-select: none;
+  transition: background-color var(--motion-fast) var(--ease-motion-out);
+}
+
+.drive-row:hover td {
+  background: var(--surface-hover);
+}
+
+.drive-row.is-selected td {
+  background: var(--drive-selected);
+}
+
+.drive-row:focus-visible {
+  outline: none;
+}
+
+.drive-row:focus-visible td {
+  box-shadow: inset 0 2px 0 var(--focus-ring), inset 0 -2px 0 var(--focus-ring);
+}
+
+.drive-row:focus-visible td:first-child {
+  box-shadow:
+    inset 2px 0 0 var(--focus-ring),
+    inset 0 2px 0 var(--focus-ring),
+    inset 0 -2px 0 var(--focus-ring);
+}
+
+.drive-row:focus-visible td:last-child {
+  box-shadow:
+    inset -2px 0 0 var(--focus-ring),
+    inset 0 2px 0 var(--focus-ring),
+    inset 0 -2px 0 var(--focus-ring);
+}
+
+.drive-row.is-busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.drive-col-modified,
+.drive-col-size {
+  font-variant-numeric: tabular-nums;
+}
+
+.drive-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drive-name-link,
+.drive-name-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-name-link {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drive-name-link:hover {
+  color: var(--drive-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* 文件类型图标：参照主流网盘用色块区分类型，颜色与文字搭配而非单独承载语义。 */
+.drive-file-icon {
+  --tone: var(--text-caption);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tone) 13%, transparent);
+  color: var(--tone);
+}
+
+.drive-file-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.drive-file-icon-lg {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+.drive-file-icon-lg svg {
+  width: 28px;
+  height: 28px;
+}
+
+.drive-file-icon[data-tone="folder"] {
+  --tone: #e3a008;
+}
+.drive-file-icon[data-tone="image"] {
+  --tone: #16a34a;
+}
+.drive-file-icon[data-tone="video"] {
+  --tone: #9333ea;
+}
+.drive-file-icon[data-tone="audio"] {
+  --tone: #db2777;
+}
+.drive-file-icon[data-tone="archive"] {
+  --tone: #a16207;
+}
+.drive-file-icon[data-tone="sheet"] {
+  --tone: #15803d;
+}
+.drive-file-icon[data-tone="slides"] {
+  --tone: #ea580c;
+}
+.drive-file-icon[data-tone="doc"] {
+  --tone: #2563eb;
+}
+.drive-file-icon[data-tone="code"] {
+  --tone: #0f766e;
+}
+
+:root[data-theme="dark"] .drive-file-icon[data-tone="folder"] {
+  --tone: #f5c04a;
+}
+:root[data-theme="dark"] .drive-file-icon[data-tone="doc"] {
+  --tone: #7aa7ff;
+}
+:root[data-theme="dark"] .drive-file-icon[data-tone="code"] {
+  --tone: #4fd1c5;
+}
+:root[data-theme="dark"] .drive-file-icon[data-tone="video"] {
+  --tone: #c084fc;
+}
+
+.drive-row-more {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-caption);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--motion-fast) var(--ease-motion-out);
+}
+
+.drive-row-more svg {
+  width: 16px;
+  height: 16px;
+}
+
+.drive-row:hover .drive-row-more,
+.drive-row:focus-within .drive-row-more,
+.drive-row.is-selected .drive-row-more,
+.drive-row-more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.drive-row-more:hover {
+  background: var(--surface-control);
+  color: var(--text-primary);
+}
+
+@media (hover: none) {
+  .drive-row-more {
+    opacity: 1;
+  }
+}
+
+/* ---------- 分页 ---------- */
+.drive-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  min-height: 48px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-caption);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.drive-pagination > span:first-child {
+  margin-right: auto;
+}
+
+.drive-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drive-page-size select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.drive-page-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.drive-notice {
+  margin: 8px 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--status-warning-bg);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+/* ---------- 拖放 ---------- */
+.drive-list-area.is-drop-target {
+  outline: 2px dashed var(--drive-accent);
+  outline-offset: -8px;
+}
+
+.drive-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--drive-accent) 8%, var(--aura-panel-strong));
+  color: var(--drive-accent);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+  animation: drive-fade-in var(--motion-fast) var(--ease-motion-out);
+}
+
+.drive-drop-overlay svg {
+  width: 36px;
+  height: 36px;
+}
+
+/* ---------- 详情栏 ---------- */
+.drive-details {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 12px 16px 20px;
+  border-left: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-subtle) 60%, transparent);
+}
+
+.drive-details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drive-details-header h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.drive-details-header h3 svg {
+  width: 15px;
+  height: 15px;
+  color: var(--text-caption);
+}
+
+.drive-details-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 4px;
+  text-align: center;
+}
+
+.drive-details-name {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.drive-details-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.drive-details-list > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.drive-details-list dt {
+  color: var(--text-caption);
+}
+
+.drive-details-list dd {
+  margin: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.drive-details-path {
+  color: var(--text-secondary) !important;
+}
+
+/* ---------- 菜单 ---------- */
+.drive-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 196px;
+  max-width: 280px;
+  padding: 5px;
+  border: 1px solid var(--aura-border-strong);
+  border-radius: var(--aura-radius-overlay);
+  background: var(--surface-elevated);
+  box-shadow: var(--aura-shadow-overlay);
+  animation: drive-pop-in var(--motion-fast) var(--ease-motion-out);
+}
+
+.drive-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drive-menu-item > svg,
+.drive-menu-icon-gap {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-caption);
+}
+
+.drive-menu-item > span:not(.drive-menu-icon-gap) {
+  flex: 1;
+}
+
+.drive-menu-item:hover,
+.drive-menu-item:focus-visible {
+  outline: none;
+  background: var(--surface-hover);
+}
+
+.drive-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.drive-menu-item.is-danger,
+.drive-menu-item.is-danger > svg {
+  color: var(--status-danger);
+}
+
+.drive-menu-item.is-danger:hover,
+.drive-menu-item.is-danger:focus-visible {
+  background: var(--status-danger-bg);
+}
+
+.drive-menu-item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.drive-menu-shortcut {
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+}
+
+.drive-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-subtle);
+}
+
+.drive-menu-empty {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--text-caption);
+  font-size: 12.5px;
+}
+
+/* ---------- 对话框 ---------- */
+.drive-dialog-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.drive-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: var(--aura-overlay);
+  animation: drive-fade-in var(--motion-fast) var(--ease-motion-out);
+}
+
+.drive-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(440px, 100%);
+  max-height: min(640px, calc(100vh - 48px));
+  padding: 20px;
+  border: 1px solid var(--aura-border-strong);
+  border-radius: var(--aura-radius-overlay);
+  background: var(--surface-elevated);
+  box-shadow: var(--aura-shadow-overlay);
+  animation: drive-pop-in var(--motion-enter) var(--ease-motion-out);
+}
+
+.drive-dialog:focus-visible {
+  outline: none;
+}
+
+.drive-dialog-wide {
+  width: min(560px, 100%);
+}
+
+.drive-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.drive-dialog-header h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.drive-dialog-header p {
+  margin: 6px 0 0;
+  color: var(--text-caption);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.drive-dialog-body {
+  display: grid;
+  gap: 10px;
+}
+
+.drive-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.drive-dialog-hint {
+  margin-right: auto;
+  color: var(--status-warning);
+  font-size: 12.5px;
+}
+
+.drive-dialog-note {
+  margin: 0;
+  color: var(--text-caption);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.drive-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.drive-field input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--aura-radius-control);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.drive-field input:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px var(--border-focus-soft);
+}
+
+.drive-field input[aria-invalid="true"] {
+  border-color: var(--status-danger);
+}
+
+.drive-field-error {
+  margin: 0;
+  color: var(--status-danger);
+  font-size: 12.5px;
+}
+
+.drive-danger-button {
+  background: var(--action-danger);
+  color: #fff;
+}
+
+.drive-danger-button:hover {
+  background: color-mix(in srgb, var(--action-danger) 88%, #000);
+}
+
+.drive-dialog-list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  list-style: none;
+  font-size: 13px;
+}
+
+.drive-dialog-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.drive-dialog-list li span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-dialog-list svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: #e3a008;
+}
+
+.drive-dot {
+  width: 6px;
+  height: 6px;
+  margin: 0 4px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.drive-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.drive-checkbox-row input {
+  accent-color: var(--drive-accent, var(--action-primary));
+}
+
+.drive-picker-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.drive-picker-crumbs > button:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drive-picker-crumbs svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+}
+
+.drive-crumb-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.drive-picker-list {
+  min-height: 220px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.drive-picker-list ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drive-picker-list li button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drive-picker-list li button span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-picker-list li button svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.drive-picker-list li button svg:first-child {
+  color: #e3a008;
+}
+
+.drive-picker-list li button svg:last-child {
+  color: var(--text-tertiary);
+}
+
+.drive-picker-list li button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.drive-picker-list li button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.drive-picker-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  margin: 0;
+  color: var(--text-caption);
+  font-size: 13px;
+}
+
+.drive-picker-error {
+  color: var(--status-danger);
+}
+
+.drive-picker-state svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- 传输面板 ---------- */
+.drive-transfer-tray {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow: hidden;
+  border: 1px solid var(--aura-border-strong);
+  border-radius: var(--aura-radius-overlay);
+  background: var(--surface-elevated);
+  box-shadow: var(--aura-shadow-overlay);
+  animation: drive-pop-in var(--motion-enter) var(--ease-motion-out);
+}
+
+.drive-transfer-tray header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 46px;
+  padding: 4px 6px 4px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.drive-transfer-tray[data-collapsed="true"] header {
+  border-bottom: 0;
+}
+
+.drive-transfer-tray header p {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.drive-transfer-tray header > div {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.drive-transfer-list {
+  margin: 0;
+  padding: 4px 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.drive-transfer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+}
+
+.drive-transfer-row + .drive-transfer-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.drive-transfer-kind {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--drive-accent, var(--action-primary));
+}
+
+.drive-transfer-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.drive-transfer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.drive-transfer-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-transfer-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-caption);
+  font-size: 12px;
+}
+
+.drive-transfer-status svg {
+  width: 13px;
+  height: 13px;
+}
+
+.drive-transfer-row[data-status="done"] .drive-transfer-status {
+  color: var(--status-success);
+}
+
+.drive-transfer-row[data-status="failed"] .drive-transfer-status,
+.drive-transfer-row[data-status="failed"] .drive-transfer-meta {
+  color: var(--status-danger);
+}
+
+.drive-transfer-row[data-status="conflict"] .drive-transfer-status {
+  color: var(--status-warning);
+}
+
+.drive-transfer-meta {
+  min-height: 16px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-caption);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-transfer-actions {
+  display: flex;
+  flex: none;
+}
+
+.drive-progress {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-control);
+}
+
+.drive-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--drive-accent, var(--action-primary));
+  transition: width var(--motion-control) linear;
+}
+
+.drive-progress > span.is-indeterminate {
+  width: 35%;
+  animation: drive-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes drive-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+@keyframes drive-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drive-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 1080px) {
+  .drive-workspace.has-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drive-details {
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .drive-col-modified {
+    display: none;
+  }
+
+  .drive-search {
+    width: 100%;
+  }
+
+  .drive-toolbar-primary {
+    width: 100%;
+  }
+
+  .drive-transfer-tray {
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drive-page *,
+  .drive-menu,
+  .drive-dialog,
+  .drive-dialog-backdrop,
+  .drive-transfer-tray,
+  .drive-transfer-tray * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .drive-progress > span.is-indeterminate {
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+@media (forced-colors: active) {
+  .drive-row.is-selected td {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .drive-meter > span,
+  .drive-progress > span {
+    background: Highlight;
+  }
+}

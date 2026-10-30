@@ -368,6 +368,10 @@ class DesktopLearningService:
             course_id, assignment_id, self._assignment_service().submit_local_file(course_id, assignment_id, path)
         ))
 
+    def pan_provider(self) -> SJTUCloudPanProvider:
+        """Shared, Keychain-synced provider for the 交大云盘 file browser."""
+        return self._pan_provider()
+
     def pan_list(self, remote_path: str, page: int, page_size: int) -> dict[str, Any]:
         result = self._pan_provider().list_directory(remote_path, page=page, page_size=page_size)
         return {

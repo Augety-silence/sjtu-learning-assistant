@@ -684,27 +684,29 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             temporary_path.with_suffix("").unlink(missing_ok=True)
             raise
 
-    def delete(self, path: RemotePath, *, permanent: bool = False, missing_ok: bool = True) -> None:
+    def delete(self, path: RemotePath, *, permanent: bool = False, missing_ok: bool = True, directory: bool = False) -> None:
+        # Folders use the directory endpoint; file behaviour is unchanged for existing callers.
+        kind = "directory" if directory else "file"
         try:
-            self._api_request("DELETE", "file", path, operation="删除项目", params={"permanent": 1 if permanent else 0})
+            self._api_request("DELETE", kind, path, operation="删除项目", params={"permanent": 1 if permanent else 0})
         except CloudNotFoundError:
             if not missing_ok:
                 raise
 
-    def _copy_or_move(self, source: RemotePath, destination: RemotePath, *, move: bool, overwrite: bool) -> CloudItem:
+    def _copy_or_move(self, source: RemotePath, destination: RemotePath, *, move: bool, overwrite: bool, directory: bool = False) -> CloudItem:
         key = "from" if move else "copyFrom"
         payload = self._api_request(
-            "PUT", "file", destination, operation="移动项目" if move else "复制项目",
+            "PUT", "directory" if directory else "file", destination, operation="移动项目" if move else "复制项目",
             params={"conflict_resolution_strategy": "overwrite" if overwrite else "ask"},
             json_body={key: "/".join(_segments(source))},
         )
         return _item(payload, _segments(destination)) if isinstance(payload, Mapping) else self.get_info(destination)
 
-    def move(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False) -> CloudItem:
-        return self._copy_or_move(source, destination, move=True, overwrite=overwrite)
+    def move(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False, directory: bool = False) -> CloudItem:
+        return self._copy_or_move(source, destination, move=True, overwrite=overwrite, directory=directory)
 
-    def copy(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False) -> CloudItem:
-        return self._copy_or_move(source, destination, move=False, overwrite=overwrite)
+    def copy(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False, directory: bool = False) -> CloudItem:
+        return self._copy_or_move(source, destination, move=False, overwrite=overwrite, directory=directory)
 
     @staticmethod
     def _read_source(source: bytes | BinaryIO) -> bytes:

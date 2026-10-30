@@ -12,6 +12,7 @@ import {
   getBackupStatus,
   getCalendar,
   getCourseMedia,
+  getDriveSpace,
   getGradebook,
   getGrading,
   getMediaCapabilities,
@@ -25,6 +26,7 @@ import {
   getTranscriptLearningSegments,
   getVideoPlayback,
   invoke,
+  listDrive,
   prepareTranscriptPlayback,
   startTranscriptBatch,
   updateTranscriptPlayback,
@@ -46,6 +48,7 @@ import {
   render as renderWithProviders,
   screen,
   waitFor,
+  within,
 } from "@/test/render";
 
 function render(ui: ReactElement) {
@@ -61,6 +64,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getBackupStatus: vi.fn(),
     getCalendar: vi.fn(),
     getCourseMedia: vi.fn(),
+    getDriveSpace: vi.fn(),
+    listDrive: vi.fn(),
     getGradebook: vi.fn(),
     getGrading: vi.fn(),
     getMediaCapabilities: vi.fn(),
@@ -333,6 +338,35 @@ beforeEach(() => {
   vi.mocked(getMessages).mockResolvedValue({ items: [] });
   vi.mocked(getRoster).mockResolvedValue({ items: [] } as never);
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
+  vi.mocked(getDriveSpace).mockResolvedValue({
+    capacity: 1024 ** 4,
+    used: 233.01 * 1024 ** 3,
+    available: 790.99 * 1024 ** 3,
+    has_personal_space: true,
+  });
+  vi.mocked(listDrive).mockResolvedValue({
+    path: [],
+    page: 1,
+    page_size: 20,
+    total: 1,
+    pages: 1,
+    folder_count: 1,
+    file_count: 0,
+    truncated: false,
+    query: "",
+    sort: { by: "name", order: "asc" },
+    items: [
+      {
+        path: ["课程资料"],
+        name: "课程资料",
+        is_directory: true,
+        size: null,
+        content_type: null,
+        created_at: null,
+        modified_at: "2026-10-20T08:00:00Z",
+      },
+    ],
+  });
   vi.mocked(getBackupStatus).mockResolvedValue({
     status: "idle",
     available: true,
@@ -1064,15 +1098,26 @@ describe("页面标题焦点", () => {
   });
 });
 
-describe("云盘备份页面导航", () => {
-  it("通过独立入口更新 hash 并渲染 BackupView", async () => {
+describe("交大云盘页面导航", () => {
+  it("通过独立入口进入文件浏览器，本地同步作为子页签", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "云盘备份" }));
+    fireEvent.click(screen.getByRole("button", { name: "交大云盘" }));
 
     await waitFor(() => expect(window.location.hash).toBe("#/backup"));
     expect(
-      screen.getByRole("heading", { level: 1, name: "云盘备份" }),
+      screen.getByRole("heading", { level: 1, name: "交大云盘" }),
     ).toBeTruthy();
+    const table = await screen.findByRole("table", { name: "文件列表" });
+    expect(
+      within(table).getByRole("button", { name: "课程资料" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/已使用233\.01GB/)).toBeTruthy();
+    expect(listDrive).toHaveBeenCalled();
+    expect(getBackupStatus).not.toHaveBeenCalled();
+
+    const syncTab = screen.getByRole("tab", { name: "本地同步" });
+    fireEvent.mouseDown(syncTab, { button: 0 });
+    fireEvent.click(syncTab);
     expect(
       await screen.findByRole("heading", {
         level: 2,
