@@ -67,8 +67,16 @@ _AUTHORIZATION_HEADER_PATTERN = re.compile(
     r"set-cookie|database_url)\b[\"']?[ \t]*(?::|=|%3d)|[\r\n]|$))"
 )
 _SECRET_VALUE_PATTERN = re.compile(
-    r"(?i)\b(authorization|proxy-authorization|token|access_token|refresh_token|"
-    r"password|passwd|secret|api[_ -]?key|cookie|set-cookie|database_url)\b[\"']?"
+    # 起点用后顾断言而非 \b：允许 client_secret / db_password 这类下划线前缀，
+    # 同时阻止在 camelCase 中间（sessionToken 的 Token）重复起扫。关键字补齐
+    # 云存储 STS 凭据（tmpSecretId/tmpSecretKey/sessionToken/SecurityToken/
+    # AccessKeyId 等）与 sslpassword；每个起点只做常数长度的关键字匹配，仍为线性。
+    r"(?i)(?<![a-z0-9])(authorization|proxy-authorization|token|access_token|"
+    r"refresh_token|(?:ssl)?password|passwd|"
+    r"(?:tmp[_-]?)?secret(?:[_-]?(?:key|id))?|"
+    r"(?:x[_-]?(?:cos[_-]?)?)?(?:session|security)[_-]?token|"
+    r"access[_-]?key(?:[_-]?(?:id|secret))?|"
+    r"api[_ -]?key|cookie|set-cookie|database_url)\b[\"']?"
     # 认证头的值形如 "Basic <凭据>"：只吞掉方案名会把真正的凭据原样留下，
     # 因此无引号分支允许可选的认证方案前缀（起点受关键字锚定，仍为线性）。
     r"\s*(?::|=|%3d)\s*(\"[^\"\n]*\"|'[^'\n]*'|"

@@ -78,6 +78,10 @@ const filters: Array<{ value: AssignmentCategory; label: string }> = [
 ];
 
 const NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop";
+type NativeDroppedFile = {
+  path: string;
+  drop_token: string;
+};
 
 const typeLabels: Record<string, string> = {
   online_text_entry: "文本提交",
@@ -329,7 +333,7 @@ export function AssignmentsView({
   const detailRequestRef = useRef(0);
   const fileDragDepthRef = useRef(0);
   const awaitingNativeDropRef = useRef(false);
-  const pendingNativeDropPathsRef = useRef<string[] | null>(null);
+  const pendingNativeDropFilesRef = useRef<NativeDroppedFile[] | null>(null);
   const nativeDropTimerRef = useRef<number | null>(null);
   const droppedFileRequestRef = useRef(0);
   const selectedRef = useRef(selected);
@@ -510,9 +514,9 @@ export function AssignmentsView({
     }
   };
 
-  const registerDroppedPaths = useCallback(
-    async (paths: string[]) => {
-      if (paths.length === 0) return;
+  const registerDroppedFiles = useCallback(
+    async (files: NativeDroppedFile[]) => {
+      if (files.length === 0) return;
       const request = ++droppedFileRequestRef.current;
       const assignmentKey = selectedRef.current
         ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
@@ -522,14 +526,17 @@ export function AssignmentsView({
         (selectedRef.current
           ? `${selectedRef.current.course_id}:${selectedRef.current.id}`
           : null) === assignmentKey;
-      if (paths.length > 1) {
+      if (files.length > 1) {
         showToast({
           kind: "info",
           message: "一次只能提交一个文件，已使用拖入的第一个文件。",
         });
       }
       try {
-        const registered = await registerAssignmentLocalFile(paths[0]);
+        const registered = await registerAssignmentLocalFile(
+          files[0].path,
+          files[0].drop_token,
+        );
         if (isCurrentRequest() && !registered.cancelled)
           setLocalFile(registered);
       } catch (reason) {
@@ -550,14 +557,23 @@ export function AssignmentsView({
       if (
         typeof detail !== "object" ||
         detail === null ||
-        !("paths" in detail) ||
-        !Array.isArray(detail.paths) ||
-        detail.paths.some((path) => typeof path !== "string")
+        !("files" in detail) ||
+        !Array.isArray(detail.files) ||
+        detail.files.some(
+          (file) =>
+            typeof file !== "object" ||
+            file === null ||
+            !("path" in file) ||
+            typeof file.path !== "string" ||
+            !("drop_token" in file) ||
+            typeof file.drop_token !== "string",
+        )
       )
         return;
       if (!awaitingNativeDropRef.current) {
         if (fileDragDepthRef.current > 0)
-          pendingNativeDropPathsRef.current = detail.paths;
+          pendingNativeDropFilesRef.current =
+            detail.files as NativeDroppedFile[];
         return;
       }
       awaitingNativeDropRef.current = false;
@@ -565,16 +581,16 @@ export function AssignmentsView({
         window.clearTimeout(nativeDropTimerRef.current);
         nativeDropTimerRef.current = null;
       }
-      void registerDroppedPaths(detail.paths);
+      void registerDroppedFiles(detail.files as NativeDroppedFile[]);
     };
     window.addEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
     return () => {
       window.removeEventListener(NATIVE_FILE_DROP_EVENT, handleNativeDrop);
       if (nativeDropTimerRef.current !== null)
         window.clearTimeout(nativeDropTimerRef.current);
-      pendingNativeDropPathsRef.current = null;
+      pendingNativeDropFilesRef.current = null;
     };
-  }, [registerDroppedPaths]);
+  }, [registerDroppedFiles]);
 
   const isFileDrag = (event: ReactDragEvent<HTMLElement>) =>
     Array.from(event.dataTransfer.types).includes("Files");
@@ -583,7 +599,7 @@ export function AssignmentsView({
     if (!isFileDrag(event)) return;
     event.preventDefault();
     if (fileDragDepthRef.current === 0)
-      pendingNativeDropPathsRef.current = null;
+      pendingNativeDropFilesRef.current = null;
     fileDragDepthRef.current += 1;
     setFileDragActive(true);
   };
@@ -600,7 +616,7 @@ export function AssignmentsView({
     fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
     if (fileDragDepthRef.current === 0) setFileDragActive(false);
     if (fileDragDepthRef.current === 0)
-      pendingNativeDropPathsRef.current = null;
+      pendingNativeDropFilesRef.current = null;
   };
 
   const handleFileDrop = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -610,8 +626,8 @@ export function AssignmentsView({
     // stopping here keeps the native drop from reaching pywebview's `document`
     // drop listener, which is the only source of file paths on WebView2/GTK/Qt.
     fileDragDepthRef.current = 0;
-    const pendingNativePaths = pendingNativeDropPathsRef.current;
-    pendingNativeDropPathsRef.current = null;
+    const pendingNativeFiles = pendingNativeDropFilesRef.current;
+    pendingNativeDropFilesRef.current = null;
     setFileDragActive(false);
     // A new WebKit drop supersedes any unresolved native fallback from the previous gesture.
     awaitingNativeDropRef.current = false;
@@ -619,16 +635,8 @@ export function AssignmentsView({
       window.clearTimeout(nativeDropTimerRef.current);
       nativeDropTimerRef.current = null;
     }
-    const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
-      const path = (file as File & { path?: string }).path;
-      return path ? [path] : [];
-    });
-    if (paths.length > 0) {
-      void registerDroppedPaths(paths);
-      return;
-    }
-    if (pendingNativePaths) {
-      void registerDroppedPaths(pendingNativePaths);
+    if (pendingNativeFiles) {
+      void registerDroppedFiles(pendingNativeFiles);
       return;
     }
     awaitingNativeDropRef.current = true;

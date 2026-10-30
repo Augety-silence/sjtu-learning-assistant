@@ -71,7 +71,8 @@ _NEGATIONS = re.compile(
     re.I,
 )
 _NUMBER = re.compile(r"(?<![0-9A-Za-z_])[-+]?\d+(?:[.,]\d+)*(?:%|e[-+]?\d+)?", re.I)
-_FORMULA = re.compile(r"(?:[=<>±×÷∑∫√^]|\b(?:sin|cos|log|ln|exp)\s*\()", re.I)
+# Same reason as above: \b fails after CJK ("得sin(x)"), so use an ASCII lookbehind.
+_FORMULA = re.compile(r"(?:[=<>±×÷∑∫√^]|(?<![A-Za-z])(?:sin|cos|log|ln|exp)\s*\()", re.I)
 _PERSON_TYPE = frozenset({"person", "person_name", "name", "人名", "姓名"})
 
 

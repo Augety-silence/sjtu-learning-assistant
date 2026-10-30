@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { AIChatSettingsPanel } from "@/components/AIChatSettingsPanel";
 import { AppBrand } from "@/components/AppBrand";
@@ -149,6 +149,25 @@ export function AIChatSidebar({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyListRef = useRef<HTMLDivElement>(null);
+  // Deleting removes the focused delete button with its row, dropping focus to
+  // <body>. Remember the row position and refocus its neighbour once gone.
+  const deleteFocusRef = useRef<{ id: string; index: number } | null>(null);
+  useEffect(() => {
+    const pending = deleteFocusRef.current;
+    if (!pending || sessions.some((session) => session.id === pending.id))
+      return;
+    deleteFocusRef.current = null;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) return;
+    const rows = historyListRef.current?.querySelectorAll<HTMLButtonElement>(
+      ".ai-history-item > button:first-child",
+    );
+    const target = rows?.length
+      ? rows[Math.min(pending.index, rows.length - 1)]
+      : pickerTriggerRef.current;
+    target?.focus();
+  }, [sessions]);
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const allowedTools = new Set(selectedPreset?.allowed_tools ?? []);
@@ -261,7 +280,7 @@ export function AIChatSidebar({
           <span>历史会话</span>
           <small>{sessions.length}</small>
         </div>
-        <div className="ai-history-list">
+        <div className="ai-history-list" ref={historyListRef}>
           {sessions.length === 0 && <p>还没有历史会话</p>}
           {groups.map((group) => (
             <div className="ai-history-group" key={group.label}>
@@ -288,7 +307,22 @@ export function AIChatSidebar({
                   <button
                     type="button"
                     aria-label={`删除对话：${session.title}`}
-                    onClick={() => onDeleteSession(session.id)}
+                    onClick={(event) => {
+                      const row =
+                        event.currentTarget.closest(".ai-history-item");
+                      const rows = Array.from(
+                        historyListRef.current?.querySelectorAll(
+                          ".ai-history-item",
+                        ) ?? [],
+                      );
+                      if (session.id !== activeSessionId) {
+                        deleteFocusRef.current = {
+                          id: session.id,
+                          index: Math.max(0, row ? rows.indexOf(row) : 0),
+                        };
+                      }
+                      onDeleteSession(session.id);
+                    }}
                   >
                     <Trash2 aria-hidden="true" />
                   </button>

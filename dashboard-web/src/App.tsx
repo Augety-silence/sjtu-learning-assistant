@@ -1450,6 +1450,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // macOS 原生拖放 hook 路径不会注入 document 级拦截：文件落在投放区外时阻止 WebView 默认打开文件并导航离开应用。
+    // 不 stopPropagation，保证各投放区与 pywebview 的 drop 监听照常收到事件。
+    const blockFileNavigation = (event: DragEvent) => {
+      const transfer = event.dataTransfer;
+      if (!transfer || !Array.from(transfer.types).includes("Files")) return;
+      // 投放区已 preventDefault 时保留其 dropEffect；区外显示“不可投放”光标。
+      if (event.type === "dragover" && !event.defaultPrevented) {
+        transfer.dropEffect = "none";
+      }
+      event.preventDefault();
+    };
+    window.addEventListener("dragover", blockFileNavigation);
+    window.addEventListener("drop", blockFileNavigation);
+    return () => {
+      window.removeEventListener("dragover", blockFileNavigation);
+      window.removeEventListener("drop", blockFileNavigation);
+    };
+  }, []);
+
+  useEffect(() => {
     // 离开作业中心时丢弃未消费的日历定向目标，保证下次普通进入仍默认“全部”。
     if (view !== "assignments") setAssignmentTarget(null);
   }, [view]);

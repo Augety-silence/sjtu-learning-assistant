@@ -285,6 +285,39 @@ describe("AIChatView", () => {
     ).toBe("true");
   });
 
+  it("moves focus to the visible composer after deleting the active session", async () => {
+    const originalConfirm = window.confirm;
+    window.confirm = vi.fn(() => true);
+    const first = {
+      id: "session-a",
+      title: "会话 A",
+      model: "auto",
+      thinking_depth: "standard" as const,
+      preset_id: "general",
+      messages: [],
+      traces: [],
+    };
+    const second = { ...first, id: "session-b", title: "会话 B" };
+    vi.mocked(getAiChatSessions)
+      .mockResolvedValueOnce({ items: [first, second] })
+      .mockResolvedValueOnce({ items: [second] });
+    vi.mocked(getAiChatSession)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+
+    try {
+      render(<AIChatView onBack={vi.fn()} />);
+      const input = await screen.findByRole("textbox", { name: "输入问题" });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "删除对话：会话 A" }),
+      );
+
+      await waitFor(() => expect(document.activeElement).toBe(input));
+    } finally {
+      window.confirm = originalConfirm;
+    }
+  });
+
   it("does not auto-send a pending prompt into a fallback session", async () => {
     window.localStorage.setItem("ai-chat-pending-session", "missing-session");
     window.localStorage.setItem("ai-chat-pending-prompt", "继续刚才的对话");
@@ -443,6 +476,49 @@ describe("AIChatView", () => {
       await screen.findByRole("button", { name: "停止本次任务" }),
     ).toBeTruthy();
     expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a task resumable when cancellation cannot be confirmed", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-cancel-unconfirmed");
+        return Promise.reject(
+          Object.assign(new Error("停止请求超时"), {
+            category: "cancel_unconfirmed",
+            retryable: true,
+          }),
+        );
+      },
+    );
+    vi.mocked(resumeAiChatMessageTask).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "保留仍在运行的任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("ai-chat-running-task:session-1"),
+      ).toContain("task-cancel-unconfirmed"),
+    );
+    expect(screen.getByText("保留仍在运行的任务")).toBeTruthy();
+    expect(screen.queryByText("停止请求超时")).toBeNull();
+    await waitFor(() =>
+      expect(resumeAiChatMessageTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-cancel-unconfirmed",
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          pollSignal: expect.any(AbortSignal),
+        }),
+      ),
+    );
+    expect(
+      window.localStorage.getItem("ai-chat-running-task:session-1"),
+    ).toContain("task-cancel-unconfirmed");
   });
 
   it("shows tool activity as soon as a streaming tool event arrives", async () => {

@@ -6,6 +6,7 @@ JavaScript, or included in exceptions.
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -16,7 +17,11 @@ from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.assignment_service import AssignmentService, SubmissionResult
 from sjtu_learning_assistant.canvas_client import CanvasClient, DEFAULT_BASE_URL
-from sjtu_learning_assistant.cloud_storage import SJTUCloudPanProvider
+from sjtu_learning_assistant.cloud_storage import (
+    CloudStorageError,
+    SJTUCloudPanProvider,
+    load_user_token,
+)
 from sjtu_learning_assistant.canvas_sync import CanvasCheckError, get_saved_token
 from sjtu_learning_assistant.credential_store import credential_storage_name
 from sjtu_learning_assistant.models import Assignment, Course
@@ -138,20 +143,51 @@ class DesktopLearningService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._owns_canvas = canvas is None
         self._owns_pan = pan_provider is None
+        self._refresh_canvas = canvas is None and assignment_service is None
+        self._canvas_token: str | None = None
+        self._pan_token: str | None = None
+        self._retired_canvas: list[CanvasClient] = []
+        self._client_lock = threading.Lock()
         self._courses: dict[str, str] = {}
 
     def _assignment_service(self) -> AssignmentService:
-        if self._assignments is None:
-            if self._canvas is None:
-                self._canvas = CanvasClient(DEFAULT_BASE_URL, self._token_loader())
-            self._assignments = AssignmentService(self._canvas, engine=self._engine)
-        return self._assignments
+        with self._client_lock:
+            if self._refresh_canvas:
+                token = self._token_loader()
+                if self._canvas is not None and token != self._canvas_token:
+                    # A bridge request may still be using the old client. Retire it now
+                    # and close it only when the desktop service itself shuts down.
+                    self._retired_canvas.append(self._canvas)
+                    self._canvas = None
+                    self._assignments = None
+                self._canvas_token = token
+                if self._canvas is None:
+                    self._canvas = CanvasClient(DEFAULT_BASE_URL, token)
+            if self._assignments is None:
+                if self._canvas is None:
+                    self._canvas = CanvasClient(DEFAULT_BASE_URL, self._token_loader())
+                self._assignments = AssignmentService(self._canvas, engine=self._engine)
+            return self._assignments
 
     def _pan_provider(self) -> SJTUCloudPanProvider:
-        if self._pan is None:
-            # The provider reads its UserToken lazily through its existing Keychain helper.
-            self._pan = SJTUCloudPanProvider()
-        return self._pan
+        with self._client_lock:
+            if self._pan is None:
+                # The provider reads its UserToken lazily through its existing Keychain helper.
+                self._pan = SJTUCloudPanProvider()
+            if self._owns_pan:
+                try:
+                    token = load_user_token()
+                except CloudStorageError:
+                    # Preserve the provider's existing safe credential error path.
+                    return self._pan
+                if token != self._pan_token:
+                    if self._pan_token is not None or token is None:
+                        if token is None:
+                            self._pan.clear_user_token(delete_from_keychain=False)
+                        else:
+                            self._pan.set_user_token(token, persist=False)
+                    self._pan_token = token
+            return self._pan
 
     @staticmethod
     def _native_types(assignment: Mapping[str, Any]) -> list[str]:
@@ -363,6 +399,9 @@ class DesktopLearningService:
 
     def close(self) -> None:
         try:
+            for retired in self._retired_canvas:
+                retired.close()
+            self._retired_canvas.clear()
             if self._canvas is not None and self._owns_canvas:
                 self._canvas.close()
         finally:

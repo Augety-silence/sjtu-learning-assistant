@@ -62,7 +62,13 @@ def sqlite_backup_paths(database_path: Path, *, keep: int = SQLITE_BACKUP_COUNT)
 
 
 def _sqlite_uri(path: Path) -> str:
-    return f"{path.expanduser().resolve().as_uri()}?mode=ro"
+    uri = path.expanduser().resolve().as_uri()
+    # Windows UNC（含 resolve() 展开的映射盘/重定向 AppData）会得到
+    # file://server/share/...；SQLite 只接受空或 localhost 的 authority，
+    # 否则报 "invalid uri authority"。改写为 file:////server/share/...。
+    if uri.startswith("file://") and not uri.startswith("file:///"):
+        uri = "file:////" + uri[len("file://"):]
+    return f"{uri}?mode=ro"
 
 
 def _database_sidecars(database_path: Path) -> tuple[Path, Path]:

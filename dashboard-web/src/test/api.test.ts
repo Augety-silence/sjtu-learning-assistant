@@ -34,6 +34,8 @@ import {
   previewTimetableSample,
   readTranscriptArtifact,
   readTranscriptV2Artifact,
+  registerAssignmentLocalFile,
+  resumeAiChatMessageTask,
   retryArchive,
   revealMailAttachment,
   saveBackupToken,
@@ -345,6 +347,88 @@ describe("pywebview bridge client", () => {
     });
   });
 
+  it("keeps a timed-out task resumable when cancellation is not confirmed", async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = vi.fn(async (action: string) => {
+        if (action === "ai_chat_stream_start") {
+          return {
+            ok: true,
+            data: {
+              task: { id: "task-timeout", status: "running" },
+              events: [],
+              next_sequence: 1,
+            },
+          };
+        }
+        if (action === "ai_task_status") {
+          return {
+            ok: true,
+            data: {
+              task: { id: "task-timeout", status: "running" },
+              events: [],
+              next_sequence: 1,
+            },
+          };
+        }
+        if (action === "ai_task_cancel") {
+          return {
+            ok: true,
+            data: {
+              task: {
+                id: "task-timeout",
+                status: "running",
+                cancel_requested: false,
+              },
+              events: [],
+              next_sequence: 1,
+            },
+          };
+        }
+        return { ok: true, data: {} };
+      });
+      vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+      const result = sendAiChatMessage(
+        "session-1",
+        "等待超时",
+        "auto",
+        "standard",
+        "general",
+      ).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(181_000);
+
+      await expect(result).resolves.toMatchObject({
+        category: "cancel_unconfirmed",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries an initial resume status read before preserving the task", async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = vi.fn(async () => ({
+        ok: false,
+        error: { code: "bridge_failed", message: "Bridge 暂时不可用" },
+      }));
+      vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+      const result = resumeAiChatMessageTask("session-1", "task-resume").catch(
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(result).resolves.toMatchObject({
+        category: "resume_unconfirmed",
+      });
+      expect(bridge).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not cancel a task after polling ownership is transferred", async () => {
     vi.useFakeTimers();
     try {
@@ -389,6 +473,21 @@ describe("pywebview bridge client", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("binds a dropped assignment path to its native capability", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { cancelled: false, name: "answer.pdf" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+
+    await registerAssignmentLocalFile("/safe/answer.pdf", "native-capability");
+
+    expect(bridge).toHaveBeenCalledWith("register_local_file", {
+      path: "/safe/answer.pdf",
+      drop_token: "native-capability",
+    });
   });
 
   it("sends a dropped path only to the attachment ingest bridge action", async () => {
