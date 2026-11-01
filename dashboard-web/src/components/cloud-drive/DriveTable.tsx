@@ -35,6 +35,7 @@ export function DriveTable({
   sortBy,
   order,
   busyKeys,
+  showPath = false,
   onSort,
   onFocusIndex,
   onSelect,
@@ -49,6 +50,7 @@ export function DriveTable({
   sortBy: DriveSortField;
   order: DriveSortOrder;
   busyKeys: Set<string>;
+  showPath?: boolean;
   onSort: (field: DriveSortField) => void;
   onFocusIndex: (index: number) => void;
   onSelect: (
@@ -168,6 +170,10 @@ export function DriveTable({
             const meta = describeItem(item);
             const Icon = meta.icon;
             const intent = { item, index };
+            const parentPath =
+              item.path.length > 1
+                ? `个人空间 / ${item.path.slice(0, -1).join(" / ")}`
+                : "个人空间";
             return (
               <tr
                 key={key}
@@ -241,26 +247,33 @@ export function DriveTable({
                     >
                       <Icon />
                     </span>
-                    {item.is_directory ? (
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        className="drive-name-link"
-                        title={item.name}
-                        onClick={(event) => {
-                          // 与网页端一致：单击文件夹名称直接进入。
-                          event.stopPropagation();
-                          onOpen(item);
-                        }}
-                      >
-                        {item.name}
-                      </button>
-                    ) : (
-                      <span className="drive-name-text" title={item.name}>
-                        {item.name}
-                      </span>
-                    )}
-                    <span className="sr-only">，{meta.label}</span>
+                    <div className="drive-name-copy">
+                      {item.is_directory ? (
+                        <button
+                          type="button"
+                          tabIndex={-1}
+                          className="drive-name-link"
+                          title={item.name}
+                          onClick={(event) => {
+                            // 与网页端一致：单击文件夹名称直接进入。
+                            event.stopPropagation();
+                            onOpen(item);
+                          }}
+                        >
+                          {item.name}
+                        </button>
+                      ) : (
+                        <span className="drive-name-text" title={item.name}>
+                          {item.name}
+                        </span>
+                      )}
+                      {showPath && (
+                        <span className="drive-item-path" title={parentPath}>
+                          {parentPath}
+                        </span>
+                      )}
+                      <span className="sr-only">，{meta.label}</span>
+                    </div>
                   </div>
                 </td>
                 <td className="drive-col-modified">

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -95,6 +96,17 @@ from sjtu_learning_assistant.desktop_learning_service import (
 PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC_INDEX = PROJECT_ROOT / "dashboard-web" / "dist" / "index.html"
 SYNC_INTERVAL_SECONDS = 15 * 60
+
+
+def _static_index_url() -> str:
+    """Return a content-addressed URL so WebView never reuses an old UI bundle."""
+    uri = STATIC_INDEX.as_uri()
+    try:
+        fingerprint = hashlib.sha256(STATIC_INDEX.read_bytes()).hexdigest()[:16]
+    except (AttributeError, OSError):
+        return uri
+    return f"{uri}?build={fingerprint}"
+
 
 _SENSITIVE_PATTERNS = (
     re.compile(r"\w+://[^\s/:]+:[^\s]+@[^\s]+"),
@@ -2393,7 +2405,7 @@ def run_desktop_app() -> int:
         native_vibrancy = sys.platform == "darwin"
         window = webview.create_window(
             "SJTU 学习助手",
-            STATIC_INDEX.as_uri(),
+            _static_index_url(),
             js_api=bridge,
             width=1280,
             height=820,

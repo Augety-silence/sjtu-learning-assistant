@@ -2,7 +2,7 @@
 
 The desktop UI used to expose only the backup/archive workflow. This service turns the
 existing :class:`SJTUCloudPanProvider` into a small, provider-neutral file manager API:
-browse folders, sort/search the current folder, create folders, rename, move, copy,
+browse folders, sort/search the personal space, create folders, rename, move, copy,
 delete to the recycle bin, upload local files and download remote files with progress.
 
 Security notes
@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,6 +42,8 @@ from sjtu_learning_assistant.cloud_storage import (
 MAX_NAME_LENGTH = 255
 MAX_LISTING_ITEMS = 10_000
 LISTING_PAGE_SIZE = 500
+MAX_SEARCH_ITEMS = 50_000
+MAX_SEARCH_FOLDERS = 2_000
 LISTING_CACHE_SECONDS = 20.0
 MAX_UPLOAD_BYTES = 2 * 1024**3
 SIMPLE_UPLOAD_LIMIT = 8 * 1024 * 1024
@@ -371,6 +374,34 @@ class CloudDriveService:
                 self._listings.pop(oldest, None)
         return listing
 
+    def _search(self, needle: str, *, refresh: bool) -> tuple[list[CloudItem], bool]:
+        """Search normalized full paths from the personal-space root using BFS."""
+        pending: deque[tuple[str, ...]] = deque([()])
+        matches: list[CloudItem] = []
+        scanned_items = 0
+        scanned_folders = 0
+        truncated = False
+        while pending:
+            if scanned_folders >= MAX_SEARCH_FOLDERS:
+                truncated = True
+                break
+            folder = pending.popleft()
+            scanned_folders += 1
+            listing = self._listing(folder, refresh=refresh)
+            truncated = truncated or listing.truncated
+            for item in listing.items:
+                if scanned_items >= MAX_SEARCH_ITEMS:
+                    truncated = True
+                    pending.clear()
+                    break
+                scanned_items += 1
+                full_path = "/".join(item.path)
+                if needle in unicodedata.normalize("NFKC", full_path).casefold():
+                    matches.append(item)
+                if item.is_directory:
+                    pending.append(item.path)
+        return matches, truncated
+
     def _child_exists(self, parent: tuple[str, ...], name: str) -> bool:
         return bool(self._provider().exists(parent + (name,)))
 
@@ -409,11 +440,13 @@ class CloudDriveService:
         if page < 1 or not 1 <= page_size <= 200:
             raise CloudDriveError("分页参数不正确。")
         normalized = tuple(path)
-        listing = self._listing(normalized, refresh=refresh)
-        items: Iterable[CloudItem] = listing.items
         needle = unicodedata.normalize("NFKC", query).casefold().strip()
         if needle:
-            items = [item for item in items if needle in unicodedata.normalize("NFKC", item.name).casefold()]
+            items, truncated = self._search(needle, refresh=refresh)
+        else:
+            listing = self._listing(normalized, refresh=refresh)
+            items = list(listing.items)
+            truncated = listing.truncated
         ordered = sort_items(items, by=sort_by, order=order)
         total = len(ordered)
         pages = max(1, -(-total // page_size))
@@ -426,9 +459,9 @@ class CloudDriveService:
             "page_size": page_size,
             "total": total,
             "pages": pages,
-            "folder_count": sum(1 for item in listing.items if item.is_directory),
-            "file_count": sum(1 for item in listing.items if not item.is_directory),
-            "truncated": listing.truncated,
+            "folder_count": sum(1 for item in ordered if item.is_directory),
+            "file_count": sum(1 for item in ordered if not item.is_directory),
+            "truncated": truncated,
             "query": query.strip(),
             "sort": {"by": sort_by, "order": order},
             "items": [serialize_item(item) for item in window],

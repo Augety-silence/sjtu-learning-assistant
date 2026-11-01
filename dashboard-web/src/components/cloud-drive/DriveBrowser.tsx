@@ -739,7 +739,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
           <EmptyState
             illustration={<Search />}
             title="没有找到匹配的项目"
-            description={`在“${currentName}”中没有名称包含“${query}”的文件或文件夹。`}
+            description={`个人空间中没有路径包含“${query}”的文件或文件夹。`}
             action={
               <Button
                 size="sm"
@@ -783,6 +783,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
         sortBy={sortBy}
         order={order}
         busyKeys={busyKeys}
+        showPath={Boolean(query)}
         onSort={sort}
         onFocusIndex={setFocusIndex}
         onSelect={handleSelect}
@@ -891,8 +892,8 @@ export function DriveBrowser({ active }: { active: boolean }) {
             ref={searchRef}
             type="search"
             value={queryInput}
-            placeholder={`在“${currentName}”中搜索`}
-            aria-label="搜索当前文件夹"
+            placeholder="搜索全部文件和文件夹"
+            aria-label="搜索全部路径"
             aria-keyshortcuts="/"
             onChange={(event) => setQueryInput(event.target.value)}
             onKeyDown={(event) => {
@@ -970,7 +971,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
         </nav>
         {query && data && (
           <span className="drive-search-note" role="status">
-            搜索“{query}”：{data.total} 个结果
+            全部路径搜索“{query}”：{data.total} 个结果
           </span>
         )}
       </div>
@@ -1077,8 +1078,9 @@ export function DriveBrowser({ active }: { active: boolean }) {
           {renderBody()}
           {data?.truncated && !error && (
             <p className="drive-notice" role="note">
-              该文件夹仅显示前 10,000
-              个项目；请在交大云盘网页端整理或拆分目录后再试。
+              {query
+                ? "已达到全盘搜索范围上限，当前结果可能不完整；请缩小关键词后重试。"
+                : "该文件夹仅显示前 10,000 个项目；请在交大云盘网页端整理或拆分目录后再试。"}
             </p>
           )}
           {data && !error && items.length > 0 && (

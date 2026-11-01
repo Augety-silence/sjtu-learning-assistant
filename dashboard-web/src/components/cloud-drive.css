@@ -482,6 +482,25 @@
   min-width: 0;
 }
 
+.drive-name-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.drive-item-path {
+  overflow: hidden;
+  width: 100%;
+  color: var(--text-caption);
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .drive-name-link,
 .drive-name-text {
   min-width: 0;

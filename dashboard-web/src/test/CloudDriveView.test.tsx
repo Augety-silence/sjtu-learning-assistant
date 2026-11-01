@@ -195,20 +195,26 @@ describe("CloudDriveView", () => {
     ).toBe("descending");
   });
 
-  it("搜索框防抖后按关键字查询当前文件夹", async () => {
+  it("搜索框防抖后查询全部路径并展示父目录", async () => {
+    vi.mocked(listDrive).mockImplementation(async ({ path, query }) =>
+      query
+        ? page(path, [item(["课程资料", "第1周", "报告.pdf"])], { query })
+        : path.length === 0
+          ? page([], rootItems)
+          : page(path, childItems),
+    );
     render();
     await screen.findByText("报告.pdf");
-    fireEvent.change(
-      screen.getByRole("searchbox", { name: "搜索当前文件夹" }),
-      {
-        target: { value: "报告" },
-      },
-    );
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索全部路径" }), {
+      target: { value: "报告" },
+    });
     await waitFor(() =>
       expect(listDrive).toHaveBeenLastCalledWith(
         expect.objectContaining({ query: "报告" }),
       ),
     );
+    expect(await screen.findByText("个人空间 / 课程资料 / 第1周")).toBeTruthy();
+    expect(screen.getByText(/全部路径搜索“报告”/)).toBeTruthy();
   });
 
   it("选中后出现批量操作栏，删除需确认并移入回收站", async () => {

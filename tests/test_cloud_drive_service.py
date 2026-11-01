@@ -233,14 +233,28 @@ class CloudDriveServiceTests(unittest.TestCase):
         self.assertEqual(["课程", "作业.docx", "Notes.txt"], [entry["name"] for entry in newest["items"]])
         found = self.drive.list((), query="NOTES")
         self.assertEqual(["Notes.txt"], [entry["name"] for entry in found["items"]])
-        self.assertEqual(1, self.pan.list_calls)
-        self.drive.list((), refresh=True)
+        nested = self.drive.list((), query="第1周")
+        self.assertEqual([["课程", "第1周.pdf"]], [entry["path"] for entry in nested["items"]])
+        by_parent = self.drive.list(("课程",), query="课程")
+        self.assertEqual(
+            [["课程"], ["课程", "第1周.pdf"]],
+            [entry["path"] for entry in by_parent["items"]],
+        )
+        self.assertEqual((1, 1), (nested["file_count"], nested["total"]))
         self.assertEqual(2, self.pan.list_calls)
+        self.drive.list((), refresh=True)
+        self.assertEqual(3, self.pan.list_calls)
         self.now[0] = 100
         self.drive.list(())
-        self.assertEqual(3, self.pan.list_calls)
+        self.assertEqual(4, self.pan.list_calls)
         with self.assertRaises(CloudDriveError):
             self.drive.list((), sort_by="evil")
+
+    def test_search_reports_truncation_at_scan_limit(self):
+        with patch("sjtu_learning_assistant.cloud_drive_service.MAX_SEARCH_ITEMS", 1):
+            result = self.drive.list((), query="课程")
+        self.assertTrue(result["truncated"])
+        self.assertEqual([["课程"]], [entry["path"] for entry in result["items"]])
 
     def test_list_missing_folder_is_not_found(self):
         with self.assertRaises(CloudNotFoundError):
