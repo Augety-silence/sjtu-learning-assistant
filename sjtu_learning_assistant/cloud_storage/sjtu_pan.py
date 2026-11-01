@@ -684,27 +684,29 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             temporary_path.with_suffix("").unlink(missing_ok=True)
             raise
 
-    def delete(self, path: RemotePath, *, permanent: bool = False, missing_ok: bool = True) -> None:
+    def delete(self, path: RemotePath, *, permanent: bool = False, missing_ok: bool = True, directory: bool = False) -> None:
+        # Folders use the directory endpoint; file behaviour is unchanged for existing callers.
+        kind = "directory" if directory else "file"
         try:
-            self._api_request("DELETE", "file", path, operation="删除项目", params={"permanent": 1 if permanent else 0})
+            self._api_request("DELETE", kind, path, operation="删除项目", params={"permanent": 1 if permanent else 0})
         except CloudNotFoundError:
             if not missing_ok:
                 raise
 
-    def _copy_or_move(self, source: RemotePath, destination: RemotePath, *, move: bool, overwrite: bool) -> CloudItem:
+    def _copy_or_move(self, source: RemotePath, destination: RemotePath, *, move: bool, overwrite: bool, directory: bool = False) -> CloudItem:
         key = "from" if move else "copyFrom"
         payload = self._api_request(
-            "PUT", "file", destination, operation="移动项目" if move else "复制项目",
+            "PUT", "directory" if directory else "file", destination, operation="移动项目" if move else "复制项目",
             params={"conflict_resolution_strategy": "overwrite" if overwrite else "ask"},
             json_body={key: "/".join(_segments(source))},
         )
         return _item(payload, _segments(destination)) if isinstance(payload, Mapping) else self.get_info(destination)
 
-    def move(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False) -> CloudItem:
-        return self._copy_or_move(source, destination, move=True, overwrite=overwrite)
+    def move(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False, directory: bool = False) -> CloudItem:
+        return self._copy_or_move(source, destination, move=True, overwrite=overwrite, directory=directory)
 
-    def copy(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False) -> CloudItem:
-        return self._copy_or_move(source, destination, move=False, overwrite=overwrite)
+    def copy(self, source: RemotePath, destination: RemotePath, *, overwrite: bool = False, directory: bool = False) -> CloudItem:
+        return self._copy_or_move(source, destination, move=False, overwrite=overwrite, directory=directory)
 
     @staticmethod
     def _read_source(source: bytes | BinaryIO) -> bytes:
@@ -751,16 +753,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             params={"confirm": None, "conflict_resolution_strategy": "overwrite" if overwrite else "ask"},
         )
         item = _item(confirmed, normalized) if isinstance(confirmed, Mapping) else self.get_info(normalized)
-        try:
-            return self._verify_uploaded_size(item, len(data))
-        except CloudRemoteApiError:
-            try:
-                self.delete(normalized, permanent=True, missing_ok=True)
-            except Exception as cleanup_error:
-                raise CloudCleanupError(
-                    "云端确认的文件大小不一致，且无法自动清理残留对象。"
-                ) from cleanup_error
-            raise
+        return self._verify_confirmed_upload(item, len(data))
 
     def init_multipart(self, path: RemotePath, *, part_numbers: Sequence[int] | None = None, overwrite: bool = False) -> UploadSession:
         normalized = _segments(path)
@@ -773,7 +766,11 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             json_body={"partNumberRange": numbers},
         )
         session = self._session_from_payload(normalized, payload, overwrite=overwrite)
-        self._cache_parts(session, payload)
+        try:
+            self._cache_parts(session, payload)
+        except Exception:
+            self._part_credentials.pop(session.upload_id, None)
+            raise
         return session
 
     def _session_from_payload(self, path: tuple[str, ...], payload: Any, *, overwrite: bool) -> UploadSession:
@@ -877,16 +874,17 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         )
         self._part_credentials.pop(session.upload_id, None)
         item = _item(payload, session.remote_path) if isinstance(payload, Mapping) else self.get_info(session.remote_path)
+        return self._verify_confirmed_upload(item, session.bytes_uploaded)
+
+    def _verify_confirmed_upload(self, item: CloudItem, expected: int) -> CloudItem:
         try:
-            return self._verify_uploaded_size(item, session.bytes_uploaded)
-        except CloudRemoteApiError:
-            try:
-                self.delete(session.remote_path, permanent=True, missing_ok=True)
-            except Exception as cleanup_error:
-                raise CloudCleanupError(
-                    "云端确认的文件大小不一致，且无法自动清理残留对象。"
-                ) from cleanup_error
-            raise
+            return self._verify_uploaded_size(item, expected)
+        except CloudRemoteApiError as exc:
+            # A path may now refer to a different upload. Without conditional deletion
+            # against the confirmed object's identity, deleting it can destroy that version.
+            raise CloudCleanupError(
+                "云端文件大小或状态无法确认，未自动删除；请检查云端文件。"
+            ) from exc
 
     def _verify_uploaded_size(self, item: CloudItem, expected: int) -> CloudItem:
         # 服务端确认后的对象大小与实际发送字节数不一致时不能当作成功（调用方可能随后删除本地副本）。
@@ -919,4 +917,7 @@ class SJTUCloudPanProvider(CloudStorageProvider):
 
     def multipart_upload(self, path: RemotePath, source: bytes | BinaryIO, *, overwrite: bool = False, chunk_size: int = 4 * 1024 * 1024) -> CloudItem:
         session = self.init_multipart(path, overwrite=overwrite)
-        return self.resume_upload(session, source, chunk_size=chunk_size, overwrite=overwrite)
+        try:
+            return self.resume_upload(session, source, chunk_size=chunk_size, overwrite=overwrite)
+        finally:
+            self._part_credentials.pop(session.upload_id, None)

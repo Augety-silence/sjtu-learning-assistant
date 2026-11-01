@@ -13,8 +13,8 @@ import {
   AssignmentsView,
   type AssignmentTarget,
 } from "@/components/AssignmentsView";
-import { BackupView } from "@/components/BackupView";
 import type { CalendarEventItem } from "@/components/CalendarView";
+import { CloudDriveView } from "@/components/CloudDriveView";
 import { ContentReveal } from "@/components/ContentReveal";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
@@ -135,7 +135,7 @@ const pageAILabels: Record<ViewName, string> = {
   roster: "花名册",
   grading: "作业批改",
   videos: "课程视频",
-  backup: "云盘备份",
+  backup: "交大云盘",
   "local-projects": "本地项目",
   knowledge: "知识库编译",
   "ai-chat": "AI 助手",
@@ -1773,7 +1773,7 @@ export default function App() {
                 refreshVersion={dataVersion}
               />
             )}
-            {view === "backup" && <BackupView />}
+            {view === "backup" && <CloudDriveView />}
             {view === "local-projects" && (
               <LocalProjectsView
                 onCompile={(project) => {

@@ -501,6 +501,103 @@ export interface PanPage {
   items: PanItem[];
 }
 
+export interface DriveSpace {
+  capacity: number | null;
+  used: number | null;
+  available: number | null;
+  has_personal_space: boolean;
+}
+
+export interface DriveItem {
+  path: string[];
+  name: string;
+  is_directory: boolean;
+  size: number | null;
+  content_type: string | null;
+  created_at: string | null;
+  modified_at: string | null;
+}
+
+export type DriveSortField = "name" | "modified" | "size";
+export type DriveSortOrder = "asc" | "desc";
+
+export interface DrivePage {
+  path: string[];
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+  folder_count: number;
+  file_count: number;
+  truncated: boolean;
+  query: string;
+  sort: { by: DriveSortField; order: DriveSortOrder };
+  items: DriveItem[];
+}
+
+export interface DriveEntryRef {
+  path: string[];
+  is_directory: boolean;
+}
+
+export interface DriveBatchFailure {
+  path: string[];
+  name: string;
+  code: string;
+  message: string;
+}
+
+export interface DriveBatchResult {
+  done: string[][];
+  failed: DriveBatchFailure[];
+}
+
+export interface DriveLocalFile {
+  path: string;
+  name: string;
+  size: number;
+  too_large: boolean;
+  relative_dir: string[];
+}
+
+export interface DriveLocalPick {
+  cancelled: boolean;
+  folder?: string;
+  files: DriveLocalFile[];
+  skipped_count?: number;
+}
+
+export interface DriveUploadResult {
+  transfer_id: string;
+  item: DriveItem;
+}
+
+export interface DriveDownloadResult {
+  status: "downloaded" | "cancelled";
+  transfer_id?: string;
+  name?: string;
+  size?: number;
+}
+
+export type DriveTransferStatus =
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | "conflict";
+
+export interface DriveTransfer {
+  id: string;
+  kind: "upload" | "download";
+  name: string;
+  total: number | null;
+  done: number;
+  status: DriveTransferStatus;
+  message: string | null;
+}
+
+export type DriveConflictStrategy = "ask" | "overwrite" | "rename";
+
 export interface BackupCounts {
   canvas: number;
   mail: number;

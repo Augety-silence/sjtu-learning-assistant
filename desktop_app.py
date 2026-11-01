@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -49,11 +50,22 @@ from sjtu_learning_assistant.cloud_storage import (
     delete_user_token,
     save_user_token,
 )
+from sjtu_learning_assistant.cloud_drive_service import (
+    CloudDriveService,
+    TransferCancelled,
+    cloud_error_code,
+    iter_folder_files,
+    safe_local_filename,
+)
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
 from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
-from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
+from sjtu_learning_assistant.dashboard_service import (
+    DashboardError,
+    DashboardService,
+    _desktop_open_command,
+)
 from sjtu_learning_assistant.database import (
     APP_SUPPORT_DIR,
     DatabaseConfigError,
@@ -288,6 +300,40 @@ def _remote_path(value: object, *, allow_root: bool = True) -> str:
     return "/".join(parts)
 
 
+def _remote_segments(value: object, *, allow_root: bool = True) -> tuple[str, ...]:
+    joined = _remote_path(value, allow_root=allow_root)
+    return tuple(joined.split("/")) if joined else ()
+
+
+def _drive_entries(value: object) -> list[tuple[tuple[str, ...], bool]]:
+    if type(value) is not list or not 1 <= len(value) <= 200:
+        raise DashboardError("请选择 1 到 200 个云盘项目。")
+    result: list[tuple[tuple[str, ...], bool]] = []
+    seen: set[tuple[str, ...]] = set()
+    for entry in value:
+        if type(entry) is not dict or set(entry) - {"path", "is_directory"}:
+            raise DashboardError("云盘项目格式不正确。")
+        path = _remote_segments(entry.get("path"), allow_root=False)
+        is_directory = entry.get("is_directory", False)
+        if type(is_directory) is not bool:
+            raise DashboardError("云盘项目类型不正确。")
+        if path not in seen:
+            seen.add(path)
+            result.append((path, is_directory))
+    return result
+
+
+def _transfer_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or re.fullmatch(r"[A-Za-z0-9_-]{8,64}", value) is None:
+        raise DashboardError("传输任务标识不正确。")
+    return value
+
+
+DRIVE_MAX_PENDING_UPLOADS = 2000
+
+
 class DesktopBridge:
     """Single pywebview API surface; actions are explicit and allowlisted."""
 
@@ -299,6 +345,10 @@ class DesktopBridge:
         file_picker: Callable[[], str | None] | None = None,
         ics_file_picker: Callable[[], str | None] | None = None,
         save_file_picker: Callable[[str], str | None] | None = None,
+        multi_file_picker: Callable[[], list[str] | None] | None = None,
+        folder_picker: Callable[[], str | None] | None = None,
+        drive_service: CloudDriveService | None = None,
+        command_runner: Callable[..., Any] | None = None,
         backup_manager: BackupManager | None = None,
         diagnostic_bundle: DiagnosticBundleService | None = None,
         timetable_service: TimetableService | None = None,
@@ -312,6 +362,17 @@ class DesktopBridge:
         self._diagnostic_bundle = diagnostic_bundle
         self._timetable = timetable_service
         self._picked_files: set[str] = set()
+        self._multi_file_picker = multi_file_picker
+        self._folder_picker = folder_picker
+        self._drive_service = drive_service
+        self._drive_lock = threading.Lock()
+        # Opaque, single-use renderer capabilities -> (absolute local path, size).
+        # Never expose the local path itself to the web view.
+        self._drive_uploads: dict[str, tuple[str, int, int, int]] = {}
+        self._drive_uploads_in_progress: set[str] = set()
+        self._drive_downloads: dict[str, str] = {}
+        self._drive_pending_downloads: dict[str, tuple[Any, tuple[str, ...], float]] = {}
+        self._command_runner = command_runner or subprocess.run
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
             "health": lambda payload: self._without_payload(
                 payload, service.health
@@ -449,6 +510,25 @@ class DesktopBridge:
             "pan_list": self._assignment_pan_list,
             "submit_cloud_file": self._assignment_submit_cloud_file,
             "open_external_assignment": self._assignment_open_external,
+            # 交大云盘文件浏览器（云盘页面「我的文件」）。
+            "drive_space": self._drive_space,
+            "drive_list": self._drive_list,
+            "drive_info": self._drive_info,
+            "drive_mkdir": self._drive_mkdir,
+            "drive_rename": self._drive_rename,
+            "drive_move": self._drive_move,
+            "drive_copy": self._drive_copy,
+            "drive_delete": self._drive_delete,
+            "drive_upload_pick": self._drive_upload_pick,
+            "drive_upload_pick_folder": self._drive_upload_pick_folder,
+            "drive_upload_register": self._drive_upload_register,
+            "drive_upload_release": self._drive_upload_release,
+            "drive_upload": self._drive_upload,
+            "drive_prepare_download": self._drive_prepare_download,
+            "drive_download": self._drive_download,
+            "drive_reveal_download": self._drive_reveal_download,
+            "drive_transfers": self._drive_transfers,
+            "drive_cancel": self._drive_cancel,
         }
 
     @staticmethod
@@ -1082,6 +1162,299 @@ class DesktopBridge:
         course_id, assignment_id = self._assignment_ids(payload)
         return self._learning().open_external_assignment(course_id, assignment_id)
 
+    # ------------------------------------------------------------- 交大云盘
+    def _drive(self) -> CloudDriveService:
+        with self._drive_lock:
+            if self._drive_service is None:
+                learning = self._learning()
+                self._drive_service = CloudDriveService(learning.pan_provider)
+            return self._drive_service
+
+    def _drive_space(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._drive().space()
+
+    def _drive_list(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "page", "page_size", "sort_by", "order", "query", "refresh"})
+        path = _remote_segments(payload.get("path", []))
+        page = payload.get("page", 1)
+        page_size = payload.get("page_size", 20)
+        sort_by = payload.get("sort_by", "name")
+        order = payload.get("order", "asc")
+        refresh = payload.get("refresh", False)
+        if type(page) is not int or not 1 <= page <= 10_000:
+            raise DashboardError("页码不正确。")
+        if type(page_size) is not int or not 1 <= page_size <= 200:
+            raise DashboardError("每页数量不正确。")
+        if sort_by not in {"name", "modified", "size"} or order not in {"asc", "desc"}:
+            raise DashboardError("排序参数不正确。")
+        if type(refresh) is not bool:
+            raise DashboardError("刷新参数不正确。")
+        query = _bounded_text(payload.get("query", ""), limit=255, label="搜索词", allow_empty=True)
+        return self._drive().list(
+            path, page=page, page_size=page_size, sort_by=sort_by, order=order,
+            query=query, refresh=refresh,
+        )
+
+    def _drive_info(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path"})
+        return self._drive().info(_remote_segments(payload.get("path"), allow_root=False))
+
+    def _drive_mkdir(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"parent", "name"})
+        parent = _remote_segments(payload.get("parent", []))
+        return self._drive().create_folder(parent, payload.get("name"))
+
+    def _drive_rename(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "name", "is_directory"})
+        path = _remote_segments(payload.get("path"), allow_root=False)
+        is_directory = payload.get("is_directory", False)
+        if type(is_directory) is not bool:
+            raise DashboardError("云盘项目类型不正确。")
+        return self._drive().rename(path, payload.get("name"), is_directory=is_directory)
+
+    def _drive_transfer(self, payload: Mapping[str, Any], *, copy: bool) -> dict[str, Any]:
+        _only_keys(payload, {"items", "destination"})
+        entries = _drive_entries(payload.get("items"))
+        destination = _remote_segments(payload.get("destination", []))
+        return self._drive().transfer(entries, destination, copy=copy)
+
+    def _drive_move(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._drive_transfer(payload, copy=False)
+
+    def _drive_copy(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._drive_transfer(payload, copy=True)
+
+    def _drive_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"items"})
+        return self._drive().delete(_drive_entries(payload.get("items")))
+
+    def _drive_register_upload(self, value: object, relative: tuple[str, ...] = ()) -> dict[str, Any]:
+        raw = _validated_local_attachment_path(value)
+        path = Path(raw).expanduser().resolve()
+        try:
+            metadata = path.stat()
+            size = metadata.st_size
+        except OSError:
+            raise DashboardError("所选文件无效或无法读取。") from None
+        if not stat.S_ISREG(metadata.st_mode) or size < 0:
+            raise DashboardError("所选文件无效或无法读取。")
+        normalized = str(path)
+        with self._drive_lock:
+            if len(self._drive_uploads) >= DRIVE_MAX_PENDING_UPLOADS:
+                raise DashboardError("待上传文件过多，请先完成当前上传。")
+            token = secrets.token_urlsafe(24)
+            while token in self._drive_uploads:
+                token = secrets.token_urlsafe(24)
+            self._drive_uploads[token] = (normalized, size, metadata.st_dev, metadata.st_ino)
+        return {
+            "path": token,
+            "name": path.name,
+            "size": size,
+            "too_large": size > 2 * 1024**3,
+            "relative_dir": list(relative),
+        }
+
+    def _drive_upload_pick(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._multi_file_picker is None:
+            raise LearningServiceError("当前环境不支持本地文件选择。")
+        selected = self._multi_file_picker()
+        if not selected:
+            return {"cancelled": True, "files": []}
+        files = []
+        skipped_count = 0
+        for value in list(selected)[:200]:
+            try:
+                files.append(self._drive_register_upload(value))
+            except DashboardError:
+                skipped_count += 1
+        return {"cancelled": False, "files": files, "skipped_count": skipped_count}
+
+    def _drive_upload_pick_folder(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._folder_picker is None:
+            raise LearningServiceError("当前环境不支持选择文件夹。")
+        selected = self._folder_picker()
+        if not selected:
+            return {"cancelled": True, "files": []}
+        root = Path(_validated_local_attachment_path(selected)).expanduser().resolve()
+        if not root.is_dir():
+            raise DashboardError("所选文件夹无效。")
+        files = []
+        try:
+            for path, relative in iter_folder_files(root):
+                files.append(self._drive_register_upload(str(path), relative))
+        except DashboardError:
+            with self._drive_lock:
+                for file in files:
+                    self._drive_uploads.pop(file["path"], None)
+            raise DashboardError(
+                "文件夹中有文件无法读取，或待上传文件过多；本次未加入上传队列。"
+            ) from None
+        return {
+            "cancelled": False,
+            "folder": root.name,
+            "files": files,
+            "skipped_count": 0,
+        }
+
+    def _drive_upload_register(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "drop_token"})
+        raw = _validated_local_attachment_path(payload.get("path"))
+        normalized = str(Path(raw).expanduser().resolve())
+        drop_token = _bounded_text(payload.get("drop_token"), limit=128, label="拖放凭证")
+        if not _consume_native_drop_capability(normalized, drop_token):
+            raise DashboardError("拖入文件凭证无效或已过期，请重新拖入文件。")
+        return self._drive_register_upload(normalized)
+
+    def _drive_upload_release(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"tokens"})
+        raw_tokens = payload.get("tokens")
+        if not isinstance(raw_tokens, list) or len(raw_tokens) > DRIVE_MAX_PENDING_UPLOADS:
+            raise DashboardError("待释放的上传凭证不正确。")
+        tokens = [
+            _bounded_text(value, limit=128, label="上传凭证")
+            for value in raw_tokens
+        ]
+        released = 0
+        with self._drive_lock:
+            for token in tokens:
+                if self._drive_uploads.pop(token, None) is not None:
+                    released += 1
+        return {"released": released}
+
+    def _drive_upload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "parent", "conflict", "transfer_id", "relative_dir"})
+        token = _bounded_text(payload.get("path"), limit=128, label="上传凭证")
+        parent = _remote_segments(payload.get("parent", []))
+        relative = _remote_segments(payload.get("relative_dir", []))
+        conflict = payload.get("conflict", "ask")
+        if conflict not in {"ask", "overwrite", "rename"}:
+            raise DashboardError("同名处理方式不正确。")
+        if len(parent) + len(relative) > 128:
+            raise DashboardError("云盘路径过长。")
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        with self._drive_lock:
+            authorization = self._drive_uploads.get(token)
+            if authorization is None or token in self._drive_uploads_in_progress:
+                raise DashboardError("请先通过上传按钮或拖放选择本地文件。")
+            self._drive_uploads_in_progress.add(token)
+        local, _registered_size, device, inode = authorization
+        succeeded = False
+        try:
+            try:
+                source_handle = open(local, "rb")
+            except OSError:
+                raise DashboardError("所选文件已变化或无法读取，请重新选择。") from None
+            with source_handle:
+                try:
+                    metadata = os.fstat(source_handle.fileno())
+                except OSError:
+                    raise DashboardError("所选文件已变化或无法读取，请重新选择。") from None
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or (metadata.st_dev, metadata.st_ino) != (device, inode)):
+                    raise DashboardError("所选文件已变化或无法读取，请重新选择。")
+                result = self._drive().upload(
+                    local, parent + relative, conflict=conflict,
+                    transfer_id=transfer_id, ensure_parent=bool(relative),
+                    source_handle=source_handle,
+                )
+            succeeded = True
+            return result
+        finally:
+            with self._drive_lock:
+                self._drive_uploads_in_progress.discard(token)
+                if succeeded:
+                    self._drive_uploads.pop(token, None)
+
+    def _drive_prepare_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "transfer_id"})
+        path = _remote_segments(payload.get("path"), allow_root=False)
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        if transfer_id is None:
+            raise DashboardError("传输任务标识不正确。")
+        drive = self._drive()
+        with self._drive_lock:
+            now = time.monotonic()
+            for key, (pending, _path, created) in tuple(self._drive_pending_downloads.items()):
+                if now - created > 300:
+                    self._drive_pending_downloads.pop(key, None)
+                    drive.transfers.finish(pending, "cancelled", "已取消")
+            if len(self._drive_pending_downloads) >= 200:
+                raise DashboardError("待下载任务过多，请稍后重试。")
+            transfer = drive.transfers.start(transfer_id, kind="download", name=path[-1], total=None)
+            self._drive_pending_downloads[transfer_id] = (transfer, path, now)
+        return {"transfer_id": transfer_id}
+
+    def _drive_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"path", "transfer_id"})
+        path = _remote_segments(payload.get("path"), allow_root=False)
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        drive = self._drive()
+        with self._drive_lock:
+            pending = self._drive_pending_downloads.get(transfer_id or "")
+            if pending is not None:
+                transfer, pending_path, _created = pending
+                if path != pending_path:
+                    raise DashboardError("下载任务与选择的文件不匹配。")
+                self._drive_pending_downloads.pop(transfer_id, None)
+            elif transfer_id is not None:
+                raise DashboardError("下载任务未准备或已过期，请重试。")
+            else:
+                transfer = drive.transfers.start(None, kind="download", name=path[-1], total=None)
+        try:
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            if self._save_file_picker is None:
+                raise LearningServiceError("当前环境不支持选择下载位置。")
+            destination = self._save_file_picker(safe_local_filename(path[-1]))
+            if not destination:
+                drive.transfers.finish(transfer, "cancelled", "已取消")
+                return {"status": "cancelled"}
+            if transfer.cancel_event.is_set():
+                raise TransferCancelled("传输已取消。")
+            selected = Path(_validated_local_attachment_path(str(destination))).expanduser()
+            # Resolve the parent only. Following the final component would allow a
+            # selected symlink to redirect the download to a different file.
+            target = selected.parent.resolve() / selected.name
+            result = drive.download(path, str(target), transfer_id=transfer_id, transfer=transfer)
+        except BaseException as exc:
+            if transfer.status == "running":
+                status = "cancelled" if isinstance(exc, TransferCancelled) else "failed"
+                drive.transfers.finish(transfer, status, "已取消" if status == "cancelled" else "下载失败")
+            raise
+        with self._drive_lock:
+            self._drive_downloads[result["transfer_id"]] = str(target)
+            while len(self._drive_downloads) > 50:
+                self._drive_downloads.pop(next(iter(self._drive_downloads)))
+        return result
+
+    def _drive_reveal_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"transfer_id"})
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        with self._drive_lock:
+            local = self._drive_downloads.get(transfer_id or "")
+        if local is None or not Path(local).exists():
+            raise DashboardError("下载文件已不存在或已被移动。")
+        command = _desktop_open_command(Path(local), reveal=True)
+        completed = self._command_runner(command, check=False)
+        # explorer.exe /select, returns exit code 1 even on success.
+        if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
+            raise DashboardError("无法在文件管理器中显示下载文件。")
+        return {"transfer_id": transfer_id, "status": "revealed"}
+
+    def _drive_transfers(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return {"items": self._drive().transfers.snapshot()}
+
+    def _drive_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"transfer_id"})
+        transfer_id = _transfer_id(payload.get("transfer_id"))
+        if transfer_id is None:
+            raise DashboardError("传输任务标识不正确。")
+        return self._drive().cancel(transfer_id)
+
     @staticmethod
     def _canvas_ids(value: object, label: str, *, maximum: int = 500) -> list[int]:
         if type(value) is not list or not 1 <= len(value) <= maximum:
@@ -1513,9 +1886,16 @@ class DesktopBridge:
             CloudStorageError,
             TimetableError,
         ) as exc:
+            # The 交大云盘 page branches on auth/not-found/conflict/network; other pages keep
+            # the historical generic code.
+            code = (
+                cloud_error_code(exc)
+                if action.startswith("drive_") and isinstance(exc, CloudStorageError)
+                else "operation_failed"
+            )
             return {
                 "ok": False,
-                "error": {"code": "operation_failed", "message": safe_message(exc)},
+                "error": {"code": code, "message": safe_message(exc)},
             }
         except SQLAlchemyError:
             return {
@@ -1960,6 +2340,13 @@ def run_desktop_app() -> int:
                 return None
             return str(result[0] if isinstance(result, (list, tuple)) else result)
 
+        def pick_files() -> list[str] | None:
+            result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True)
+            if not result:
+                return None
+            values = result if isinstance(result, (list, tuple)) else [result]
+            return [str(value) for value in values]
+
         def save_file(default_name: str) -> str | None:
             result = webview.windows[0].create_file_dialog(
                 webview.SAVE_DIALOG, save_filename=default_name
@@ -1994,6 +2381,8 @@ def run_desktop_app() -> int:
             file_picker=pick_file,
             ics_file_picker=pick_ics_file,
             save_file_picker=save_file,
+            multi_file_picker=pick_files,
+            folder_picker=pick_folder,
             backup_manager=backup_manager,
             diagnostic_bundle=diagnostic_bundle,
             timetable_service=TimetableService(

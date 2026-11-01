@@ -756,6 +756,149 @@ export function getPanFiles(remotePath = "", page = 1, pageSize = 50) {
   });
 }
 
+// ---------------------------------------------------------------- 交大云盘文件管理
+
+export function getDriveSpace() {
+  return invoke<import("@/lib/types").DriveSpace>("drive_space");
+}
+
+export function listDrive(options: {
+  path: string[];
+  page?: number;
+  pageSize?: number;
+  sortBy?: import("@/lib/types").DriveSortField;
+  order?: import("@/lib/types").DriveSortOrder;
+  query?: string;
+  refresh?: boolean;
+}) {
+  return invoke<import("@/lib/types").DrivePage>("drive_list", {
+    path: options.path,
+    page: options.page ?? 1,
+    page_size: options.pageSize ?? 20,
+    sort_by: options.sortBy ?? "name",
+    order: options.order ?? "asc",
+    query: options.query ?? "",
+    refresh: options.refresh ?? false,
+  });
+}
+
+export function createDriveFolder(parent: string[], name: string) {
+  return invoke<import("@/lib/types").DriveItem>("drive_mkdir", {
+    parent,
+    name,
+  });
+}
+
+export function renameDriveItem(
+  path: string[],
+  name: string,
+  isDirectory: boolean,
+) {
+  return invoke<import("@/lib/types").DriveItem>("drive_rename", {
+    path,
+    name,
+    is_directory: isDirectory,
+  });
+}
+
+export function moveDriveItems(
+  items: import("@/lib/types").DriveEntryRef[],
+  destination: string[],
+) {
+  return invoke<import("@/lib/types").DriveBatchResult>("drive_move", {
+    items,
+    destination,
+  });
+}
+
+export function copyDriveItems(
+  items: import("@/lib/types").DriveEntryRef[],
+  destination: string[],
+) {
+  return invoke<import("@/lib/types").DriveBatchResult>("drive_copy", {
+    items,
+    destination,
+  });
+}
+
+export function deleteDriveItems(items: import("@/lib/types").DriveEntryRef[]) {
+  return invoke<import("@/lib/types").DriveBatchResult>("drive_delete", {
+    items,
+  });
+}
+
+export function pickDriveUploadFiles() {
+  return invoke<import("@/lib/types").DriveLocalPick>("drive_upload_pick");
+}
+
+export function pickDriveUploadFolder() {
+  return invoke<import("@/lib/types").DriveLocalPick>(
+    "drive_upload_pick_folder",
+  );
+}
+
+export function registerDriveDropFile(path: string, dropToken: string) {
+  return invoke<import("@/lib/types").DriveLocalFile>("drive_upload_register", {
+    path,
+    drop_token: dropToken,
+  });
+}
+
+export function releaseDriveUploads(tokens: string[]) {
+  return invoke<{ released: number }>("drive_upload_release", { tokens });
+}
+
+export function uploadDriveFile(options: {
+  path: string;
+  parent: string[];
+  conflict?: import("@/lib/types").DriveConflictStrategy;
+  transferId?: string;
+  relativeDir?: string[];
+}) {
+  return invoke<import("@/lib/types").DriveUploadResult>("drive_upload", {
+    path: options.path,
+    parent: options.parent,
+    conflict: options.conflict ?? "ask",
+    ...(options.transferId ? { transfer_id: options.transferId } : {}),
+    ...(options.relativeDir?.length
+      ? { relative_dir: options.relativeDir }
+      : {}),
+  });
+}
+
+export function prepareDriveDownload(path: string[], transferId: string) {
+  return invoke<{ transfer_id: string }>("drive_prepare_download", {
+    path,
+    transfer_id: transferId,
+  });
+}
+
+export function downloadDriveItem(path: string[], transferId?: string) {
+  return invoke<import("@/lib/types").DriveDownloadResult>("drive_download", {
+    path,
+    ...(transferId ? { transfer_id: transferId } : {}),
+  });
+}
+
+export function revealDriveDownload(transferId: string) {
+  return invoke<{ transfer_id: string; status: string }>(
+    "drive_reveal_download",
+    { transfer_id: transferId },
+  );
+}
+
+export function getDriveTransfers() {
+  return invoke<{ items: import("@/lib/types").DriveTransfer[] }>(
+    "drive_transfers",
+  );
+}
+
+export function cancelDriveTransfer(transferId: string) {
+  return invoke<{ transfer_id: string; cancelled: boolean }>("drive_cancel", {
+    transfer_id: transferId,
+  });
+}
+
 export function submitAssignmentCloudFile(
   courseId: number,
   assignmentId: number,
