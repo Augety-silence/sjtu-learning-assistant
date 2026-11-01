@@ -50,6 +50,7 @@ MAX_PARTS_PER_RENEWAL = 50
 MAX_SAFE_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY_SECONDS = 5.0
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+MAX_GLOBAL_SEARCH_PAGE_SIZE = 1000
 TRUSTED_OBJECT_HOST_SUFFIXES = (
     ".myqcloud.com",
     ".tencentcos.cn",
@@ -240,7 +241,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
         self._keyring = keyring_module
         clean_credential = validate_user_token_value
         self._user_token = clean_credential(user_token) if user_token is not None else None
+        self._organization_library_id: str | None = None
         self._credential: SpaceCredential | None = None
+        self._organization_id: str | None = None
         self._credential_lock = threading.RLock()
         self._part_credentials: dict[str, dict[int, Mapping[str, str]]] = {}
         self._owns_client = client is None
@@ -262,7 +265,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             save_user_token(token, keyring_module=self._keyring)
         with self._credential_lock:
             self._user_token = token
+            self._organization_library_id = None
             self._credential = None
+            self._organization_id = None
             self._part_credentials.clear()
 
     def clear_user_token(self, *, delete_from_keychain: bool = True) -> None:
@@ -270,7 +275,9 @@ class SJTUCloudPanProvider(CloudStorageProvider):
             delete_user_token(keyring_module=self._keyring)
         with self._credential_lock:
             self._user_token = None
+            self._organization_library_id = None
             self._credential = None
+            self._organization_id = None
             self._part_credentials.clear()
 
     def _token(self) -> str:
@@ -416,6 +423,51 @@ class SJTUCloudPanProvider(CloudStorageProvider):
     def refresh_credentials(self) -> SpaceCredential:
         return self.get_space_credentials(force_refresh=True)
 
+    def _get_organization_id(self, credential: SpaceCredential) -> str:
+        with self._credential_lock:
+            if (
+                self._organization_id is not None
+                and self._organization_library_id == credential.library_id
+            ):
+                return self._organization_id
+            response = self._send_raw(
+                "GET",
+                f"{self._base_url}/user/v1/organization",
+                params={"user_token": self._token()},
+                retryable=True,
+            )
+            payload = self._decode(response, "读取云盘组织信息")
+            if not isinstance(payload, list):
+                raise CloudRemoteApiError("交大云盘组织信息响应格式错误。")
+            matches = [
+                value
+                for value in payload
+                if isinstance(value, Mapping)
+                and str(value.get("libraryId") or "") == credential.library_id
+            ]
+            if not matches:
+                raise CloudRemoteApiError("交大云盘组织信息与个人空间不匹配。")
+            selected = next(
+                (value for value in matches if value.get("isLastSignedIn") is True),
+                matches[0],
+            )
+            raw_id = selected.get("id")
+            if type(raw_id) is int and raw_id > 0:
+                organization_id = str(raw_id)
+            elif (
+                isinstance(raw_id, str)
+                and raw_id.isascii()
+                and raw_id.isdigit()
+                and 0 < len(raw_id) <= 20
+                and int(raw_id) > 0
+            ):
+                organization_id = str(int(raw_id))
+            else:
+                raise CloudRemoteApiError("交大云盘组织信息缺少有效标识。")
+            self._organization_id = organization_id
+            self._organization_library_id = credential.library_id
+            return organization_id
+
     def _pan_api_url(
         self, kind: str, credential: SpaceCredential, path: RemotePath
     ) -> httpx.URL:
@@ -511,6 +563,55 @@ class SJTUCloudPanProvider(CloudStorageProvider):
                 return
             previous_fingerprint = fingerprint
             page_number += 1
+
+    def search_global(
+        self,
+        keyword: str,
+        *,
+        page_size: int = 500,
+        accurate: bool = False,
+    ) -> tuple[tuple[CloudItem, ...], bool]:
+        """Return one fast indexed page and whether additional matches exist."""
+        clean_keyword = keyword.strip()
+        if not clean_keyword or len(clean_keyword) > 256 or any(
+            ord(character) < 32 or ord(character) == 127 for character in clean_keyword
+        ):
+            raise ValueError("云盘搜索关键词格式无效。")
+        if not 1 <= page_size <= MAX_GLOBAL_SEARCH_PAGE_SIZE:
+            raise ValueError("云盘搜索分页参数无效。")
+        if type(accurate) is not bool:
+            raise ValueError("云盘搜索模式无效。")
+
+        credential = self.get_space_credentials()
+        organization_id = self._get_organization_id(credential)
+        url = (
+            f"{self._base_url}/user/v1/directory-search/"
+            f"{organization_id}/global-search"
+        )
+        response = self._send_raw(
+            "POST",
+            url,
+            params={"user_token": self._token()},
+            json={
+                "keyword": clean_keyword,
+                "accurate": accurate,
+                "scope": "/",
+                "limit": page_size,
+                "spaceId": credential.space_id,
+                "searchBy": "fileName",
+            },
+            retryable=True,
+        )
+        payload = self._decode(response, "搜索云盘文件")
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("contents"), list):
+            raise CloudRemoteApiError("交大云盘搜索响应格式错误。")
+        items = tuple(
+            _item(value) for value in payload["contents"] if isinstance(value, Mapping)
+        )
+        has_more = payload.get("hasMore", False)
+        if type(has_more) is not bool:
+            raise CloudRemoteApiError("交大云盘搜索分页响应格式错误。")
+        return items, has_more
 
     def create_directory(self, path: RemotePath) -> None:
         normalized = _segments(path)

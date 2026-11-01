@@ -247,6 +247,53 @@ class SJTUCloudPanTests(unittest.TestCase):
         self.assertEqual(["1", "2"], requested_pages)
         self.assertTrue(all("%E8%AF%BE%E7%A8%8B%201" in path for path in paths))
 
+    def test_global_search_single_page_supports_exact_file_name_mode(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("/personal"):
+                return httpx.Response(200, json=credential(), request=request)
+            if request.url.path == "/user/v1/organization":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"id": 9, "libraryId": "other", "isLastSignedIn": True},
+                        {"id": 42, "libraryId": "library"},
+                    ],
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "contents": [
+                        {"name": "报告.pdf", "path": ["课程", "报告.pdf"], "type": "file"}
+                    ],
+                    "hasMore": False,
+                },
+                request=request,
+            )
+
+        provider, client = self.provider(handler)
+        try:
+            items, has_more = provider.search_global("报告.pdf", accurate=True)
+        finally:
+            client.close()
+        self.assertEqual(["报告.pdf"], [value.name for value in items])
+        self.assertFalse(has_more)
+        search_request = next(
+            request for request in requests if request.url.path.endswith("/global-search")
+        )
+        body = json.loads(search_request.content)
+        self.assertTrue(body["accurate"])
+        self.assertEqual("fileName", body["searchBy"])
+        self.assertEqual(
+            "/user/v1/directory-search/42/global-search",
+            search_request.url.path,
+        )
+        self.assertEqual(TOKEN, search_request.url.params["user_token"])
+        self.assertNotIn("access_token", search_request.url.params)
+
     def test_chinese_reserved_path_segments_are_encoded_exactly_once(self) -> None:
         raw_paths: list[str] = []
         name = "中文 空格#?%文件.txt"

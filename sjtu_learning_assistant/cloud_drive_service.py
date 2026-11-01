@@ -45,6 +45,7 @@ LISTING_PAGE_SIZE = 500
 MAX_SEARCH_ITEMS = 50_000
 MAX_SEARCH_FOLDERS = 2_000
 LISTING_CACHE_SECONDS = 20.0
+MAX_SEARCH_CACHE_ENTRIES = 16
 MAX_UPLOAD_BYTES = 2 * 1024**3
 SIMPLE_UPLOAD_LIMIT = 8 * 1024 * 1024
 MULTIPART_CHUNK_SIZE = 4 * 1024 * 1024
@@ -338,6 +339,7 @@ class CloudDriveService:
         self._clock = clock
         self._cache_lock = threading.Lock()
         self._listings: dict[tuple[str, ...], _Listing] = {}
+        self._searches: dict[str, _Listing] = {}
         self._cache_generation = 0
         self.transfers = TransferRegistry()
 
@@ -348,6 +350,7 @@ class CloudDriveService:
     def _invalidate(self, *paths: Sequence[str]) -> None:
         with self._cache_lock:
             self._cache_generation += 1
+            self._searches.clear()
             for path in paths:
                 key = tuple(path)
                 # Drop the folder itself and anything nested below it.
@@ -374,8 +377,13 @@ class CloudDriveService:
                 self._listings.pop(oldest, None)
         return listing
 
-    def _search(self, needle: str, *, refresh: bool) -> tuple[list[CloudItem], bool]:
-        """Search normalized full paths from the personal-space root using BFS."""
+    @staticmethod
+    def _matches_search(item: CloudItem, needle: str) -> bool:
+        full_path = "/".join(item.path)
+        return needle in unicodedata.normalize("NFKC", full_path).casefold()
+
+    def _scan_search(self, needle: str, *, refresh: bool) -> tuple[list[CloudItem], bool]:
+        """Compatibility fallback for providers without indexed global search."""
         pending: deque[tuple[str, ...]] = deque([()])
         matches: list[CloudItem] = []
         scanned_items = 0
@@ -395,12 +403,66 @@ class CloudDriveService:
                     pending.clear()
                     break
                 scanned_items += 1
-                full_path = "/".join(item.path)
-                if needle in unicodedata.normalize("NFKC", full_path).casefold():
+                if self._matches_search(item, needle):
                     matches.append(item)
                 if item.is_directory:
                     pending.append(item.path)
         return matches, truncated
+
+    def _search(
+        self,
+        keyword: str,
+        needle: str,
+        *,
+        refresh: bool,
+    ) -> tuple[list[CloudItem], bool]:
+        """Prefer the provider's indexed global search and cache complete result sets."""
+        now = self._clock()
+        with self._cache_lock:
+            cached = self._searches.get(needle)
+            generation = self._cache_generation
+        if cached is not None and not refresh and now - cached.fetched_at < LISTING_CACHE_SECONDS:
+            return list(cached.items), cached.truncated
+
+        provider = self._provider()
+        indexed_search = getattr(provider, "search_global", None)
+        if callable(indexed_search):
+            exact_candidates, exact_truncated = indexed_search(
+                keyword,
+                page_size=LISTING_PAGE_SIZE,
+                accurate=True,
+            )
+            exact_items = [
+                item
+                for item in exact_candidates
+                if self._matches_search(item, needle)
+            ]
+            if exact_items:
+                items = exact_items
+                truncated = exact_truncated
+            else:
+                candidates, truncated = indexed_search(
+                    keyword,
+                    page_size=LISTING_PAGE_SIZE,
+                    accurate=False,
+                )
+                items = [
+                    item
+                    for item in candidates
+                    if self._matches_search(item, needle)
+                ]
+        else:
+            items, truncated = self._scan_search(needle, refresh=refresh)
+
+        listing = _Listing(tuple(items), truncated, self._clock())
+        with self._cache_lock:
+            if generation != self._cache_generation:
+                return items, truncated
+            self._searches[needle] = listing
+            if len(self._searches) > MAX_SEARCH_CACHE_ENTRIES:
+                oldest = min(self._searches, key=lambda key: self._searches[key].fetched_at)
+                self._searches.pop(oldest, None)
+        return items, truncated
 
     def _child_exists(self, parent: tuple[str, ...], name: str) -> bool:
         return bool(self._provider().exists(parent + (name,)))
@@ -440,9 +502,16 @@ class CloudDriveService:
         if page < 1 or not 1 <= page_size <= 200:
             raise CloudDriveError("分页参数不正确。")
         normalized = tuple(path)
-        needle = unicodedata.normalize("NFKC", query).casefold().strip()
+        search_keyword = unicodedata.normalize("NFKC", query).strip()
+        if len(search_keyword) > 256 or any(
+            ord(character) < 32 or ord(character) == 127 for character in search_keyword
+        ):
+            raise CloudDriveError("搜索关键词格式不正确。")
+        needle = search_keyword.casefold()
         if needle:
-            items, truncated = self._search(needle, refresh=refresh)
+            items, truncated = self._search(
+                search_keyword, needle, refresh=refresh
+            )
         else:
             listing = self._listing(normalized, refresh=refresh)
             items = list(listing.items)
