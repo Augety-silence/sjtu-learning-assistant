@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ from desktop_app import (
     _native_file_drop_paths,
     _promote_drop_listener_to_capture,
     _notify_database_recovery,
+    _static_index_url,
     _report_startup_error,
     main,
     run_desktop_app,
@@ -606,6 +608,20 @@ class DesktopBridgeTests(unittest.TestCase):
 
 
 class DesktopStartupLifecycleTests(unittest.TestCase):
+    def test_static_index_url_is_content_addressed(self):
+        payload = b"<html>current frontend</html>"
+        with tempfile.TemporaryDirectory() as directory:
+            index = Path(directory) / "index.html"
+            index.write_bytes(payload)
+            with patch("desktop_app.STATIC_INDEX", index):
+                url = _static_index_url()
+
+        fingerprint = hashlib.sha256(payload).hexdigest()[:16]
+        self.assertEqual(
+            f"{index.as_uri()}?build={fingerprint}",
+            url,
+        )
+
     def test_database_configuration_error_is_reported_at_startup(self):
         webview = SimpleNamespace()
         with (
@@ -844,7 +860,12 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             create_window=Mock(),
             start=Mock(),
         )
-        static_index = SimpleNamespace(is_file=lambda: True, as_uri=lambda: "file:///index.html")
+        index_payload = b"<html>packaged frontend</html>"
+        static_index = SimpleNamespace(
+            is_file=lambda: True,
+            as_uri=lambda: "file:///index.html",
+            read_bytes=lambda: index_payload,
+        )
         with (
             patch("desktop_app.sys.platform", "darwin"),
             patch.dict("sys.modules", {"webview": webview}),
@@ -858,8 +879,10 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertEqual(0, run_desktop_app())
 
         create_window_call = webview.create_window.call_args
+        fingerprint = hashlib.sha256(index_payload).hexdigest()[:16]
         self.assertEqual(
-            ("SJTU 学习助手", "file:///index.html"), create_window_call.args
+            ("SJTU 学习助手", f"file:///index.html?build={fingerprint}"),
+            create_window_call.args,
         )
         self.assertEqual(1280, create_window_call.kwargs["width"])
         self.assertEqual(820, create_window_call.kwargs["height"])
