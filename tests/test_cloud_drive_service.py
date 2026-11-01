@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import unittest
@@ -645,8 +646,14 @@ class DriveBridgeTests(unittest.TestCase):
         original_upload = drive.upload
 
         def swap_then_upload(*args, **kwargs):
-            self.local.unlink()
-            self.local.symlink_to(target)
+            try:
+                self.local.unlink()
+                self.local.symlink_to(target)
+            except OSError:
+                # Windows keeps the verified source handle locked.  That
+                # prevents replacement and is the secure platform outcome.
+                if os.name != "nt":
+                    raise
             return original_upload(*args, **kwargs)
 
         with patch.object(drive, "upload", side_effect=swap_then_upload):
