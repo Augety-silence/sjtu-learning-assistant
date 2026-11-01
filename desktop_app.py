@@ -2115,7 +2115,9 @@ def _install_macos_native_file_drop_hook() -> bool:
         if paths:
             event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
             files = _authorize_native_drop_paths(paths)
-            detail = json.dumps({"files": files}, ensure_ascii=False)
+            # Keep the historical paths contract for AIChatView alongside the
+            # capability tokens used by the assignment workspace.
+            detail = json.dumps({"paths": list(paths), "files": files}, ensure_ascii=False)
             script = (
                 "window.setTimeout(function(){window.dispatchEvent(new CustomEvent("
                 f"{event_name}, {{detail: {detail}}}));}}, 0);"

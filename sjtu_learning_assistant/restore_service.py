@@ -479,7 +479,9 @@ class RestoreService:
                 job.plan_data = dict(job.plan_data, target=str(target))
             elif existing is not None and conflict_policy != "overwrite":
                 raise RestoreError("目标文件已存在，需要选择冲突策略。")
-            if existing and existing.get("kind") != "file":
+            # 仅覆盖时才检查原目标类型：另存为已换到不冲突的新文件名，同名目录等非普通文件
+            # 不再是写入目标，若仍用换名前的 existing 判断会错误拒绝“另存为”。
+            if conflict_policy == "overwrite" and existing and existing.get("kind") != "file":
                 raise RestoreError("目标已存在且不是普通文件。")
             self._create_directories(root, target.parent)
             reservation_inode = None

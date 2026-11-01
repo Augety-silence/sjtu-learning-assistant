@@ -92,7 +92,12 @@ def validate_archive_root(value: object) -> str:
         raise SettingsError("归档目录必须是字符串。")
     if not value.strip() or any(ord(character) < 32 for character in value):
         raise SettingsError("归档目录不能为空且不能包含控制字符。")
-    path = Path(value.strip()).expanduser()
+    try:
+        path = Path(value.strip()).expanduser()
+    except RuntimeError as exc:
+        # "~unknownuser/x" (or no resolvable home): must stay a SettingsError so
+        # load()'s salvage path and the bridge's safe message both apply.
+        raise SettingsError("归档目录无法展开用户主目录。") from exc
     if not path.is_absolute():
         raise SettingsError("归档目录必须是绝对路径。")
     path = Path(os.path.abspath(path))
@@ -139,17 +144,22 @@ def validate_ai_base_url(value: object) -> str:
     normalized = value.strip().rstrip("/")
     if not normalized or len(normalized) > 2048:
         raise SettingsError("AI Base URL 格式不正确。")
-    parsed = urlparse(normalized)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.params
-        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
-    ):
+    try:
+        # urlparse/hostname raise plain ValueError for e.g. "https://[::1".
+        parsed = urlparse(normalized)
+        invalid = (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.params
+            or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        )
+    except ValueError as exc:
+        raise SettingsError("AI Base URL 格式不正确。") from exc
+    if invalid:
         raise SettingsError("AI Base URL 必须是无账号、查询参数和片段的 HTTPS 地址。")
     return normalized
 
@@ -303,7 +313,10 @@ class SettingsStore:
         try:
             with self.path.open("r", encoding="utf-8-sig") as stream:
                 payload = json.load(stream)
-        except (UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, ValueError, RecursionError):
+            # JSONDecodeError is a ValueError; json also raises bare ValueError
+            # (int > sys.get_int_max_str_digits()) and RecursionError (deep
+            # nesting). All mean "unreadable file", never a startup crash.
             # The user's archive_root is unknown now; persist a fallback with
             # auto download off so later loads do not see a "fresh install".
             fallback = LocalSettings(

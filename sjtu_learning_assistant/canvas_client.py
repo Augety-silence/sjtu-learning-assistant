@@ -120,13 +120,18 @@ class CanvasClient:
         return parsed.scheme, parsed.hostname, port
 
     def _assert_same_origin(self, url: str) -> None:
-        absolute = str(self._client.base_url.join(url))
-        parsed = urlparse(absolute)
-        if (
-            parsed.username is not None
-            or parsed.password is not None
-            or self._origin(absolute) != self._origin(self.base_url)
-        ):
+        try:
+            absolute = str(self._client.base_url.join(url))
+            parsed = urlparse(absolute)
+            foreign = (
+                parsed.username is not None
+                or parsed.password is not None
+                or self._origin(absolute) != self._origin(self.base_url)
+            )
+        except (ValueError, httpx.InvalidURL) as exc:
+            # 畸形端口（如 :99999）会让 urlparse().port 抛 ValueError，需收敛到 CanvasError 体系。
+            raise CanvasProtocolError("Canvas 返回了无效链接，已停止以保护访问令牌。") from exc
+        if foreign:
             raise CanvasProtocolError("Canvas 链接指向其他站点，已停止以保护访问令牌。")
 
     def _request(

@@ -1893,7 +1893,10 @@ class ArchiveService:
             if record is None:
                 raise ArchiveError("文件元数据已不存在：%s" % source_id)
             record.download_attempts += 1
-            record.download_status = "pending"
+            if not (record.download_status == "cloud_only" and record.cloud_path):
+                # 显式下载 cloud_only 文件期间不改状态：进程中断时若停在 pending，
+                # 批量归档的 cloud_only 跳过会失效并悄悄重新下载。
+                record.download_status = "pending"
             record.download_error = None
 
     def _write_status(
@@ -1914,6 +1917,10 @@ class ArchiveService:
             )
             if record is None:
                 raise ArchiveError(f"文件元数据已不存在：{source_id}")
+            if status == "failed" and record.download_status == "cloud_only" and record.cloud_path:
+                # 用户已释放本地空间、云端副本仍有效：显式下载失败只记录错误，保持
+                # cloud_only，避免批量归档跳过失效、前端以“失败”遮住“仅云端”。
+                status = "cloud_only"
             record.download_status = status
             record.download_error = error
             if status == "downloaded":

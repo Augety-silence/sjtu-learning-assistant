@@ -108,6 +108,7 @@ interface PersistedChatTask {
 }
 
 const ACTIVE_CHAT_TASK_PREFIX = "ai-chat-running-task:";
+const RESUME_RETRY_NOTICE = "暂时无法确认后台任务状态，正在自动重新连接…";
 
 function readPersistedChatTask(sessionId: string): PersistedChatTask | null {
   const key = `${ACTIVE_CHAT_TASK_PREFIX}${sessionId}`;
@@ -211,8 +212,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const sidebarAutoSubmitRef = useRef<string | null>(null);
   const resumeRetryRef = useRef<{
     sessionId: string;
+    taskId: string | null;
     failures: number;
     notBefore: number;
+    cancel: boolean;
   } | null>(null);
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
@@ -807,6 +810,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     taskAbortRef.current = controller;
     taskPollAbortRef.current = pollController;
     let trackedTaskId = resumeTaskId;
+    let retryScheduled = false;
     setRunningTaskId(resumeTaskId);
     setCanRetry(false);
     if (resumeTaskId) {
@@ -875,6 +879,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             );
       clearPersistedChatTask(request.sessionId, trackedTaskId);
       resumeRetryRef.current = null;
+      setError((current) => (current === RESUME_RETRY_NOTICE ? null : current));
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
@@ -931,14 +936,41 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         category === "resume_unconfirmed"
       ) {
         const previous = resumeRetryRef.current;
-        const failures =
-          previous?.sessionId === request.sessionId ? previous.failures + 1 : 1;
+        const sameTask =
+          previous?.sessionId === request.sessionId &&
+          previous.taskId === trackedTaskId;
+        const failures = sameTask ? previous.failures + 1 : 1;
         resumeRetryRef.current = {
           sessionId: request.sessionId,
+          taskId: trackedTaskId,
           failures,
           notBefore:
             Date.now() + Math.min(5_000, 500 * 2 ** Math.min(failures - 1, 4)),
+          // Keep an unconfirmed stop (user or timeout) alive across retries;
+          // otherwise the reconnect silently resumes a task the user stopped.
+          cancel:
+            category === "cancel_unconfirmed" ||
+            controller.signal.aborted ||
+            (sameTask && previous.cancel),
         };
+        retryScheduled = true;
+        // The resumed poll replays every event from sequence 0; drop the partial
+        // stream now so the retry does not append the same text/tools twice.
+        setActive((current) =>
+          current?.id === request.sessionId
+            ? {
+                ...current,
+                messages: current.messages.filter(
+                  (item) => !item.id.startsWith("stream-"),
+                ),
+                traces: current.traces.filter(
+                  (item) => !item.id.startsWith("stream-"),
+                ),
+              }
+            : current,
+        );
+        if (failures >= 3 && activeSessionIdRef.current === request.sessionId)
+          setError(RESUME_RETRY_NOTICE);
         return;
       }
       resumeRetryRef.current = null;
@@ -996,7 +1028,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         setBusy(false);
         setRunningSessionId(null);
         setRunningTaskId(null);
-        window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
+        window.setTimeout(() => {
+          // Background reconnect attempts must not pull focus back every few
+          // seconds; only recover focus that was lost with the stop button.
+          const focused = document.activeElement;
+          if (retryScheduled && focused && focused !== document.body) return;
+          focusIfPresent(textareaRef.current);
+        }, 0);
       }
     }
   }
@@ -1006,7 +1044,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     const persisted = readPersistedChatTask(active.id);
     if (!persisted) return;
     const retry = resumeRetryRef.current;
-    if (retry?.sessionId === active.id && retry.notBefore > Date.now()) {
+    const retryMatchesTask =
+      retry?.sessionId === active.id && retry.taskId === persisted.taskId;
+    if (retryMatchesTask && retry.notBefore > Date.now()) {
       const timer = window.setTimeout(
         () => setResumeRetryTick((value) => value + 1),
         retry.notBefore - Date.now(),
@@ -1014,6 +1054,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       return () => window.clearTimeout(timer);
     }
     void runSubmission(persisted.request, persisted.taskId);
+    if (retryMatchesTask && retry.cancel) {
+      // runSubmission installs its AbortController synchronously; abort it so
+      // the resumed poll re-sends the stop request once the backend answers.
+      setStopping(true);
+      taskAbortRef.current?.abort();
+    }
     // Re-check when busy clears: a session opened while another task was
     // running must still reconnect, otherwise submit() stays blocked.
   }, [active?.id, loading, busy, resumeRetryTick]);

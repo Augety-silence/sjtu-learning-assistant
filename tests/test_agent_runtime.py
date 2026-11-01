@@ -20,7 +20,7 @@ from sjtu_learning_assistant.agent_runtime import (
     ReadOnlyToolRegistry,
 )
 from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
-from sjtu_learning_assistant.agent_runtime.tools import _clip
+from sjtu_learning_assistant.agent_runtime.tools import _clip, _redact_body
 from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
@@ -175,6 +175,15 @@ class AgentRuntimeTests(unittest.TestCase):
         for secret in ("two word secret", "key-secret", "相邻秘密"):
             self.assertNotIn(secret, clipped)
         self.assertGreaterEqual(clipped.count("[已隐藏]"), 3)
+
+    def test_url_credentials_with_long_password_are_redacted(self) -> None:
+        secret = "s" * 2048
+        source = f"https://student:{secret}@example.edu/private"
+
+        self.assertEqual("[已隐藏]", _clip(source, 5000))
+        body, truncated = _redact_body(source, 5000)
+        self.assertEqual("[已隐藏]", body)
+        self.assertFalse(truncated)
 
     def test_email_detail_rejects_inactive_unified_item(self) -> None:
         result = self.registry.execute("search_messages", {"kind": "email"}, ALL_TOOLS).result
