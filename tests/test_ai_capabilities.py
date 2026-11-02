@@ -23,7 +23,12 @@ class AICapabilityTests(unittest.TestCase):
             self.assertTrue(task["page_ai_available"])
             self.assertEqual("persistent_ledger", task["task_runtime"])
             self.assertGreater(task["max_model_calls"], 0)
-            self.assertLessEqual(task["max_output_tokens"], 4096)
+            if task["task_id"] == "learning_chat":
+                # 学习对话的输出预算按整轮累计（最多 6 步工具调用 + 最终回答）。
+                self.assertLessEqual(task["max_output_tokens"], 12000)
+                self.assertGreaterEqual(task["max_model_calls"], 7)
+            else:
+                self.assertLessEqual(task["max_output_tokens"], 4096)
             if task["implementation_status"] == "planned":
                 self.assertEqual([], task["backend_actions"])
         chat = ai_task_catalog("ai-chat")["tasks"][0]

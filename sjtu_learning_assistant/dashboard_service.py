@@ -2920,7 +2920,11 @@ class DashboardService:
         context = normalize_page_context(page_context)
         settings = self._effective_settings()
         selected_model, _ = self._chat_model(model, depth, settings.ai_model)
-        snapshot = self.ai_tasks.create(context, model=selected_model)
+        # 页面上下文（如“来自：概览”）只决定证据范围；预算始终按学习对话计，
+        # 否则会套用概览页“单次调用”的预算，多步工具调用在第 2 次就失败。
+        snapshot = self.ai_tasks.create(
+            context, model=selected_model, capability_page_id="ai-chat"
+        )
         task_id = str(snapshot["task"]["id"])
         thread = threading.Thread(
             target=self._run_ai_chat_task,

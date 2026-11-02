@@ -245,13 +245,29 @@ export function TraceRun({ run }: { run: AIToolRun }) {
   );
 }
 
-function parseStartedAt(value: number | string | null | undefined) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
+// 不带时区的 ISO 时间（旧版后端从 SQLite 读回的 UTC）按 UTC 解析，
+// 否则 Date.parse 会当成本地时间，在 UTC+8 下多算 8 小时。
+const ISO_WITHOUT_ZONE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+export function parseStartedAt(
+  value: number | string | null | undefined,
+  now: number = Date.now(),
+) {
+  let parsed: number | null = null;
+  if (typeof value === "number" && Number.isFinite(value)) parsed = value;
+  else if (typeof value === "string" && value.trim()) {
+    const text = value.trim();
+    const normalized = ISO_WITHOUT_ZONE.test(text)
+      ? `${text.replace(" ", "T")}Z`
+      : text;
+    const time = Date.parse(normalized);
+    if (Number.isFinite(time)) parsed = time;
   }
-  return null;
+  if (parsed === null) return null;
+  // 开始时刻不可能晚于现在（允许 1 分钟时钟抖动）；异常值不显示计时，
+  // 不能把错误的时间当成“已用 N 小时”展示。
+  if (parsed > now + 60_000) return null;
+  return parsed;
 }
 
 /** 运行中每秒刷新一次已用时间；页面不可见或已结束时不计时。 */

@@ -5,6 +5,7 @@ import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import {
   formatDuration,
   InlineAgentExecution,
+  parseStartedAt,
   toolArgumentHint,
   toolResultLabel,
   turnSummaryText,
@@ -76,6 +77,23 @@ describe("per-turn execution details", () => {
         rejected: 1,
       }),
     ).toBe("未完成 · 2 个工具调用 · 1 项未执行");
+  });
+
+  it("parses zoneless backend timestamps as UTC instead of local time", () => {
+    const now = Date.parse("2026-11-02T12:46:10Z");
+    // 北京时间 20:46 运行的任务，后端旧格式给出无时区 UTC 时间。
+    expect(parseStartedAt("2026-11-02T12:46:00.284896", now)).toBe(
+      Date.parse("2026-11-02T12:46:00.284Z"),
+    );
+    expect(parseStartedAt("2026-11-02 12:46:00", now)).toBe(
+      Date.parse("2026-11-02T12:46:00Z"),
+    );
+    expect(parseStartedAt("2026-11-02T12:46:00+00:00", now)).toBe(
+      Date.parse("2026-11-02T12:46:00Z"),
+    );
+    // 明显在未来的开始时间视为无效，不显示错误计时。
+    expect(parseStartedAt("2026-11-02T20:46:00", now)).toBeNull();
+    expect(parseStartedAt("not a date", now)).toBeNull();
   });
 
   it("describes reads by page range and never shows raw queries", () => {

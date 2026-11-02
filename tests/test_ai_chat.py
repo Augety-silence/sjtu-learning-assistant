@@ -230,6 +230,9 @@ class AIChatHistoryTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual("completed", snapshot["task"]["status"])
         self.assertEqual("calendar", snapshot["task"]["page_id"])
+        # 从日程页带上下文进入对话：预算按学习对话，而不是日程页的单次调用。
+        self.assertEqual("learning_chat", snapshot["task"]["capability_id"])
+        self.assertGreaterEqual(snapshot["task"]["budget"]["max_model_calls"], 7)
         self.assertIn(
             "建议", snapshot["task"]["result"]["chat_result"]["assistant_message"]["content"]
         )
