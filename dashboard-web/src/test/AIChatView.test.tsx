@@ -647,7 +647,13 @@ describe("AIChatView", () => {
     );
 
     emit({ type: "content_delta", delta: "第 4 页介绍了开课概况。" });
-    expect(await screen.findByText("第 4 页介绍了开课概况。")).toBeTruthy();
+    // 流式文字按节奏逐步渐显（被拆入渐显元素），最终完整显示在回复气泡中。
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown")
+          ?.textContent,
+      ).toBe("第 4 页介绍了开课概况。"),
+    );
     // 正文开始流式输出后，执行详情跟随到回复气泡顶部，不会消失。
     await waitFor(() =>
       expect(

@@ -17,7 +17,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { type ComponentType, useEffect, useId, useRef, useState } from "react";
-import type { AIAgentTrace, AIToolRun } from "@/lib/types";
+import type { AIAgentLiveStatus, AIAgentTrace, AIToolRun } from "@/lib/types";
 
 const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
   list_courses: GraduationCap,
@@ -283,6 +283,48 @@ function useElapsed(startedAt: number | null, active: boolean) {
   return Math.max(0, now - startedAt);
 }
 
+/** 运行中最后一行的进度文案：区分“请求模型 / 等待较久 / 自动重试 / 生成回答”。 */
+export function liveStepText({
+  streaming,
+  status,
+  waitedMs,
+  hasTools,
+}: {
+  streaming: boolean;
+  status?: AIAgentLiveStatus | null;
+  waitedMs: number | null;
+  hasTools: boolean;
+}) {
+  if (streaming) return "正在生成回答…";
+  if (!status) {
+    return hasTools ? "正在规划下一步…" : "请求已发送，正在等待 Agent 返回";
+  }
+  const waited = waitedMs === null ? 0 : Math.floor(waitedMs / 1000);
+  const step = status.step && status.step > 1 ? `（第 ${status.step} 步）` : "";
+  if (status.state === "retrying") {
+    const delay = Math.max(0, Math.ceil(status.delay_seconds ?? 0) - waited);
+    const attempt =
+      status.attempt && status.max_attempts
+        ? `第 ${status.attempt}/${status.max_attempts} 次`
+        : "再次";
+    const reason = status.reason ?? "模型请求失败";
+    return delay > 0
+      ? `${reason}，${delay} 秒后${attempt}请求模型…`
+      : `${reason}，正在${attempt}请求模型…`;
+  }
+  const retry =
+    status.attempt && status.attempt > 1
+      ? `（第 ${status.attempt} 次尝试）`
+      : "";
+  if (waited >= 30) {
+    return `正在等待模型响应${step}${retry} · 已等待 ${formatDuration(waited * 1000)}，响应较慢，超时会自动重试`;
+  }
+  if (waited >= 5) {
+    return `正在等待模型响应${step}${retry} · 已等待 ${waited} 秒`;
+  }
+  return `正在请求模型${step}${retry}…`;
+}
+
 export function turnSummaryText({
   running,
   failed,
@@ -329,6 +371,7 @@ export function InlineAgentExecution({
   running = false,
   streaming = false,
   startedAt,
+  liveStatus,
   agentName,
   onOpenActivity,
 }: {
@@ -337,9 +380,11 @@ export function InlineAgentExecution({
   running?: boolean;
   streaming?: boolean;
   startedAt?: number | string | null;
+  liveStatus?: AIAgentLiveStatus | null;
   agentName?: string;
   onOpenActivity: () => void;
 }) {
+  const waitedMs = useElapsed(liveStatus?.received_at ?? null, running);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const detailId = useId();
   const listRef = useRef<HTMLOListElement>(null);
@@ -379,6 +424,12 @@ export function InlineAgentExecution({
     : failed
       ? "is-failed"
       : "is-complete";
+  const liveText = liveStepText({
+    streaming,
+    status: liveStatus,
+    waitedMs,
+    hasTools: runs.length > 0,
+  });
 
   return (
     <section
@@ -416,18 +467,14 @@ export function InlineAgentExecution({
               {running && (
                 <li className="ai-turn-step-live" aria-live="off">
                   <LoaderCircle className="animate-spin" aria-hidden="true" />
-                  <span>{streaming ? "正在生成回答…" : "正在规划下一步…"}</span>
+                  <span>{liveText}</span>
                 </li>
               )}
             </ol>
           ) : running ? (
             <p className="ai-turn-step-live">
               <LoaderCircle className="animate-spin" aria-hidden="true" />
-              <span>
-                {streaming
-                  ? "正在生成回答…"
-                  : "请求已发送，正在等待 Agent 返回"}
-              </span>
+              <span>{liveText}</span>
             </p>
           ) : (
             <p className="ai-trace-no-tools">本轮直接作答，没有调用工具。</p>

@@ -49,6 +49,18 @@ export interface AIToolRun {
   duration_ms?: number | null;
 }
 
+/** 后端推送的本轮进度（模型请求、自动重试）。 */
+export interface AIAgentLiveStatus {
+  state: "model_call" | "retrying";
+  step?: number;
+  attempt?: number;
+  max_attempts?: number;
+  reason?: string;
+  delay_seconds?: number;
+  /** 前端收到该状态的时刻（毫秒）。 */
+  received_at: number;
+}
+
 export interface AIAgentTrace {
   id: string;
   preset_id: string;

@@ -1647,3 +1647,23 @@
     grid-template-columns: 18px minmax(0, 1fr) 0 12px;
   }
 }
+
+/* ===== 流式回答：新出现的文字渐显（结束后最终消息整体显现，无动画残留） ===== */
+.ai-stream-fresh {
+  animation: ai-stream-fade 420ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@keyframes ai-stream-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-stream-fresh {
+    animation: none;
+  }
+}

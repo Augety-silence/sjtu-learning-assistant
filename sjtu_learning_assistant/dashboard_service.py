@@ -230,6 +230,60 @@ def to_shanghai(value: datetime | None) -> str | None:
     return value.astimezone(SHANGHAI_TZ).isoformat(timespec="seconds")
 
 
+# 长会话：从最近的消息往前取，按字符预算装入本轮请求，而不是固定条数。
+HISTORY_SCAN_LIMIT = 80
+HISTORY_CHAR_BUDGET = 24_000
+HISTORY_RECENT_MESSAGE_CHARS = 8_000
+HISTORY_OLDER_MESSAGE_CHARS = 2_400
+_HISTORY_ELISION = "\n\n…（较早的回复内容过长，中间部分已省略）…\n\n"
+
+
+def _clip_history_message(content: str, limit: int) -> str:
+    """保留开头和结尾：结论通常在开头，补充与追问常在结尾。"""
+    text = content.strip()
+    if len(text) <= limit:
+        return text
+    head = max(1, int(limit * 0.7))
+    tail = max(1, limit - head - len(_HISTORY_ELISION))
+    return text[:head].rstrip() + _HISTORY_ELISION + text[-tail:].lstrip()
+
+
+def pack_chat_history(
+    messages: list[tuple[str, str]],
+    *,
+    budget: int = HISTORY_CHAR_BUDGET,
+    recent_chars: int = HISTORY_RECENT_MESSAGE_CHARS,
+    older_chars: int = HISTORY_OLDER_MESSAGE_CHARS,
+) -> tuple[list[dict[str, str]], int]:
+    """按时间顺序返回装得下的历史消息以及被省略的条数。
+
+    - 最近一轮（最后两条）按较宽上限截断，更早的消息按较窄上限截断；
+    - 从新到旧累计，超出预算后停止，保证本轮请求不会因为历史过长而失败；
+    - 结果总以用户消息开头，兼容要求“首条非 system 消息必须是 user”的网关。
+    """
+    picked: list[dict[str, str]] = []
+    used = 0
+    usable = [
+        (role, content)
+        for role, content in messages
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip()
+    ]
+    for index, (role, content) in enumerate(reversed(usable)):
+        limit = recent_chars if index < 2 else older_chars
+        text = _clip_history_message(content, limit)
+        if picked and used + len(text) > budget:
+            break
+        if not picked and len(text) > budget:
+            text = _clip_history_message(text, budget)
+        picked.append({"role": role, "content": text})
+        used += len(text)
+    picked.reverse()
+    while picked and picked[0]["role"] != "user":
+        picked.pop(0)
+    omitted = len(usable) - len(picked)
+    return picked, omitted
+
+
 def _turn_duration_ms(values: list[datetime]) -> int | None:
     """由同一轮用户/助手消息的入库时刻推算耗时；旧记录两者相同，返回未知。"""
     if len(values) < 2:
@@ -2713,12 +2767,25 @@ class DashboardService:
                 select(AIChatMessage)
                 .where(AIChatMessage.session_id == session_id)
                 .order_by(AIChatMessage.sequence.desc())
-                .limit(23)
+                .limit(HISTORY_SCAN_LIMIT)
             ).all()
-            prompt = [
-                {"role": message.role, "content": message.content}
-                for message in reversed(history)
-            ]
+            prompt, omitted_history = pack_chat_history(
+                [(message.role, message.content) for message in reversed(history)]
+            )
+            older_exists = len(history) >= HISTORY_SCAN_LIMIT
+        if omitted_history or older_exists:
+            prompt.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": (
+                        "长会话提示：受上下文长度限制，本会话较早的消息"
+                        + (f"（至少 {omitted_history} 条）" if omitted_history else "")
+                        + "未随本轮发送，部分较长的历史回复只保留了开头和结尾。"
+                        "如用户引用了更早的内容而你看不到，请直接说明并请用户补充关键信息，不要猜测。"
+                    ),
+                },
+            )
         if attachment_context:
             compact_context = json.dumps(
                 {"attachments": attachment_context},

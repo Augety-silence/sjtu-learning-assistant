@@ -22,6 +22,7 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_MESSAGES,
     MAX_SSE_RESPONSE_BYTES,
     MAX_SSE_STREAM_SECONDS,
+    STREAM_IDLE_TIMEOUT_SECONDS,
 )
 from sjtu_learning_assistant.material_classifier import CATEGORY_ORDER
 
@@ -116,6 +117,8 @@ class AIClassificationError(RuntimeError):
         self.status_code = status_code
         self.error_code = error_code or category
         self.exception_type = exception_type
+        # 流式请求失败前是否已向界面输出过文字；仅流式请求会设置为 True。
+        self.emitted_output = False
 
 
 class _DeltaCallbackAbort(Exception):
@@ -302,6 +305,17 @@ class OpenAIClassificationClient:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
             transport=transport,
+        )
+        try:
+            idle_seconds = float(
+                os.environ.get("SJTU_AI_STREAM_IDLE_TIMEOUT_SECONDS", STREAM_IDLE_TIMEOUT_SECONDS)
+            )
+        except (TypeError, ValueError):
+            idle_seconds = STREAM_IDLE_TIMEOUT_SECONDS
+        idle_seconds = max(5.0, min(idle_seconds, 120.0))
+        # 流式请求单独设置：读超时 = 两个数据块之间允许的最长静默（含首包）。
+        self._stream_timeout = httpx.Timeout(
+            connect=min(5.0, idle_seconds), read=idle_seconds, write=30.0, pool=10.0
         )
 
     def close(self) -> None:
@@ -705,9 +719,14 @@ class OpenAIClassificationClient:
 
         defined_tool_names = frozenset(item["function"]["name"] for item in tools or ())
 
+        # 是否已经向调用方输出过任何增量：未输出时失败可以安全地整体重试，
+        # 已输出则重试会让界面出现重复文字，由调用方决定如何处理。
+        stream_state = {"emitted": False}
+
         def emit_delta(kind: str, value: str) -> None:
             # 回调异常（取消、调用方错误）必须原样冒泡，不能被下方的
             # TypeError/ValueError/Exception 映射成 response_format/client_error。
+            stream_state["emitted"] = True
             try:
                 on_delta(kind, value)  # type: ignore[misc]
             except Exception as exc:
@@ -721,7 +740,12 @@ class OpenAIClassificationClient:
             finish_reason: str | None = None
             stream_started_at = time.monotonic()
             received_done = False
-            with self._client.stream("POST", "chat/completions", json=dict(request_body)) as response:
+            with self._client.stream(
+                "POST",
+                "chat/completions",
+                json=dict(request_body),
+                timeout=self._stream_timeout,
+            ) as response:
                 response.raise_for_status()
                 for line in _iter_sse_lines(response.iter_bytes(), started_at=stream_started_at):
                     if not line or not line.startswith("data:"):
@@ -855,6 +879,18 @@ class OpenAIClassificationClient:
                 "response_metadata": metadata,
             }
 
+        try:
+            return self._run_stream(consume, body, tools)
+        except AIClassificationError as error:
+            error.emitted_output = stream_state["emitted"]
+            raise
+
+    def _run_stream(
+        self,
+        consume: Callable[[Mapping[str, object]], dict[str, Any]],
+        body: dict[str, object],
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
         try:
             self._limiter()
             try:

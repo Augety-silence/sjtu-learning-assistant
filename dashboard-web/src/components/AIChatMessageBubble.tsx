@@ -16,7 +16,16 @@ import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { motionDuration, motionEase } from "@/lib/motion";
-import type { AIAgentTrace, AIChatMessage } from "@/lib/types";
+import {
+  rehypeStreamFade,
+  useStreamFade,
+  useStreamReveal,
+} from "@/lib/streamReveal";
+import type {
+  AIAgentLiveStatus,
+  AIAgentTrace,
+  AIChatMessage,
+} from "@/lib/types";
 
 // 桌面端以 file:// 加载，target=_blank 链接由 pywebview 交给系统打开
 // （Windows 为 os.startfile）；只放行绝对 http(s)/mailto，相对、file、UNC 链接一律去掉 href。
@@ -53,15 +62,19 @@ const MessageMarkdown = memo(function MessageMarkdown({
   content,
   showCodeLineNumbers,
   clip = false,
+  fade = null,
 }: {
   content: string;
   showCodeLineNumbers: boolean;
   clip?: boolean;
+  fade?: ReturnType<typeof useStreamFade>;
 }) {
   const markdown = (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize]}
+      rehypePlugins={
+        fade ? [rehypeSanitize, [rehypeStreamFade, fade]] : [rehypeSanitize]
+      }
       urlTransform={safeMarkdownUrl}
       components={{
         a: ({ node: _node, ...props }) => (
@@ -132,6 +145,7 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   queued = false,
   running = false,
   startedAt,
+  liveStatus,
 }: {
   message: AIChatMessage;
   trace?: AIAgentTrace | null;
@@ -143,6 +157,7 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   queued?: boolean;
   running?: boolean;
   startedAt?: number | string | null;
+  liveStatus?: AIAgentLiveStatus | null;
 }) {
   const collapsible =
     message.role === "user" && isLongUserMessage(message.content);
@@ -153,6 +168,14 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   );
   const copyTimerRef = useRef<number | null>(null);
   const shouldReduceMotion = useReducedMotion();
+  // 流式回答按平滑节奏逐步显示并渐显；结束后由最终消息整体替换，余下文字一次显现。
+  const streamingAnswer = message.role === "assistant" && running;
+  const visibleContent = useStreamReveal(
+    message.content,
+    streamingAnswer,
+    Boolean(shouldReduceMotion),
+  );
+  const fade = useStreamFade(streamingAnswer && !shouldReduceMotion);
   useEffect(
     () => () => {
       if (copyTimerRef.current !== null)
@@ -222,6 +245,7 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
             running={running}
             streaming={running}
             startedAt={startedAt}
+            liveStatus={liveStatus}
             agentName={agentName}
             onOpenActivity={onOpenActivity}
           />
@@ -243,8 +267,9 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
           </div>
         ) : (
           <MessageMarkdown
-            content={message.content}
+            content={visibleContent}
             showCodeLineNumbers={showCodeLineNumbers}
+            fade={fade}
           />
         )}
         {collapsible && (

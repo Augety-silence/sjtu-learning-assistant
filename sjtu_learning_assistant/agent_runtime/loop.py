@@ -16,10 +16,21 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_MESSAGES,
     SYSTEM_MESSAGE_CHAR_BUDGET,
 )
-from sjtu_learning_assistant.ai_classifier import AIToolsUnsupportedError
+from sjtu_learning_assistant.ai_classifier import AIClassificationError, AIToolsUnsupportedError
 
 MAX_STEPS = 6
-DEFAULT_TIMEOUT_SECONDS = 75.0
+# 整轮 Agent 的时间预算（在每一步开始前检查）；单次流式请求另有读超时与总时长上限。
+DEFAULT_TIMEOUT_SECONDS = 300.0
+MAX_TIMEOUT_SECONDS = 600.0
+# 模型请求在“尚未输出任何内容”时失败，可安全地自动重试的次数与错误类别。
+MODEL_RETRY_LIMIT = 2
+RETRYABLE_MODEL_ERRORS = frozenset({"timeout", "network", "upstream_service", "rate_limit_or_quota"})
+RETRY_REASONS = {
+    "timeout": "模型长时间没有响应",
+    "network": "连接 AI 服务失败",
+    "upstream_service": "AI 服务暂时不可用",
+    "rate_limit_or_quota": "AI 请求受限",
+}
 # 低于 ai_classifier._clean_chat_messages 的 60_000 字符总上限，留出余量。
 CONTEXT_CHAR_BUDGET = AGENT_CONTEXT_CHAR_BUDGET
 # 预检索结果合计上限，为系统提示、历史与本轮问题保留空间。
@@ -78,6 +89,7 @@ class AgentLoop:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         agent_prompt_path: Path | None = None,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
             raise ValueError("max_steps 必须在 1 到 6 之间。")
@@ -85,8 +97,9 @@ class AgentLoop:
         self.tools = tools
         self.preset = preset
         self.max_steps = max_steps
-        self.timeout_seconds = max(1.0, min(float(timeout_seconds), 120.0))
+        self.timeout_seconds = max(1.0, min(float(timeout_seconds), MAX_TIMEOUT_SECONDS))
         self.clock = clock
+        self.sleeper = sleeper
         path = agent_prompt_path or default_resource_root() / "AGENT.md"
         try:
             base_prompt = path.read_text(encoding="utf-8").strip()
@@ -176,6 +189,84 @@ class AgentLoop:
                 }
             )
         return messages, runs
+
+    def _call_model(
+        self,
+        conversation: list[dict[str, Any]],
+        definitions: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        event_callback: Callable[[str, dict[str, Any]], None] | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """发起一次模型请求；返回 (completion, 之后仍可用的工具定义)。"""
+        try:
+            stream_method = getattr(self.client, "chat_completion_stream", None)
+            if (
+                not _has_image_content(conversation)
+                and callable(stream_method)
+                and bool(getattr(self.client, "supports_streaming", True))
+            ):
+                completion = stream_method(
+                    conversation,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system_prompt=False,
+                    on_delta=(
+                        lambda kind, value: event_callback(
+                            "content_delta" if kind == "content" else "reasoning_delta",
+                            {"delta": value},
+                        )
+                        if event_callback is not None
+                        else None
+                    ),
+                    tools=definitions or None,
+                    tool_choice="auto" if definitions else None,
+                )
+            else:
+                completion = self.client.chat_completion(
+                    conversation,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    tools=definitions,
+                    tool_choice="auto" if definitions else None,
+                    system_prompt=False,
+                )
+            return completion, definitions
+        except AIToolsUnsupportedError:
+            completion = self.client.chat_completion(
+                conversation,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=None,
+                tool_choice=None,
+                system_prompt=False,
+            )
+            return completion, []
+        except TypeError as exc:
+            # 兼容尚未实现 tools 参数的旧 client/测试替身；确定性预检索
+            # 已作为 system context 写入，因此仍基于真实本地结果回答。
+            if "unexpected keyword" not in str(exc):
+                raise
+            completion = self.client.chat_completion(
+                conversation,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return completion, definitions
+
+    def _retry_delay(self, exc: AIClassificationError, attempt: int, started: float) -> float | None:
+        """尚未输出内容的可恢复错误返回重试前等待秒数，否则返回 None。"""
+        if isinstance(exc, AIToolsUnsupportedError):
+            return None
+        if exc.category not in RETRYABLE_MODEL_ERRORS or getattr(exc, "emitted_output", False):
+            return None
+        if attempt > MODEL_RETRY_LIMIT:
+            return None
+        delay = 8.0 if exc.category == "rate_limit_or_quota" else 2.0 * attempt
+        # 剩余整轮时间不足以再等一次时不再重试，直接把错误交给用户。
+        if self.clock() - started + delay > self.timeout_seconds:
+            return None
+        return delay
 
     def _time_hint(self) -> str:
         # 仅作“今天/剩余时间”的参照；具体日期与截止时间仍以工具结果为准。
@@ -287,58 +378,34 @@ class AgentLoop:
         for step in range(1, self.max_steps + 1):
             if self.clock() - started > self.timeout_seconds:
                 return AgentResult("智能体执行超时，请缩小问题范围后重试。", None, "timeout", step - 1, tuple(runs))
-            try:
-                stream_method = getattr(self.client, "chat_completion_stream", None)
-                if (
-                    not _has_image_content(conversation)
-                    and callable(stream_method)
-                    and bool(getattr(self.client, "supports_streaming", True))
-                ):
-                    completion = stream_method(
-                        conversation,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        system_prompt=False,
-                        on_delta=(
-                            lambda kind, value: event_callback(
-                                "content_delta" if kind == "content" else "reasoning_delta",
-                                {"delta": value},
-                            )
-                            if event_callback is not None
-                            else None
-                        ),
-                        tools=definitions or None,
-                        tool_choice="auto" if definitions else None,
+            attempt = 1
+            while True:
+                if event_callback is not None:
+                    event_callback("status", {"state": "model_call", "step": step, "attempt": attempt})
+                try:
+                    completion, definitions = self._call_model(
+                        conversation, definitions, max_tokens, temperature, event_callback
                     )
-                else:
-                    completion = self.client.chat_completion(
-                        conversation,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        tools=definitions,
-                        tool_choice="auto" if definitions else None,
-                        system_prompt=False,
-                    )
-            except AIToolsUnsupportedError:
-                definitions = []
-                completion = self.client.chat_completion(
-                    conversation,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    tools=definitions or None,
-                    tool_choice="auto" if definitions else None,
-                    system_prompt=False,
-                )
-            except TypeError as exc:
-                # 兼容尚未实现 tools 参数的旧 client/测试替身；确定性预检索
-                # 已作为 system context 写入，因此仍基于真实本地结果回答。
-                if "unexpected keyword" not in str(exc):
-                    raise
-                completion = self.client.chat_completion(
-                    conversation,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
+                except AIClassificationError as exc:
+                    retry_delay = self._retry_delay(exc, attempt, started)
+                    if retry_delay is None:
+                        raise
+                    if event_callback is not None:
+                        event_callback(
+                            "status",
+                            {
+                                "state": "retrying",
+                                "step": step,
+                                "attempt": attempt + 1,
+                                "max_attempts": MODEL_RETRY_LIMIT + 1,
+                                "reason": RETRY_REASONS.get(exc.category, "模型请求失败"),
+                                "delay_seconds": retry_delay,
+                            },
+                        )
+                    self.sleeper(retry_delay)
+                    attempt += 1
+                    continue
+                break
             reasoning = completion.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning.strip():
                 reasoning_parts.append(reasoning.strip())

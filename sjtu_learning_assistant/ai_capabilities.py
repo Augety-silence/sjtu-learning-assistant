@@ -93,7 +93,8 @@ TASK_SPECS = (
                ("chat_history", "readonly_local_tools", "selected_ai_attachments"), ("selected_session",),
                # 预算按整轮累计：Agent 最多 6 步，每步都重发完整上下文（实测每步输入约 2–6k）；
                # 网关未回报用量时按请求的 max_tokens 计费，输出预算需覆盖多步工具调用加最终回答。
-               64000, 12000, 8, ("retrieve_evidence", "explain", "suggest_next_step"),
+               # 调用次数 = 6 步 + 尚未输出内容时失败的自动重试余量。
+               64000, 16000, 12, ("retrieve_evidence", "explain", "suggest_next_step"),
                ("tool_selection_steps_remain_one_shot", "no_transcript_or_course_memory_tool")),
     AITaskSpec("settings", "connection_diagnostics", "AI连接配置解释", "partial", ("test_ai_connection",), "one_shot",
                ("nonsecret_ai_settings", "explicit_connection_test_result"), ("no_raw_key_in_context",),

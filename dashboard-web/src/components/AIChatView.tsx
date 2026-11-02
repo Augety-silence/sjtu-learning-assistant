@@ -39,6 +39,7 @@ import {
 } from "@/lib/api";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
+  AIAgentLiveStatus,
   AIAgentPreset,
   AIChatMessage,
   AIChatPreferences,
@@ -174,6 +175,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [runningStartedAt, setRunningStartedAt] = useState<
     number | string | null
   >(null);
+  // 后端推送的最新进度（请求模型 / 自动重试），只对当前任务生效。
+  const [liveStatus, setLiveStatus] = useState<{
+    taskId: string;
+    status: AIAgentLiveStatus;
+  } | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -289,8 +295,32 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       const taskId = detail.task_id;
       if (typeof sessionId !== "string" || typeof taskId !== "string") return;
       const streamId = `stream-${taskId}`;
+      if (detail.type === "status") {
+        const raw = detail.status;
+        if (!raw || typeof raw !== "object") return;
+        const value = raw as Record<string, unknown>;
+        if (value.state !== "model_call" && value.state !== "retrying") return;
+        const number = (key: string) =>
+          typeof value[key] === "number" ? (value[key] as number) : undefined;
+        setLiveStatus({
+          taskId,
+          status: {
+            state: value.state,
+            step: number("step"),
+            attempt: number("attempt"),
+            max_attempts: number("max_attempts"),
+            reason: typeof value.reason === "string" ? value.reason : undefined,
+            delay_seconds: number("delay_seconds"),
+            received_at: Date.now(),
+          },
+        });
+        return;
+      }
       if (detail.type === "start") {
         setRunningTaskId(taskId);
+        setLiveStatus((current) =>
+          current?.taskId === taskId ? current : null,
+        );
         setRunningStartedAt(
           typeof detail.started_at === "string" && detail.started_at
             ? detail.started_at
@@ -590,6 +620,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       window.removeEventListener("keydown", handleEscape);
     };
   }, [activityOpen, isPresent, focusIfPresent]);
+
+  useEffect(() => {
+    // 流式渐显时内容逐帧增高、messages 并不变化；运行中观察消息列表尺寸，
+    // 仅当用户停留在底部时保持贴底（直接设置 scrollTop，避免平滑滚动抖动）。
+    if (!busy || !isPresent || typeof ResizeObserver === "undefined") return;
+    const end = endRef.current;
+    const list = end?.parentElement;
+    const thread = end?.closest(".ai-chat-thread") as HTMLElement | null;
+    if (!list || !thread) return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) thread.scrollTop = thread.scrollHeight;
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [busy, isPresent]);
 
   useEffect(() => {
     if (!isPresent || !stickToBottomRef.current) return;
@@ -1215,6 +1260,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     }
     return null;
   }, [active?.traces, runningTaskId]);
+  const currentLiveStatus =
+    liveStatus && liveStatus.taskId === runningTaskId
+      ? liveStatus.status
+      : null;
   const tracesById = useMemo(
     () => new Map(active?.traces.map((trace) => [trace.id, trace]) ?? []),
     [active?.traces],
@@ -1436,6 +1485,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                       queued={queuedMessageIds.includes(message.id)}
                       running={streaming && visibleBusy}
                       startedAt={streaming ? runningStartedAt : undefined}
+                      liveStatus={streaming ? currentLiveStatus : undefined}
                     />
                   );
                 })}
@@ -1464,6 +1514,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                           running
                           trace={liveStreamTrace}
                           startedAt={runningStartedAt}
+                          liveStatus={currentLiveStatus}
                           agentName={selectedPreset?.name ?? "学习 Agent"}
                           onOpenActivity={openActivity}
                         />

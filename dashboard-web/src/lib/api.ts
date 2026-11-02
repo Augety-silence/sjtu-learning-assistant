@@ -446,6 +446,15 @@ function emitAIStreamEvents(
         run: event.payload,
       });
     }
+    if (event.kind === "status") {
+      // 模型请求 / 自动重试等进度，让长时间等待时界面有明确反馈。
+      emitAIStream({
+        type: "status",
+        task_id: taskId,
+        session_id: sessionId,
+        status: event.payload,
+      });
+    }
   }
 }
 
@@ -474,7 +483,8 @@ async function pollAiChatTask(
   // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
   // 另设绝对上限防止任务永久挂起。
   const idleTimeoutMs = 180_000;
-  const hardDeadline = Date.now() + 600_000;
+  // 长会话：后端整轮上限 5 分钟，最后一步流式输出还可能持续数分钟。
+  const hardDeadline = Date.now() + 900_000;
   let deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
   let lastStatus = snapshot.task.status;
   let transientPollFailures = 0;

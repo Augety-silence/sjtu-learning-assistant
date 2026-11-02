@@ -22,7 +22,7 @@ from sjtu_learning_assistant.agent_runtime import (
 )
 from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
 from sjtu_learning_assistant.agent_runtime.tools import _clip, _hide_cut_url_tail, _redact_body
-from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
+from sjtu_learning_assistant.ai_classifier import AIClassificationError, OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.dashboard_service import DashboardService
@@ -696,6 +696,98 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("list_courses", requests[1]["messages"][-1]["name"])
         self.assertIn(("content_delta", {"delta": "共有"}), deltas)
         self.assertIn(("content_delta", {"delta": "一门课程。"}), deltas)
+
+    def test_stream_timeout_before_any_output_is_retried_with_status_events(self) -> None:
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(1)
+            if len(attempts) == 1:
+                # 网关建立连接后迟迟不返回任何数据 → 读超时。
+                raise httpx.ReadTimeout("no data", request=request)
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"概览完成。"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+
+        client = OpenAIClassificationClient(
+            api_key="fake", model="qwen", transport=httpx.MockTransport(handler), limiter=lambda: None
+        )
+        events: list[tuple[str, dict]] = []
+        sleeps: list[float] = []
+        try:
+            result = AgentLoop(
+                client, self.registry, preset("list_courses"), sleeper=sleeps.append
+            ).run(
+                [{"role": "user", "content": "你好"}],
+                user_text="你好",
+                max_tokens=500,
+                temperature=0,
+                event_callback=lambda kind, payload: events.append((kind, payload)),
+            )
+        finally:
+            client.close()
+        self.assertEqual("completed", result.status)
+        self.assertEqual("概览完成。", result.content)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual([2.0], sleeps)
+        statuses = [payload for kind, payload in events if kind == "status"]
+        self.assertEqual(["model_call", "retrying", "model_call"], [item["state"] for item in statuses])
+        self.assertEqual("模型长时间没有响应", statuses[1]["reason"])
+        self.assertEqual((2, 3), (statuses[1]["attempt"], statuses[1]["max_attempts"]))
+
+    def test_stream_failure_after_partial_output_is_not_retried(self) -> None:
+        class PartialClient:
+            supports_streaming = True
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+                kwargs["on_delta"]("content", "已经输出一半")
+                error = AIClassificationError("AI 流式请求超时，请稍后重试。", category="timeout")
+                error.emitted_output = True
+                raise error
+
+        client = PartialClient()
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(client, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}],
+                user_text="你好",
+                max_tokens=500,
+                temperature=0,
+                event_callback=lambda *_args: None,
+            )
+        # 已经向界面输出过文字时重试会产生重复内容，必须直接把错误交给用户。
+        self.assertEqual(1, client.calls)
+
+    def test_non_retryable_and_exhausted_errors_surface_without_extra_calls(self) -> None:
+        class FailingClient:
+            supports_streaming = True
+
+            def __init__(inner_self, category):
+                inner_self.category = category
+                inner_self.calls = 0
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+                raise AIClassificationError("失败", category=inner_self.category)
+
+        auth = FailingClient("authentication")
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(auth, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=100, temperature=0
+            )
+        self.assertEqual(1, auth.calls)
+        flaky = FailingClient("upstream_service")
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(flaky, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=100, temperature=0
+            )
+        self.assertEqual(3, flaky.calls)
 
     def test_unauthorized_tool_is_rejected(self) -> None:
         client = ScriptedClient(

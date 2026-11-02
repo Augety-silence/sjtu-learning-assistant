@@ -37,6 +37,30 @@ NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
 
 
 class AIClientTests(unittest.TestCase):
+    def test_stream_uses_idle_read_timeout_and_flags_emitted_output(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.extensions["timeout"]["read"] == 60.0
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"部分"}}]}\n\n',
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+
+        client = OpenAIClassificationClient(
+            api_key="fake-key", model="qwen", transport=httpx.MockTransport(handler), limiter=lambda: None
+        )
+        try:
+            with self.assertRaises(AIClassificationError) as raised:
+                client.chat_completion_stream(
+                    [{"role": "user", "content": "hi"}], on_delta=lambda *_args: None
+                )
+        finally:
+            client.close()
+        # 没有 [DONE] 的流以格式错误结束；已向调用方输出过文字，调用方不得自动重试。
+        self.assertEqual("response_format", raised.exception.category)
+        self.assertTrue(raised.exception.emitted_output)
+
     def test_sse_lines_only_split_on_protocol_line_endings(self):
         chunks = [
             b"\xef\xbb\xbfdata: {\"content\":\"before",

@@ -202,6 +202,43 @@ class AIChatHistoryTests(unittest.TestCase):
         self.service.ai_chat_send(chat["id"], "旧记录", "deepseek-chat", "standard", "general")
         self.assertIsNone(self.service.ai_chat_session(chat["id"])["traces"][0]["duration_ms"])
 
+    def test_long_session_history_is_packed_by_budget_and_flagged(self) -> None:
+        from sjtu_learning_assistant.dashboard_service import pack_chat_history
+
+        history = []
+        for index in range(30):
+            history.append(("user", f"问题 {index}"))
+            history.append(("assistant", f"回答 {index} " + "很长的内容" * 2000))
+        packed, omitted = pack_chat_history(history, budget=10_000)
+        total = sum(len(item["content"]) for item in packed)
+        self.assertLessEqual(total, 10_000)
+        self.assertGreater(omitted, 0)
+        self.assertEqual(len(history), len(packed) + omitted)
+        self.assertEqual("user", packed[0]["role"])
+        # 最近一条回答保留开头与结尾，中间注明已省略。
+        self.assertTrue(packed[-1]["content"].startswith("回答 29"))
+        self.assertIn("中间部分已省略", packed[-1]["content"])
+        self.assertTrue(packed[-1]["content"].endswith("很长的内容"))
+        short, none_omitted = pack_chat_history([("assistant", "孤立回答"), ("user", "你好")])
+        self.assertEqual(([{"role": "user", "content": "你好"}], 1), (short, none_omitted))
+
+    def test_long_session_sends_bounded_history_with_notice(self) -> None:
+        chat = self.service.ai_chat_new("deepseek-chat", "standard", "general")
+        for index in range(45):
+            self.service.ai_chat_send(
+                chat["id"], f"第 {index} 个问题 " + "背景说明" * 900, "deepseek-chat", "standard", "general"
+            )
+        self.service.ai_chat_send(chat["id"], "总结一下", "deepseek-chat", "standard", "general")
+        request = FakeAIClient.requested_messages[-1]
+        history_chars = sum(
+            len(item["content"]) for item in request if item["role"] in {"user", "assistant"} and isinstance(item["content"], str)
+        )
+        # 历史按字符预算装入（约 24k + 本轮问题），不会随会话增长而无限变大。
+        self.assertLess(history_chars, 30_000)
+        self.assertEqual("总结一下", request[-1]["content"])
+        notices = [item["content"] for item in request if item["role"] == "system" and "长会话提示" in item["content"]]
+        self.assertEqual(1, len(notices))
+
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")
         self.assertTrue(self.service.ai_chat_delete(chat["id"])["deleted"])
