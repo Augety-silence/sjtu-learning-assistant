@@ -44,6 +44,7 @@ MAX_LISTING_ITEMS = 10_000
 LISTING_PAGE_SIZE = 500
 MAX_SEARCH_ITEMS = 50_000
 MAX_SEARCH_FOLDERS = 2_000
+MAX_SEARCH_SECONDS = 15.0
 LISTING_CACHE_SECONDS = 20.0
 MAX_SEARCH_CACHE_ENTRIES = 16
 MAX_UPLOAD_BYTES = 2 * 1024**3
@@ -56,6 +57,12 @@ MAX_TRANSFER_HISTORY = 50
 SORT_FIELDS = frozenset({"name", "modified", "size"})
 SORT_ORDERS = frozenset({"asc", "desc"})
 CONFLICT_STRATEGIES = frozenset({"ask", "overwrite", "rename"})
+PROTECTED_MANAGED_PATHS = frozenset(
+    {
+        ("SJTU Learning Assistant",),
+        ("SJTU Learning Assistant", "Archive"),
+    }
+)
 TRANSFER_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _WINDOWS_RESERVED = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -87,6 +94,15 @@ def cloud_error_code(error: BaseException) -> str:
     if isinstance(error, CloudNetworkError):
         return "network_error"
     return "operation_failed"
+
+
+def ensure_mutable_remote_path(path: tuple[str, ...]) -> None:
+    """Keep archive-managed roots stable for backup and restore records."""
+    archive_root = ("SJTU Learning Assistant", "Archive")
+    if path in PROTECTED_MANAGED_PATHS or path[: len(archive_root)] == archive_root:
+        raise CloudDriveError(
+            "该文件夹由学习助手的归档功能管理，不能重命名、移动或删除。"
+        )
 
 
 def validate_item_name(value: object, *, label: str = "名称") -> str:
@@ -263,7 +279,16 @@ class TransferRegistry:
             if transfer.cancel_event.is_set():
                 raise TransferCancelled("传输已取消。")
             try:
-                os.link(temporary, target)
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    raise
+                except OSError:
+                    # FAT32/exFAT/ReFS have no hard links. On Windows os.rename never
+                    # replaces an existing file or link, so it keeps the same guarantee.
+                    if os.name != "nt":
+                        raise
+                    os.rename(temporary, target)
             except FileExistsError:
                 raise CloudDriveError("保存位置已有同名文件，请选择其他名称。") from None
             transfer.status = "done"
@@ -389,8 +414,12 @@ class CloudDriveService:
         scanned_items = 0
         scanned_folders = 0
         truncated = False
+        # Each folder is a sequential remote request; bound wall time as well as counts.
+        deadline = self._clock() + MAX_SEARCH_SECONDS
         while pending:
-            if scanned_folders >= MAX_SEARCH_FOLDERS:
+            if scanned_folders >= MAX_SEARCH_FOLDERS or (
+                scanned_folders and self._clock() >= deadline
+            ):
                 truncated = True
                 break
             folder = pending.popleft()
@@ -560,6 +589,7 @@ class CloudDriveService:
         source = tuple(path)
         if not source:
             raise CloudDriveError("不能重命名根目录。")
+        ensure_mutable_remote_path(source)
         clean = validate_item_name(new_name)
         if clean == source[-1]:
             return serialize_item(self._provider().get_info(source))
@@ -604,6 +634,7 @@ class CloudDriveService:
         def remove(source: tuple[str, ...], is_directory: bool) -> None:
             if not source:
                 raise CloudDriveError("不能删除根目录。")
+            ensure_mutable_remote_path(source)
             try:
                 # Already-deleted items are treated as success so retries stay idempotent.
                 provider.delete(source, permanent=False, missing_ok=True, directory=is_directory)
@@ -630,6 +661,8 @@ class CloudDriveService:
         def run(source: tuple[str, ...], is_directory: bool) -> None:
             if not source:
                 raise CloudDriveError("不能移动根目录。")
+            if not copy:
+                ensure_mutable_remote_path(source)
             if source[:-1] == target_dir and not copy:
                 raise CloudDriveError("项目已在目标文件夹中。")
             if target_dir[: len(source)] == source:
@@ -827,7 +860,8 @@ def iter_folder_files(root: Path, *, max_files: int = 2000, max_depth: int = 32)
             if entry.name.startswith(".") or entry.name.casefold() in skipped:
                 continue
             try:
-                if entry.is_symlink():
+                # Windows junctions are not symlinks but can point outside the picked folder.
+                if entry.is_symlink() or getattr(entry, "is_junction", lambda: False)():
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     if depth + 1 >= max_depth:

@@ -46,8 +46,22 @@ SENSITIVE_TEXT = (
     # 但避免长无空白文本（大邮件正文）在每个位置重试导致的二次回溯。
     # userinfo 不允许未转义的斜杠；把它排除在口令段之外，既让重复的
     # "http://x:" 在下一个 scheme 前快速失败，也能遮盖任意长度的合法口令。
-    re.compile(r"(?<!\w)\w+://[^\s/:]+:[^\s/@]*@[^\s]+"),
+    re.compile(r"(?<!\w)\w+://[^\s/:]*:[^\s/@]*@[^\s]+"),
 )
+
+
+_URL_START = re.compile(r"(?<!\w)\w+://")
+
+
+def _hide_cut_url_tail(text: str) -> str:
+    """Hide a trailing URL fragment whose credential terminator was clipped."""
+    index = len(text)
+    while index > 0 and not text[index - 1].isspace():
+        index -= 1
+    match = _URL_START.search(text, index)
+    if match is None:
+        return text
+    return text[: match.start()] + "[已隐藏]"
 
 
 class AgentToolError(RuntimeError):
@@ -350,7 +364,12 @@ class ReadOnlyToolRegistry:
                         if "@" in (item.sender_name or "")
                         else _clip(item.sender_name or "邮件", 80),
                         "occurred_at": _iso(unified.occurred_at),
-                        "preview": _clip(item.body_preview, 320),
+                        "preview": _clip(
+                            _hide_cut_url_tail(item.body_preview)
+                            if len(item.body_preview or "") >= 300
+                            else item.body_preview,
+                            320,
+                        ),
                     }
                     for item, unified in rows
                 )
@@ -447,7 +466,7 @@ class ReadOnlyToolRegistry:
                 if row is None:
                     raise AgentToolError("消息不存在。")
                 item, unified = row
-                result = {"ref": ref, "kind": kind, "title": _clip(item.subject, 240), "source_label": "邮件发件人" if "@" in (item.sender_name or "") else _clip(item.sender_name or "邮件", 80), "occurred_at": _iso(unified.occurred_at), "body": _clip(item.body_text or item.body_preview, 3000), "attachments": [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]}
+                result = {"ref": ref, "kind": kind, "title": _clip(item.subject, 240), "source_label": "邮件发件人" if "@" in (item.sender_name or "") else _clip(item.sender_name or "邮件", 80), "occurred_at": _iso(unified.occurred_at), "body": _clip(item.body_text or (_hide_cut_url_tail(item.body_preview) if len(item.body_preview or "") >= 300 else item.body_preview), 3000), "attachments": [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]}
             elif kind == "announcement":
                 row = session.execute(select(Announcement, Course).join(Course, Course.id == Announcement.course_id).where(Announcement.id == item_id, Announcement.is_active.is_(True))).one_or_none()
                 if row is None:
@@ -540,7 +559,10 @@ class ReadOnlyToolRegistry:
         if isinstance(result.get("text"), str):
             # 不用 _clip：它会把全部空白折叠成单个空格并追加“…”，
             # 让代码/表格附件失去行结构且可能超出 max_chars。
-            text, clipped = _redact_body(result["text"], max_chars)
+            raw_text = result["text"]
+            if result.get("truncated"):
+                raw_text = _hide_cut_url_tail(raw_text)
+            text, clipped = _redact_body(raw_text, max_chars)
             result["text"] = text
             result["returned_chars"] = len(text)
             if clipped:

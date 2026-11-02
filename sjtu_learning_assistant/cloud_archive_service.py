@@ -55,6 +55,59 @@ _SENSITIVE_KEY_PARTS = (
 )
 
 
+_SENSITIVE_ASSIGNMENT = (
+    r"((?:token|cookie|authorization|password|secret(?:[_-]?(?:key|id))?|signature"
+    r"|api[_-]?key|credentials?|access[_-]?key(?:[_-]?(?:id|secret))?))"
+    r"(\\?[\"']?\s*(?:[:=]|%3d)\s*)"
+)
+_SENSITIVE_CONTAINER_START = re.compile(
+    r"(?i)" + _SENSITIVE_ASSIGNMENT + r"(?=[{\[])"
+)
+
+
+def _container_end(value: str, start: int) -> int:
+    """Return the balanced container end, conservatively consuming malformed tails."""
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for index in range(start, len(value)):
+        character = value[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in ("\"", "'"):
+            quote = character
+        elif character in ("{", "["):
+            stack.append(character)
+        elif character in ("}", "]"):
+            if not stack or stack[-1] != pairs[character]:
+                return len(value)
+            stack.pop()
+            if not stack:
+                return index + 1
+    return len(value)
+
+
+def _redact_sensitive_containers(value: str) -> str:
+    """Replace full object/array values following sensitive keys in linear time."""
+    output: list[str] = []
+    cursor = 0
+    while match := _SENSITIVE_CONTAINER_START.search(value, cursor):
+        output.append(value[cursor : match.start()])
+        output.append(match.group(1))
+        output.append(match.group(2))
+        output.append("<redacted>")
+        cursor = _container_end(value, match.end())
+    output.append(value[cursor:])
+    return "".join(output)
+
+
 def redact_public_text(value: str) -> str:
     home = str(Path.home())
     redacted = value
@@ -77,27 +130,18 @@ def redact_public_text(value: str) -> str:
         r"(?i)\b(authorization\s*:\s*)(?:[a-z][\w-]*\s+)?[^\s,;\"']+",
         r"\1<redacted>", redacted,
     )
-    # 覆盖 access_token / user_token / UserToken / x-cos-security-token / q-signature 等复合键名；
-    # 键名后允许 JSON/repr 的收尾引号（含转义 \"）与 URL 编码的 %3D，Authorization 值允许 Basic 方案。
-    # 不再用 \b[\w-]* 匹配键名前缀：前缀原样保留在匹配之外，输出不变；否则 "a-a-a-…" 这类
-    # 长输入会在每个起点重扫整段，二次方回溯（40KB 约 38 秒，repository 同步失败路径也会调用）。
-    # 云存储 STS 凭据常见 tmpSecretKey / secretId / SecretKey / AccessKeyId / credential 键名，
-    # 关键字后紧跟可选的固定后缀，仍是线性匹配。
-    # 未加引号的值若是嵌套对象（{" 或 [{ 开头）则不吞：STS 响应
-    # {"Credentials": {"Token": "…", …}} 中 Credentials 会把 {"Token": 当成值吞掉，
-    # 导致内层第一个键的值反而原样泄露；跳过后内层各键由本正则逐个脱敏。
-    # 只在确实形如 {"键": / [{'键': 时跳过（引号键 + 冒号）；token={"abc"}、token=[{abc}]
-    # 这类并非嵌套对象的值仍整体脱敏。键长上限固定且字符类不含引号，前瞻不会回溯。
+    # Sensitive mapping values can be nested JSON/repr containers. Redact the
+    # entire balanced value first; malformed containers conservatively consume
+    # the remaining tail so later elements cannot leak.
+    redacted = _redact_sensitive_containers(redacted)
+    # Cover scalar access_token / UserToken / tmpSecretKey / AccessKeyId /
+    # credential values, JSON/repr closing quotes, URL-encoded '=' and schemes.
     return re.sub(
-        r"(?i)((?:token|cookie|authorization|password|secret(?:[_-]?(?:key|id))?|signature"
-        r"|api[_-]?key|credentials?|access[_-]?key(?:[_-]?(?:id|secret))?))"
-        r"(\\?[\"']?\s*(?:[:=]|%3d)\s*)"
-        r"(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?"
-        r"(?!(?:\[\s*){0,3}\{\s*\\?[\"'][^\"'\\\r\n]{0,256}\\?[\"']\s*:)[^\s,;&]+)",
+        r"(?i)" + _SENSITIVE_ASSIGNMENT
+        + r"(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)",
         r"\1\2<redacted>",
         redacted,
     )
-
 
 def redact_public_value(value: Any) -> Any:
     if isinstance(value, Mapping):

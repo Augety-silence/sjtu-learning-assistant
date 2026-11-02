@@ -1107,7 +1107,7 @@ describe("交大云盘页面导航", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "交大云盘" }),
     ).toBeTruthy();
-    const table = await screen.findByRole("table", { name: "文件列表" });
+    const table = await screen.findByRole("grid", { name: "文件列表" });
     expect(
       within(table).getByRole("button", { name: "课程资料" }),
     ).toBeTruthy();

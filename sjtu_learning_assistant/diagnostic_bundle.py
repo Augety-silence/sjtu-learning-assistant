@@ -155,7 +155,10 @@ def sanitize_text(value: object, *, limit: int = MAX_ENTRY_BYTES) -> str:
     )
     text_value = _JWT_PATTERN.sub("[redacted_token]", text_value)
     text_value = _KNOWN_TOKEN_PATTERN.sub("[redacted_token]", text_value)
-    payload = text_value.encode("utf-8")[:limit]
+    # 孤立代理（Windows 未配对 UTF-16 文件名、JSON "\udc80"、surrogateescape）
+    # 不能编码为 UTF-8；严格编码会让 safe_message 在桥接层 except 分支内再抛
+    # UnicodeEncodeError，把含原始异常文本的 traceback 交给 pywebview。
+    payload = text_value.encode("utf-8", errors="replace")[:limit]
     return payload.decode("utf-8", errors="ignore")
 
 

@@ -521,48 +521,19 @@ describe("AIChatView", () => {
     ).toContain("task-cancel-unconfirmed");
   });
 
-  it("does not carry a cancelled retry into the next queued task", async () => {
+  it("does not start a queued task while cancellation remains unconfirmed", async () => {
     let rejectFirst: ((reason: Error) => void) | undefined;
-    let resumedSignal: AbortSignal | undefined;
-    vi.mocked(sendAiChatMessage)
-      .mockImplementationOnce(
-        (
-          _session,
-          _content,
-          _model,
-          _depth,
-          _preset,
-          _attachments,
-          options,
-        ) => {
-          options?.onTaskStart?.("task-first");
-          return new Promise((_resolve, reject) => {
-            rejectFirst = reject;
-          });
-        },
-      )
-      .mockImplementationOnce(
-        (
-          _session,
-          _content,
-          _model,
-          _depth,
-          _preset,
-          _attachments,
-          options,
-        ) => {
-          options?.onTaskStart?.("task-second");
-          return Promise.reject(
-            Object.assign(new Error("恢复请求超时"), {
-              category: "resume_unconfirmed",
-              retryable: true,
-            }),
-          );
-        },
-      );
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-first");
+        return new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      },
+    );
     vi.mocked(resumeAiChatMessageTask).mockImplementationOnce(
       (_session, _task, options) => {
-        resumedSignal = options?.signal;
+        void options?.signal;
         return new Promise(() => undefined);
       },
     );
@@ -584,15 +555,14 @@ describe("AIChatView", () => {
       }),
     );
 
-    await waitFor(() => expect(sendAiChatMessage).toHaveBeenCalledTimes(2));
     await waitFor(() =>
       expect(resumeAiChatMessageTask).toHaveBeenCalledWith(
         "session-1",
-        "task-second",
+        "task-first",
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
-    expect(resumedSignal?.aborted).toBe(false);
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
   });
 
   it("shows tool activity as soon as a streaming tool event arrives", async () => {

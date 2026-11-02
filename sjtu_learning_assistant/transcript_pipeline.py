@@ -502,7 +502,16 @@ def _validated_json(
                     separators=(",", ":"),
                 )
             )
-            if encoded_length > MAX_VALIDATED_JSON_CHARS:
+            # Bound model-authored size; audit source_cue refs expand to full
+            # program-derived cue text, so the expanded form gets a looser ceiling.
+            authored_length = len(json.dumps(
+                {key: item for key, item in parsed.items() if key != "cleaned_transcript"},
+                ensure_ascii=False, separators=(",", ":"),
+            ))
+            if (
+                min(encoded_length, authored_length) > MAX_VALIDATED_JSON_CHARS
+                or encoded_length > MAX_VALIDATED_JSON_CHARS * 16
+            ):
                 raise ValueError("validated JSON too long")
             # json.loads accepts lone-surrogate escapes such as "\ud800"; the
             # service later writes UTF-8 bytes, so reject them here (fail closed
@@ -1861,7 +1870,9 @@ def _normalize_study_guide(value: object, cues: Sequence[Cue]) -> dict[str, Any]
         ):
             _schema_fail(path + ".evidence", "non-empty array of exact {cue_id,quote} objects", raw_evidence)
         evidence = _normalize_guide_evidence(raw_evidence, cues, path + ".evidence")
-        if len(evidence) != len(raw_evidence):
+        # Check rows one by one: the normalizer dedupes and caps at 6, so a count
+        # comparison would reject guides with 7+ valid or repeated citations.
+        if any(not _normalize_guide_evidence([row], cues, path + ".evidence") for row in raw_evidence):
             _schema_fail(path + ".evidence", "every quote must match a current cue exactly", raw_evidence)
         if not evidence:
             _schema_fail(path + ".evidence", "at least one exact current-cue citation for every theme", evidence)

@@ -114,7 +114,8 @@ export function AIChatTracePanel({
   const pinnedToLatestRef = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   // 已有流式轨迹在展示时，不再额外渲染“等待”占位，也不重复计入轮数。
-  const lastTrace = traces.at(-1);
+  // 不用 Array.prototype.at：macOS 12.0–12.2 的 WKWebView（Safari 15.0–15.3）未实现，会整页抛错。
+  const lastTrace = traces.length > 0 ? traces[traces.length - 1] : undefined;
   const liveTrace = Boolean(
     runningTaskId &&
       lastTrace?.id === `stream-${runningTaskId}` &&
@@ -140,7 +141,7 @@ export function AIChatTracePanel({
     } else {
       setShowLatest(true);
     }
-  }, [open, traces.length, traces.at(-1)?.tool_runs.length, busy]);
+  }, [open, traces.length, lastTrace?.tool_runs.length, busy]);
 
   return (
     <aside
