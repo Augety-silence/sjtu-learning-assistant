@@ -40,6 +40,7 @@ from sjtu_learning_assistant.agent_runtime import (
     ReadOnlyToolRegistry,
 )
 from sjtu_learning_assistant.ai_attachments import (
+    MAX_VISION_IMAGES,
     AIFileError,
     AIManagedFileService,
     attachment_dto,
@@ -2647,6 +2648,40 @@ class DashboardService:
                 category="unsupported_multimodal_model",
                 retryable=False,
             )
+        document_image_note = ""
+        if selected_attachment_ids:
+            # PPTX/DOCX 的内嵌图片只在已选多模态模型时附带，不为文档自动切换模型：
+            # 附图会关闭流式输出，也会增加模型用量。
+            vision_budget = (
+                MAX_VISION_IMAGES - len(image_parts)
+                if selected_model == "qwen3.8-27b"
+                else 0
+            )
+            try:
+                document_parts, document_labels, skipped_images = (
+                    self.ai_files.document_vision_parts(
+                        selected_attachment_ids, budget=max(0, vision_budget)
+                    )
+                )
+            except AIFileError as exc:
+                raise DashboardError(str(exc), category="attachment", retryable=False) from None
+            image_parts = [*image_parts, *document_parts]
+            if document_labels:
+                document_image_note = (
+                    "本轮随消息附带了文档内嵌图片（按顺序）："
+                    + "；".join(document_labels)
+                    + "。图片只代表文档中的插图，不是整页截图。"
+                )
+            if skipped_images:
+                document_image_note += (
+                    f"另有 {skipped_images} 个文档内嵌图片未发送给模型"
+                    + (
+                        "（超过单次图片上限）。"
+                        if selected_model == "qwen3.8-27b"
+                        else "（当前模型不支持图片；需要识别图片时请切换到 Qwen 3.8）。"
+                    )
+                    + "不得声称看过未发送的图片。"
+                )
         with Session(self.engine) as session:
             chat = session.get(AIChatSession, session_id)
             if chat is None:
@@ -2677,6 +2712,8 @@ class DashboardService:
                     ),
                 }
             )
+        if document_image_note:
+            prompt.append({"role": "system", "content": document_image_note})
         if page_context:
             prompt.append(
                 {
@@ -2733,6 +2770,7 @@ class DashboardService:
                     now_provider=self.now,
                     ai_file_service=self.ai_files,
                     attachment_ids=selected_attachment_ids or None,
+                    course_file_resolver=self._resolve_local_file,
                 ),
                 preset,
             ).run(

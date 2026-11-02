@@ -21,6 +21,7 @@ KNOWN_TOOLS = frozenset(
         "get_material_tree",
         "search_ai_attachments",
         "read_ai_attachment_text",
+        "read_course_file_text",
     }
 )
 

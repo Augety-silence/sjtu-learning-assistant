@@ -18,6 +18,7 @@ const toolLabels: Record<string, string> = {
   get_material_tree: "读取资料目录",
   search_ai_attachments: "检索 AI 附件",
   read_ai_attachment_text: "读取附件正文",
+  read_course_file_text: "读取课件正文",
 };
 
 export function toolLabel(toolName: string) {

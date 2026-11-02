@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+from office_fixtures import build_pptx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -246,6 +247,123 @@ class AgentRuntimeTests(unittest.TestCase):
                 "read_ai_attachment_text",
                 {"attachment_id": first["id"], "path": "/tmp/private"},
                 allowed,
+            )
+
+    def _course_pptx(self, source_id: str, *, local: bool = True) -> Path:
+        path = build_pptx(
+            self.root / f"{source_id}.pptx",
+            extra={
+                "ppt/slides/slide2.xml": (
+                    '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>'
+                    "<p:sp><p:txBody><a:p><a:r><a:t>封面 token=slide-secret 资料在 /Users/private/a.txt</a:t></a:r></a:p>"
+                    + "".join(f"<a:p><a:r><a:t>要点{index:03d}" + "甲" * 40 + "</a:t></a:r></a:p>" for index in range(30))
+                    + "</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+                )
+            },
+        )
+        with Session(self.engine) as session, session.begin():
+            course = session.scalar(select(Course).where(Course.source_id == "course-1"))
+            session.add(
+                CourseFile(
+                    source_id=source_id,
+                    course_id=course.id,
+                    display_name="第一章 导论.pptx",
+                    filename="chapter1.pptx",
+                    size=path.stat().st_size,
+                    local_path=str(path) if local else None,
+                    download_status="downloaded" if local else "pending",
+                    is_active=True,
+                    last_seen_at=datetime.now(timezone.utc),
+                    raw_data={},
+                )
+            )
+        return path
+
+    def test_course_file_text_tool_pages_redacts_and_never_returns_paths(self) -> None:
+        path = self._course_pptx("ppt-1")
+        self._course_pptx("ppt-remote", local=False)
+        resolved: list[str] = []
+
+        def resolver(source_id: str) -> Path:
+            resolved.append(source_id)
+            return path
+
+        registry = ReadOnlyToolRegistry(self.engine, course_file_resolver=resolver)
+        allowed = ("search_course_files", "read_course_file_text")
+        self.assertIn(
+            "read_course_file_text",
+            {item["function"]["name"] for item in registry.definitions(allowed)},
+        )
+
+        first = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "max_chars": 1000}, allowed
+        ).result
+        self.assertEqual(("ready", "pptx", "页", 2), (first["status"], first["format"], first["unit_label"], first["unit_count"]))
+        self.assertEqual((1, 1, 2), (first["start_page"], first["end_page"], first["next_page"]))
+        self.assertTrue(first["page_text_clipped"])
+        self.assertTrue(first["text"].startswith("【第 1 页 / 共 2 页】\n封面"))
+        self.assertNotIn("slide-secret", first["text"])
+        self.assertNotIn("/Users/private", first["text"])
+        self.assertLessEqual(len(json.dumps(first["text"], ensure_ascii=False)), 1000)
+
+        second = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "start_page": 2}, allowed
+        ).result
+        self.assertEqual((2, None), (second["end_page"], second["next_page"]))
+        self.assertIn("[表格]\n概念 | 定义", second["text"])
+        self.assertIn("[演讲者备注]", second["text"])
+        self.assertEqual(1, second["embedded_image_count"])
+        self.assertIn("Qwen", second["image_note"])
+        encoded = json.dumps([first, second], ensure_ascii=False)
+        self.assertNotIn(str(self.root), encoded)
+        # 同一轮内重复读取复用解析结果，不再次解析文件路径。
+        self.assertEqual(["ppt-1"], resolved)
+
+        beyond = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "start_page": 9}, allowed
+        ).result
+        self.assertEqual("out_of_range", beyond["status"])
+        remote = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-remote"}, allowed
+        ).result
+        self.assertEqual("unavailable", remote["status"])
+        with self.assertRaisesRegex(AgentToolError, "未找到"):
+            registry.execute("read_course_file_text", {"source_id": "missing"}, allowed)
+        for bad in ({"source_id": "ppt-1", "path": "/etc/passwd"}, {"source_id": "ppt-1", "max_chars": 20_000}, {"source_id": "ppt-1", "start_page": 0}):
+            with self.assertRaises(AgentToolError):
+                registry.execute("read_course_file_text", bad, allowed)
+
+    def test_course_file_text_tool_maps_resolver_and_format_failures(self) -> None:
+        self._course_pptx("ppt-escape")
+
+        def escaped(_source_id: str) -> Path:
+            raise RuntimeError("/Users/private/outside.pptx is outside archive")
+
+        registry = ReadOnlyToolRegistry(self.engine, course_file_resolver=escaped)
+        result = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-escape"}, ("read_course_file_text",)
+        ).result
+        self.assertEqual("unavailable", result["status"])
+        self.assertNotIn("/Users/private", json.dumps(result, ensure_ascii=False))
+
+        legacy = self.root / "legacy.ppt"
+        legacy.write_bytes(b"\xd0\xcf\x11\xe0 legacy binary")
+        with Session(self.engine) as session, session.begin():
+            file = session.scalar(select(CourseFile).where(CourseFile.source_id == "ppt-escape"))
+            file.display_name = "旧版课件.ppt"
+        unsupported = ReadOnlyToolRegistry(
+            self.engine, course_file_resolver=lambda _source_id: legacy
+        ).execute(
+            "read_course_file_text", {"source_id": "ppt-escape"}, ("read_course_file_text",)
+        ).result
+        self.assertEqual("unsupported", unsupported["status"])
+
+    def test_course_file_text_tool_is_absent_without_controlled_resolver(self) -> None:
+        self.assertNotIn("read_course_file_text", self.registry.names)
+        with self.assertRaisesRegex(AgentToolError, "未知工具"):
+            self.registry.execute(
+                "read_course_file_text", {"source_id": "file-1"}, ("read_course_file_text",)
             )
 
     def test_deterministic_course_file_prefetch_without_model_tools(self) -> None:

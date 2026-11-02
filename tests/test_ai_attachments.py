@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from office_fixtures import build_pptx
 from PIL import Image
 from sqlalchemy import create_engine
 
@@ -140,6 +141,31 @@ class AIManagedFileServiceTests(unittest.TestCase):
         self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
         self.assertEqual({"url"}, set(parts[0]["image_url"]))
         self.assertEqual("unsupported", item["text_status"])
+
+    def test_pptx_attachment_text_is_readable_and_embedded_images_are_bounded(self) -> None:
+        source = build_pptx(self.root / "第一章.pptx")
+        item = self.service.ingest(source)
+
+        self.assertEqual("ready", item["text_status"])
+        self.assertNotIn("【第", item["summary"])
+        self.assertIn("封面", item["summary"])
+        excerpt = self.service.read_text(item["id"], max_chars=4000)
+        self.assertIn("【第 2 页 / 共 2 页】", excerpt["text"])
+        self.assertIn("[演讲者备注]\n讲解重点：需求弹性", excerpt["text"])
+        # 文档不是图片附件，不会进入强制 Qwen 的图片通道。
+        self.assertEqual([], self.service.vision_message_parts([item["id"]]))
+
+        parts, labels, skipped = self.service.document_vision_parts([item["id"]], budget=4)
+        self.assertEqual(1, len(parts))
+        self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(0, skipped)
+        self.assertIn("第 2 页", labels[0])
+        self.assertNotIn(str(self.root), labels[0])
+
+        none, no_labels, skipped = self.service.document_vision_parts([item["id"]], budget=0)
+        self.assertEqual(([], [], 1), (none, no_labels, skipped))
+        with self.assertRaises(AIFileError):
+            self.service.document_vision_parts([item["id"]], budget=-1)
 
     def test_cloud_only_read_verifies_hash_and_restore_then_reveal(self) -> None:
         source = self.root / "cloud.txt"

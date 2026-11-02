@@ -30,7 +30,11 @@ const capabilities = [
   { label: "课程", tools: ["list_courses"], icon: GraduationCap },
   {
     label: "课程文件",
-    tools: ["search_course_files", "list_course_files"],
+    tools: [
+      "search_course_files",
+      "list_course_files",
+      "read_course_file_text",
+    ],
     icon: FileSearch,
   },
   { label: "截止日期", tools: ["get_deadlines"], icon: CalendarClock },

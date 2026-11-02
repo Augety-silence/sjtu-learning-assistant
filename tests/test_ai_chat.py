@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
+from office_fixtures import build_pptx
 from PIL import Image
 from sqlalchemy import create_engine
 
@@ -135,6 +136,34 @@ class AIChatHistoryTests(unittest.TestCase):
 
         self.assertEqual("qwen3.8-27b", result["assistant_message"]["model"])
         self.assertEqual("image_url", FakeAIClient.requested_messages[-1][-1]["content"][0]["type"])
+
+    def test_qwen_receives_pptx_embedded_images_while_text_models_get_a_notice(self) -> None:
+        attachment = self.service.ai_attachment_ingest(build_pptx(self.root / "课件.pptx"))
+        self.assertEqual("ready", attachment["text_status"])
+        chat = self.service.ai_chat_new("auto", "standard", "general")
+
+        auto = self.service.ai_chat_send(
+            chat["id"], "总结这份课件", "auto", "standard", "general", [attachment["id"]]
+        )
+        # 文档不会把 auto 改路由到 Qwen；文本模型只收到“图片未发送”的说明。
+        self.assertEqual("deepseek-chat", auto["assistant_message"]["model"])
+        text_request = FakeAIClient.requested_messages[-1]
+        self.assertIsInstance(text_request[-1]["content"], str)
+        notices = [m["content"] for m in text_request if m["role"] == "system" and "文档内嵌图片" in m["content"]]
+        self.assertEqual(1, len(notices))
+        self.assertIn("当前模型不支持图片", notices[0])
+
+        qwen = self.service.ai_chat_send(
+            chat["id"], "图里画了什么", "qwen3.8-27b", "standard", "general", [attachment["id"]]
+        )
+        self.assertEqual("qwen3.8-27b", qwen["assistant_message"]["model"])
+        vision_request = FakeAIClient.requested_messages[-1]
+        user_content = vision_request[-1]["content"]
+        self.assertEqual(["image_url", "text"], [part["type"] for part in user_content])
+        labels = [m["content"] for m in vision_request if m["role"] == "system" and "随消息附带了文档内嵌图片" in m["content"]]
+        self.assertEqual(1, len(labels))
+        self.assertIn("第 2 页", labels[0])
+        self.assertNotIn(str(self.root), str(vision_request))
 
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")
