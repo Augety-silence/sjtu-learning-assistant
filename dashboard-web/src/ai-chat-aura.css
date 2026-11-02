@@ -1288,3 +1288,362 @@
     transition: none;
   }
 }
+
+/* ===== 每一轮执行详情（运行中展开、完成后折叠为一行） ===== */
+.ai-turn-trace {
+  width: min(100%, 680px);
+  margin: 0 0 12px;
+}
+
+.ai-turn-trace-toggle {
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 8px 3px 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-turn-trace-toggle:hover {
+  color: var(--text-primary);
+  background: var(--ai-control-hover);
+}
+
+.ai-turn-trace-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.ai-turn-trace-status {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+
+.ai-turn-trace-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ai-turn-trace.is-running .ai-turn-trace-status {
+  color: var(--action-primary);
+}
+
+.ai-turn-trace.is-complete .ai-turn-trace-status {
+  color: var(--status-success);
+}
+
+.ai-turn-trace.is-failed .ai-turn-trace-status,
+.ai-turn-trace.is-failed .ai-turn-trace-summary {
+  color: var(--status-danger);
+}
+
+.ai-turn-trace-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-turn-trace-caret {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.ai-turn-trace.is-open .ai-turn-trace-caret {
+  transform: rotate(90deg);
+}
+
+.ai-turn-trace-detail {
+  margin: 6px 0 0 11px;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid color-mix(in srgb, var(--aura-border) 80%, transparent);
+}
+
+.ai-turn-trace .ai-turn-steps {
+  max-height: min(320px, 42vh);
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 0;
+}
+
+.ai-turn-steps > li {
+  min-width: 0;
+}
+
+.ai-turn-trace .ai-tool-run {
+  border: 1px solid color-mix(in srgb, var(--aura-border) 88%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--aura-control) 78%, transparent);
+}
+
+.ai-turn-trace .ai-tool-run + .ai-tool-run {
+  border-top: 1px solid color-mix(in srgb, var(--aura-border) 88%, transparent);
+}
+
+.ai-turn-trace .ai-tool-run.is-rejected {
+  border-color: color-mix(in srgb, var(--status-danger) 26%, var(--aura-border));
+}
+
+.ai-turn-trace .ai-tool-run summary {
+  min-height: 34px;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 12px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9px;
+}
+
+.ai-turn-trace .ai-tool-run summary:hover {
+  background: var(--ai-control-hover);
+}
+
+.ai-turn-trace .ai-tool-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+  background: transparent !important;
+}
+
+.ai-turn-trace .ai-tool-icon.is-rejected {
+  color: var(--status-danger);
+}
+
+.ai-turn-trace .ai-tool-run-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ai-turn-trace .ai-tool-run-copy strong {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-turn-trace .ai-tool-run-copy > span {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-tool-hint {
+  margin-left: 6px;
+  color: var(--text-tertiary);
+  font-style: normal;
+  font-weight: 400;
+}
+
+.ai-turn-trace .ai-tool-phase {
+  font-size: 10.5px;
+}
+
+/* 行内只标注“预检索”；模型主动调用是默认情况，不再逐行重复。 */
+.ai-turn-trace .ai-tool-phase.is-model {
+  display: none;
+}
+
+.ai-tool-run-copy .ai-tool-duration {
+  font-size: inherit;
+  color: inherit;
+}
+
+.ai-turn-trace .ai-tool-run summary > .ai-tool-caret {
+  grid-column: 4;
+}
+
+.ai-turn-trace .ai-tool-detail {
+  padding: 2px 10px 10px 36px;
+}
+
+.ai-turn-step-live {
+  margin: 0;
+  padding: 4px 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.ai-turn-step-live svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--action-primary);
+}
+
+.ai-turn-trace-footer {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+
+.ai-turn-trace-footer button {
+  min-height: 28px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 82%, transparent);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.ai-turn-trace-footer button:hover {
+  color: var(--action-primary);
+  background: var(--ai-control-hover);
+}
+
+.ai-turn-trace-footer button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.ai-turn-trace-footer svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 独立运行卡片沿用助手消息的作者行与宽度。 */
+.ai-inline-execution.ai-message {
+  width: 100%;
+}
+
+/* ===== 用户消息气泡：长文折叠、标题/列表/代码按正文尺寸排版 ===== */
+.ai-message-user .ai-markdown {
+  overflow-wrap: anywhere;
+}
+
+.ai-message-user .ai-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 8px 0 2px;
+  font-size: inherit;
+  line-height: inherit;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.ai-message-user .ai-markdown :is(ul, ol) {
+  margin: 4px 0;
+  padding: 0 0 0 1.4em;
+}
+
+.ai-message-user .ai-markdown ul {
+  list-style: disc;
+}
+
+.ai-message-user .ai-markdown ol {
+  list-style: decimal;
+}
+
+.ai-message-user .ai-markdown li + li {
+  margin-top: 2px;
+}
+
+.ai-message-user .ai-markdown pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-user-content {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ai-user-content.is-collapsed .ai-markdown-clip {
+  max-height: 252px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 56px), transparent);
+}
+
+.ai-user-expand {
+  min-height: 26px;
+  margin-top: 4px;
+  padding: 0 6px;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--action-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-user-expand:hover {
+  background: var(--ai-control-hover);
+}
+
+.ai-user-expand:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.ai-user-expand svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 140ms ease;
+}
+
+.ai-user-expand[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-turn-trace-caret,
+  .ai-user-expand svg {
+    transition: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .ai-turn-trace .ai-tool-phase {
+    display: none;
+  }
+  .ai-turn-trace .ai-tool-run summary {
+    grid-template-columns: 18px minmax(0, 1fr) 0 12px;
+  }
+}

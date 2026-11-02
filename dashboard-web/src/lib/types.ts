@@ -45,6 +45,8 @@ export interface AIToolRun {
   status: AIToolRunStatus;
   arguments_summary: unknown;
   result_summary: unknown;
+  /** 单次工具执行耗时（毫秒）；旧记录没有该字段。 */
+  duration_ms?: number | null;
 }
 
 export interface AIAgentTrace {
@@ -54,6 +56,8 @@ export interface AIAgentTrace {
   steps: number;
   tool_runs: AIToolRun[];
   created_at?: string | null;
+  /** 本轮从发送到完成的耗时（毫秒）；未知时为空。 */
+  duration_ms?: number | null;
 }
 
 export interface AIAgentPreset {

@@ -170,6 +170,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [stopping, setStopping] = useState(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  // 当前任务的开始时刻（毫秒或后端 ISO 时间），用于每轮执行详情的实时计时。
+  const [runningStartedAt, setRunningStartedAt] = useState<
+    number | string | null
+  >(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -287,6 +291,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       const streamId = `stream-${taskId}`;
       if (detail.type === "start") {
         setRunningTaskId(taskId);
+        setRunningStartedAt(
+          typeof detail.started_at === "string" && detail.started_at
+            ? detail.started_at
+            : Date.now(),
+        );
         return;
       }
       if (
@@ -1191,6 +1200,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   // Streaming deltas are kept quiet by aria-live="off" on the stream bubble
   // (AIChatMessageBubble). aria-busy on this live region is avoided on purpose:
   // NVDA/JAWS on Chromium never announce the region after busy clears.
+  // 运行中的临时轨迹（stream-<task>）；任务标识尚未回传时取最近一条临时轨迹。
+  // 不用 Array.prototype.findLast/at：旧版 WKWebView 未实现。
+  const liveStreamTrace = useMemo(() => {
+    const traces = active?.traces ?? [];
+    if (runningTaskId) {
+      const exact = traces.find(
+        (trace) => trace.id === `stream-${runningTaskId}`,
+      );
+      if (exact) return exact;
+    }
+    for (let index = traces.length - 1; index >= 0; index -= 1) {
+      if (traces[index].id.startsWith("stream-")) return traces[index];
+    }
+    return null;
+  }, [active?.traces, runningTaskId]);
   const tracesById = useMemo(
     () => new Map(active?.traces.map((trace) => [trace.id, trace]) ?? []),
     [active?.traces],
@@ -1390,9 +1414,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             ) : (
               <div className="ai-chat-messages">
                 {active?.messages.map((message) => {
-                  const trace = message.trace_id
-                    ? tracesById.get(message.trace_id)
-                    : null;
+                  const streaming = message.id.startsWith("stream-");
+                  // 还没有正文的流式占位由下方的运行卡片表示，避免出现空白气泡。
+                  if (streaming && !message.content.trim()) return null;
+                  // 流式消息与其临时轨迹共用 stream-<task> 标识，正文出现后执行详情不丢失。
+                  const trace = streaming
+                    ? tracesById.get(message.id)
+                    : message.trace_id
+                      ? tracesById.get(message.trace_id)
+                      : null;
                   return (
                     <AIChatMessageBubble
                       key={message.id}
@@ -1404,13 +1434,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                       showCodeLineNumbers={preferences.ai_code_line_numbers}
                       animateEntry={motionMessageIds.includes(message.id)}
                       queued={queuedMessageIds.includes(message.id)}
+                      running={streaming && visibleBusy}
+                      startedAt={streaming ? runningStartedAt : undefined}
                     />
                   );
                 })}
                 <AnimatePresence>
                   {visibleBusy && !hasVisibleStream && (
                     <motion.div
-                      className="ai-inline-execution"
+                      className="ai-inline-execution ai-message ai-message-assistant"
                       initial={
                         shouldReduceMotion ? false : { opacity: 0.72, y: 3 }
                       }
@@ -1421,11 +1453,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                         ease: motionEase.out,
                       }}
                     >
-                      <InlineAgentExecution
-                        running
-                        agentName={selectedPreset?.name ?? "学习 Agent"}
-                        onOpenActivity={openActivity}
-                      />
+                      <div className="ai-message-body">
+                        <header className="ai-message-author">
+                          <img src={aiAgentLogo} alt="" aria-hidden="true" />
+                          <strong>
+                            {selectedPreset?.name ?? "学习 Agent"}
+                          </strong>
+                        </header>
+                        <InlineAgentExecution
+                          running
+                          trace={liveStreamTrace}
+                          startedAt={runningStartedAt}
+                          agentName={selectedPreset?.name ?? "学习 Agent"}
+                          onOpenActivity={openActivity}
+                        />
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from office_fixtures import build_pptx
@@ -164,6 +165,42 @@ class AIChatHistoryTests(unittest.TestCase):
         self.assertEqual(1, len(labels))
         self.assertIn("第 2 页", labels[0])
         self.assertNotIn(str(self.root), str(vision_request))
+
+    def test_turn_duration_is_returned_live_and_recovered_after_reload(self) -> None:
+        moments = iter(
+            [
+                datetime(2026, 11, 2, 11, 0, 0, tzinfo=timezone.utc),
+                datetime(2026, 11, 2, 11, 1, 53, tzinfo=timezone.utc),
+            ]
+        )
+        last = [datetime(2026, 11, 2, 11, 1, 53, tzinfo=timezone.utc)]
+
+        def clock() -> datetime:
+            try:
+                last[0] = next(moments)
+            except StopIteration:
+                pass
+            return last[0]
+
+        chat = self.service.ai_chat_new("deepseek-chat", "standard", "general")
+        self.service.now_provider = clock
+        result = self.service.ai_chat_send(chat["id"], "总结本周", "deepseek-chat", "standard", "general")
+
+        self.assertIsInstance(result["trace"]["duration_ms"], int)
+        self.assertGreaterEqual(result["trace"]["duration_ms"], 0)
+        restored = self.service.ai_chat_session(chat["id"])
+        # 用户消息以本轮开始时刻入库、助手消息以完成时刻入库，重载后仍能得到耗时。
+        self.assertEqual(113_000, restored["traces"][0]["duration_ms"])
+        self.assertLess(
+            restored["messages"][0]["created_at"], restored["messages"][1]["created_at"]
+        )
+
+    def test_legacy_turns_without_distinct_timestamps_report_unknown_duration(self) -> None:
+        fixed = datetime(2026, 11, 2, 11, 0, 0, tzinfo=timezone.utc)
+        self.service.now_provider = lambda: fixed
+        chat = self.service.ai_chat_new("deepseek-chat", "standard", "general")
+        self.service.ai_chat_send(chat["id"], "旧记录", "deepseek-chat", "standard", "general")
+        self.assertIsNone(self.service.ai_chat_session(chat["id"])["traces"][0]["duration_ms"])
 
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")

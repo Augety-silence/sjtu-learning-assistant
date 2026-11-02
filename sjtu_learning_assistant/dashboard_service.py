@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -227,6 +228,18 @@ def to_shanghai(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(SHANGHAI_TZ).isoformat(timespec="seconds")
+
+
+def _turn_duration_ms(values: list[datetime]) -> int | None:
+    """由同一轮用户/助手消息的入库时刻推算耗时；旧记录两者相同，返回未知。"""
+    if len(values) < 2:
+        return None
+    normalized = [
+        value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        for value in values
+    ]
+    elapsed = (max(normalized) - min(normalized)).total_seconds()
+    return int(round(elapsed * 1000)) if elapsed > 0 else None
 
 
 def _course_name(value: str | None) -> str:
@@ -2525,6 +2538,10 @@ class DashboardService:
                 .order_by(AIAgentTrace.created_at.asc())
             ).all()
             trace_by_id = {trace.id: trace for trace in traces}
+            turn_times: dict[str, list[datetime]] = {}
+            for message in messages:
+                if message.trace_id and message.created_at is not None:
+                    turn_times.setdefault(message.trace_id, []).append(message.created_at)
             return {
                 "id": row.id,
                 "title": row.title,
@@ -2550,6 +2567,7 @@ class DashboardService:
                         "steps": trace.steps,
                         "tool_runs": list(trace.tool_runs),
                         "created_at": to_shanghai(trace.created_at),
+                        "duration_ms": _turn_duration_ms(turn_times.get(trace.id, [])),
                     }
                     for trace in traces
                 ],
@@ -2614,6 +2632,10 @@ class DashboardService:
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
+        # 本轮开始时刻：用户消息以它入库，助手消息以完成时刻入库，两者之差即本轮耗时，
+        # 无需新增数据库列（避免回退到旧版 App 时遇到未知迁移版本）。
+        turn_started_at = self.now()
+        turn_started = time.monotonic()
         if attachment_ids is None:
             selected_attachment_ids: list[int] = []
         elif (
@@ -2824,6 +2846,7 @@ class DashboardService:
                 content=text,
                 model=selected_model,
                 trace_id=trace_id,
+                created_at=min(turn_started_at, now),
             )
             assistant_row = AIChatMessage(
                 session_id=session_id,
@@ -2833,6 +2856,7 @@ class DashboardService:
                 reasoning_content=agent_result.reasoning_content,
                 model=selected_model,
                 trace_id=trace_id,
+                created_at=now,
             )
             session.add_all((trace_row, user_row, assistant_row))
             session.flush()
@@ -2858,6 +2882,7 @@ class DashboardService:
                 "steps": trace_row.steps,
                 "tool_runs": safe_tool_runs,
                 "created_at": to_shanghai(trace_row.created_at),
+                "duration_ms": max(0, int(round((time.monotonic() - turn_started) * 1000))),
             }
             result = {
                 "session": {

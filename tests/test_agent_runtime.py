@@ -307,6 +307,14 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("/Users/private", first["text"])
         self.assertLessEqual(len(json.dumps(first["text"], ensure_ascii=False)), 1000)
 
+        summary = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "max_chars": 1000}, allowed
+        ).result_summary
+        # 安全摘要带页码范围，执行详情可显示“已读第 1 页 / 共 2 页”。
+        self.assertEqual(
+            {"content_status": "ready", "start_page": 1, "end_page": 1, "next_page": 2, "unit_count": 2, "unit_label": "页"},
+            {key: summary[key] for key in ("content_status", "start_page", "end_page", "next_page", "unit_count", "unit_label")},
+        )
         second = registry.execute(
             "read_course_file_text", {"source_id": "ppt-1", "start_page": 2}, allowed
         ).result
@@ -428,6 +436,29 @@ class AgentRuntimeTests(unittest.TestCase):
         system_content = system_messages[0]["content"]
         self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
         self.assertIn("上下文过长，已截断", system_content)
+
+    def test_tool_runs_record_non_negative_duration_for_prefetch_and_model_calls(self) -> None:
+        client = ScriptedClient(
+            [
+                {"content": "", "reasoning_content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_courses", "arguments": "{}"}}]},
+                {"content": "完成。", "reasoning_content": None},
+            ]
+        )
+        events: list[dict] = []
+        result = AgentLoop(client, self.registry, preset(*ALL_TOOLS)).run(
+            [{"role": "user", "content": "看看截止日期"}],
+            user_text="看看截止日期",
+            max_tokens=500,
+            temperature=0.2,
+            attachment_ids=[1],
+            event_callback=lambda kind, payload: events.append(payload) if kind == "tool" else None,
+        )
+        self.assertTrue(result.tool_runs)
+        for run in result.tool_runs:
+            self.assertIsInstance(run["duration_ms"], int)
+            self.assertGreaterEqual(run["duration_ms"], 0)
+        self.assertEqual({"prefetch", "model"}, {run["phase"] for run in result.tool_runs})
+        self.assertTrue(all("duration_ms" in event for event in events))
 
     def test_model_tool_calls_loop_and_reasoning(self) -> None:
         client = ScriptedClient(

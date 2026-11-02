@@ -1,12 +1,36 @@
 import {
   Activity,
+  BookOpenText,
+  CalendarClock,
   CheckCircle2,
   ChevronRight,
   CircleSlash2,
+  FileSearch,
+  Files,
+  FileText,
+  FolderTree,
+  GraduationCap,
   LoaderCircle,
+  Mail,
+  MailOpen,
+  Paperclip,
+  Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { type ComponentType, useEffect, useId, useRef, useState } from "react";
 import type { AIAgentTrace, AIToolRun } from "@/lib/types";
+
+const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
+  list_courses: GraduationCap,
+  search_course_files: FileSearch,
+  list_course_files: Files,
+  get_deadlines: CalendarClock,
+  search_messages: Mail,
+  get_message_detail: MailOpen,
+  get_material_tree: FolderTree,
+  search_ai_attachments: Paperclip,
+  read_ai_attachment_text: FileText,
+  read_course_file_text: BookOpenText,
+};
 
 const toolLabels: Record<string, string> = {
   list_courses: "读取课程列表",
@@ -23,6 +47,72 @@ const toolLabels: Record<string, string> = {
 
 export function toolLabel(toolName: string) {
   return toolLabels[toolName] ?? toolName;
+}
+
+const contentStatusLabels: Record<string, string> = {
+  unavailable: "文件未下载到本机",
+  unsupported: "格式暂不支持读取",
+  failed: "正文读取失败",
+  out_of_range: "页码超出范围",
+  pending: "正文仍在处理",
+};
+
+const messageKindLabels: Record<string, string> = {
+  all: "全部消息",
+  email: "邮件",
+  announcement: "公告",
+  assignment: "作业",
+};
+
+/** 由已脱敏的参数摘要生成一句短提示；不展示原始查询词或路径。 */
+export function toolArgumentHint(run: AIToolRun) {
+  const args =
+    run.arguments_summary && typeof run.arguments_summary === "object"
+      ? (run.arguments_summary as Record<string, unknown>)
+      : {};
+  const parts: string[] = [];
+  if (typeof args.start_page === "number")
+    parts.push(`从第 ${args.start_page} 页起`);
+  if (typeof args.attachment_id === "number")
+    parts.push(`附件 #${args.attachment_id}`);
+  if (typeof args.hours === "number") {
+    parts.push(
+      args.hours % 24 === 0
+        ? `未来 ${args.hours / 24} 天`
+        : `未来 ${args.hours} 小时`,
+    );
+  }
+  if (typeof args.kind === "string" && messageKindLabels[args.kind])
+    parts.push(messageKindLabels[args.kind]);
+  if (
+    args.has_query === true ||
+    (typeof args.query_length === "number" && args.query_length > 0)
+  )
+    parts.push("按关键词");
+  if (args.course_filtered === true) parts.push("限定课程");
+  if (args.scope === "message") parts.push("本轮附件");
+  return parts.join(" · ");
+}
+
+/** 把毫秒格式化为“不到 1 秒 / 12 秒 / 1 分 53 秒 / 1 小时 2 分”。 */
+export function formatDuration(ms: number | null | undefined) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return "不到 1 秒";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0)
+    return minutes > 0 ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`;
+  return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+}
+
+/** 单个工具的耗时只在 ≥0.1 秒时显示，保留一位小数。 */
+export function formatToolDuration(ms: number | null | undefined) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 100) return null;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`;
+  return formatDuration(ms);
 }
 
 export function compactJson(value: unknown) {
@@ -50,6 +140,26 @@ export function toolResultLabel(run: AIToolRun) {
   }
   if (run.result_summary && typeof run.result_summary === "object") {
     const summary = run.result_summary as Record<string, unknown>;
+    const contentStatus = summary.content_status;
+    if (typeof contentStatus === "string" && contentStatus !== "ready") {
+      return contentStatusLabels[contentStatus] ?? "正文不可用";
+    }
+    if (
+      typeof summary.start_page === "number" &&
+      typeof summary.end_page === "number"
+    ) {
+      const unit =
+        typeof summary.unit_label === "string" ? summary.unit_label : "页";
+      const range =
+        summary.start_page === summary.end_page
+          ? `第 ${summary.start_page} ${unit}`
+          : `第 ${summary.start_page}–${summary.end_page} ${unit}`;
+      return typeof summary.unit_count === "number"
+        ? `已读${range} / 共 ${summary.unit_count} ${unit}`
+        : `已读${range}`;
+    }
+    if (contentStatus === "ready") return "已读取正文";
+    if (summary.status === "omitted") return "结果过长，已省略";
     if (typeof summary.count === "number") return `命中 ${summary.count} 项`;
     if (typeof summary.items_count === "number") {
       return `命中 ${summary.items_count} 项`;
@@ -83,9 +193,12 @@ export function traceRejectedCount(toolRuns: AIToolRun[]) {
 export function TraceRun({ run }: { run: AIToolRun }) {
   const ok = run.status === "ok";
   const [open, setOpen] = useState(false);
+  const Icon = toolIcons[run.tool_name] ?? Wrench;
+  const hint = toolArgumentHint(run);
+  const duration = formatToolDuration(run.duration_ms);
   return (
     <details
-      className="ai-tool-run"
+      className={ok ? "ai-tool-run" : "ai-tool-run is-rejected"}
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
@@ -93,17 +206,27 @@ export function TraceRun({ run }: { run: AIToolRun }) {
         <span
           className={ok ? "ai-tool-icon is-ok" : "ai-tool-icon is-rejected"}
         >
-          {ok ? (
-            <CheckCircle2 aria-hidden="true" />
-          ) : (
-            <CircleSlash2 aria-hidden="true" />
-          )}
+          {ok ? <Icon aria-hidden /> : <CircleSlash2 aria-hidden="true" />}
         </span>
         <span className="ai-tool-run-copy">
-          <strong>{toolLabel(run.tool_name)}</strong>
-          <span>{toolResultLabel(run)}</span>
+          <strong>
+            {toolLabel(run.tool_name)}
+            {hint && <em className="ai-tool-hint">{hint}</em>}
+          </strong>
+          <span>
+            {toolResultLabel(run)}
+            {duration && (
+              <span className="ai-tool-duration"> · {duration}</span>
+            )}
+          </span>
         </span>
-        <span className="ai-tool-phase">
+        <span
+          className={
+            run.phase === "prefetch"
+              ? "ai-tool-phase is-prefetch"
+              : "ai-tool-phase is-model"
+          }
+        >
           {run.phase === "prefetch" ? "预检索" : "模型调用"}
         </span>
         <ChevronRight className="ai-tool-caret" aria-hidden="true" />
@@ -122,91 +245,189 @@ export function TraceRun({ run }: { run: AIToolRun }) {
   );
 }
 
+function parseStartedAt(value: number | string | null | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+/** 运行中每秒刷新一次已用时间；页面不可见或已结束时不计时。 */
+function useElapsed(startedAt: number | null, active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || startedAt === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+  if (startedAt === null) return null;
+  return Math.max(0, now - startedAt);
+}
+
+export function turnSummaryText({
+  running,
+  failed,
+  durationMs,
+  toolCount,
+  rejected,
+}: {
+  running: boolean;
+  failed: boolean;
+  durationMs: number | null;
+  toolCount: number;
+  rejected: number;
+}) {
+  const duration = formatDuration(durationMs);
+  const tools = toolCount > 0 ? `${toolCount} 个工具调用` : "未调用工具";
+  const parts: string[] = [];
+  if (running) {
+    parts.push("正在执行");
+    if (duration) parts.push(`已用 ${duration}`);
+    if (toolCount > 0) parts.push(tools);
+  } else {
+    parts.push(
+      failed
+        ? duration
+          ? `未完成 · 执行了 ${duration}`
+          : "未完成"
+        : duration
+          ? `执行了 ${duration}`
+          : "已完成",
+    );
+    parts.push(tools);
+  }
+  if (rejected > 0) parts.push(`${rejected} 项未执行`);
+  return parts.join(" · ");
+}
+
+/**
+ * 每一轮回复上方的执行详情：运行中默认展开并实时追加工具步骤，
+ * 完成后折叠为“执行了 X · N 个工具调用”一行，点击可展开逐步核对。
+ */
 export function InlineAgentExecution({
   trace,
   toolRuns,
   running = false,
+  streaming = false,
+  startedAt,
   agentName,
   onOpenActivity,
 }: {
   trace?: AIAgentTrace | null;
   toolRuns?: AIToolRun[];
   running?: boolean;
+  streaming?: boolean;
+  startedAt?: number | string | null;
   agentName?: string;
   onOpenActivity: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-
-  if (running) {
-    return (
-      <section
-        className="ai-execution-card is-running"
-        role="status"
-        aria-label="Agent 执行状态"
-      >
-        <div className="ai-execution-agent">
-          <LoaderCircle className="animate-spin" aria-hidden="true" />
-          <span>
-            <strong>{agentName ?? "学习 Agent"}</strong>
-            <small>请求已发送，正在等待 Agent 返回</small>
-          </span>
-        </div>
-        <p>工具事件返回后会在这里显示，并同步到 Activity。</p>
-      </section>
-    );
-  }
-
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const detailId = useId();
+  const listRef = useRef<HTMLOListElement>(null);
+  const started = parseStartedAt(startedAt);
+  const elapsed = useElapsed(started, running);
   const runs = trace?.tool_runs ?? toolRuns ?? [];
-  if (!trace && runs.length === 0) return null;
+  const runCount = runs.length;
+  const open = userOpen ?? running;
 
-  const failed = trace
-    ? traceFailed(trace)
-    : runs.some((run) => run.status === "rejected");
-  const hits = traceHitCount(runs);
+  useEffect(() => {
+    // 运行中有新步骤时把列表滚到最新一步（列表有最大高度，避免顶走正文）。
+    if (!running || !open || runCount === 0) return;
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [running, open, runCount]);
+
+  if (!running && !trace && runs.length === 0) return null;
+
+  const failed =
+    !running &&
+    Boolean(
+      trace
+        ? traceFailed(trace)
+        : runs.some((run) => run.status === "rejected"),
+    );
   const rejected = traceRejectedCount(runs);
-  const firstAction = runs[0] ? toolLabel(runs[0].tool_name) : "整理回答";
-  const summary = failed
-    ? `未完成 · ${runs.length} 项可观察操作`
-    : `已完成 · ${runs.length} 项操作${hits > 0 ? ` · 命中 ${hits} 项` : ""}${
-        rejected > 0 ? ` · ${rejected} 项未执行` : ""
-      }`;
+  const durationMs = running ? elapsed : (trace?.duration_ms ?? null);
+  const summary = turnSummaryText({
+    running,
+    failed,
+    durationMs,
+    toolCount: runs.length,
+    rejected,
+  });
+  const stateClass = running
+    ? "is-running"
+    : failed
+      ? "is-failed"
+      : "is-complete";
 
   return (
-    <details
-      className={
-        failed ? "ai-execution-card is-failed" : "ai-execution-card is-complete"
-      }
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
+    <section
+      className={`ai-turn-trace ${stateClass}${open ? " is-open" : ""}`}
+      aria-label={`${agentName ?? "Agent"} 本轮执行详情`}
     >
-      <summary>
-        <span className="ai-execution-status" aria-hidden="true">
-          {failed ? <CircleSlash2 /> : <CheckCircle2 />}
+      <button
+        type="button"
+        className="ai-turn-trace-toggle"
+        aria-expanded={open}
+        aria-controls={detailId}
+        onClick={() => setUserOpen(!open)}
+      >
+        <span className="ai-turn-trace-status" aria-hidden="true">
+          {running ? (
+            <LoaderCircle className="animate-spin" />
+          ) : failed ? (
+            <CircleSlash2 />
+          ) : (
+            <CheckCircle2 />
+          )}
         </span>
-        <span className="ai-execution-summary-copy">
-          <strong>{firstAction}</strong>
-          <small>{summary}</small>
-        </span>
-        <span className="ai-execution-disclosure">查看过程</span>
-        <ChevronRight className="ai-execution-caret" aria-hidden="true" />
-      </summary>
-      <div className="ai-execution-detail">
-        {runs.length > 0 ? (
-          <div className="ai-tool-runs">
-            {runs.map((run, index) => (
-              <TraceRun
-                key={`${run.tool_name}-${run.phase}-${index}`}
-                run={run}
-              />
-            ))}
-          </div>
-        ) : (
-          <p className="ai-trace-no-tools">本轮没有可观察的工具调用。</p>
-        )}
-        <button type="button" onClick={onOpenActivity}>
-          <Activity aria-hidden="true" />在 Activity 查看完整记录
-        </button>
-      </div>
-    </details>
+        <span className="ai-turn-trace-summary">{summary}</span>
+        <ChevronRight className="ai-turn-trace-caret" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="ai-turn-trace-detail" id={detailId}>
+          {runs.length > 0 ? (
+            <ol className="ai-tool-runs ai-turn-steps" ref={listRef}>
+              {runs.map((run, index) => (
+                <li key={`${run.tool_name}-${run.phase}-${index}`}>
+                  <TraceRun run={run} />
+                </li>
+              ))}
+              {running && (
+                <li className="ai-turn-step-live" aria-live="off">
+                  <LoaderCircle className="animate-spin" aria-hidden="true" />
+                  <span>{streaming ? "正在生成回答…" : "正在规划下一步…"}</span>
+                </li>
+              )}
+            </ol>
+          ) : running ? (
+            <p className="ai-turn-step-live">
+              <LoaderCircle className="animate-spin" aria-hidden="true" />
+              <span>
+                {streaming
+                  ? "正在生成回答…"
+                  : "请求已发送，正在等待 Agent 返回"}
+              </span>
+            </p>
+          ) : (
+            <p className="ai-trace-no-tools">本轮直接作答，没有调用工具。</p>
+          )}
+          {!running && (
+            <div className="ai-turn-trace-footer">
+              {trace && trace.steps > 0 && (
+                <span>模型请求 {trace.steps} 次</span>
+              )}
+              <button type="button" onClick={onOpenActivity}>
+                <Activity aria-hidden="true" />在 Activity 查看完整记录
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

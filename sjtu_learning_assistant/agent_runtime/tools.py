@@ -253,6 +253,17 @@ class ReadOnlyToolRegistry:
             "count": len(items) if isinstance(items, list) else result.get("count", 1),
             "truncated": bool(result.get("truncated", False)),
         }
+        if name in {"read_course_file_text", "read_ai_attachment_text"}:
+            # 正文读取类工具：把“读到第几页 / 是否可读”放进安全摘要，便于逐轮核对。
+            content_status = result.get("status")
+            if content_status in {"ready", "unavailable", "unsupported", "failed", "out_of_range", "pending"}:
+                summary["content_status"] = content_status
+            for key in ("start_page", "end_page", "next_page", "unit_count"):
+                value = result.get(key)
+                if type(value) is int:
+                    summary[key] = value
+            if isinstance(result.get("unit_label"), str):
+                summary["unit_label"] = result["unit_label"][:8]
         return ToolExecution(name, result, arg_summary, summary)
 
     def _list_courses(self, raw: object):

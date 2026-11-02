@@ -462,7 +462,14 @@ async function pollAiChatTask(
   let snapshot = initialSnapshot;
   const taskId = snapshot.task.id;
   let sequence = snapshot.next_sequence;
-  emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
+  emitAIStream({
+    type: "start",
+    task_id: taskId,
+    session_id: sessionId,
+    // 恢复轮询时也能从后端真实开始时刻计时，而不是从页面重新挂载时算起。
+    started_at:
+      snapshot.task.started_at ?? snapshot.task.created_at ?? undefined,
+  });
   emitAIStreamEvents(snapshot, taskId, sessionId);
   // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
   // 另设绝对上限防止任务永久挂起。
