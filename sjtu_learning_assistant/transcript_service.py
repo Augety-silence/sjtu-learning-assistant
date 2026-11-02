@@ -584,6 +584,12 @@ class TranscriptService:
                     owner = job.get("owner") or batch_owner
                     if self._owner_alive(owner):
                         continue
+                    if job.get("status") == "queued" and batch.get("origin") != "playback":
+                        # A queued job never started, so nothing was
+                        # interrupted. Keep it claimable for the next run.
+                        job.pop("owner", None)
+                        changed = True
+                        continue
                     job["status"] = "interrupted"
                     job["stage"] = "interrupted"
                     job["message"] = "上次运行被中断，可重试并复用已保存工件。"
@@ -599,6 +605,15 @@ class TranscriptService:
                 active_jobs = tuple(job for job in batch.get("jobs", list()) if job.get("status") in ACTIVE_STATES)
                 if batch.get("status") in ACTIVE_STATES and not active_jobs:
                     batch["status"] = "interrupted"
+                    batch.pop("owner", None)
+                    changed = True
+                elif (
+                    batch.get("origin") != "playback"
+                    and batch.get("status") in ACTIVE_STATES
+                    and all(job.get("status") == "queued" for job in active_jobs)
+                    and not self._owner_alive(batch_owner)
+                ):
+                    batch["status"] = "queued"
                     batch.pop("owner", None)
                     changed = True
                 if changed:

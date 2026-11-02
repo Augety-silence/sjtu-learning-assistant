@@ -110,6 +110,7 @@ export function DriveTable({
       }}
     >
       <table
+        role="grid"
         className="drive-table"
         aria-label="文件列表"
         aria-multiselectable="true"

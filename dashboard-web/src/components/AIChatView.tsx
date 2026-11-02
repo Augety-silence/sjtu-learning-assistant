@@ -210,13 +210,17 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const nativeDropTimerRef = useRef<number | null>(null);
   const nativeDropSeenRef = useRef(false);
   const sidebarAutoSubmitRef = useRef<string | null>(null);
-  const resumeRetryRef = useRef<{
-    sessionId: string;
-    taskId: string | null;
-    failures: number;
-    notBefore: number;
-    cancel: boolean;
-  } | null>(null);
+  const resumeRetryRef = useRef(
+    new Map<
+      string,
+      {
+        taskId: string | null;
+        failures: number;
+        notBefore: number;
+        cancel: boolean;
+      }
+    >(),
+  );
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
       !isPresentRef.current ||
@@ -878,7 +882,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               },
             );
       clearPersistedChatTask(request.sessionId, trackedTaskId);
-      resumeRetryRef.current = null;
+      resumeRetryRef.current.delete(request.sessionId);
       setError((current) => (current === RESUME_RETRY_NOTICE ? null : current));
       setMotionMessageIds([result.assistant_message.id]);
       setActive((current) => {
@@ -935,13 +939,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         category === "cancel_unconfirmed" ||
         category === "resume_unconfirmed"
       ) {
-        const previous = resumeRetryRef.current;
-        const sameTask =
-          previous?.sessionId === request.sessionId &&
-          previous.taskId === trackedTaskId;
+        const previous = resumeRetryRef.current.get(request.sessionId);
+        const sameTask = previous?.taskId === trackedTaskId;
         const failures = sameTask ? previous.failures + 1 : 1;
-        resumeRetryRef.current = {
-          sessionId: request.sessionId,
+        resumeRetryRef.current.set(request.sessionId, {
           taskId: trackedTaskId,
           failures,
           notBefore:
@@ -952,7 +953,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             category === "cancel_unconfirmed" ||
             controller.signal.aborted ||
             (sameTask && previous.cancel),
-        };
+        });
         retryScheduled = true;
         // The resumed poll replays every event from sequence 0; drop the partial
         // stream now so the retry does not append the same text/tools twice.
@@ -973,7 +974,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           setError(RESUME_RETRY_NOTICE);
         return;
       }
-      resumeRetryRef.current = null;
+      resumeRetryRef.current.delete(request.sessionId);
       clearPersistedChatTask(request.sessionId, trackedTaskId);
       setMotionMessageIds([]);
       setActive((current) =>
@@ -1021,7 +1022,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       if (taskPollAbortRef.current === pollController)
         taskPollAbortRef.current = null;
       setStopping(false);
-      const next = pendingQueueRef.current.shift();
+      const queue = pendingQueueRef.current;
+      const nextIndex = queue.findIndex(
+        (item) => !readPersistedChatTask(item.sessionId),
+      );
+      const next = nextIndex >= 0 ? queue.splice(nextIndex, 1)[0] : undefined;
       if (next) {
         void runSubmission(next);
       } else {
@@ -1043,9 +1048,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (loading || !active || busy) return;
     const persisted = readPersistedChatTask(active.id);
     if (!persisted) return;
-    const retry = resumeRetryRef.current;
-    const retryMatchesTask =
-      retry?.sessionId === active.id && retry.taskId === persisted.taskId;
+    const retry = resumeRetryRef.current.get(active.id);
+    const retryMatchesTask = retry?.taskId === persisted.taskId;
     if (retryMatchesTask && retry.notBefore > Date.now()) {
       const timer = window.setTimeout(
         () => setResumeRetryTick((value) => value + 1),
@@ -1151,6 +1155,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       await deleteAiChatSession(sessionId);
       deletedSessionIdsRef.current.add(sessionId);
       failedRequestsRef.current.delete(sessionId);
+      resumeRetryRef.current.delete(sessionId);
       const removed = pendingQueueRef.current.filter(
         (request) => request.sessionId === sessionId,
       );

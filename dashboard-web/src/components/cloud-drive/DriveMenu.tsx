@@ -44,6 +44,10 @@ export function DriveMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: anchor.x, top: anchor.y });
   const enabled = items.filter((item) => !item.disabled);
+  // 父组件传入的是内联 onClose；传输进度轮询会让父组件每 800ms 重渲染，
+  // 若把 onClose 放进依赖，effect 会反复执行并把焦点抢回第一项。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useLayoutEffect(() => {
     const menu = menuRef.current;
@@ -66,9 +70,9 @@ export function DriveMenu({
     first?.focus();
     const close = (event: Event) => {
       if (menuRef.current?.contains(event.target as Node)) return;
-      onClose();
+      onCloseRef.current();
     };
-    const closeOnScroll = () => onClose();
+    const closeOnScroll = () => onCloseRef.current();
     window.addEventListener("pointerdown", close, true);
     window.addEventListener("resize", closeOnScroll);
     window.addEventListener("blur", closeOnScroll);
@@ -77,7 +81,7 @@ export function DriveMenu({
       window.removeEventListener("resize", closeOnScroll);
       window.removeEventListener("blur", closeOnScroll);
     };
-  }, [onClose]);
+  }, []);
 
   const dismiss = (restore = true) => {
     onClose();

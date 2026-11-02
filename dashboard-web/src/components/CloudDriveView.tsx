@@ -37,7 +37,12 @@ export function CloudDriveView() {
           </TabsList>
         </div>
         {/* 文件浏览保持挂载：切到「本地同步」再回来时保留所在文件夹、选择与滚动位置。 */}
-        <TabsContent value="files" forceMount className="drive-tab-panel">
+        <TabsContent
+          value="files"
+          forceMount
+          hidden={tab !== "files"}
+          className="drive-tab-panel"
+        >
           <DriveBrowser active={tab === "files"} />
         </TabsContent>
         <TabsContent value="sync" className="drive-tab-panel">

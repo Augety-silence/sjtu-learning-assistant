@@ -24,6 +24,45 @@ type BackgroundState = {
   ariaHidden: string | null;
 };
 
+type BackgroundLockState = {
+  count: number;
+  hadInert: boolean;
+  ariaHidden: string | null;
+};
+
+const backgroundLocks = new WeakMap<HTMLElement, BackgroundLockState>();
+
+function lockBackground(background: BackgroundState) {
+  const current = backgroundLocks.get(background.element);
+  if (current) {
+    current.count += 1;
+  } else {
+    backgroundLocks.set(background.element, {
+      count: 1,
+      hadInert: background.hadInert,
+      ariaHidden: background.ariaHidden,
+    });
+  }
+  background.element.setAttribute("inert", "");
+  background.element.setAttribute("aria-hidden", "true");
+}
+
+function unlockBackground(element: HTMLElement) {
+  const current = backgroundLocks.get(element);
+  if (!current) return;
+  current.count -= 1;
+  if (current.count > 0) {
+    element.setAttribute("inert", "");
+    element.setAttribute("aria-hidden", "true");
+    return;
+  }
+  backgroundLocks.delete(element);
+  if (current.hadInert) element.setAttribute("inert", "");
+  else element.removeAttribute("inert");
+  if (current.ariaHidden === null) element.removeAttribute("aria-hidden");
+  else element.setAttribute("aria-hidden", current.ariaHidden);
+}
+
 function backgroundSiblings(container: HTMLElement): BackgroundState[] {
   const modalLayer = container.closest<HTMLElement>("[data-modal-layer]");
   const siblings = new Set<HTMLElement>();
@@ -40,7 +79,14 @@ function backgroundSiblings(container: HTMLElement): BackgroundState[] {
         // Live regions such as the toast viewport opt out of being inerted.
         !sibling.hasAttribute("data-modal-exempt")
       ) {
-        siblings.add(sibling);
+        const isHigherModalLayer =
+          current.hasAttribute("data-modal-layer") &&
+          sibling.hasAttribute("data-modal-layer") &&
+          Boolean(
+            current.compareDocumentPosition(sibling) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+          );
+        if (!isHigherModalLayer) siblings.add(sibling);
       }
     }
     current = current.parentElement;
@@ -128,9 +174,8 @@ export function useModalFocus(
         : null);
     const background = backgroundSiblings(container);
 
-    for (const { element } of background) {
-      element.setAttribute("inert", "");
-      element.setAttribute("aria-hidden", "true");
+    for (const item of background) {
+      lockBackground(item);
     }
 
     const focusables = () =>
@@ -202,12 +247,8 @@ export function useModalFocus(
       window.clearTimeout(initialTimer);
       document.removeEventListener("keydown", onKeyDown);
 
-      for (const { element, hadInert, ariaHidden } of background) {
-        if (hadInert) element.setAttribute("inert", "");
-        else element.removeAttribute("inert");
-
-        if (ariaHidden === null) element.removeAttribute("aria-hidden");
-        else element.setAttribute("aria-hidden", ariaHidden);
+      for (const { element } of background) {
+        unlockBackground(element);
       }
 
       if (optionsRef.current.shouldRestoreFocus?.() !== false) {

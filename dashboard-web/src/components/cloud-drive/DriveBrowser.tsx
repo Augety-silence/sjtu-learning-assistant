@@ -188,7 +188,14 @@ export function DriveBrowser({ active }: { active: boolean }) {
     refreshNextRef.current = false;
     setLoading(true);
     setError(null);
-    setData(null);
+    // 同一文件夹/同一搜索内翻页、排序、刷新时保留旧列表，避免表格卸载导致键盘焦点丢失。
+    setData((previous) =>
+      previous &&
+      pathKey(previous.path) === pathKey(path) &&
+      previous.query === query
+        ? previous
+        : null,
+    );
     listDrive({ path, page, pageSize, sortBy, order, query, refresh })
       .then((result) => {
         if (request !== requestRef.current) return;
@@ -449,6 +456,19 @@ export function DriveBrowser({ active }: { active: boolean }) {
             shortcut: single ? "Enter" : undefined,
             onSelect: () => download(targets),
           },
+      ...(query && single
+        ? [
+            {
+              key: "reveal",
+              label: "打开所在文件夹",
+              icon: FolderOpen,
+              onSelect: () => {
+                navigate(single.path.slice(0, -1));
+                setSelected(new Set([itemKey(single)]));
+              },
+            },
+          ]
+        : []),
       {
         key: "rename",
         label: "重命名",
@@ -1108,7 +1128,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
                   size="icon"
                   variant="ghost"
                   aria-label="上一页"
-                  disabled={page <= 1 || loading}
+                  disabled={page <= 1}
                   onClick={() => setPage(page - 1)}
                 >
                   <ChevronLeft aria-hidden="true" />
@@ -1120,7 +1140,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
                   size="icon"
                   variant="ghost"
                   aria-label="下一页"
-                  disabled={page >= pages || loading}
+                  disabled={page >= pages}
                   onClick={() => setPage(page + 1)}
                 >
                   <ChevronRight aria-hidden="true" />

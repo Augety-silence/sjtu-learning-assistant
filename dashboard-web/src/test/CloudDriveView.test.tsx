@@ -155,7 +155,7 @@ describe("CloudDriveView", () => {
     expect(screen.getByText(/已使用233\.01GB/)).toBeTruthy();
     expect(screen.getByText(/剩余可用790\.99GB/)).toBeTruthy();
     expect(screen.getByText("共 2 项")).toBeTruthy();
-    const table = screen.getByRole("table", { name: "文件列表" });
+    const table = screen.getByRole("grid", { name: "文件列表" });
     expect(within(table).getByText("报告.pdf")).toBeTruthy();
     expect(within(table).getByText("1.0 MB")).toBeTruthy();
     expect(screen.getByText("共有 2 个项目")).toBeTruthy();
@@ -542,6 +542,7 @@ describe("CloudDriveView", () => {
       }),
     );
     const dialog = await screen.findByRole("dialog", { name: "存在同名文件" });
+    expect(screen.queryByRole("button", { name: "关闭对话框" })).toBeNull();
     fireEvent.click(within(dialog).getByRole("button", { name: "保留两者" }));
     await waitFor(() =>
       expect(uploadDriveFile).toHaveBeenLastCalledWith(
@@ -591,7 +592,7 @@ describe("CloudDriveView", () => {
     ).closest("tr") as HTMLElement;
     folderRow.focus();
     fireEvent.keyDown(folderRow, { key: "ArrowDown" });
-    const table = screen.getByRole("table", { name: "文件列表" });
+    const table = screen.getByRole("grid", { name: "文件列表" });
     const fileRow = within(table)
       .getByText("报告.pdf")
       .closest("tr") as HTMLElement;

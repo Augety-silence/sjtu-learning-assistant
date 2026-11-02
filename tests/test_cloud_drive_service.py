@@ -398,6 +398,36 @@ class CloudDriveServiceTests(unittest.TestCase):
         with self.assertRaises(CloudDriveError):
             self.drive.delete([])
 
+    def test_archive_managed_roots_cannot_be_renamed_moved_or_deleted(self):
+        managed_root = ("SJTU Learning Assistant",)
+        archive_root = managed_root + ("Archive",)
+        self.pan.add(*managed_root, directory=True)
+        self.pan.add(*archive_root, directory=True)
+        archived_file = archive_root + ("course", "file.pdf")
+        self.pan.add(*archived_file, data=b"archive")
+
+        for protected in (managed_root, archive_root, archived_file):
+            with self.subTest(path=protected):
+                with self.assertRaisesRegex(CloudDriveError, "归档功能管理"):
+                    self.drive.rename(
+                        protected,
+                        "renamed",
+                        is_directory=protected != archived_file,
+                    )
+                deleted = self.drive.delete(
+                    [(protected, protected != archived_file)]
+                )
+                self.assertEqual("operation_failed", deleted["failed"][0]["code"])
+                moved = self.drive.transfer(
+                    [(protected, protected != archived_file)],
+                    ("课程",),
+                )
+                self.assertEqual("operation_failed", moved["failed"][0]["code"])
+                self.assertIn(protected, self.pan.nodes)
+
+        copied = self.drive.transfer([(archive_root, True)], ("课程",), copy=True)
+        self.assertEqual([], copied["failed"])
+
     def test_upload_simple_multipart_conflict_and_rename(self):
         with tempfile.TemporaryDirectory() as directory:
             local = Path(directory) / "作业.docx"

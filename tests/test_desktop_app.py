@@ -828,6 +828,51 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertIn("drop_token", script)
             self.assertIn('"paths"', script)
 
+    def test_windows_forged_webview_path_is_not_forwarded_to_ai_ingest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            forged = Path(temporary) / "private.txt"
+            forged.write_text("private", encoding="utf-8")
+
+            class DropEvent:
+                callback = None
+
+                def __iadd__(self, callback):
+                    self.callback = callback
+                    return self
+
+            drop = DropEvent()
+            window = SimpleNamespace(
+                events=SimpleNamespace(loaded=SimpleNamespace(wait=lambda _timeout: True)),
+                dom=SimpleNamespace(
+                    document=SimpleNamespace(events=SimpleNamespace(drop=drop))
+                ),
+                evaluate_js=Mock(),
+            )
+            event = {
+                "dataTransfer": {
+                    "files": [
+                        {
+                            "name": forged.name,
+                            "pywebviewFullPath": str(forged),
+                        }
+                    ]
+                }
+            }
+            with (
+                patch("desktop_app._REQUIRE_NATIVE_DROP_RECORD", True),
+                patch(
+                    "desktop_app._install_trusted_native_drop_queue",
+                    return_value=None,
+                ),
+            ):
+                _install_native_file_drop_bridge(window)
+                drop.callback(event)
+
+            script = window.evaluate_js.call_args.args[0]
+            self.assertIn('"paths": []', script)
+            self.assertNotIn(str(forged.resolve()), script)
+            self.assertNotIn("drop_token", script)
+
     def test_native_drop_ignores_path_probe_permission_error(self):
         event = {"dataTransfer": {"files": [{"pywebviewFullPath": "/restricted/file.pdf"}]}}
         with patch.object(Path, "is_file", side_effect=PermissionError("denied")):

@@ -2052,6 +2052,88 @@ def _consume_native_drop_capability(path: str, token: str) -> bool:
     return expires_at >= now and authorized_path == path
 
 
+# pywebview 5.x copies ``pywebviewFullPath`` from page JavaScript and only
+# overwrites it when the file name matches a natively queued drop, so a page
+# script can forge it. On Windows (the shipped DOM-bridge platform) capability
+# tokens are therefore minted only for paths the native backend itself queued.
+_REQUIRE_NATIVE_DROP_RECORD = sys.platform == "win32"
+_NATIVE_DROP_TRUST_LOCK = threading.Lock()
+_NATIVE_DROP_TRUSTED_PATHS: dict[str, float] = {}
+
+
+def _native_drop_trust_key(value: object) -> str | None:
+    if type(value) is not str or not value or "\x00" in value:
+        return None
+    try:
+        return os.path.normcase(str(Path(value).expanduser().resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _record_trusted_native_drop_paths(entries: object) -> None:
+    """Remember paths written to pywebview's drop queue by native code only."""
+    now = time.monotonic()
+    keys: list[str] = []
+    try:
+        items = list(entries)[:20]  # type: ignore[call-overload]
+    except TypeError:
+        return
+    for item in items:
+        if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[1], str):
+            raw = str(item[1])
+            # GTK/Qt keep file-URL escapes; pywebview unquotes when joining.
+            for candidate in {raw, unquote(raw)}:
+                key = _native_drop_trust_key(candidate)
+                if key is not None:
+                    keys.append(key)
+    if not keys:
+        return
+    with _NATIVE_DROP_TRUST_LOCK:
+        for key, expires_at in tuple(_NATIVE_DROP_TRUSTED_PATHS.items()):
+            if expires_at < now:
+                _NATIVE_DROP_TRUSTED_PATHS.pop(key, None)
+        for key in keys:
+            _NATIVE_DROP_TRUSTED_PATHS[key] = now + NATIVE_DROP_CAPABILITY_TTL_SECONDS
+        while len(_NATIVE_DROP_TRUSTED_PATHS) > 64:
+            _NATIVE_DROP_TRUSTED_PATHS.pop(next(iter(_NATIVE_DROP_TRUSTED_PATHS)))
+
+
+def _take_trusted_native_drop_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Return only natively queued paths, consuming each record once."""
+    if not _REQUIRE_NATIVE_DROP_RECORD:
+        return paths
+    now = time.monotonic()
+    result: list[str] = []
+    with _NATIVE_DROP_TRUST_LOCK:
+        for path in paths:
+            key = _native_drop_trust_key(path)
+            expires_at = _NATIVE_DROP_TRUSTED_PATHS.pop(key, None) if key else None
+            if expires_at is not None and expires_at >= now:
+                result.append(path)
+    return tuple(result)
+
+
+class _TrustedNativeDropQueue(list):
+    """pywebview 5.x native backends append with ``_dnd_state['paths'] += files``."""
+
+    def __iadd__(self, other):  # type: ignore[override]
+        _record_trusted_native_drop_paths(other)
+        return super().__iadd__(other)
+
+
+def _install_trusted_native_drop_queue() -> dict[str, object] | None:
+    try:
+        from webview.dom import _dnd_state  # type: ignore[import-not-found]
+    except (ImportError, AttributeError):
+        return None
+    if not isinstance(_dnd_state, dict):
+        return None
+    queue = _dnd_state.get("paths")
+    if not isinstance(queue, _TrustedNativeDropQueue):
+        _dnd_state["paths"] = _TrustedNativeDropQueue(queue if isinstance(queue, list) else ())
+    return _dnd_state
+
+
 def _macos_dragged_file_paths(
     sender: object,
     *,
@@ -2197,26 +2279,31 @@ def _install_native_file_drop_bridge(window: object) -> None:
         LOGGER.warning("文件拖放默认导航保护安装失败。")
         return
 
+    # Install before registering the listener: pywebview backends only queue
+    # native drop paths once a drop listener exists.
+    dnd_state = _install_trusted_native_drop_queue()
+
     def forward_drop(event: object) -> None:
         pending_native_paths: object = ()
-        dnd_state: dict[str, object] | None = None
-        try:
-            from webview.dom import _dnd_state  # type: ignore[import-not-found]
-
-            if isinstance(_dnd_state, dict):
-                dnd_state = _dnd_state
-                pending_native_paths = _dnd_state.get("paths", ())
-        except (ImportError, AttributeError):
-            pass
+        if dnd_state is not None:
+            pending_native_paths = list(dnd_state.get("paths", ()))
         paths = _native_file_drop_paths(event, pending_native_paths)
         if dnd_state is not None:
-            dnd_state["paths"] = []
+            queue = dnd_state.get("paths")
+            if isinstance(queue, _TrustedNativeDropQueue):
+                queue.clear()  # keep the recording queue object in place
+            else:
+                dnd_state["paths"] = _TrustedNativeDropQueue()
         if not paths:
             return
-        files = _authorize_native_drop_paths(paths)
         # AIChatView still consumes the historical paths contract, while the
-        # assignment workspace requires the per-drop capability tokens.
-        detail = json.dumps({"paths": paths, "files": files}, ensure_ascii=False)
+        # assignment workspace requires per-drop capability tokens, minted
+        # only for paths the native backend queued (see _REQUIRE_NATIVE_DROP_RECORD).
+        trusted = _take_trusted_native_drop_paths(paths)
+        payload: dict[str, object] = {"paths": list(trusted)}
+        if trusted:
+            payload["files"] = _authorize_native_drop_paths(trusted)
+        detail = json.dumps(payload, ensure_ascii=False)
         event_name = json.dumps(NATIVE_FILE_DROP_EVENT)
         try:
             window.evaluate_js(

@@ -39,6 +39,7 @@ function DialogFrame({
   footer,
   initialFocusRef,
   size = "default",
+  dismissOnBackdrop = true,
 }: {
   title: string;
   description?: ReactNode;
@@ -48,6 +49,8 @@ function DialogFrame({
   footer: ReactNode;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
   size?: "default" | "wide";
+  /** 关闭即产生副作用的对话框（如同名冲突=取消整批）不应被误点遮罩关闭。 */
+  dismissOnBackdrop?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const titleId = useId();
@@ -61,14 +64,18 @@ function DialogFrame({
   });
   return createPortal(
     <div className="drive-dialog-layer" data-modal-layer>
-      <button
-        type="button"
-        className="drive-dialog-backdrop"
-        aria-label="关闭对话框"
-        tabIndex={-1}
-        disabled={busy}
-        onClick={dismiss}
-      />
+      {dismissOnBackdrop ? (
+        <button
+          type="button"
+          className="drive-dialog-backdrop"
+          aria-label="关闭对话框"
+          tabIndex={-1}
+          disabled={busy}
+          onClick={dismiss}
+        />
+      ) : (
+        <div className="drive-dialog-backdrop" aria-hidden="true" />
+      )}
       <section
         ref={dialogRef}
         className={`drive-dialog${size === "wide" ? " drive-dialog-wide" : ""}`}
@@ -493,6 +500,7 @@ export function ConflictDialog({
       description={<>当前文件夹已存在“{name}”。请选择处理方式。</>}
       onClose={() => onChoose("cancel", false)}
       initialFocusRef={keepRef}
+      dismissOnBackdrop={false}
       footer={
         <>
           <Button
@@ -522,6 +530,7 @@ export function ConflictDialog({
       <div className="drive-dialog-body">
         <p className="drive-dialog-note">
           “保留两者”会自动生成一个不冲突的新名称。覆盖会替换云端已有版本。
+          关闭此对话框会取消本次上传中尚未开始的文件。
         </p>
         {remaining > 0 && (
           <label className="drive-checkbox-row">

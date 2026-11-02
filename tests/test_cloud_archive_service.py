@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.cloud_archive_service import CloudArchiveError, CloudArchiveService
-from sjtu_learning_assistant.cloud_storage import CloudNetworkError
+from sjtu_learning_assistant.cloud_storage import CloudCleanupError, CloudNetworkError
 from sjtu_learning_assistant.cloud_storage.models import CloudItem
 from sjtu_learning_assistant.models import (
     AIManagedFile, ArchiveEntry, ArchiveEvent, ArchiveJob, ArchiveVersion, Base,
@@ -192,6 +192,30 @@ def test_same_metadata_path_replacement_before_upload_is_rejected(archive_env):
         assert session.scalar(select(ArchiveJob)).status == "failed"
 
 
+def test_unverified_uploaded_object_stays_reconcilable(archive_env):
+    root, engine, provider, service = archive_env
+    path = root / "unverified.txt"
+    path.write_bytes(b"expected bytes")
+
+    def upload_then_lose_verification(remote_path, source, overwrite=False):
+        assert overwrite is False
+        provider.objects[tuple(remote_path)] = source.read()
+        provider.uploads += 1
+        raise CloudCleanupError(
+            "云端文件大小或状态无法确认，未自动删除；请检查云端文件。"
+        )
+
+    provider.simple_upload = upload_then_lose_verification
+    with pytest.raises(CloudArchiveError, match="无法确认"):
+        service.archive_file(path)
+
+    with Session(engine) as session:
+        job = session.scalar(select(ArchiveJob))
+        assert job.status == "needs_reconcile"
+        assert session.scalar(select(ArchiveVersion)).status == "needs_reconcile"
+    assert len(provider.objects) == 1
+
+
 def test_uploaded_but_db_update_failed_can_reconcile(archive_env):
     root, engine, provider, service = archive_env
     path = root / "reconcile.txt"
@@ -332,6 +356,24 @@ def test_public_redaction_covers_cloud_temporary_credentials():
     for secret in ("secret-a", "secret-b", "secret-c", "secret-d", "secret-e"):
         assert secret not in redacted
     assert redacted.count("<redacted>") == 5
+
+
+def test_public_redaction_hides_entire_nested_sensitive_containers():
+    from sjtu_learning_assistant.cloud_archive_service import redact_public_text
+
+    cases = (
+        'credentials={"values":["secret-a","secret-b"]}',
+        'credentials={"token":"secret-a","refresh":"secret-b"}',
+        'token={"outer":{"values":["secret-a","secret-b"]}}',
+        'token=[{"value":"secret-a"},{"value":"secret-b"}]',
+        'token={"unfinished":["secret-a","secret-b"',
+    )
+
+    for source in cases:
+        redacted = redact_public_text(source)
+        assert "secret-a" not in redacted
+        assert "secret-b" not in redacted
+        assert "<redacted>" in redacted
 
 
 def test_public_redaction_handles_long_hyphenated_prefix_in_linear_time():
