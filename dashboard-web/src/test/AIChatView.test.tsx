@@ -521,6 +521,80 @@ describe("AIChatView", () => {
     ).toContain("task-cancel-unconfirmed");
   });
 
+  it("does not carry a cancelled retry into the next queued task", async () => {
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    let resumedSignal: AbortSignal | undefined;
+    vi.mocked(sendAiChatMessage)
+      .mockImplementationOnce(
+        (
+          _session,
+          _content,
+          _model,
+          _depth,
+          _preset,
+          _attachments,
+          options,
+        ) => {
+          options?.onTaskStart?.("task-first");
+          return new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          });
+        },
+      )
+      .mockImplementationOnce(
+        (
+          _session,
+          _content,
+          _model,
+          _depth,
+          _preset,
+          _attachments,
+          options,
+        ) => {
+          options?.onTaskStart?.("task-second");
+          return Promise.reject(
+            Object.assign(new Error("恢复请求超时"), {
+              category: "resume_unconfirmed",
+              retryable: true,
+            }),
+          );
+        },
+      );
+    vi.mocked(resumeAiChatMessageTask).mockImplementationOnce(
+      (_session, _task, options) => {
+        resumedSignal = options?.signal;
+        return new Promise(() => undefined);
+      },
+    );
+
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "第一项" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText("请求已发送，正在等待 Agent 返回");
+
+    fireEvent.change(input, { target: { value: "第二项" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("将在当前检索完成后执行")).toBeTruthy();
+
+    rejectFirst?.(
+      Object.assign(new Error("停止请求超时"), {
+        category: "cancel_unconfirmed",
+        retryable: true,
+      }),
+    );
+
+    await waitFor(() => expect(sendAiChatMessage).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(resumeAiChatMessageTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-second",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+    expect(resumedSignal?.aborted).toBe(false);
+  });
+
   it("shows tool activity as soon as a streaming tool event arrives", async () => {
     vi.mocked(sendAiChatMessage).mockImplementationOnce(
       () => new Promise(() => undefined),

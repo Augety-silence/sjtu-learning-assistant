@@ -1042,21 +1042,46 @@ class AcademicFeatureService:
         ]
         if expected == "":
             return all(value in (None, "") for value in observed_values)
-        try:
-            expected_number = Decimal(expected)
-        except InvalidOperation:
+        # Canvas posted_grade 语义：pass/complete 同义（满分），fail/incomplete 同义（0 分）；
+        # pass_fail 作业回读 grade 为 complete/incomplete。entered_score = score + points_deducted
+        # 为浮点加法，可能出现 9.500000000000002 之类的漂移，因此数值比较留极小容差。
+        synonyms = {"pass": "complete", "fail": "incomplete"}
+
+        def _text_key(text: str) -> str:
+            folded = text.strip().casefold()
+            return synonyms.get(folded, folded)
+
+        def _number(value: Any) -> Decimal | None:
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                number = Decimal(str(value).strip())
+            except InvalidOperation:
+                return None
+            return number if number.is_finite() else None
+
+        tolerance = Decimal("0.000001")
+        expected_text = expected.strip()
+        if expected_text.endswith("%"):
+            expected_percent = _number(expected_text[:-1])
+            if expected_percent is not None and any(
+                isinstance(value, str)
+                and value.strip().endswith("%")
+                and (observed := _number(value.strip()[:-1])) is not None
+                and abs(observed - expected_percent) <= tolerance
+                for value in observed_values
+            ):
+                return True
+        expected_number = _number(expected_text)
+        if expected_number is None:
             return any(
-                isinstance(value, str) and value.strip().casefold() == expected.casefold()
+                isinstance(value, str) and _text_key(value) == _text_key(expected_text)
                 for value in observed_values
             )
         for value in observed_values:
-            if value is None or isinstance(value, bool):
-                continue
-            try:
-                if Decimal(str(value)) == expected_number:
-                    return True
-            except InvalidOperation:
-                continue
+            observed = _number(value)
+            if observed is not None and abs(observed - expected_number) <= tolerance:
+                return True
         return False
 
     @staticmethod

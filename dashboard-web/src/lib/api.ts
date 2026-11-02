@@ -457,6 +457,8 @@ async function pollAiChatTask(
     pollSignal?: AbortSignal;
   },
 ): Promise<import("@/lib/types").AIChatSendResult> {
+  // 已转交的轮询不能再向全局重放事件：新页面实例监听同一事件，会把重复 delta 追加到流式消息。
+  if (options.pollSignal?.aborted) throw aiTaskDetachedError();
   let snapshot = initialSnapshot;
   const taskId = snapshot.task.id;
   let sequence = snapshot.next_sequence;
@@ -617,6 +619,8 @@ export async function resumeAiChatMessageTask(
   let snapshot: import("@/lib/types").AITaskSnapshot;
   let transientFailures = 0;
   for (;;) {
+    // 页面卸载或轮询已转交时停止重试首读，交给新实例接管。
+    if (options.pollSignal?.aborted) throw aiTaskDetachedError();
     try {
       snapshot = await invoke<import("@/lib/types").AITaskSnapshot>(
         "ai_task_status",
@@ -624,6 +628,7 @@ export async function resumeAiChatMessageTask(
       );
       break;
     } catch (error) {
+      if (options.pollSignal?.aborted) throw aiTaskDetachedError();
       if (isTransientTaskPollError(error)) {
         if (transientFailures < MAX_TRANSIENT_TASK_POLL_FAILURES) {
           transientFailures += 1;

@@ -739,7 +739,7 @@ export function DriveBrowser({ active }: { active: boolean }) {
           <EmptyState
             illustration={<Search />}
             title="没有找到匹配的项目"
-            description={`个人空间中没有路径包含“${query}”的文件或文件夹。`}
+            description={`个人空间所有层级中没有名称包含“${query}”的文件或文件夹。`}
             action={
               <Button
                 size="sm"

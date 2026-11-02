@@ -250,6 +250,75 @@ class CloudDriveServiceTests(unittest.TestCase):
         with self.assertRaises(CloudDriveError):
             self.drive.list((), sort_by="evil")
 
+    def test_search_prefers_indexed_provider_and_caches_results(self):
+        remote_items = (
+            item(("课程", "第1周.pdf"), size=11),
+            item(("课程", "无关结果.txt"), size=3),
+        )
+        search = Mock(return_value=(remote_items, False))
+        self.pan.search_global = search
+
+        found = self.drive.list((), query="第1周")
+        self.assertEqual(
+            [["课程", "第1周.pdf"]],
+            [entry["path"] for entry in found["items"]],
+        )
+        self.assertEqual(0, self.pan.list_calls)
+        search.assert_called_once_with("第1周", page_size=500, accurate=True)
+
+        # Sorting or paging the same result set must not repeat the remote search.
+        cached = self.drive.list((), query="第1周", sort_by="modified")
+        self.assertEqual(1, cached["total"])
+        self.assertEqual(1, search.call_count)
+        self.drive.list((), query="第1周", refresh=True)
+        self.assertEqual(2, search.call_count)
+
+    def test_indexed_search_errors_are_not_hidden_by_slow_scan(self):
+        self.pan.search_global = Mock(
+            side_effect=CloudNetworkError("无法连接交大云盘服务。")
+        )
+        with self.assertRaises(CloudNetworkError):
+            self.drive.list((), query="报告")
+        self.assertEqual(0, self.pan.list_calls)
+
+    def test_indexed_search_uses_one_fuzzy_page_when_exact_search_is_empty(self):
+        fuzzy_items = (
+            item(("课程", "报告草稿.docx"), size=3),
+            item(("课程", "无关结果.txt"), size=3),
+        )
+        search = Mock(
+            side_effect=(
+                (tuple(), False),
+                (fuzzy_items, True),
+            )
+        )
+        self.pan.search_global = search
+        result = self.drive.list((), query="报告")
+        self.assertEqual([["课程", "报告草稿.docx"]], [row["path"] for row in result["items"]])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(
+            [True, False],
+            [call.kwargs["accurate"] for call in search.call_args_list],
+        )
+        self.assertEqual(0, self.pan.list_calls)
+
+    def test_mutation_invalidates_indexed_search_cache(self):
+        def search(keyword, *, page_size, accurate):
+            del page_size
+            del accurate
+            return tuple(
+                value
+                for value in self.pan.nodes.values()
+                if keyword.casefold() in "/".join(value.path).casefold()
+            ), False
+
+        indexed = Mock(side_effect=search)
+        self.pan.search_global = indexed
+        self.assertEqual(0, self.drive.list((), query="新目录")["total"])
+        self.drive.create_folder((), "新目录")
+        self.assertEqual(1, self.drive.list((), query="新目录")["total"])
+        self.assertEqual(3, indexed.call_count)
+
     def test_search_reports_truncation_at_scan_limit(self):
         with patch("sjtu_learning_assistant.cloud_drive_service.MAX_SEARCH_ITEMS", 1):
             result = self.drive.list((), query="课程")
