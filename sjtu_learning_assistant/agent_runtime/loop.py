@@ -14,6 +14,7 @@ from sjtu_learning_assistant.agent_runtime.tools import LOCAL_TIMEZONE, AgentToo
 from sjtu_learning_assistant.ai_limits import (
     AGENT_CONTEXT_CHAR_BUDGET,
     MAX_CHAT_MESSAGES,
+    MAX_TOOL_ARGUMENT_CHARS,
     SYSTEM_MESSAGE_CHAR_BUDGET,
 )
 from sjtu_learning_assistant.ai_classifier import AIClassificationError, AIToolsUnsupportedError
@@ -24,6 +25,14 @@ DEFAULT_TIMEOUT_SECONDS = 300.0
 MAX_TIMEOUT_SECONDS = 600.0
 # 模型请求在“尚未输出任何内容”时失败，可安全地自动重试的次数与错误类别。
 MODEL_RETRY_LIMIT = 2
+# 回复因单次输出上限被截断（finish_reason=length）时自动续写的最大段数。
+MAX_CONTINUATIONS = 3
+CONTINUE_PROMPT = (
+    "（系统）上一条回复因单次输出长度上限被截断。请从中断处直接接着写，"
+    "不要重复已经输出的内容，不要重新开头或总结前文。"
+)
+# 续写时回传给模型的已输出片段上限（单条消息上限 14_000 字符，留出余量）。
+CONTINUATION_TAIL_CHARS = 9_000
 RETRYABLE_MODEL_ERRORS = frozenset({"timeout", "network", "upstream_service", "rate_limit_or_quota"})
 RETRY_REASONS = {
     "timeout": "模型长时间没有响应",
@@ -308,7 +317,7 @@ class AgentLoop:
     def _parse_arguments(value: object) -> dict[str, Any]:
         if type(value) is dict:
             return value
-        if type(value) is not str or len(value) > 8_000:
+        if type(value) is not str or len(value) > MAX_TOOL_ARGUMENT_CHARS:
             raise AgentToolError("工具参数不是有效 JSON 对象。")
         try:
             parsed = json.loads(value)
@@ -375,8 +384,15 @@ class AgentLoop:
         if event_callback is not None:
             for run in runs:
                 event_callback("tool", dict(run))
-        for step in range(1, self.max_steps + 1):
+        answer_parts: list[str] = []
+        continuations = 0
+        step = 0
+        while step < self.max_steps:
+            step += 1
             if self.clock() - started > self.timeout_seconds:
+                if answer_parts:
+                    partial = "".join(answer_parts).strip() + "\n\n（回复较长，已达到本轮时间上限，后续内容未完成。）"
+                    return AgentResult(partial, "\n\n".join(reasoning_parts)[:12_000] or None, "timeout", step - 1, tuple(runs))
                 return AgentResult("智能体执行超时，请缩小问题范围后重试。", None, "timeout", step - 1, tuple(runs))
             attempt = 1
             while True:
@@ -412,14 +428,41 @@ class AgentLoop:
             tool_calls = completion.get("tool_calls") or []
             content = completion.get("content")
             metadata = completion.get("response_metadata")
-            if isinstance(metadata, dict) and metadata.get("finish_reason") == "length":
-                visible = content.strip() if isinstance(content, str) and content.strip() else "模型回复达到长度上限，本轮未完成。"
-                if isinstance(content, str) and content.strip():
-                    visible += "\n\n（回复可能因长度限制未完成。）"
+            truncated = isinstance(metadata, dict) and metadata.get("finish_reason") == "length"
+            segment = content if isinstance(content, str) else ""
+            if truncated and not tool_calls and segment.strip():
+                tail = segment[-CONTINUATION_TAIL_CHARS:]
+                used = sum(_content_chars(item.get("content")) for item in conversation)
+                room = CONTEXT_CHAR_BUDGET - used - len(CONTINUE_PROMPT) - 200
+                if (
+                    continuations < MAX_CONTINUATIONS
+                    and room >= min(len(tail), 1_500)
+                    and len(conversation) + 2 < MAX_CHAT_MESSAGES
+                ):
+                    # 自动续写：不计入工具步数，界面上的流式文字自然衔接。
+                    answer_parts.append(segment)
+                    continuations += 1
+                    conversation.append({"role": "assistant", "content": tail[-room:] if room < len(tail) else tail})
+                    conversation.append({"role": "user", "content": CONTINUE_PROMPT})
+                    if event_callback is not None:
+                        event_callback(
+                            "status",
+                            {"state": "continuing", "step": step, "part": continuations + 1, "max_parts": MAX_CONTINUATIONS + 1},
+                        )
+                    step -= 1
+                    continue
+            if truncated:
+                answer_parts.append(segment)
+                joined = "".join(answer_parts).strip()
+                visible = joined or "模型回复达到长度上限，本轮未完成。"
+                if joined:
+                    visible += "\n\n（回复已达到本轮长度上限，后续内容未完成；可以回复“继续”接着输出。）"
                 combined = "\n\n".join(reasoning_parts)[:12_000] or None
                 return AgentResult(visible, combined, "max_steps", step, tuple(runs))
             if not tool_calls:
-                visible = content.strip() if isinstance(content, str) and content.strip() else "模型未返回可显示内容。"
+                answer_parts.append(segment)
+                joined = "".join(answer_parts).strip()
+                visible = joined if joined else "模型未返回可显示内容。"
                 combined = "\n\n".join(reasoning_parts)[:12_000] or None
                 return AgentResult(visible, combined, "completed", step, tuple(runs))
             available_slots = max(0, MAX_CHAT_MESSAGES - len(conversation) - 1)
@@ -452,6 +495,16 @@ class AgentLoop:
                 else:
                     runs.append({"tool_name": execution.name, "phase": "model", "status": "ok", "arguments_summary": execution.arguments_summary, "result_summary": execution.result_summary, "duration_ms": _elapsed_ms(tool_started)})
                     tool_result = execution.result
+                    if execution.name == "propose_file_change" and isinstance(function, dict):
+                        # 文件正文已保存为修改提议；从对话中移除大段参数，避免后续请求上下文膨胀。
+                        function["arguments"] = json.dumps(
+                            {
+                                "path": tool_result.get("path"),
+                                "mode": arguments.get("mode"),
+                                "content": "（正文已保存为修改提议 " + str(tool_result.get("change_id")) + "，此处省略）",
+                            },
+                            ensure_ascii=False,
+                        )
                 tool_content = json.dumps(tool_result, ensure_ascii=False, separators=(",", ":"))
                 # 客户端对整轮对话有 60_000 字符 / 64 条的硬上限，超限会以不可重试的
                 # “对话内容过长”失败；这里在追加前按预算省略结果，保留 tool_call_id 配对。

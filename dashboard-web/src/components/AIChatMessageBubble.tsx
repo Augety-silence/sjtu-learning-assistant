@@ -15,6 +15,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
+import { AIFileChangeCard, fileChangeIds } from "@/components/AIFileChangeCard";
 import { motionDuration, motionEase } from "@/lib/motion";
 import {
   rehypeStreamFade,
@@ -284,6 +285,12 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
             {expanded ? "收起" : `展开全文（共 ${message.content.length} 字）`}
           </button>
         )}
+        {message.role === "assistant" &&
+          fileChangeIds(trace?.tool_runs ?? message.tool_runs).map(
+            (changeId) => (
+              <AIFileChangeCard key={changeId} changeId={changeId} />
+            ),
+          )}
         {message.attachments && message.attachments.length > 0 && (
           <div
             className="ai-message-attachments"

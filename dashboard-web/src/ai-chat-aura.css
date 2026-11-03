@@ -1667,3 +1667,389 @@
     animation: none;
   }
 }
+
+/* ===== AI 文件修改提议卡片 ===== */
+.ai-file-change {
+  width: min(100%, 720px);
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 90%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--aura-control) 82%, transparent);
+}
+
+.ai-file-change.is-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.ai-file-change svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.ai-file-change > header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.ai-file-change-title {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.ai-file-change-title strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-change-title small {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+
+.ai-diff-count.is-add { color: var(--status-success); }
+.ai-diff-count.is-del { color: var(--status-danger); }
+
+.ai-file-change-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--ai-control-hover);
+}
+
+.ai-file-change-status.is-pending { color: var(--action-primary); }
+.ai-file-change-status.is-applied { color: var(--status-success); }
+.ai-file-change-status.is-conflict,
+.ai-file-change-status.is-failed { color: var(--status-danger); }
+
+.ai-file-change-summary {
+  margin: 6px 0 0 26px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ai-file-change-toggle {
+  margin: 6px 0 0 20px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.ai-file-change-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.ai-file-change-toggle:hover { background: var(--ai-control-hover); }
+
+.ai-file-diff {
+  max-height: min(360px, 46vh);
+  margin: 6px 0 0;
+  padding: 8px 0;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface-ai-tool-detail, var(--surface-subtle));
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.ai-diff-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-diff-line.is-add { background: color-mix(in srgb, var(--status-success) 13%, transparent); }
+.ai-diff-line.is-del { background: color-mix(in srgb, var(--status-danger) 12%, transparent); }
+.ai-diff-line.is-hunk,
+.ai-diff-line.is-meta { color: var(--text-tertiary); }
+
+.ai-file-change-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-file-change-actions button,
+.ai-skill-actions button,
+.ai-workspace-setting button,
+.ai-skill-entry button,
+.ai-skill-add {
+  min-height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 86%, transparent);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--aura-control);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-file-change-actions button.is-primary,
+.ai-skill-actions button.is-primary {
+  border-color: transparent;
+  color: var(--text-inverse);
+  background: var(--action-primary);
+}
+
+.ai-file-change-actions button:disabled,
+.ai-skill-actions button:disabled { opacity: 0.6; cursor: default; }
+
+.ai-file-change-actions small,
+.ai-file-change-note {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+
+.ai-file-change-note { margin: 6px 0 0 26px; }
+
+.ai-file-change-error {
+  margin: 6px 0 0 26px;
+  color: var(--status-danger);
+  font-size: 12px;
+}
+
+/* ===== 自定义技能入口与管理对话框 ===== */
+.ai-skill-entry {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-skill-entry svg,
+.ai-workspace-setting svg,
+.ai-skill-add svg,
+.ai-skill-actions svg { width: 13px; height: 13px; }
+
+.ai-skill-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: var(--action-primary);
+  background: color-mix(in srgb, var(--action-primary) 10%, transparent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.ai-skill-dialog {
+  width: min(880px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  padding: 18px 20px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.ai-skill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-skill-header h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+}
+
+.ai-skill-header h3 svg { width: 17px; height: 17px; color: var(--action-primary); }
+
+.ai-skill-close {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-skill-close:hover { background: var(--ai-control-hover); }
+.ai-skill-close svg { width: 16px; height: 16px; }
+
+.ai-skill-body {
+  min-height: 0;
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.ai-skill-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.ai-skill-list button {
+  min-height: 32px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-skill-list button svg { width: 14px; height: 14px; }
+.ai-skill-list button:hover { background: var(--ai-control-hover); }
+.ai-skill-list button.is-active { color: var(--action-primary); background: color-mix(in srgb, var(--action-primary) 9%, transparent); }
+
+.ai-skill-form {
+  min-height: 0;
+  padding-right: 4px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.ai-skill-form > label {
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.ai-skill-form > label > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.ai-skill-form small { color: var(--text-tertiary); font-size: 11px; }
+
+.ai-skill-form input:not([type="checkbox"]),
+.ai-skill-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 90%, transparent);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: var(--aura-control);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ai-skill-form textarea { min-height: 150px; resize: vertical; }
+
+.ai-skill-form fieldset {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--aura-border) 80%, transparent);
+  border-radius: 10px;
+}
+
+.ai-skill-form legend {
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.ai-skill-tool-group {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+
+.ai-skill-tool-group > small { flex-basis: 100%; }
+
+.ai-skill-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.ai-skill-hint { margin: 2px 0 6px; color: var(--text-tertiary); font-size: 11.5px; }
+
+.ai-skill-references {
+  max-height: 160px;
+  display: grid;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.ai-skill-references .ai-skill-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-skill-actions { justify-content: flex-end; }
+.ai-skill-actions .ai-skill-delete { margin-right: auto; color: var(--status-danger); }
+
+/* ===== 个性化设置：AI 工作区 ===== */
+.ai-workspace-setting {
+  padding: 10px 0;
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--aura-border-lowlight, var(--aura-border)) 70%, transparent);
+}
+
+.ai-workspace-setting > span { display: grid; gap: 2px; }
+.ai-workspace-setting strong { font-size: 13px; }
+.ai-workspace-setting small { color: var(--text-tertiary); font-size: 11.5px; line-height: 16px; }
+
+.ai-workspace-setting code {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-workspace-setting > div { display: flex; gap: 6px; }
+
+@media (max-width: 720px) {
+  .ai-skill-body { grid-template-columns: 1fr; }
+  .ai-skill-list { flex-direction: row; flex-wrap: wrap; }
+}
+
+.ai-message .ai-file-change pre.ai-file-diff { padding: 8px 0; border: 0; }
+.ai-message .ai-file-diff .ai-diff-line.is-ctx { background: transparent; }
+.ai-message .ai-file-diff .ai-diff-line.is-add { color: var(--text-primary); background: color-mix(in srgb, var(--status-success) 16%, transparent); }
+.ai-message .ai-file-diff .ai-diff-line.is-del { color: var(--text-primary); background: color-mix(in srgb, var(--status-danger) 14%, transparent); }

@@ -5,9 +5,11 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleSlash2,
+  FilePen,
   FileSearch,
   Files,
   FileText,
+  FolderOpen,
   FolderTree,
   GraduationCap,
   LoaderCircle,
@@ -30,6 +32,9 @@ const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
   search_ai_attachments: Paperclip,
   read_ai_attachment_text: FileText,
   read_course_file_text: BookOpenText,
+  list_workspace_files: FolderOpen,
+  read_workspace_file: FileText,
+  propose_file_change: FilePen,
 };
 
 const toolLabels: Record<string, string> = {
@@ -43,6 +48,9 @@ const toolLabels: Record<string, string> = {
   search_ai_attachments: "检索 AI 附件",
   read_ai_attachment_text: "读取附件正文",
   read_course_file_text: "读取课件正文",
+  list_workspace_files: "浏览工作区",
+  read_workspace_file: "读取工作区文件",
+  propose_file_change: "生成文件修改",
 };
 
 export function toolLabel(toolName: string) {
@@ -71,6 +79,14 @@ export function toolArgumentHint(run: AIToolRun) {
       ? (run.arguments_summary as Record<string, unknown>)
       : {};
   const parts: string[] = [];
+  const modeLabels: Record<string, string> = {
+    create: "新建",
+    overwrite: "整体重写",
+    replace: "局部替换",
+    append: "追加",
+  };
+  if (typeof args.mode === "string" && modeLabels[args.mode])
+    parts.push(modeLabels[args.mode]);
   if (typeof args.start_page === "number")
     parts.push(`从第 ${args.start_page} 页起`);
   if (typeof args.attachment_id === "number")
@@ -159,6 +175,11 @@ export function toolResultLabel(run: AIToolRun) {
         : `已读${range}`;
     }
     if (contentStatus === "ready") return "已读取正文";
+    if (typeof summary.change_id === "string") {
+      const added = typeof summary.added === "number" ? summary.added : 0;
+      const removed = typeof summary.removed === "number" ? summary.removed : 0;
+      return `待你确认 · +${added} −${removed} 行`;
+    }
     if (summary.status === "omitted") return "结果过长，已省略";
     if (typeof summary.count === "number") return `命中 ${summary.count} 项`;
     if (typeof summary.items_count === "number") {
@@ -295,7 +316,11 @@ export function liveStepText({
   waitedMs: number | null;
   hasTools: boolean;
 }) {
-  if (streaming) return "正在生成回答…";
+  if (streaming) {
+    return status?.state === "continuing" && status.part
+      ? `回答较长，正在继续生成第 ${status.part} 段…`
+      : "正在生成回答…";
+  }
   if (!status) {
     return hasTools ? "正在规划下一步…" : "请求已发送，正在等待 Agent 返回";
   }

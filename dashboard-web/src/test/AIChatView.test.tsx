@@ -144,6 +144,21 @@ vi.mock("@/lib/api", () => ({
   revealAiAttachment: vi.fn(async () => ({ status: "revealed" })),
   deleteAiChatSession: vi.fn(async () => ({ deleted: true })),
   resumeAiChatMessageTask: vi.fn(),
+  getAiWorkspaceStatus: vi.fn(async () => ({
+    configured: false,
+    available: false,
+    name: null,
+    path: null,
+    reason: null,
+  })),
+  pickAiWorkspace: vi.fn(),
+  clearAiWorkspace: vi.fn(),
+  listAiAttachments: vi.fn(async () => ({ items: [] })),
+  saveAiSkill: vi.fn(),
+  deleteAiSkill: vi.fn(),
+  getAiFileChange: vi.fn(),
+  applyAiFileChange: vi.fn(),
+  rejectAiFileChange: vi.fn(),
 }));
 
 afterEach(() => {

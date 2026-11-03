@@ -41,7 +41,7 @@ class AIChatHistoryTests(unittest.TestCase):
         self.root = root
         self.engine = create_engine(f"sqlite:///{root / 'app.db'}")
         bootstrap_sqlite(self.engine)
-        settings = SettingsStore(root / "settings.json")
+        settings = SettingsStore(root / "config" / "settings.json")
         settings.update({"ai_key_saved": True})
         FakeAIClient.created_models.clear()
         FakeAIClient.requested_messages.clear()
@@ -238,6 +238,58 @@ class AIChatHistoryTests(unittest.TestCase):
         self.assertEqual("总结一下", request[-1]["content"])
         notices = [item["content"] for item in request if item["role"] == "system" and "长会话提示" in item["content"]]
         self.assertEqual(1, len(notices))
+
+    def test_user_skill_references_and_workspace_tools_reach_the_agent(self) -> None:
+        notes = self.root / "skill-notes.txt"
+        notes.write_text("宏观经济学术语表：GDP、CPI、乘数效应", encoding="utf-8")
+        reference = self.service.ai_attachment_ingest(notes)
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        (workspace / "提纲.md").write_text("# 提纲\n", encoding="utf-8")
+        status = self.service.ai_workspace_set(str(workspace))
+        self.assertEqual((True, True, "workspace"), (status["configured"], status["available"], status["name"]))
+        saved = self.service.ai_skill_save(
+            {
+                "name": "宏观复习",
+                "instructions": "用术语表解释概念。",
+                "allowed_tools": ["read_ai_attachment_text", "list_workspace_files", "propose_file_change"],
+                "reference_attachment_ids": [reference["id"]],
+            }
+        )
+        skill_id = saved["skill"]["id"]
+        self.assertIn(skill_id, [item["id"] for item in saved["items"]])
+        chat = self.service.ai_chat_new("deepseek-chat", "standard", skill_id)
+        self.service.ai_chat_send(chat["id"], "解释乘数效应", "deepseek-chat", "standard", skill_id)
+        request = str(FakeAIClient.requested_messages[-1])
+        self.assertIn("用术语表解释概念", request)
+        self.assertIn("宏观复习", request)
+        self.assertIn("skill-notes.txt", request)
+        self.assertIn("AI 工作区「workspace」", request)
+        self.assertNotIn(str(workspace), request)
+        # 删除技能后，绑定该技能的会话回退到默认助手而不是报错。
+        self.service.ai_skill_delete(skill_id)
+        self.service.ai_chat_send(chat["id"], "继续", "deepseek-chat", "standard", skill_id)
+        self.assertNotIn("用术语表解释概念", str(FakeAIClient.requested_messages[-1]))
+        with self.assertRaises(DashboardError):
+            self.service.ai_skill_save({"name": "x", "instructions": "y", "reference_attachment_ids": [99999]})
+        with self.assertRaises(DashboardError):
+            self.service.ai_workspace_set(str(self.root / "archive"))
+        self.assertFalse(self.service.ai_workspace_set("")["configured"])
+
+    def test_file_change_apply_goes_through_the_service(self) -> None:
+        workspace = self.root / "ws2"
+        workspace.mkdir()
+        self.service.ai_workspace_set(str(workspace))
+        from sjtu_learning_assistant.ai_workspace import AIWorkspace
+
+        change = AIWorkspace(workspace, changes_dir=self.service.ai_changes_dir).propose(
+            "总结.md", mode="create", content="# 总结\n"
+        )
+        self.assertEqual("pending", self.service.ai_file_change_get(change["change_id"])["status"])
+        self.assertEqual("applied", self.service.ai_file_change_apply(change["change_id"])["status"])
+        self.assertEqual("# 总结\n", (workspace / "总结.md").read_text(encoding="utf-8"))
+        with self.assertRaises(DashboardError):
+            self.service.ai_file_change_get("../../etc")
 
     def test_delete_is_idempotent(self) -> None:
         chat = self.service.ai_chat_new("deepseek-chat", "quick")

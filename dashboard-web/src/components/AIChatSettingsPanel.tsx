@@ -1,4 +1,4 @@
-import { Check, Settings2, X } from "lucide-react";
+import { Check, FolderOpen, Settings2, X } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -11,6 +11,7 @@ import type {
   AIChatPreferences,
   AIChatSendShortcut,
   AIReplyLanguage,
+  AIWorkspaceStatus,
 } from "@/lib/types";
 
 type PreferenceChange = Partial<AIChatPreferences>;
@@ -161,11 +162,19 @@ export function AIChatSettingsPanel({
   saving,
   status,
   onChange,
+  workspace = null,
+  workspaceBusy = false,
+  onPickWorkspace,
+  onClearWorkspace,
 }: {
   preferences: AIChatPreferences;
   saving: boolean;
   status: string | null;
   onChange: (change: PreferenceChange) => void;
+  workspace?: AIWorkspaceStatus | null;
+  workspaceBusy?: boolean;
+  onPickWorkspace?: () => void;
+  onClearWorkspace?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const shortcutChoices = buildShortcutChoices(isMacPlatform());
@@ -270,6 +279,44 @@ export function AIChatSettingsPanel({
                 回复语言与附件预算会保存为偏好；当前 Agent
                 运行时尚未提供安全扩展点，因此不会改写既有请求契约。
               </p>
+              {onPickWorkspace && (
+                <section
+                  className="ai-workspace-setting"
+                  aria-label="AI 工作区"
+                >
+                  <span>
+                    <strong>AI 工作区</strong>
+                    <small>
+                      {workspace?.available
+                        ? `助手可读取「${workspace.name}」内的文件，并生成需你确认的修改`
+                        : workspace?.reason ||
+                          "选择一个文件夹后，助手才能读取和编辑其中的文件"}
+                    </small>
+                  </span>
+                  {workspace?.available && workspace.path && (
+                    <code title={workspace.path}>{workspace.path}</code>
+                  )}
+                  <div>
+                    <button
+                      type="button"
+                      disabled={workspaceBusy}
+                      onClick={onPickWorkspace}
+                    >
+                      <FolderOpen aria-hidden="true" />
+                      {workspace?.configured ? "更换文件夹" : "选择文件夹"}
+                    </button>
+                    {workspace?.configured && onClearWorkspace && (
+                      <button
+                        type="button"
+                        disabled={workspaceBusy}
+                        onClick={onClearWorkspace}
+                      >
+                        取消授权
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
               <label className="ai-preference-toggle">
                 <span>
                   <strong>代码块行号</strong>

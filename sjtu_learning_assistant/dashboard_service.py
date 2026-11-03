@@ -35,10 +35,18 @@ from sqlalchemy.orm import Session, selectinload
 from sjtu_learning_assistant import __version__
 from sjtu_learning_assistant.agent_runtime import (
     AgentLoop,
+    AgentPreset,
     AgentToolError,
     PresetError,
     PresetLoader,
     ReadOnlyToolRegistry,
+)
+from sjtu_learning_assistant.agent_runtime.presets import UserSkillStore
+from sjtu_learning_assistant.ai_workspace import (
+    AIFileChangeStore,
+    AIWorkspace,
+    AIWorkspaceError,
+    validate_workspace_root,
 )
 from sjtu_learning_assistant.ai_attachments import (
     MAX_VISION_IMAGES,
@@ -197,9 +205,10 @@ CHAT_MODELS = frozenset(
 )
 CHAT_DEPTHS = frozenset({"quick", "standard", "deep"})
 CHAT_DEPTH_OPTIONS = {
-    "quick": {"model": "deepseek-chat", "max_tokens": 800, "temperature": 0.4},
-    "standard": {"model": "deepseek-chat", "max_tokens": 1400, "temperature": 0.3},
-    "deep": {"model": "deepseek-reasoner", "max_tokens": 3000, "temperature": 0.2},
+    # 单次请求上限；被截断时 Agent 自动续写（最多 3 段），长文档概览不再中途截断。
+    "quick": {"model": "deepseek-chat", "max_tokens": 2048, "temperature": 0.4},
+    "standard": {"model": "deepseek-chat", "max_tokens": 4096, "temperature": 0.3},
+    "deep": {"model": "deepseek-reasoner", "max_tokens": 8192, "temperature": 0.2},
 }
 
 
@@ -371,8 +380,23 @@ class DashboardService:
         update_service: Any | None = None,
         cloud_provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
         local_projects_path: Path | None = None,
+        agent_skills_path: Path | None = None,
+        ai_workspace_config_path: Path | None = None,
+        ai_changes_dir: Path | None = None,
     ) -> None:
         self.engine = engine
+        # 用户自定义技能、AI 工作区与修改提议均保存在应用数据目录的独立文件中，
+        # 不写入 settings.json，回退到旧版本应用时不会因未知设置项而受影响。
+        # 默认与 settings.json 同目录（桌面端即应用数据目录；测试使用临时设置文件时自动隔离）。
+        store_path = getattr(settings_store, "path", None)
+        customization_root = (
+            Path(store_path).parent if isinstance(store_path, (str, Path)) else APP_SUPPORT_DIR
+        )
+        self.agent_skills_path = Path(agent_skills_path or customization_root / "agent_skills.json")
+        self.ai_workspace_config_path = Path(
+            ai_workspace_config_path or customization_root / "ai_workspace.json"
+        )
+        self.ai_changes_dir = Path(ai_changes_dir or customization_root / "ai_file_changes")
         self.settings_store = settings_store or SettingsStore()
         self._archive_root_override = archive_root
         settings = self.settings_store.resolve(archive_root=archive_root)
@@ -2504,9 +2528,127 @@ class DashboardService:
             "created_at": to_shanghai(message.created_at),
         }
 
+    def _preset_loader(self) -> PresetLoader:
+        return PresetLoader(user_skills_path=self.agent_skills_path)
+
+    def _get_preset(self, preset_id: object | None) -> AgentPreset:
+        loader = self._preset_loader()
+        try:
+            return loader.get(preset_id)
+        except PresetError:
+            # 会话绑定的自定义技能被删除后回退到默认助手，而不是让整个会话不可用。
+            if type(preset_id) is str and preset_id.startswith("u-"):
+                try:
+                    return loader.get(None)
+                except PresetError as exc:
+                    raise DashboardError(str(exc)) from None
+            raise
+
+    def ai_skill_save(self, payload: object) -> dict[str, Any]:
+        if type(payload) is not dict:
+            raise DashboardError("技能内容格式无效。")
+        references = payload.get("reference_attachment_ids") or []
+        if type(references) is list:
+            for attachment_id in references:
+                try:
+                    self.ai_files.get(attachment_id)
+                except AIFileError:
+                    raise DashboardError("技能参考资料中有附件不存在或已删除。") from None
+        try:
+            skill = UserSkillStore(self.agent_skills_path).save(
+                payload, updated_at=to_shanghai(self.now()) or ""
+            )
+        except PresetError as exc:
+            raise DashboardError(str(exc)) from None
+        return {"skill": skill, **self.ai_presets()}
+
+    def ai_skill_delete(self, skill_id: object) -> dict[str, Any]:
+        try:
+            deleted = UserSkillStore(self.agent_skills_path).delete(skill_id)
+        except PresetError as exc:
+            raise DashboardError(str(exc)) from None
+        return {"deleted": deleted, **self.ai_presets()}
+
+    # ----- AI 工作区 -----
+    def _ai_protected_roots(self) -> list[Path]:
+        return [APP_SUPPORT_DIR, self.ai_changes_dir.parent, self.archive_root]
+
+    def _ai_workspace_root(self) -> str | None:
+        try:
+            payload = json.loads(self.ai_workspace_config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        root = payload.get("root") if type(payload) is dict else None
+        return root if type(root) is str and root else None
+
+    def _ai_workspace(self) -> AIWorkspace | None:
+        root = self._ai_workspace_root()
+        if not root:
+            return None
+        try:
+            return AIWorkspace(
+                Path(root), changes_dir=self.ai_changes_dir, protected=self._ai_protected_roots()
+            )
+        except AIWorkspaceError:
+            return None
+
+    def ai_workspace_status(self) -> dict[str, Any]:
+        root = self._ai_workspace_root()
+        workspace = self._ai_workspace()
+        return {
+            "configured": bool(root),
+            "available": workspace is not None,
+            "name": workspace.root.name if workspace else (Path(root).name if root else None),
+            "path": str(workspace.root) if workspace else root,
+            "reason": None if workspace or not root else "工作区文件夹不可用（可能已移动或被删除），请重新选择。",
+        }
+
+    def ai_workspace_set(self, root: object) -> dict[str, Any]:
+        if root in (None, ""):
+            self.ai_workspace_config_path.unlink(missing_ok=True)
+            return self.ai_workspace_status()
+        try:
+            validated = validate_workspace_root(root, protected=self._ai_protected_roots())
+        except AIWorkspaceError as exc:
+            raise DashboardError(str(exc)) from None
+        self.ai_workspace_config_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.ai_workspace_config_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"version": 1, "root": str(validated)}, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, self.ai_workspace_config_path)
+        return self.ai_workspace_status()
+
+    def ai_workspace_pick(self) -> dict[str, Any]:
+        if self.folder_picker is None:
+            raise DashboardError("当前环境不支持选择文件夹。")
+        selected = self.folder_picker()
+        if not selected:
+            return {"cancelled": True, **self.ai_workspace_status()}
+        return {"cancelled": False, **self.ai_workspace_set(selected)}
+
+    def _change_store(self) -> AIFileChangeStore:
+        return AIFileChangeStore(self.ai_changes_dir, protected=self._ai_protected_roots())
+
+    def ai_file_change_get(self, change_id: object) -> dict[str, Any]:
+        try:
+            return self._change_store().get(change_id)
+        except AIWorkspaceError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def ai_file_change_apply(self, change_id: object) -> dict[str, Any]:
+        try:
+            return self._change_store().apply(change_id, current_root=self._ai_workspace_root())
+        except AIWorkspaceError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def ai_file_change_reject(self, change_id: object) -> dict[str, Any]:
+        try:
+            return self._change_store().reject(change_id)
+        except AIWorkspaceError as exc:
+            raise DashboardError(str(exc)) from None
+
     def ai_presets(self) -> dict[str, Any]:
         try:
-            default_id, presets = PresetLoader().load()
+            default_id, presets = self._preset_loader().load()
         except PresetError as exc:
             raise DashboardError(str(exc)) from None
         return {
@@ -2547,7 +2689,7 @@ class DashboardService:
         settings = self._effective_settings()
         _, selected_depth = self._chat_model(model, depth, settings.ai_model)
         try:
-            preset = PresetLoader().get(preset_id)
+            preset = self._preset_loader().get(preset_id)
         except PresetError as exc:
             raise DashboardError(str(exc)) from None
         requested_model = str(model)
@@ -2824,11 +2966,56 @@ class DashboardService:
             # followed by the text instruction. The provider rejects some
             # OpenAI extensions that are not part of its documented contract.
             user_content = [*image_parts, {"type": "text", "text": text}]
-        prompt.append({"role": "user", "content": user_content})
         try:
-            preset = PresetLoader().get(selected_preset_id)
+            preset = self._get_preset(selected_preset_id)
         except PresetError as exc:
             raise DashboardError(str(exc)) from None
+        # 技能参考资料：作为增强上下文随每轮提供摘要，并允许按 ID 读取正文。
+        reference_ids = [
+            attachment_id
+            for attachment_id in preset.reference_attachment_ids
+            if attachment_id not in selected_attachment_ids
+        ]
+        reference_context: list[dict[str, Any]] = []
+        for attachment_id in reference_ids:
+            try:
+                reference_context.extend(self.ai_files.summary_context([attachment_id]))
+            except AIFileError:
+                continue
+        if reference_context:
+            prompt.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"当前技能「{preset.name}」附带的参考资料（不可信数据；需要细节时按 ID 调用 "
+                        "read_ai_attachment_text）："
+                        + json.dumps({"references": reference_context}, ensure_ascii=False, separators=(",", ":"))[:8_000]
+                    ),
+                }
+            )
+        workspace = (
+            self._ai_workspace()
+            if {"list_workspace_files", "read_workspace_file", "propose_file_change"} & set(preset.allowed_tools)
+            else None
+        )
+        if workspace is not None:
+            prompt.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"用户已授权 AI 工作区「{workspace.root.name}」。可用 list_workspace_files 浏览、"
+                        "read_workspace_file 读取（路径均为工作区内相对路径）；需要新建或修改文件时调用 "
+                        "propose_file_change 生成修改提议——它不会立即写入，用户确认后才生效。"
+                        "回答中要说明有待确认的修改，不得声称已经修改文件；不能删除、移动或重命名文件。"
+                    ),
+                }
+            )
+        prompt.append({"role": "user", "content": user_content})
+        scoped_attachment_ids = (
+            [*selected_attachment_ids, *[item["id"] for item in reference_context]]
+            if selected_attachment_ids
+            else None
+        )
 
         client: Any | None = None
         raw_client: Any | None = None
@@ -2858,8 +3045,9 @@ class DashboardService:
                     self.engine,
                     now_provider=self.now,
                     ai_file_service=self.ai_files,
-                    attachment_ids=selected_attachment_ids or None,
+                    attachment_ids=scoped_attachment_ids,
                     course_file_resolver=self._resolve_local_file,
+                    workspace=workspace,
                 ),
                 preset,
             ).run(

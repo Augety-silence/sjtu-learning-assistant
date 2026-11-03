@@ -22,6 +22,8 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_MESSAGES,
     MAX_SSE_RESPONSE_BYTES,
     MAX_SSE_STREAM_SECONDS,
+    MAX_OUTPUT_TOKENS_PER_CALL,
+    MAX_TOOL_ARGUMENT_CHARS,
     STREAM_IDLE_TIMEOUT_SECONDS,
 )
 from sjtu_learning_assistant.material_classifier import CATEGORY_ORDER
@@ -567,7 +569,7 @@ class OpenAIClassificationClient:
             self._limiter()
             request_body: dict[str, object] = {
                 "model": self.model,
-                "max_tokens": max(256, min(int(max_tokens), 4096)),
+                "max_tokens": max(256, min(int(max_tokens), MAX_OUTPUT_TOKENS_PER_CALL)),
                 "messages": request_messages,
             }
             if tools:
@@ -706,7 +708,7 @@ class OpenAIClassificationClient:
             raise AIClassificationError("AI tool_choice 无效。")
         body: dict[str, object] = {
             "model": self.model,
-            "max_tokens": max(256, min(int(max_tokens), 4096)),
+            "max_tokens": max(256, min(int(max_tokens), MAX_OUTPUT_TOKENS_PER_CALL)),
             "messages": request_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -841,7 +843,7 @@ class OpenAIClassificationClient:
                                     arguments = function["arguments"]
                                     if type(arguments) is not str:
                                         raise ValueError("invalid streamed tool arguments")
-                                    if len(current["arguments"]) + len(arguments) > 8_000:
+                                    if len(current["arguments"]) + len(arguments) > MAX_TOOL_ARGUMENT_CHARS:
                                         raise ValueError("streamed tool arguments too long")
                                     current["arguments"] += arguments
             if not received_done:
@@ -849,7 +851,7 @@ class OpenAIClassificationClient:
             tool_calls = []
             for index in sorted(tool_call_parts):
                 item = tool_call_parts[index]
-                if not item["name"] or len(item["arguments"]) > 8_000:
+                if not item["name"] or len(item["arguments"]) > MAX_TOOL_ARGUMENT_CHARS:
                     raise ValueError("invalid streamed tool call")
                 tool_calls.append(
                     {
@@ -967,7 +969,7 @@ class OpenAIClassificationClient:
                 or not name
                 or len(name) > 80
                 or type(arguments) is not str
-                or len(arguments) > 8_000
+                or len(arguments) > MAX_TOOL_ARGUMENT_CHARS
                 or type(call_id) is not str
                 or not call_id
                 or len(call_id) > 128

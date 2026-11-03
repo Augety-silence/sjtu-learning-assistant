@@ -682,6 +682,57 @@ export function revealAiAttachment(attachmentId: number) {
   }>("ai_attachment_reveal", { attachment_id: attachmentId });
 }
 
+export function listAiAttachments(limit = 100) {
+  return invoke<{ items: import("@/lib/types").AIManagedAttachment[] }>(
+    "ai_attachment_list",
+    { limit },
+  );
+}
+
+type PresetsResult = import("@/lib/types").AIAgentPresetsResult;
+
+export function saveAiSkill(skill: import("@/lib/types").AISkillDraft) {
+  return invoke<PresetsResult & { skill: { id: string } }>("ai_skill_save", {
+    skill,
+  });
+}
+
+export function deleteAiSkill(skillId: string) {
+  return invoke<PresetsResult & { deleted: boolean }>("ai_skill_delete", {
+    skill_id: skillId,
+  });
+}
+
+export function getAiWorkspaceStatus() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_status");
+}
+
+export function pickAiWorkspace() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_pick");
+}
+
+export function clearAiWorkspace() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_clear");
+}
+
+export function getAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_get", {
+    change_id: changeId,
+  });
+}
+
+export function applyAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_apply", {
+    change_id: changeId,
+  });
+}
+
+export function rejectAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_reject", {
+    change_id: changeId,
+  });
+}
+
 export function deleteAiChatSession(sessionId: string) {
   return invoke<{ deleted: boolean }>("ai_chat_delete", {
     session_id: sessionId,

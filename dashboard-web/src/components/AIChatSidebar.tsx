@@ -4,11 +4,13 @@ import {
   Check,
   ChevronDown,
   FileSearch,
+  FolderOpen,
   FolderTree,
   GraduationCap,
   Mail,
   Paperclip,
   Plus,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,6 +26,7 @@ import type {
   AIAgentPreset,
   AIChatPreferences,
   AIChatSessionSummary,
+  AIWorkspaceStatus,
 } from "@/lib/types";
 
 const capabilities = [
@@ -44,6 +47,15 @@ const capabilities = [
     icon: Mail,
   },
   { label: "资料树", tools: ["get_material_tree"], icon: FolderTree },
+  {
+    label: "工作区",
+    tools: [
+      "list_workspace_files",
+      "read_workspace_file",
+      "propose_file_change",
+    ],
+    icon: FolderOpen,
+  },
   {
     label: "附件",
     tools: ["search_ai_attachments", "read_ai_attachment_text"],
@@ -133,6 +145,11 @@ export function AIChatSidebar({
   settingsSaving,
   settingsStatus,
   onPreferenceChange,
+  onManageSkills,
+  workspace = null,
+  workspaceBusy = false,
+  onPickWorkspace,
+  onClearWorkspace,
 }: {
   open: boolean;
   onClose: () => void;
@@ -150,6 +167,11 @@ export function AIChatSidebar({
   settingsSaving: boolean;
   settingsStatus: string | null;
   onPreferenceChange: (change: Partial<AIChatPreferences>) => void;
+  onManageSkills?: (skillId?: string | null) => void;
+  workspace?: AIWorkspaceStatus | null;
+  workspaceBusy?: boolean;
+  onPickWorkspace?: () => void;
+  onClearWorkspace?: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerTriggerRef = useRef<HTMLButtonElement>(null);
@@ -255,7 +277,12 @@ export function AIChatSidebar({
                 >
                   <img src={aiAgentLogo} alt="" aria-hidden="true" />
                   <span>
-                    <strong>{preset.name}</strong>
+                    <strong>
+                      {preset.name}
+                      {preset.source === "user" && (
+                        <em className="ai-skill-badge">自定义</em>
+                      )}
+                    </strong>
                     <small>{preset.description}</small>
                   </span>
                   {preset.id === selectedPresetId && (
@@ -277,6 +304,22 @@ export function AIChatSidebar({
             <small>暂未配置可用功能</small>
           )}
         </div>
+        {onManageSkills && (
+          <div className="ai-skill-entry">
+            <button type="button" onClick={() => onManageSkills(null)}>
+              <Sparkles aria-hidden="true" />
+              自定义技能
+            </button>
+            {selectedPreset?.source === "user" && (
+              <button
+                type="button"
+                onClick={() => onManageSkills(selectedPreset.id)}
+              >
+                编辑当前技能
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="ai-history-section">
@@ -342,6 +385,10 @@ export function AIChatSidebar({
         saving={settingsSaving}
         status={settingsStatus}
         onChange={onPreferenceChange}
+        workspace={workspace}
+        workspaceBusy={workspaceBusy}
+        onPickWorkspace={onPickWorkspace}
+        onClearWorkspace={onClearWorkspace}
       />
     </aside>
   );

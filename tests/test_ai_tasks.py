@@ -308,7 +308,8 @@ def test_sse_parser_rejects_oversized_or_unknown_tool_delta_fields():
     call["function"]["name"] = "x" * 81
     invalid_calls.append(call)
     call = copy.deepcopy(base_call)
-    call["function"]["arguments"] = "x" * 8_001
+    # 写文件内容经工具参数传递，上限为 MAX_TOOL_ARGUMENT_CHARS（32_000）。
+    call["function"]["arguments"] = "x" * 32_001
     invalid_calls.append(call)
     call = copy.deepcopy(base_call)
     call["unexpected"] = "reject"

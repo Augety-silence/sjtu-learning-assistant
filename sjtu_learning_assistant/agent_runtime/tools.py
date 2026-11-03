@@ -19,6 +19,7 @@ from sjtu_learning_assistant.ai_attachments import (
     AIManagedFileService,
     extract_document_units,
 )
+from sjtu_learning_assistant.ai_workspace import AIWorkspace, AIWorkspaceError
 from sjtu_learning_assistant.document_text import DocumentText
 from sjtu_learning_assistant.material_tree import build_material_tree
 from sjtu_learning_assistant.text_content import content_to_plain_text
@@ -190,8 +191,13 @@ class ReadOnlyToolRegistry:
         ai_file_service: AIManagedFileService | None = None,
         attachment_ids: list[int] | tuple[int, ...] | None = None,
         course_file_resolver: Callable[[str], Path] | None = None,
+        workspace: AIWorkspace | None = None,
     ) -> None:
         self.engine = engine
+        # 用户指定的 AI 工作区；未配置时不注册任何文件工具。
+        self.workspace = workspace
+        # 本轮已提议的修改：同一文件的后续 append 合并进同一条提议。
+        self._turn_changes: dict[str, str] = {}
         # 只接受按 source_id 解析、已校验在归档目录内的普通文件；模型永远拿不到路径。
         self.course_file_resolver = course_file_resolver
         self._document_cache: dict[str, DocumentText] = {}
@@ -213,6 +219,10 @@ class ReadOnlyToolRegistry:
         }
         if course_file_resolver is not None:
             self._handlers["read_course_file_text"] = self._read_course_file_text
+        if workspace is not None:
+            self._handlers["list_workspace_files"] = self._list_workspace_files
+            self._handlers["read_workspace_file"] = self._read_workspace_file
+            self._handlers["propose_file_change"] = self._propose_file_change
 
     @property
     def names(self) -> frozenset[str]:
@@ -229,11 +239,16 @@ class ReadOnlyToolRegistry:
             "get_material_tree": ("读取截断后的资料树", {"type": "object", "properties": {"course_id": {"type": "string", "maxLength": 128}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "additionalProperties": False}),
             "search_ai_attachments": ("只搜索 AI 附件的名称、摘要和标签，先用它定位附件 ID", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
             "read_course_file_text": ("按课程文件 source_id 分页读取已下载到本机的课件/文档正文（PPTX、DOCX、XLSX、PDF 与文本），返回带页码标记的文字、表格、图片替代文本和演讲者备注；不接受路径", {"type": "object", "properties": {"source_id": {"type": "string", "maxLength": 128}, "start_page": {"type": "integer", "minimum": 1, "maximum": MAX_DOCUMENT_UNIT}, "max_chars": {"type": "integer", "minimum": 500, "maximum": COURSE_FILE_TEXT_MAX_CHARS}}, "required": ["source_id"], "additionalProperties": False}),
+            "list_workspace_files": ("列出用户 AI 工作区内的文件与文件夹（相对路径、大小、是否可读/可编辑）", {"type": "object", "properties": {"folder": {"type": "string", "maxLength": 512, "description": "工作区内的相对文件夹，留空表示根目录"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}, "additionalProperties": False}),
+            "read_workspace_file": ("分页读取 AI 工作区内的文件正文（文本、Markdown、代码、PDF、PPTX、DOCX、XLSX），路径为工作区内相对路径", {"type": "object", "properties": {"path": {"type": "string", "maxLength": 512}, "start_page": {"type": "integer", "minimum": 1, "maximum": MAX_DOCUMENT_UNIT}, "max_chars": {"type": "integer", "minimum": 500, "maximum": COURSE_FILE_TEXT_MAX_CHARS}}, "required": ["path"], "additionalProperties": False}),
+            "propose_file_change": ("在 AI 工作区内新建或修改文本文件。修改不会立即生效：会生成差异预览，由用户在界面确认后才写入。mode=create 新建；overwrite 整体替换；replace 按 edits 中每个 find（必须在文件中恰好出现一次）替换为 replace；append 在末尾追加（长文档请先 create 再多次 append，每次不超过约 6000 字）。", {"type": "object", "properties": {"path": {"type": "string", "maxLength": 512}, "mode": {"type": "string", "enum": ["create", "overwrite", "replace", "append"]}, "content": {"type": "string"}, "edits": {"type": "array", "maxItems": 30, "items": {"type": "object", "properties": {"find": {"type": "string"}, "replace": {"type": "string"}}, "required": ["find", "replace"], "additionalProperties": False}}, "summary": {"type": "string", "maxLength": 300, "description": "一句话说明这次修改做了什么"}}, "required": ["path", "mode"], "additionalProperties": False}),
             "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1, "maximum": MAX_ATTACHMENT_ID}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
+        # 只声明本次实际注册的工具：未配置工作区时文件工具不出现在模型可选项中。
         return [
             {"type": "function", "function": {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
             for name in allowed_tools
+            if name in self._handlers
         ]
 
     def execute(self, name: object, arguments: object, allowed_tools: tuple[str, ...]) -> ToolExecution:
@@ -253,7 +268,12 @@ class ReadOnlyToolRegistry:
             "count": len(items) if isinstance(items, list) else result.get("count", 1),
             "truncated": bool(result.get("truncated", False)),
         }
-        if name in {"read_course_file_text", "read_ai_attachment_text"}:
+        if name == "propose_file_change":
+            for key in ("change_id", "path", "mode", "added", "removed"):
+                if key in result:
+                    summary[key] = result[key]
+            summary["approval"] = "pending_user"
+        if name in {"read_course_file_text", "read_ai_attachment_text", "read_workspace_file"}:
             # 正文读取类工具：把“读到第几页 / 是否可读”放进安全摘要，便于逐轮核对。
             content_status = result.get("status")
             if content_status in {"ready", "unavailable", "unsupported", "failed", "out_of_range", "pending"}:
@@ -668,54 +688,130 @@ class ReadOnlyToolRegistry:
                     "text": "",
                 }, arg_summary
             self._document_cache[file.source_id] = document
-        units = document.units
-        if start_page > len(units):
-            return {
-                **base,
-                "status": "out_of_range",
-                "unit_label": document.unit_label,
-                "unit_count": document.unit_count,
-                "available_units": len(units),
-                "text": "",
-            }, arg_summary
-        # 以 JSON 编码后的长度计预算：换行、引号转义后仍要落在工具结果上限内，
-        # 否则 _bounded_payload 会从中间截断而 next_page 失真。
-        pieces: list[str] = []
-        used = 0
-        end_page = start_page - 1
-        unit_clipped = False
-        for index in range(start_page - 1, len(units)):
-            text, _clipped = _redact_body(units[index], COURSE_FILE_TEXT_MAX_CHARS)
-            cost = len(json.dumps(text, ensure_ascii=False)) + 2
-            if pieces and used + cost > max_chars:
-                break
-            if not pieces and cost > max_chars:
-                keep = max(1, len(text) * max_chars // cost)
-                text = text[:keep]
-                unit_clipped = True
-                cost = max_chars
-            pieces.append(text)
-            used += cost
-            end_page = index + 1
-            if unit_clipped:
-                break
-        more = end_page < len(units)
-        result: dict[str, Any] = {
+        return _paginate_document(document, base, start_page, max_chars), arg_summary
+
+    def _require_workspace(self) -> AIWorkspace:
+        if self.workspace is None:
+            raise AgentToolError("尚未设置 AI 工作区，请在个性化设置中选择文件夹。")
+        return self.workspace
+
+    def _list_workspace_files(self, raw: object):
+        args = _only(raw, {"folder", "limit"})
+        folder = _bounded_text(args.get("folder"), "folder", limit=512, required=False)
+        limit = _bounded_limit(args.get("limit"), maximum=500, default=200)
+        try:
+            result = self._require_workspace().list(folder, limit=limit)
+        except AIWorkspaceError as exc:
+            raise AgentToolError(str(exc), category="execution", retryable=False) from None
+        return result, {"has_folder": bool(folder), "limit": limit}
+
+    def _read_workspace_file(self, raw: object):
+        args = _only(raw, {"path", "start_page", "max_chars"})
+        relative = _bounded_text(args.get("path"), "path", limit=512)
+        start_page = args.get("start_page", 1)
+        max_chars = args.get("max_chars", 6000)
+        if type(start_page) is not int or not 1 <= start_page <= MAX_DOCUMENT_UNIT:
+            raise AgentToolError(f"start_page 必须为 1 到 {MAX_DOCUMENT_UNIT} 的整数。")
+        if type(max_chars) is not int or not 500 <= max_chars <= COURSE_FILE_TEXT_MAX_CHARS:
+            raise AgentToolError(f"max_chars 必须为 500 到 {COURSE_FILE_TEXT_MAX_CHARS} 的整数。")
+        arg_summary = {"start_page": start_page, "max_chars": max_chars}
+        try:
+            clean_path, path = self._require_workspace().resolve_readable(relative)
+        except AIWorkspaceError as exc:
+            raise AgentToolError(str(exc), category="execution", retryable=False) from None
+        cache_key = f"ws:{clean_path}"
+        document = self._document_cache.get(cache_key)
+        if document is None:
+            try:
+                document = extract_document_units(path, path.name)
+            except AIFileError as exc:
+                return {"path": clean_path, "status": "failed", "reason": _clip(str(exc), 200), "text": ""}, arg_summary
+            self._document_cache[cache_key] = document
+        return _paginate_document(document, {"path": clean_path}, start_page, max_chars), arg_summary
+
+    def _propose_file_change(self, raw: object):
+        args = _only(raw, {"path", "mode", "content", "edits", "summary"})
+        relative = _bounded_text(args.get("path"), "path", limit=512)
+        mode = args.get("mode")
+        workspace = self._require_workspace()
+        try:
+            key = workspace._resolve(relative, allow_missing=True).relative
+            if mode == "append" and key in self._turn_changes:
+                change = workspace.extend(self._turn_changes[key], args.get("content"))
+            else:
+                change = workspace.propose(
+                    relative,
+                    mode=mode,
+                    content=args.get("content"),
+                    edits=args.get("edits"),
+                    summary=args.get("summary"),
+                )
+        except AIWorkspaceError as exc:
+            raise AgentToolError(str(exc), category="execution", retryable=False) from None
+        self._turn_changes[change["path"]] = change["change_id"]
+        result = {
+            "status": "pending_user_approval",
+            "change_id": change["change_id"],
+            "path": change["path"],
+            "mode": change["mode"],
+            "added": change["added"],
+            "removed": change["removed"],
+            "note": "修改尚未写入，需用户在界面上确认后生效；回答中请说明这是待确认的修改提议，不要声称文件已修改。",
+        }
+        return result, {"mode": mode, "has_edits": bool(args.get("edits")), "content_chars": len(args.get("content") or "")}
+
+def _paginate_document(
+    document: DocumentText, base: dict[str, Any], start_page: int, max_chars: int
+) -> dict[str, Any]:
+    """从 start_page 起返回不超过 max_chars（按 JSON 编码计）的若干页，附下一页游标。"""
+    units = document.units
+    if start_page > len(units):
+        return {
             **base,
-            "status": "ready",
-            "format": document.kind,
+            "status": "out_of_range",
             "unit_label": document.unit_label,
             "unit_count": document.unit_count,
-            "start_page": start_page,
-            "end_page": end_page,
-            "next_page": end_page + 1 if more else None,
-            "page_text_clipped": unit_clipped,
-            "document_truncated": document.truncated,
-            "embedded_image_count": len(document.images),
-            "text": "\n\n".join(pieces),
+            "available_units": len(units),
+            "text": "",
         }
-        if document.images:
-            result["image_note"] = (
-                "插图只提供替代文本；如需识别图片，请让用户把该文件作为 AI 附件发送并选择 Qwen 3.8。"
-            )
-        return result, arg_summary
+    # 以 JSON 编码后的长度计预算：换行、引号转义后仍要落在工具结果上限内，
+    # 否则 _bounded_payload 会从中间截断而 next_page 失真。
+    pieces: list[str] = []
+    used = 0
+    end_page = start_page - 1
+    unit_clipped = False
+    for index in range(start_page - 1, len(units)):
+        text, _clipped = _redact_body(units[index], COURSE_FILE_TEXT_MAX_CHARS)
+        cost = len(json.dumps(text, ensure_ascii=False)) + 2
+        if pieces and used + cost > max_chars:
+            break
+        if not pieces and cost > max_chars:
+            keep = max(1, len(text) * max_chars // cost)
+            text = text[:keep]
+            unit_clipped = True
+            cost = max_chars
+        pieces.append(text)
+        used += cost
+        end_page = index + 1
+        if unit_clipped:
+            break
+    more = end_page < len(units)
+    result: dict[str, Any] = {
+        **base,
+        "status": "ready",
+        "format": document.kind,
+        "unit_label": document.unit_label,
+        "unit_count": document.unit_count,
+        "start_page": start_page,
+        "end_page": end_page,
+        "next_page": end_page + 1 if more else None,
+        "page_text_clipped": unit_clipped,
+        "document_truncated": document.truncated,
+        "embedded_image_count": len(document.images),
+        "text": "\n\n".join(pieces),
+    }
+    if document.images:
+        result["image_note"] = (
+            "插图只提供替代文本；如需识别图片，请让用户把该文件作为 AI 附件发送并选择 Qwen 3.8。"
+        )
+    return result

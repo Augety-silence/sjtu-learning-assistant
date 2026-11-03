@@ -446,6 +446,14 @@ class DesktopBridge:
             "ai_attachment_ingest": self._ai_attachment_ingest,
             "ai_attachment_restore": self._ai_attachment_restore,
             "ai_attachment_reveal": self._ai_attachment_reveal,
+            "ai_skill_save": self._ai_skill_save,
+            "ai_skill_delete": self._ai_skill_delete,
+            "ai_workspace_status": self._ai_workspace_status,
+            "ai_workspace_pick": self._ai_workspace_pick,
+            "ai_workspace_clear": self._ai_workspace_clear,
+            "ai_file_change_get": self._ai_file_change_get,
+            "ai_file_change_apply": self._ai_file_change_apply,
+            "ai_file_change_reject": self._ai_file_change_reject,
             "settings_pick_archive_root": self._settings_pick_archive_root,
             "archive_organize": self._archive_organize,
             "archive_download_current_term": self._archive_download_current_term,
@@ -863,6 +871,44 @@ class DesktopBridge:
 
     def _ai_attachment_reveal(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._service.ai_attachment_reveal(self._ai_attachment_id(payload))
+
+    def _ai_skill_save(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"skill"})
+        skill = payload.get("skill")
+        if type(skill) is not dict or len(json.dumps(skill, ensure_ascii=False)) > 40_000:
+            raise DashboardError("技能内容格式无效或过长。")
+        return self._service.ai_skill_save(dict(skill))
+
+    def _ai_skill_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {"skill_id"})
+        return self._service.ai_skill_delete(
+            _bounded_id(payload.get("skill_id"), limit=32, label="技能标识")
+        )
+
+    def _ai_workspace_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.ai_workspace_status()
+
+    def _ai_workspace_pick(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.ai_workspace_pick()
+
+    def _ai_workspace_clear(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        return self._service.ai_workspace_set("")
+
+    def _ai_change_id(self, payload: Mapping[str, Any]) -> str:
+        _only_keys(payload, {"change_id"})
+        return _bounded_id(payload.get("change_id"), limit=32, label="修改记录标识")
+
+    def _ai_file_change_get(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._service.ai_file_change_get(self._ai_change_id(payload))
+
+    def _ai_file_change_apply(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._service.ai_file_change_apply(self._ai_change_id(payload))
+
+    def _ai_file_change_reject(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._service.ai_file_change_reject(self._ai_change_id(payload))
 
     def _settings_pick_archive_root(
         self, payload: Mapping[str, Any]

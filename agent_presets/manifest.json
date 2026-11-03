@@ -7,7 +7,14 @@
       "name": "综合助理",
       "description": "综合查询课程、资料、截止事项与消息并给出行动建议。",
       "skill": "skills/general.md",
-      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "read_course_file_text", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text"]
+      "allowed_tools": ["list_courses", "search_course_files", "list_course_files", "read_course_file_text", "get_deadlines", "search_messages", "get_message_detail", "get_material_tree", "search_ai_attachments", "read_ai_attachment_text", "list_workspace_files", "read_workspace_file", "propose_file_change"]
+    },
+    {
+      "id": "file-assistant",
+      "name": "文件助手",
+      "description": "在你授权的 AI 工作区内阅读、整理并撰写文件；修改需你确认后才写入。",
+      "skill": "skills/file-assistant.md",
+      "allowed_tools": ["list_workspace_files", "read_workspace_file", "propose_file_change", "search_course_files", "list_course_files", "read_course_file_text", "search_ai_attachments", "read_ai_attachment_text"]
     },
     {
       "id": "course-navigator",

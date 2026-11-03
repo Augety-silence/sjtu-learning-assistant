@@ -601,17 +601,46 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("文本附件已读取。", result.content)
         self.assertEqual(1, client.stream_calls)
 
-    def test_finish_reason_length_marks_answer_incomplete(self) -> None:
-        client = ScriptedClient([{
-            "content": "这是被截断的回答",
-            "tool_calls": [],
-            "response_metadata": {"finish_reason": "length"},
-        }])
+    def test_truncated_answer_is_continued_automatically_and_joined(self) -> None:
+        cut = {"tool_calls": [], "response_metadata": {"finish_reason": "length"}}
+        client = ScriptedClient([
+            {**cut, "content": "第一部分：背景"},
+            {**cut, "content": "，第二部分：方法"},
+            {"content": "，第三部分：结论。", "tool_calls": [], "response_metadata": {"finish_reason": "stop"}},
+        ])
+        events: list[tuple[str, dict]] = []
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [{"role": "user", "content": "概览这份 PDF"}],
+            user_text="概览这份 PDF",
+            max_tokens=5,
+            temperature=0,
+            event_callback=lambda kind, payload: events.append((kind, payload)),
+        )
+        self.assertEqual("completed", result.status)
+        self.assertEqual("第一部分：背景，第二部分：方法，第三部分：结论。", result.content)
+        # 续写不占用工具步数。
+        self.assertEqual(1, result.steps)
+        self.assertEqual(3, len(client.requests))
+        conversation = client.requests[-1][0]
+        self.assertEqual(
+            ["第一部分：背景", "，第二部分：方法"],
+            [item["content"] for item in conversation if item["role"] == "assistant"],
+        )
+        prompts = [item for item in conversation if item["role"] == "user" and "从中断处直接接着写" in item["content"]]
+        self.assertEqual(2, len(prompts))
+        parts = [payload["part"] for kind, payload in events if kind == "status" and payload["state"] == "continuing"]
+        self.assertEqual([2, 3], parts)
+
+    def test_finish_reason_length_after_max_continuations_marks_answer_incomplete(self) -> None:
+        cut = {"content": "段", "tool_calls": [], "response_metadata": {"finish_reason": "length"}}
+        client = ScriptedClient([dict(cut) for _ in range(4)])
         result = AgentLoop(client, self.registry, preset("list_courses")).run(
             [{"role": "user", "content": "总结"}], user_text="总结", max_tokens=5, temperature=0
         )
         self.assertEqual("max_steps", result.status)
-        self.assertIn("可能因长度限制未完成", result.content)
+        self.assertTrue(result.content.startswith("段段段段"))
+        self.assertIn("可以回复“继续”", result.content)
+        self.assertEqual(4, len(client.requests))
 
     def test_tool_context_omission_is_reflected_in_trace(self) -> None:
         class LargeResultRegistry:

@@ -20,18 +20,22 @@ import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { AIChatTracePanel } from "@/components/AIChatTracePanel";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
+import { AISkillManager } from "@/components/AISkillManager";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import {
   AI_CHAT_STREAM_EVENT,
+  clearAiWorkspace,
   createAiChatSession,
   deleteAiChatSession,
   getAiChatSession,
   getAiChatSessions,
   getAiPresets,
+  getAiWorkspaceStatus,
   getSettings,
   ingestAiAttachment,
   pickAiAttachment,
+  pickAiWorkspace,
   resumeAiChatMessageTask,
   revealAiAttachment,
   sendAiChatMessage,
@@ -48,6 +52,7 @@ import type {
   AIManagedAttachment,
   AIModel,
   AIThinkingDepth,
+  AIWorkspaceStatus,
 } from "@/lib/types";
 import { useResizablePanes } from "@/lib/useResizablePanes";
 
@@ -175,6 +180,41 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [runningStartedAt, setRunningStartedAt] = useState<
     number | string | null
   >(null);
+  // 自定义技能管理与 AI 工作区。
+  const [skillManager, setSkillManager] = useState<{
+    skillId: string | null;
+  } | null>(null);
+  const [workspace, setWorkspace] = useState<AIWorkspaceStatus | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // 放进 then 中调用：旧版桥接或测试替身缺少该动作时只当作“未设置工作区”。
+    Promise.resolve()
+      .then(() => getAiWorkspaceStatus())
+      .then((status) => {
+        if (!cancelled) setWorkspace(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const changeWorkspace = async (action: "pick" | "clear") => {
+    if (workspaceBusy) return;
+    setWorkspaceBusy(true);
+    try {
+      const status = await (action === "pick"
+        ? pickAiWorkspace()
+        : clearAiWorkspace());
+      if (!status.cancelled) setWorkspace(status);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "设置 AI 工作区失败。",
+      );
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
   // 后端推送的最新进度（请求模型 / 自动重试），只对当前任务生效。
   const [liveStatus, setLiveStatus] = useState<{
     taskId: string;
@@ -299,7 +339,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         const raw = detail.status;
         if (!raw || typeof raw !== "object") return;
         const value = raw as Record<string, unknown>;
-        if (value.state !== "model_call" && value.state !== "retrying") return;
+        if (
+          value.state !== "model_call" &&
+          value.state !== "retrying" &&
+          value.state !== "continuing"
+        )
+          return;
         const number = (key: string) =>
           typeof value[key] === "number" ? (value[key] as number) : undefined;
         setLiveStatus({
@@ -311,6 +356,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             max_attempts: number("max_attempts"),
             reason: typeof value.reason === "string" ? value.reason : undefined,
             delay_seconds: number("delay_seconds"),
+            part: number("part"),
+            max_parts: number("max_parts"),
             received_at: Date.now(),
           },
         });
@@ -1304,7 +1351,32 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           settingsSaving={settingsSaving}
           settingsStatus={settingsStatus}
           onPreferenceChange={(change) => void updatePreference(change)}
+          onManageSkills={(skillId) =>
+            setSkillManager({ skillId: skillId ?? null })
+          }
+          workspace={workspace}
+          workspaceBusy={workspaceBusy}
+          onPickWorkspace={() => void changeWorkspace("pick")}
+          onClearWorkspace={() => void changeWorkspace("clear")}
         />
+        {skillManager && (
+          <AISkillManager
+            presets={presets}
+            initialSkillId={skillManager.skillId}
+            onClose={() => setSkillManager(null)}
+            onSaved={(result, selectedId) => {
+              setPresets(result.items);
+              setSkillManager(null);
+              setSelectedPresetId(
+                (current) =>
+                  selectedId ??
+                  (result.items.some((item) => item.id === current)
+                    ? current
+                    : result.default_preset_id),
+              );
+            }}
+          />
+        )}
         <div
           className="ai-pane-resizer ai-pane-resizer-left"
           role="separator"
