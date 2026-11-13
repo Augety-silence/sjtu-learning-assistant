@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PyInstaller.building.osx import BUNDLE
 from PyInstaller.utils import osx as pyinstaller_osx
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 from sjtu_learning_assistant import __version__
 
@@ -41,6 +41,7 @@ datas = [
     (str(ROOT / "migrations"), "migrations"),
     *collect_data_files("imageio_ffmpeg"),
     *collect_data_files("pypdfium2"),
+    *copy_metadata("pypdfium2"),
 ]
 
 hiddenimports = [

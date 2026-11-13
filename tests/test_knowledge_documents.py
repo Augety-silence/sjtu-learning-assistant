@@ -41,6 +41,11 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual([1, 2], [number for number, _ in pages])
         self.assertTrue(all(data.startswith(b"\xff\xd8") and len(data) < 4 * 1024**2 for _, data in pages))
 
+    def test_both_app_specs_include_pdfium_license_metadata(self):
+        root = Path(__file__).resolve().parents[1]
+        for filename in ("desktop.spec", "windows.spec"):
+            self.assertIn('*copy_metadata("pypdfium2")', (root / "packaging" / filename).read_text())
+
     def test_multimodal_pages_and_standard_markdown_provenance(self):
         note = self.converter().compile(self.source, self.path, self.target)
         self.assertEqual(2, len(self.calls))
