@@ -30,6 +30,7 @@ except ImportError:
     fcntl = None
 
 from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from sjtu_learning_assistant import __version__
@@ -521,7 +522,7 @@ class DashboardService:
                 if month == 12
                 else datetime(year, month + 1, 1, tzinfo=SHANGHAI_TZ)
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise DashboardError("年月格式无效。") from exc
 
         current = self.now()
@@ -740,7 +741,9 @@ class DashboardService:
                         if size > limit:
                             raise DashboardError("文件超过媒体处理大小限制。")
                         chunks.append(chunk)
-                payload = b"".join(chunks)
+                    payload = b"".join(chunks)
+                    if len(payload) != record.cloud_size:
+                        raise DashboardError("云端文件大小校验失败，无法读取。")
             except DashboardError:
                 raise
             except Exception:
@@ -2073,7 +2076,13 @@ class DashboardService:
                 raise DashboardError("Dashboard 服务已关闭。")
             if self._ai_client_config == config:
                 if self._ai_client is None and required:
-                    raise DashboardError("未找到已保存的 AI API key。")
+                    # 缓存命中的“读不到凭据”路径同样按不可重试凭据故障分类，
+                    # 否则会被默认标记为可重试，引导用户反复重试 keychain 授权。
+                    raise DashboardError(
+                        "未找到已保存的 AI API key。",
+                        category="credential",
+                        retryable=False,
+                    )
                 return self._ai_client
             self._close_client(self._ai_client)
             self._ai_client = None
@@ -2088,11 +2097,28 @@ class DashboardService:
                         base_url=settings.ai_base_url,
                         model=settings.ai_model,
                     )
-            except (AIKeychainError, AIClassificationError) as exc:
+            except AIKeychainError:
+                # 与 ai_chat_send / ai_chat / _run_knowledge_compiler_ai 三处
+                # 调用点的凭据分类保持一致；required=False 时静默缓存配置即可。
                 if required:
-                    raise DashboardError("AI 归档连接初始化失败。") from exc
+                    raise DashboardError(
+                        "AI 凭据无法读取，请在设置中重新保存 AI 连接配置。",
+                        category="credential",
+                        retryable=False,
+                    ) from None
+            except AIClassificationError as exc:
+                if required:
+                    raise DashboardError(
+                        "AI 归档连接初始化失败。",
+                        category=getattr(exc, "category", "application"),
+                        retryable=False,
+                    ) from exc
             if self._ai_client is None and required:
-                raise DashboardError("未找到已保存的 AI API key。")
+                raise DashboardError(
+                    "未找到已保存的 AI API key。",
+                    category="credential",
+                    retryable=False,
+                )
             return self._ai_client
 
     def _new_archive_service(
@@ -2119,7 +2145,12 @@ class DashboardService:
         finally:
             self._close_archive_service(service)
         if result.status == "failed":
-            raise DashboardError("文件下载失败，请稍后重试。")
+            # ArchiveService 已经对错误文本做过 URL query 与用户目录脱敏。
+            detail = (result.error or "").strip()
+            raise DashboardError(
+                f"文件下载失败：{detail}" if detail else "文件下载失败，请稍后重试。",
+                retryable=True,
+            )
         return {
             "source_id": result.source_id,
             "status": result.status,
@@ -2208,6 +2239,11 @@ class DashboardService:
             result = service.move_file_by_source_id(
                 source_id, target_node_id, cloud_path=next_cloud_path
             )
+            if result.status == "failed":
+                detail = (getattr(result, "error", None) or "").strip()
+                raise DashboardError(
+                    f"资料移动失败：{detail}" if detail else "资料移动失败，请稍后重试。"
+                )
         except Exception:
             if moved_cloud is not None:
                 old_path, new_path = moved_cloud
@@ -2267,8 +2303,14 @@ class DashboardService:
             resolved.relative_to(root)
         except DashboardError:
             raise
-        except (OSError, ValueError) as exc:
+        except (FileNotFoundError, NotADirectoryError) as exc:
             raise NotFoundError("本地文件不存在或不在归档目录内，已拒绝打开。") from exc
+        except ValueError as exc:
+            raise NotFoundError("本地文件不在归档目录内，已拒绝打开。") from exc
+        except OSError as exc:
+            # Windows 上长路径（ERROR_PATH_NOT_FOUND 等）、杀软占用都会落到这里，
+            # 不能一概报“文件不存在”，否则会误导用户去云端再下载一份。
+            raise DashboardError("本地文件暂时无法访问，请关闭占用它的程序后重试。") from exc
 
         if not stat.S_ISREG(resolved.lstat().st_mode):
             raise DashboardError("本地目标不是普通文件，已拒绝打开。")
@@ -3058,8 +3100,14 @@ class DashboardService:
                 attachment_ids=selected_attachment_ids,
                 event_callback=event_callback,
             )
-        except AIClassificationError as exc:
+        except (AIKeychainError, AIClassificationError) as exc:
             self._persist_failed_agent_trace(session_id, preset.id)
+            if isinstance(exc, AIKeychainError):
+                # 选择非默认模型时临时创建的客户端也要给出凭据类提示，
+                # 否则前端只能看到“未显示底层异常”的内部错误。
+                raise DashboardError(
+                    str(exc), category="credential", retryable=False
+                ) from None
             retryable = exc.category not in {"authentication", "validation", "unsupported_tools"}
             raise DashboardError(
                 str(exc), category=exc.category, retryable=retryable
@@ -3074,88 +3122,95 @@ class DashboardService:
         now = self.now()
         trace_id = str(uuid.uuid4())
         safe_tool_runs = [dict(run) for run in agent_result.tool_runs]
-        with Session(self.engine) as session, session.begin():
-            chat = session.get(AIChatSession, session_id)
-            if chat is None:
-                raise NotFoundError("对话不存在或已被删除。")
-            next_sequence = int(
-                session.scalar(
-                    select(func.max(AIChatMessage.sequence)).where(
-                        AIChatMessage.session_id == session_id
+        # 仅重试持久化事务，不重复模型调用，并保留本地分支的时间/附件字段。
+        for save_attempt in range(2):
+            try:
+                with Session(self.engine) as session, session.begin():
+                    chat = session.get(AIChatSession, session_id)
+                    if chat is None:
+                        raise NotFoundError("对话不存在或已被删除。")
+                    next_sequence = int(
+                        session.scalar(
+                            select(func.max(AIChatMessage.sequence)).where(
+                                AIChatMessage.session_id == session_id
+                            )
+                        )
+                        or 0
+                    ) + 1
+                    trace_row = AIAgentTrace(
+                        id=trace_id,
+                        session_id=session_id,
+                        preset_id=preset.id,
+                        status=agent_result.status,
+                        steps=agent_result.steps,
+                        tool_runs=safe_tool_runs,
                     )
-                )
-                or 0
-            ) + 1
-            trace_row = AIAgentTrace(
-                id=trace_id,
-                session_id=session_id,
-                preset_id=preset.id,
-                status=agent_result.status,
-                steps=agent_result.steps,
-                tool_runs=safe_tool_runs,
-            )
-            user_row = AIChatMessage(
-                session_id=session_id,
-                sequence=next_sequence,
-                role="user",
-                content=text,
-                model=selected_model,
-                trace_id=trace_id,
-                created_at=min(turn_started_at, now),
-            )
-            assistant_row = AIChatMessage(
-                session_id=session_id,
-                sequence=next_sequence + 1,
-                role="assistant",
-                content=agent_result.content,
-                reasoning_content=agent_result.reasoning_content,
-                model=selected_model,
-                trace_id=trace_id,
-                created_at=now,
-            )
-            session.add_all((trace_row, user_row, assistant_row))
-            session.flush()
-            session.add_all(
-                AIChatMessageAttachment(
-                    message_id=user_row.id,
-                    managed_file_id=attachment_id,
-                    position=position,
-                )
-                for position, attachment_id in enumerate(selected_attachment_ids)
-            )
-            chat.model = str(model)
-            chat.thinking_depth = selected_depth
-            chat.preset_id = preset.id
-            chat.updated_at = now
-            if chat.title == "新对话":
-                chat.title = text[:36] + ("…" if len(text) > 36 else "")
-            session.flush()
-            trace_dto = {
-                "id": trace_row.id,
-                "preset_id": trace_row.preset_id,
-                "status": trace_row.status,
-                "steps": trace_row.steps,
-                "tool_runs": safe_tool_runs,
-                "created_at": to_shanghai(trace_row.created_at),
-                "duration_ms": max(0, int(round((time.monotonic() - turn_started) * 1000))),
-            }
-            result = {
-                "session": {
-                    "id": chat.id,
-                    "title": chat.title,
-                    "model": chat.model,
-                    "thinking_depth": chat.thinking_depth,
-                    "preset_id": chat.preset_id,
-                    "updated_at": to_shanghai(chat.updated_at),
-                },
-                "trace": trace_dto,
-                "user_message": self._chat_message_dto(
-                    user_row, safe_tool_runs, attachment_metadata
-                ),
-                "assistant_message": self._chat_message_dto(
-                    assistant_row, safe_tool_runs, []
-                ),
-            }
+                    user_row = AIChatMessage(
+                        session_id=session_id,
+                        sequence=next_sequence,
+                        role="user",
+                        content=text,
+                        model=selected_model,
+                        trace_id=trace_id,
+                        created_at=min(turn_started_at, now),
+                    )
+                    assistant_row = AIChatMessage(
+                        session_id=session_id,
+                        sequence=next_sequence + 1,
+                        role="assistant",
+                        content=agent_result.content,
+                        reasoning_content=agent_result.reasoning_content,
+                        model=selected_model,
+                        trace_id=trace_id,
+                        created_at=now,
+                    )
+                    session.add_all((trace_row, user_row, assistant_row))
+                    session.flush()
+                    session.add_all(
+                        AIChatMessageAttachment(
+                            message_id=user_row.id,
+                            managed_file_id=attachment_id,
+                            position=position,
+                        )
+                        for position, attachment_id in enumerate(selected_attachment_ids)
+                    )
+                    chat.model = str(model)
+                    chat.thinking_depth = selected_depth
+                    chat.preset_id = preset.id
+                    chat.updated_at = now
+                    if chat.title == "新对话":
+                        chat.title = text[:36] + ("…" if len(text) > 36 else "")
+                    session.flush()
+                    trace_dto = {
+                        "id": trace_row.id,
+                        "preset_id": trace_row.preset_id,
+                        "status": trace_row.status,
+                        "steps": trace_row.steps,
+                        "tool_runs": safe_tool_runs,
+                        "created_at": to_shanghai(trace_row.created_at),
+                        "duration_ms": max(0, int(round((time.monotonic() - turn_started) * 1000))),
+                    }
+                    result = {
+                        "session": {
+                            "id": chat.id,
+                            "title": chat.title,
+                            "model": chat.model,
+                            "thinking_depth": chat.thinking_depth,
+                            "preset_id": chat.preset_id,
+                            "updated_at": to_shanghai(chat.updated_at),
+                        },
+                        "trace": trace_dto,
+                        "user_message": self._chat_message_dto(
+                            user_row, safe_tool_runs, attachment_metadata
+                        ),
+                        "assistant_message": self._chat_message_dto(
+                            assistant_row, safe_tool_runs, []
+                        ),
+                    }
+                break
+            except IntegrityError:
+                if save_attempt:
+                    raise DashboardError("对话保存发生并发冲突，请重新加载后重试。") from None
         return result
 
     def ai_chat_stream_start(
@@ -3303,6 +3358,14 @@ class DashboardService:
         assert client is not None
         try:
             reply = client.chat(messages, context=self._learning_context())
+        except AIKeychainError:
+            # 与 ai_chat_send / _run_knowledge_compiler_ai 保持同一凭据分类，
+            # 否则 keychain 瞬时不可读会穿透成无文案的内部错误并被误判为可重试。
+            raise DashboardError(
+                "AI 凭据无法读取，请在设置中重新保存 AI 连接配置。",
+                category="credential",
+                retryable=False,
+            ) from None
         except AIClassificationError as exc:
             raise DashboardError(str(exc)) from None
         return {"reply": reply, "model": settings.ai_model}
@@ -3344,6 +3407,13 @@ class DashboardService:
         return self.cloud_archive.archive_file(source_path, idempotency_key=idempotency_key)
 
     def archive_retry(self, job_id: str) -> dict[str, Any]:
+        if (
+            type(job_id) is not str
+            or not job_id
+            or len(job_id) > 36
+            or not re.fullmatch(r"[0-9A-Za-z-]+", job_id)
+        ):
+            raise DashboardError("任务标识不正确。")
         with Session(self.engine) as session:
             job = session.get(ArchiveJob, job_id)
             kind = job.kind if job is not None else None
@@ -3467,7 +3537,15 @@ class DashboardService:
             if type(content) is not str or not content.strip():
                 raise DashboardError("AI 未返回可用的知识库内容。")
             return content.strip()
-        except (AIKeychainError, AIClassificationError) as exc:
+        except AIKeychainError:
+            # 与 ai_chat_send 临时客户端分支保持一致：凭据类故障不可重试，
+            # 否则会穿透成无文案的内部错误，并被后台编译任务错分类为 internal/retryable。
+            raise DashboardError(
+                "AI 凭据无法读取，请在设置中重新保存 AI 连接配置。",
+                category="credential",
+                retryable=False,
+            ) from None
+        except AIClassificationError as exc:
             raise DashboardError(str(exc)) from None
         finally:
             self._close_client(client)
@@ -3562,6 +3640,15 @@ class DashboardService:
         self._close_client(transcript_service)
         self._close_client(canvas_client)
         self._close_client(ai_client)
+        # 后台 AI 线程是 daemon，进程退出不会阻塞；但仍需发出取消请求，
+        # 避免线程继续写入将被 dispose 的 engine，以及任务长期停留在 running。
+        with self._ai_task_lock:
+            task_ids = tuple(self._ai_task_threads)
+        for task_id in task_ids:
+            try:
+                self.ai_tasks.cancel(task_id)
+            except Exception:
+                pass
         for temporary in (self._material_temp, self._academic_temp):
             try:
                 temporary.cleanup()
@@ -3633,7 +3720,9 @@ class DashboardService:
         if self.folder_picker is None:
             raise DashboardError("当前环境不支持选择文件夹。")
         selected = self.folder_picker()
-        if selected is None:
+        if not selected:
+            # 原生选择器取消时返回 None；个别平台/测试替身返回 ""，一并按取消处理，
+            # 否则会把空串写进设置并报“归档目录不能为空”。
             return {"cancelled": True, "settings": self.settings_status()}
         updated = self.settings_store.update({"archive_root": selected})
         if self._archive_root_override is None:
@@ -3806,15 +3895,21 @@ class DashboardService:
         running = self._sync_lock.locked()
         lock = Path(DEFAULT_LOCK_PATH)
         if lock.exists() and fcntl is not None:
-            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
             try:
+                fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+            except OSError:
+                # 锁目录不可访问（权限/杀软占用）时不能让状态接口整体失败，
+                # 退回仅依据进程内 _sync_lock 判定，避免未关闭的描述符或裸异常穿透。
+                fd = None
+            if fd is not None:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except BlockingIOError:
-                    running = True
-            finally:
-                os.close(fd)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except BlockingIOError:
+                        running = True
+                finally:
+                    os.close(fd)
 
         with Session(self.engine) as session:
             last_success = session.scalar(select(func.max(SyncState.last_success_at)))

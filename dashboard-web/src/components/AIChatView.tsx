@@ -383,8 +383,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         const run = detail.run as import("@/lib/types").AIToolRun;
         setActive((current) => {
           if (current?.id !== sessionId) return current;
+          // A tool event can arrive after the first content/reasoning delta
+          // (replayed snapshot ordering, or streamed tool runs mid-answer);
+          // only recycle an empty placeholder stream message, never visible text.
           const messages = current.messages.filter(
-            (message) => message.id !== streamId,
+            (message) =>
+              message.id !== streamId ||
+              Boolean(
+                message.content.trim() || message.reasoning_content?.trim(),
+              ),
           );
           const existing = current.traces.findIndex(
             (trace) => trace.id === streamId,
@@ -650,6 +657,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     const handleEscape = (event: KeyboardEvent) => {
       // A nested popover (settings menu etc.) already handled this Escape.
       if (event.defaultPrevented) return;
+      // IME composition (e.g. 微软拼音 Esc 撤销候选词) must not close panels.
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         setHistoryOpen(false);
         if (activityOpen) {

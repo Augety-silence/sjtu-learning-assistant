@@ -9,6 +9,17 @@ const mainSource = readFileSync(
 );
 
 describe("motion contract", () => {
+  it("作业拖放过渡只引用已定义令牌，Toast 有时长兜底", () => {
+    const assignments = readFileSync(
+      new URL("../components/assignments-workspace.css", import.meta.url),
+      "utf8",
+    );
+    expect(assignments).not.toContain("var(--motion-duration-fast)");
+    expect(assignments).not.toContain("var(--motion-ease-standard)");
+    expect(assignments).toContain("var(--motion-fast) var(--ease-motion-out)");
+    expect(css).toContain("var(--toast-duration, 220ms)");
+  });
+
   it("keeps JavaScript motion values aligned with CSS tokens", () => {
     expect(motionDuration).toEqual({
       instant: 0.08,

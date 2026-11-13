@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+import httpx
+
 from sjtu_learning_assistant.ai_classifier import (
     ALLOWED_AI_MODELS,
     DEFAULT_AI_BASE_URL,
@@ -147,9 +149,18 @@ def validate_ai_base_url(value: object) -> str:
     try:
         # urlparse/hostname raise plain ValueError for e.g. "https://[::1".
         parsed = urlparse(normalized)
+        # urlparse 不校验端口；读取 .port 才会对 ":abc"/":99999" 抛 ValueError。
+        parsed.port
+        hostname = parsed.hostname or ""
+        if hostname and not any(character.isspace() for character in hostname):
+            # 与实际请求相同的 httpx IDNA 规则：零宽/全角字符抛 InvalidURL，
+            # 非法 "xn--" 标签抛 IDNAError（ValueError 子类）。否则坏地址会被
+            # 持久化，之后每次构造 AI 客户端都抛出未分类异常并中断同步。
+            httpx.URL(normalized).host
         invalid = (
             parsed.scheme != "https"
-            or not parsed.hostname
+            or not hostname
+            or any(character.isspace() for character in hostname)
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
@@ -157,7 +168,7 @@ def validate_ai_base_url(value: object) -> str:
             or parsed.params
             or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
         )
-    except ValueError as exc:
+    except (ValueError, httpx.InvalidURL) as exc:
         raise SettingsError("AI Base URL 格式不正确。") from exc
     if invalid:
         raise SettingsError("AI Base URL 必须是无账号、查询参数和片段的 HTTPS 地址。")
@@ -294,10 +305,25 @@ def _salvage_settings(payload: object, mail_account: str) -> dict[str, Any]:
 
 def _quarantine_corrupt_settings(path: Path) -> bool:
     """Best-effort: keep an unreadable file for diagnosis, then use defaults."""
+    quarantine_path = path.with_name(f"{path.name}.corrupt")
     try:
-        _replace_with_retry(path, path.with_name(f"{path.name}.corrupt"))
+        _replace_with_retry(path, quarantine_path)
     except OSError:
         return False
+    try:
+        # os.replace 保留源文件权限：若损坏文件由外部编辑器原子重写产生（umask 022
+        # 下为 0644），隔离副本会比 save() 产出的 0600 更宽松。显式收敛到属主可
+        # 读写，与正常 settings.json 的机密性姿态保持一致。
+        if hasattr(os, "fchmod") and not quarantine_path.is_symlink():
+            descriptor = os.open(quarantine_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                if stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+    except OSError:
+        # 已完成隔离，仍需保存禁止自动下载的 fallback；权限动作不能使其被当作新安装。
+        pass
     return True
 
 
@@ -309,7 +335,12 @@ class SettingsStore:
         environment = os.environ if environ is None else environ
         initial_mail_account = validate_mail_account(environment.get("SJTU_EMAIL", ""))
         if not self.path.exists():
-            return LocalSettings(mail_account=initial_mail_account)
+            # 隔离已成功但 fallback 无法写入时，下次启动仍不能被当作全新安装自动下载。
+            quarantined = self.path.with_name(f"{self.path.name}.corrupt")
+            return LocalSettings(
+                mail_account=initial_mail_account,
+                auto_download_current_term=not os.path.lexists(quarantined),
+            )
         try:
             with self.path.open("r", encoding="utf-8-sig") as stream:
                 payload = json.load(stream)

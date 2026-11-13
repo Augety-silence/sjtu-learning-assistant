@@ -19,6 +19,10 @@ SPEC.loader.exec_module(scanner_module)
 
 
 class ScanSecretsTests(unittest.TestCase):
+    def test_database_password_with_empty_user_is_detected(self) -> None:
+        value = "postgresql+driver://:" + "fake-short-value" + "@localhost/database"
+        self.assertTrue(any(pattern.search(value) for pattern in scanner_module.PATTERNS))
+
     def test_scanner_covers_github_fine_grained_and_slack_tokens(self) -> None:
         values = (
             "github_pat_" + "a" * 45,

@@ -15,6 +15,23 @@ from sjtu_learning_assistant.mail_sync import MailCheckError
 
 
 class MailCursorTests(unittest.TestCase):
+    def test_expunge_is_skipped_but_no_bad_never_advance_cursor(self) -> None:
+        for fetch_status, fetch_data in (("OK", [None]), ("NO", []), ("BAD", [])):
+            with self.subTest(status=fetch_status):
+                client = MagicMock()
+                client.__enter__.return_value = client
+                client.select.return_value = ("OK", [])
+                client.response.return_value = ("UIDVALIDITY", [b"12345"])
+                client.uid.side_effect = [("OK", [b"7"]), (fetch_status, fetch_data)]
+                with patch("sjtu_learning_assistant.mail_client.imaplib.IMAP4_SSL", return_value=client):
+                    if fetch_status == "OK":
+                        result = fetch_incremental_mail("student@example.com", "fake", None)
+                        self.assertEqual([], result.messages)
+                        self.assertEqual(7, result.highest_uid)
+                    else:
+                        with self.assertRaises(MailCheckError):
+                            fetch_incremental_mail("student@example.com", "fake", None)
+
     def test_cursor_round_trip(self) -> None:
         cursor = make_cursor("12345", 678)
         self.assertEqual(("12345", 678), parse_cursor(cursor))

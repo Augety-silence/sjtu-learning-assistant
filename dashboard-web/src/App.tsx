@@ -63,6 +63,7 @@ import {
   getVideoSubtitles,
   invoke,
   nextTranscriptPlaybackSequence,
+  openExternal,
   prepareTranscriptPlayback,
   retryTranscriptJob,
   revealAcademicExport,
@@ -143,6 +144,19 @@ const pageAILabels: Record<ViewName, string> = {
 };
 
 type ReadRequest = BoundedReadRequest;
+
+// 转写任务的终态集合：没有进行中任务时降低轮询频率，避免无谓后端调用。
+// 注意与后端 transcript_service.FINAL_STATES 对齐：saved 是“为播放让路”的暂停态，
+// 属于 ACTIVE_STATES，不能当作终态，否则暂停中的任务会饿死轮询。
+const transcriptTerminalStatuses = new Set<string>([
+  "completed",
+  "completed_with_warnings",
+  "partial",
+  "failed",
+  "waiting_for_ai",
+  "interrupted",
+  "cancelled",
+]);
 
 function useBoundedReadRequests(): ReadRequest {
   const pool = useRef<ReadRequest | null>(null);
@@ -301,7 +315,14 @@ function ScheduleAdapter({
       if (calendarRequest.current === request) setLoading(false);
     }
   }, [month]);
-  useEffect(() => void loadCanvas(), [loadCanvas]);
+  // “待处理”页只展示本地截止事项，不应拉取 Canvas 月历。
+  useEffect(() => {
+    if (mode !== "calendar") return;
+    void loadCanvas();
+    return () => {
+      calendarRequest.current += 1;
+    };
+  }, [loadCanvas, mode]);
 
   if (mode === "deadlines") return <DeadlinesView embedded />;
   return (
@@ -427,12 +448,17 @@ function GradesAdapter({
   );
   const save = async (input: GradeSaveInput) => {
     if (!courseId) return;
-    await updateGrading(
-      courseId,
-      Number(input.assignmentId),
-      Number(input.studentId),
-      { grade: input.score },
-    );
+    const studentNumber = positiveInteger(input.studentId);
+    if (studentNumber === null) {
+      throw new Error("该成绩缺少有效学生标识，已取消保存。");
+    }
+    const assignmentNumber = positiveInteger(input.assignmentId);
+    if (assignmentNumber === null) {
+      throw new Error("作业标识无效，已取消保存。");
+    }
+    await updateGrading(courseId, assignmentNumber, studentNumber, {
+      grade: input.score,
+    });
     await load(true);
   };
   return (
@@ -611,6 +637,10 @@ function GradingAdapter({
   const [loading, setLoading] = useState(Boolean(courseId));
   const [error, setError] = useState<string | null>(null);
   const gradingRequest = useRef(0);
+  // 提交附件是学生个人文件，不在课程资料表里，不能走 material_download；改用 Canvas 返回的下载链接。
+  // useRef 的初始值每次渲染都会求值，Map 改为惰性创建，避免每渲染分配一个随即丢弃的 Map。
+  const attachmentUrls = useRef<Map<string, string> | null>(null);
+  if (attachmentUrls.current === null) attachmentUrls.current = new Map();
   const load = useCallback(
     async (silent = false) => {
       if (!courseId) return;
@@ -651,7 +681,18 @@ function GradingAdapter({
           "items" in result && Array.isArray(result.items)
             ? result.items
             : [result as GradingSubmissionDto];
-        setSubmissions(items.map(adaptGradingSubmission));
+        const adapted = items.map(adaptGradingSubmission);
+        const urls = new Map<string, string>();
+        items.forEach((item, index) => {
+          const raw = Array.isArray(item.attachments) ? item.attachments : [];
+          adapted[index].attachments.forEach((attachment, attachmentIndex) => {
+            const url = raw[attachmentIndex]?.url;
+            if (typeof url === "string")
+              urls.set(`${adapted[index].id}\n${attachment.id}`, url);
+          });
+        });
+        attachmentUrls.current = urls;
+        setSubmissions(adapted);
       } catch (reason) {
         if (gradingRequest.current === request)
           setError(messageFrom(reason, "作业提交加载失败"));
@@ -722,9 +763,17 @@ function GradingAdapter({
         onAddComment={({ studentId, comment }) =>
           update(studentId, { comment })
         }
-        onDownloadAttachment={(attachment) =>
-          invoke("material_download", { source_id: attachment.id })
-        }
+        onDownloadAttachment={async (attachment, submission) => {
+          const url = attachmentUrls.current?.get(
+            `${submission.id}\n${attachment.id}`,
+          );
+          if (!url?.startsWith("https://")) {
+            throw new Error(
+              "该附件没有可用的 Canvas 下载链接，请在 Canvas 网页中查看。",
+            );
+          }
+          await openExternal(url);
+        }}
       />
     </ContentReveal>
   );
@@ -734,7 +783,12 @@ function videoDisplayTitle(item: CourseMediaItemDto) {
   const parts: string[] = [];
   if (item.week_number) parts.push(`第${item.week_number}周`);
   if (item.weekday_label) parts.push(item.weekday_label);
-  else if (item.weekday)
+  else if (
+    typeof item.weekday === "number" &&
+    Number.isInteger(item.weekday) &&
+    item.weekday >= 1 &&
+    item.weekday <= 7
+  )
     parts.push(`周${"一二三四五六日".charAt(item.weekday - 1)}`);
   if (item.lesson_number) parts.push(`第${item.lesson_number}节`);
   if (parts.length) return parts.join(" · ");
@@ -795,7 +849,9 @@ function VideosAdapter({
   refreshVersion: number;
   readRequest: ReadRequest;
 }) {
-  const playbackSeq = useRef(new Map<string, number>());
+  // 与附件 URL 表同理：Map 惰性创建，避免每次渲染重建初始值。
+  const playbackSeq = useRef<Map<string, number> | null>(null);
+  if (playbackSeq.current === null) playbackSeq.current = new Map();
   const [videos, setVideos] = useState<CourseVideoItem[]>([]);
   const [loadedCourseId, setLoadedCourseId] = useState<number | null>(null);
   const [slidesPdfAvailable, setSlidesPdfAvailable] = useState(false);
@@ -810,13 +866,14 @@ function VideosAdapter({
     model: string;
     connectionVerified: boolean;
     status: "checking" | "ready" | "blocked" | "unknown";
-  }>({
+  }>(() => ({
+    // 初始对象改惰性创建：useState 非函数初始值每次渲染都会构造，只是被丢弃。
     status: "checking",
     configured: false,
     message: "正在检查 AI 配置…",
     model: "",
     connectionVerified: false,
-  });
+  }));
   useEffect(() => {
     const controller = new AbortController();
     void readRequest(
@@ -848,6 +905,10 @@ function VideosAdapter({
     return () => controller.abort();
   }, [readRequest, refreshVersion, taskRetry]);
   const [transcriptJobs, setTranscriptJobs] = useState<TranscriptJob[]>([]);
+  const hasActiveTranscriptJobs = useRef(false);
+  // 本地开始/重试/取消转写会改写活跃标记；在途轮询返回时若发现已被本地动作改写，
+  // 不能用旧响应把标记覆盖回去，否则会让新任务饿死后续轮询。
+  const transcriptLocalIntent = useRef(0);
   const [transcriptCourseId, setTranscriptCourseId] = useState<number | null>(
     null,
   );
@@ -957,15 +1018,27 @@ function VideosAdapter({
   }, [load]);
   useEffect(() => {
     setTranscriptCourseId(null);
+    hasActiveTranscriptJobs.current = false;
     if (!courseId) {
       setTranscriptJobs([]);
       return;
     }
     let active = true;
     let pending = false;
+    let lastSuccessfulRead: number | null = null;
     const controller = new AbortController();
-    const refresh = async () => {
+    const refresh = async (force = false) => {
       if (!active || pending || document.hidden) return;
+      // 空闲时仍每 10 秒探测后端自动重试；初读失败不得关闭后续轮询。
+      if (
+        !force &&
+        !hasActiveTranscriptJobs.current &&
+        lastSuccessfulRead !== null &&
+        performance.now() - lastSuccessfulRead < 10_000
+      )
+        return;
+      // 记录本次读取启动时的本地动作版本，返回时用于识别在途期间的本地写入。
+      const localIntent = transcriptLocalIntent.current;
       pending = true;
       try {
         const result = await readRequest(
@@ -974,9 +1047,15 @@ function VideosAdapter({
           controller.signal,
           "学习材料状态读取超时，视频仍可播放。",
         );
-        if (active) {
+        if (active && transcriptLocalIntent.current === localIntent) {
+          lastSuccessfulRead = performance.now();
           setTranscriptCourseId(courseId);
           setTranscriptError(null);
+          if (transcriptLocalIntent.current === localIntent) {
+            hasActiveTranscriptJobs.current = result.items.some(
+              (item) => !transcriptTerminalStatuses.has(item.status),
+            );
+          }
           setTranscriptJobs((current) =>
             JSON.stringify(current) === JSON.stringify(result.items)
               ? current
@@ -994,12 +1073,13 @@ function VideosAdapter({
     };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2500);
-    document.addEventListener("visibilitychange", refresh);
+    const onVisibilityChange = () => void refresh(true);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       active = false;
       controller.abort();
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [courseId, readRequest, taskRetry]);
   const visibleVideos = loadedCourseId === courseId ? videos : [];
@@ -1022,7 +1102,13 @@ function VideosAdapter({
   return (
     <>
       {(toolError || transcriptError) && (
-        <div className="inline-notice" role="status">
+        // 非阻断性工具错误（录像列表仍可用），等待当前播报结束再提示。
+        <div
+          className="inline-notice"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <span>{transcriptError || toolError}</span>
           <Button
             variant="link"
@@ -1076,6 +1162,8 @@ function VideosAdapter({
           );
           if (activeCourseId.current !== courseId) return;
           setTranscriptCourseId(courseId);
+          hasActiveTranscriptJobs.current = true;
+          transcriptLocalIntent.current += 1;
           setTranscriptJobs((current) => [
             ...batch.jobs,
             ...current.filter(
@@ -1091,9 +1179,9 @@ function VideosAdapter({
           )
             return;
           const seq = nextTranscriptPlaybackSequence(
-            playbackSeq.current.get(video.id) ?? 0,
+            playbackSeq.current?.get(video.id) ?? 0,
           );
-          playbackSeq.current.set(video.id, seq);
+          playbackSeq.current?.set(video.id, seq);
           await updateTranscriptPlayback(
             courseId,
             video.id,
@@ -1157,18 +1245,25 @@ function VideosAdapter({
           );
           if (activeCourseId.current !== courseId) return;
           setTranscriptCourseId(courseId);
+          hasActiveTranscriptJobs.current = true;
+          transcriptLocalIntent.current += 1;
           setTranscriptJobs((current) => [...batch.jobs, ...current]);
         }}
         onRetryTranscript={async (job) => {
           const batch = await retryTranscriptJob(job.id);
           if (activeCourseId.current !== courseId) return;
           setTranscriptCourseId(courseId);
+          hasActiveTranscriptJobs.current = true;
+          transcriptLocalIntent.current += 1;
           setTranscriptJobs((current) => [...batch.jobs, ...current]);
         }}
         onCancelTranscript={async (job) => {
           const batch = await cancelTranscriptJob(job.id);
           if (activeCourseId.current !== courseId) return;
           setTranscriptCourseId(courseId);
+          // 此响应仅含一个批次，下一轮必须重读整个课程，不能停掉其他批次。
+          hasActiveTranscriptJobs.current = true;
+          transcriptLocalIntent.current += 1;
           setTranscriptJobs((current) => [
             ...batch.jobs,
             ...current.filter((item) => item.id !== job.id),
@@ -1243,6 +1338,10 @@ function VideosAdapter({
 export default function App() {
   const readRequest = useBoundedReadRequests();
   const [view, setViewState] = useState<ViewName>(initialView);
+  // SPA 无整页导航，视图切换时同步 document.title，满足 WCAG 2.2 SC 2.4.2 页面标题要求。
+  useEffect(() => {
+    document.title = `${pageAILabels[view]} · SJTU 学习助手`;
+  }, [view]);
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>("calendar");
   const [assignmentTarget, setAssignmentTarget] =
     useState<AssignmentTarget | null>(null);
@@ -1303,7 +1402,8 @@ export default function App() {
     onChange: (value: number) => void,
   ) =>
     courses.length > 1 ? (
-      <div className="finder-toolbar" aria-label="课程范围">
+      // div 的隐式 generic 角色禁止 aria-label（ARIA 1.2），补 role="group" 才能向辅助技术暴露分组名。
+      <div className="finder-toolbar" role="group" aria-label="课程范围">
         <label>
           <span>课程</span>
           <select
@@ -1327,37 +1427,48 @@ export default function App() {
   };
 
   const openSidebarAI = (request: SidebarAIRequest = {}) => {
-    for (const key of [
-      "ai-chat-pending-prompt",
-      "ai-chat-pending-context",
-      "ai-chat-pending-session",
-      "ai-chat-new-session",
-      "ai-chat-auto-submit",
-    ]) {
-      window.localStorage.removeItem(key);
-    }
-    if (request.sessionId) {
-      window.localStorage.setItem("ai-chat-pending-session", request.sessionId);
-    } else if (request.newSession) {
-      window.localStorage.setItem("ai-chat-new-session", "true");
-    }
-    if (request.prompt) {
-      const selection: Record<string, string | number | boolean | null> = {};
-      if (view === "calendar") selection.schedule_mode = scheduleMode;
-      if (["grades", "roster", "grading"].includes(view) && staffCourseId) {
-        selection.course_id = staffCourseId;
-      }
-      window.localStorage.setItem("ai-chat-pending-prompt", request.prompt);
-      window.localStorage.setItem("ai-chat-auto-submit", "true");
-      window.localStorage.setItem(
+    try {
+      for (const key of [
+        "ai-chat-pending-prompt",
         "ai-chat-pending-context",
-        JSON.stringify({
-          page_id: view,
-          source: "sidebar",
-          title: pageAILabels[view],
-          ...(Object.keys(selection).length > 0 ? { selection } : {}),
-        }),
-      );
+        "ai-chat-pending-session",
+        "ai-chat-new-session",
+        "ai-chat-auto-submit",
+      ]) {
+        window.localStorage.removeItem(key);
+      }
+      if (request.sessionId) {
+        window.localStorage.setItem(
+          "ai-chat-pending-session",
+          request.sessionId,
+        );
+      } else if (request.newSession) {
+        window.localStorage.setItem("ai-chat-new-session", "true");
+      }
+      if (request.prompt) {
+        const selection: Record<string, string | number | boolean | null> = {};
+        if (view === "calendar") selection.schedule_mode = scheduleMode;
+        if (["grades", "roster", "grading"].includes(view) && staffCourseId) {
+          selection.course_id = staffCourseId;
+        }
+        window.localStorage.setItem("ai-chat-pending-prompt", request.prompt);
+        window.localStorage.setItem("ai-chat-auto-submit", "true");
+        window.localStorage.setItem(
+          "ai-chat-pending-context",
+          JSON.stringify({
+            page_id: view,
+            source: "sidebar",
+            title: pageAILabels[view],
+            ...(Object.keys(selection).length > 0 ? { selection } : {}),
+          }),
+        );
+      }
+    } catch {
+      showToast({
+        kind: "error",
+        message: "浏览器存储不可用，无法把当前内容交给 AI 助手。",
+      });
+      return;
     }
     setDrawerOpen(false);
     setView("ai-chat");
@@ -1485,6 +1596,7 @@ export default function App() {
   const statusFailures = useRef(0);
   // 因状态不可读而提前结束“同步中”后，状态恢复时仍补报结果并刷新数据。
   const statusLost = useRef(false);
+  const observedSyncing = useRef(false);
   const currentView = useRef(view);
   // 草稿页上推迟的同步刷新：离开草稿页时补上，避免 capabilities 等停留在同步前。
   const [syncRefreshDeferred, setSyncRefreshDeferred] = useState(false);
@@ -1509,6 +1621,7 @@ export default function App() {
     try {
       const accepted = syncAccepted.current;
       const next = await invoke<SyncStatus>("sync_status");
+      observedSyncing.current = next.status === "syncing";
       statusFailures.current = 0;
       setSyncStatus((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
@@ -1554,14 +1667,24 @@ export default function App() {
         if (!keepDrafts) setDataVersion((value) => value + 1);
       }
     } catch {
-      setSyncStatus(null);
-      if (syncRequested && syncAccepted.current) {
+      // 瞬时读取失败保留上次状态，避免“上次同步”时间戳与同步指示闪烁；
+      // 连续失败达到上限时再以 idle 占位解除按钮禁用，时间戳仍保留。
+      if (observedSyncing.current || (syncRequested && syncAccepted.current)) {
         statusFailures.current += 1;
         if (statusFailures.current >= SYNC_STATUS_FAILURE_LIMIT) {
           statusFailures.current = 0;
+          observedSyncing.current = false;
           syncAccepted.current = false;
           statusLost.current = true;
           deferredRefreshToast.current = false;
+          setSyncStatus((current) =>
+            current
+              ? {
+                  ...current,
+                  status: "idle",
+                }
+              : current,
+          );
           setSyncRequested(false);
           showToast({
             id: "sync-operation",
@@ -1777,14 +1900,23 @@ export default function App() {
             {view === "local-projects" && (
               <LocalProjectsView
                 onCompile={(project) => {
-                  window.localStorage.setItem(
-                    "knowledge-compiler-source",
-                    project.source_root,
-                  );
-                  window.localStorage.setItem(
-                    "knowledge-compiler-target",
-                    project.target_root,
-                  );
+                  try {
+                    window.localStorage.setItem(
+                      "knowledge-compiler-source",
+                      project.source_root,
+                    );
+                    window.localStorage.setItem(
+                      "knowledge-compiler-target",
+                      project.target_root,
+                    );
+                  } catch {
+                    showToast({
+                      kind: "error",
+                      message:
+                        "浏览器存储不可用，无法把项目路径传给知识库编译器。",
+                    });
+                    return;
+                  }
                   setView("knowledge");
                 }}
               />

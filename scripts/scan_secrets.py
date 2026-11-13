@@ -15,7 +15,9 @@ PATTERNS = (
     re.compile(r"github_pat_[A-Za-z0-9_]{40,}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(r"postgres(?:ql)?(?:\+\w+)?://[^\s:'\"]+:[^\s@'\"]+@", re.IGNORECASE),
+    # userinfo 的 user 段允许为空（RFC 3986，即 scheme 之后直接跟冒号），
+    # 用 * 而不是 +，否则空用户名连接串中的真实密码会漏报。
+    re.compile(r"postgres(?:ql)?(?:\+\w+)?://[^\s:'\"]*:[^\s@'\"]+@", re.IGNORECASE),
     re.compile(r"(?:api[_-]?key|secret|token|password)\s*[=:]\s*['\"][A-Za-z0-9_./+=-]{20,}['\"]", re.IGNORECASE),
 )
 SKIP_SUFFIXES = {".png", ".icns", ".jpg", ".jpeg", ".gif", ".pdf", ".lock"}

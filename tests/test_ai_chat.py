@@ -5,14 +5,18 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from office_fixtures import build_pptx
 from PIL import Image
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.dashboard_service import DashboardError, DashboardService
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.local_settings import SettingsStore
+from sjtu_learning_assistant.models import AIChatMessage
 
 
 class FakeAIClient:
@@ -57,6 +61,27 @@ class AIChatHistoryTests(unittest.TestCase):
         self.service.close()
         self.engine.dispose()
         self.temporary.cleanup()
+
+    def test_transaction_conflict_retries_save_without_recalling_ai(self) -> None:
+        chat = self.service.ai_chat_new("auto", "standard")
+        original_flush = Session.flush
+        conflicts = []
+
+        def flush_once(session, *args, **kwargs):
+            if any(isinstance(row, AIChatMessage) for row in session.new) and not conflicts:
+                conflicts.append(True)
+                raise IntegrityError("fake sequence conflict", {}, RuntimeError("fake"))
+            return original_flush(session, *args, **kwargs)
+
+        with patch.object(Session, "flush", flush_once):
+            result = self.service.ai_chat_send(chat["id"], "假模型回归测试")
+        self.assertEqual(1, len(conflicts))
+        self.assertEqual(1, len(FakeAIClient.requested_messages))
+        restored = self.service.ai_chat_session(chat["id"])
+        self.assertEqual(2, len(restored["messages"]))
+        self.assertEqual(1, len(restored["traces"]))
+        self.assertGreaterEqual(result["trace"]["duration_ms"], 0)
+        self.assertGreaterEqual(restored["traces"][0]["duration_ms"], 0)
 
     def test_history_persists_and_deep_auto_routes_to_reasoner(self) -> None:
         chat = self.service.ai_chat_new("auto", "standard")

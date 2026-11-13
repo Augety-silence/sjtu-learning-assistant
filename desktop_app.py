@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import logging
+import logging.handlers
 import os
 import secrets
 import stat
@@ -107,6 +109,79 @@ def _static_index_url() -> str:
         return uri
     return f"{uri}?build={fingerprint}"
 
+
+_DESKTOP_LOGGING_CONFIGURED = False
+
+
+class _SafeDesktopFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        # 清洗最终字符串，包含参数及 traceback；不修改其他 handler 共享的 LogRecord。
+        return sanitize_text(super().format(copy.copy(record)))
+
+
+class _PrivateDesktopLogHandler(logging.handlers.RotatingFileHandler):
+    def _open(self):
+        descriptor = os.open(
+            self.baseFilename,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("日志目标不是普通文件")
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            return os.fdopen(descriptor, "a", encoding="utf-8")
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        # 日志不可用不能影响操作，也不能由 logging 的 stderr fallback 输出原始参数。
+        pass
+
+
+def _configure_desktop_logging() -> None:
+    """Persist warnings/errors so windowed builds stay diagnosable without a console.
+
+    PyInstaller windowed builds set stderr to None; without a file handler the
+    LOGGER.warning/exception calls in this module (and in the services) are
+    silently dropped, leaving users and support staff with no root cause.
+    """
+    global _DESKTOP_LOGGING_CONFIGURED
+    if _DESKTOP_LOGGING_CONFIGURED:
+        return
+    # Only attach the file sink in packaged runs (or an explicitly redirected
+    # profile); dev and unit-test runs keep the default stderr behaviour and
+    # must not create log directories in the developer's home folder.
+    if not getattr(sys, "frozen", False) and not os.environ.get("SJTU_APP_SUPPORT_DIR"):
+        return
+    try:
+        log_dir = APP_SUPPORT_DIR / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if log_dir.is_symlink():
+            return
+        if os.name != "nt":
+            log_dir.chmod(0o700)
+        handler = _PrivateDesktopLogHandler(
+            log_dir / "desktop.log",
+            mode="a",
+            maxBytes=512 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+            delay=True,
+        )
+    except OSError:
+        # A read-only profile or missing permissions must not block startup;
+        # stderr output still works in dev and console builds.
+        return
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(
+        _SafeDesktopFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.addHandler(handler)
+    _DESKTOP_LOGGING_CONFIGURED = True
 
 _SENSITIVE_PATTERNS = (
     re.compile(r"\w+://[^\s/:]+:[^\s]+@[^\s]+"),
@@ -1961,6 +2036,9 @@ class DesktopBridge:
                 "error": {"code": "database_unavailable", "message": "本地数据库暂时不可用。"},
             }
         except Exception:
+            # The renderer only receives a generic message; keep the traceback
+            # in the local desktop log so field failures stay diagnosable.
+            LOGGER.exception("桥接操作失败: action=%s", action)
             return {
                 "ok": False,
                 "error": {
@@ -2001,7 +2079,9 @@ class DesktopScheduler:
                 self._task()
             except Exception:
                 # A scheduler failure must not terminate the UI. Errors are visible
-                # through sync_status without exposing exception details.
+                # through sync_status without exposing exception details; keep the
+                # traceback in the desktop log for support diagnostics.
+                LOGGER.exception("计划同步任务执行失败")
                 continue
 
     def stop(self, timeout: float = 2.0) -> None:
@@ -2328,6 +2408,11 @@ def _install_native_file_drop_bridge(window: object) -> None:
     # Install before registering the listener: pywebview backends only queue
     # native drop paths once a drop listener exists.
     dnd_state = _install_trusted_native_drop_queue()
+    if dnd_state is None and _REQUIRE_NATIVE_DROP_RECORD:
+        LOGGER.warning(
+            "无法安装可信原生拖放队列（pywebview 版本或内部结构不兼容）；"
+            "本次启动的文件拖放将不可用，请改用文件选择按钮。"
+        )
 
     def forward_drop(event: object) -> None:
         pending_native_paths: object = ()
@@ -2434,6 +2519,7 @@ end run
 
 def run_desktop_app() -> int:
     """Create the native window. Tests exercise components without calling this."""
+    _configure_desktop_logging()
     if not STATIC_INDEX.is_file():
         if getattr(sys, "frozen", False):
             _report_startup_error("错误：安装包缺少界面资源，请重新安装 SJTU 学习助手。")
@@ -2569,15 +2655,23 @@ def run_desktop_app() -> int:
             return 2
         return 0
     finally:
+        def _close_quietly(name: str, closer: Callable[[], Any]) -> None:
+            try:
+                closer()
+            except Exception:
+                # Shutdown must still release the remaining resources (and
+                # dispose the engine) even if one component fails to close.
+                LOGGER.exception("应用退出时关闭 %s 失败", name)
+
         if scheduler is not None:
-            scheduler.stop()
+            _close_quietly("计划调度器", scheduler.stop)
         if backup_manager is not None:
-            backup_manager.close()
+            _close_quietly("备份管理器", backup_manager.close)
         if service is not None:
-            service.close()
+            _close_quietly("主服务", service.close)
         if learning_service is not None:
-            learning_service.close()
-        engine.dispose()
+            _close_quietly("作业服务", learning_service.close)
+        _close_quietly("数据库引擎", engine.dispose)
 
 
 def main() -> int:

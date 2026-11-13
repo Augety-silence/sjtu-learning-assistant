@@ -738,6 +738,40 @@ describe("后台轮询状态回归", () => {
     last_run_at: "2026-10-10T10:00:00+08:00",
   };
 
+  it("外部同步连续读取失败后解除交互锁并保留成功时间", async () => {
+    const timers = controlIntervals();
+    let fail = false;
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return new Promise<never>(() => undefined);
+      if (action === "overview") return overview as never;
+      if (action === "sync_status") {
+        if (fail) throw new Error("synthetic unavailable status");
+        return { ...idleStatus, status: "syncing" } as never;
+      }
+      throw new Error(`Unexpected action: ${action}`);
+    });
+    render(<App />);
+    const button = await screen.findByRole("button", { name: "同步中" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    fail = true;
+    for (let count = 0; count < 10; count += 1) {
+      await act(async () => {
+        timers.latest(1200)?.tick();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "立即同步" })
+          .getAttribute("aria-disabled"),
+      ).not.toBe("true"),
+    );
+    expect(screen.queryByText("尚未同步")).toBeNull();
+    expect(screen.getByText(/暂时无法读取同步状态/)).toBeTruthy();
+  });
+
   it("sync_status 请求未完成时，定时轮询不会启动第二个请求", async () => {
     const timers = controlIntervals();
     const pendingStatus = deferred<SyncStatus>();
@@ -841,6 +875,69 @@ describe("后台轮询状态回归", () => {
 });
 
 describe("课程切换时字幕任务轮询隔离", () => {
+  function configureVideoPage() {
+    window.location.hash = "#/videos";
+    vi.mocked(invoke).mockImplementation(async (action) => {
+      if (action === "capabilities") return learnerCapabilities() as never;
+      if (action === "sync_status") return { status: "idle" } as never;
+      throw new Error(`Unexpected action: ${action}`);
+    });
+  }
+
+  it("首次隐藏不关掉轮询，可见事件触发首次读取", async () => {
+    configureVideoPage();
+    const timers = controlIntervals();
+    let hidden = true;
+    vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+    render(<App />);
+    await screen.findByText("A 专属录像");
+    await act(async () => {
+      timers.latest(2500)?.tick();
+    });
+    expect(getTranscriptJobs).not.toHaveBeenCalled();
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(1));
+  });
+
+  it("初次读取失败后下一轮仍能恢复", async () => {
+    configureVideoPage();
+    const timers = controlIntervals();
+    vi.mocked(getTranscriptJobs)
+      .mockRejectedValueOnce(new Error("假失败"))
+      .mockResolvedValue({ items: [] });
+    render(<App />);
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(1));
+    await screen.findByText("假失败");
+    await act(async () => {
+      timers.latest(2500)?.tick();
+    });
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("假失败")).toBeNull();
+  });
+
+  it("空闲清单保留低频探测，发现后端自动重试", async () => {
+    configureVideoPage();
+    const timers = controlIntervals();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    render(<App />);
+    await screen.findByText("A 专属录像");
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(1));
+    now = 2500;
+    await act(async () => {
+      timers.latest(2500)?.tick();
+    });
+    expect(getTranscriptJobs).toHaveBeenCalledTimes(1);
+    now = 10_001;
+    await act(async () => {
+      timers.latest(2500)?.tick();
+    });
+    await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(2));
+  });
+
   it("单课程慢请求不重叠，切课程后迟到响应不会覆盖当前课程", async () => {
     window.location.hash = "#/videos";
     const timers = controlIntervals();

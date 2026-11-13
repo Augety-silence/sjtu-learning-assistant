@@ -22,7 +22,9 @@ HIGH_CONFIDENCE_SECRET_PATTERNS = (
 )
 DATABASE_CREDENTIAL_PATTERN = re.compile(
     rb"(?:postgres(?:ql)?|mysql|mariadb)(?:\+[A-Za-z0-9_]+)?://"
-    rb"[^\s:/@'\"]+:([^\s/@'\"]+)@",
+    # RFC 3986 允许 userinfo 的 user 段为空（scheme 之后直接跟冒号），
+    # 用 * 而不是 +，避免空用户名把真实密码带出扫描。
+    rb"[^\s:/@'\"]*:([^\s/@'\"]+)@",
     re.IGNORECASE,
 )
 PLACEHOLDER_PASSWORDS = {
@@ -121,15 +123,21 @@ def main() -> int:
         except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
             errors.append("Info.plist 无法读取或格式无效")
         else:
-            expected = {
-                "CFBundleIdentifier": "io.github.sjtu-learning-assistant",
-                "CFBundleName": "SJTU Learning Assistant",
-            }
-            for key, value in expected.items():
-                if plist.get(key) != value:
-                    errors.append(f"Info.plist 的 {key} 不正确")
-            if not plist.get("CFBundleShortVersionString"):
-                errors.append("Info.plist 缺少版本")
+            # plistlib.load 对 string/list/integer 等非字典根对象不抛异常
+            # （文档：根对象"usually is a dictionary"而非强制），后续 .get 会变成
+            # 未捕获的 AttributeError traceback，需在此转成结构化门禁错误。
+            if not isinstance(plist, dict):
+                errors.append("Info.plist 根对象必须是字典")
+            else:
+                expected = {
+                    "CFBundleIdentifier": "io.github.sjtu-learning-assistant",
+                    "CFBundleName": "SJTU Learning Assistant",
+                }
+                for key, value in expected.items():
+                    if plist.get(key) != value:
+                        errors.append(f"Info.plist 的 {key} 不正确")
+                if not plist.get("CFBundleShortVersionString"):
+                    errors.append("Info.plist 缺少版本")
 
     forbidden_path = _forbidden_path_bytes(args.forbid_path)
     seen: set[Path] = set()

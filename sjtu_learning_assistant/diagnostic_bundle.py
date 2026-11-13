@@ -114,10 +114,13 @@ class DiagnosticBundleError(RuntimeError):
 
 def _sanitize_url(match: re.Match[str]) -> str:
     raw_url = match.group(0)
-    trailing = ""
-    while raw_url and raw_url[-1] in ".,);]}":
-        trailing = raw_url[-1] + trailing
-        raw_url = raw_url[:-1]
+    # 用索引回退代替“切片 + 前置拼接”循环：后者每轮都复制整个字符串，
+    # 在超长尾随标点（如 ")" * 400k）下退化为 O(n^2)，2 MB 输入可阻塞约百秒。
+    cut = len(raw_url)
+    while cut and raw_url[cut - 1] in ".,);]}":
+        cut -= 1
+    trailing = raw_url[cut:]
+    raw_url = raw_url[:cut]
     try:
         parsed = urlsplit(raw_url)
         host = parsed.hostname or ""

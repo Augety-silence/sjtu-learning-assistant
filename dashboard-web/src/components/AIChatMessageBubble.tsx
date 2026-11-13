@@ -37,6 +37,18 @@ function safeMarkdownUrl(url: string, key: string) {
   return null;
 }
 
+// 旧 WKWebView 不支持 GFM 自动链接内部的 lookbehind，降级 CommonMark。
+export function safeRemarkPlugins() {
+  try {
+    new RegExp("(?<=a)b");
+    return [remarkGfm];
+  } catch {
+    return [];
+  }
+}
+
+const remarkPlugins = safeRemarkPlugins();
+
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
   if (!isValidElement<{ children?: ReactNode; className?: string }>(child)) {
@@ -72,7 +84,7 @@ const MessageMarkdown = memo(function MessageMarkdown({
 }) {
   const markdown = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={
         fade ? [rehypeSanitize, [rehypeStreamFade, fade]] : [rehypeSanitize]
       }
