@@ -22,6 +22,7 @@ datas = [
     # ffmpeg binary as package data, otherwise video_screenshot_pdf silently
     # degrades on machines without a system ffmpeg on PATH.
     *collect_data_files("imageio_ffmpeg"),
+    *collect_data_files("pypdfium2"),
 ]
 
 hiddenimports = [
@@ -32,6 +33,7 @@ hiddenimports = [
     "keyring.backends.fail",
     "keyring.backends.Windows",
     "pypdf",
+    "pypdfium2",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

@@ -65,6 +65,14 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("KnowledgeCompilerView", () => {
+  it("默认选择逐页多模态，显示转换边界", async () => {
+    render(<KnowledgeCompilerView />);
+    const radio = await screen.findByRole("radio", {
+      name: /逐页多模态转 Markdown/,
+    });
+    expect((radio as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/每次最多 100 页调用/)).toBeTruthy();
+  });
   it("展示 12 轮编译路线和安全目录说明", async () => {
     render(<KnowledgeCompilerView />);
     expect(
@@ -145,6 +153,7 @@ describe("KnowledgeCompilerView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "扫描素材" }));
     expect(await screen.findByText("12")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /完整编译 · 12 轮/ }));
     fireEvent.click(screen.getByRole("button", { name: "开始编译" }));
 
     await waitFor(() =>

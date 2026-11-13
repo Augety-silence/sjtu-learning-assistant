@@ -40,6 +40,7 @@ datas = [
     (str(ROOT / "agent_presets"), "agent_presets"),
     (str(ROOT / "migrations"), "migrations"),
     *collect_data_files("imageio_ffmpeg"),
+    *collect_data_files("pypdfium2"),
 ]
 
 hiddenimports = [
@@ -52,6 +53,7 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "pypdf",
+    "pypdfium2",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

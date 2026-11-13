@@ -3509,7 +3509,7 @@ class DashboardService:
         return service
 
     def _run_knowledge_compiler_ai(
-        self, model: str, system_prompt: str, user_content: str
+        self, model: str, system_prompt: str, user_content: Any
     ) -> str:
         settings = self._effective_settings()
         if not settings.ai_enabled or not settings.ai_key_saved:
@@ -3534,6 +3534,8 @@ class DashboardService:
                 system_prompt=False,
             )
             content = result.get("content")
+            if (result.get("response_metadata") or {}).get("finish_reason") == "length":
+                raise DashboardError("知识库响应达到长度上限，请拆分页面或素材后重试。")
             if type(content) is not str or not content.strip():
                 raise DashboardError("AI 未返回可用的知识库内容。")
             return content.strip()

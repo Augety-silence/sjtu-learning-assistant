@@ -92,7 +92,9 @@ function PathPicker({
         <Icon />
       </div>
       <div>
-        <strong>{source ? "课程 Markdown 素材" : "Obsidian Vault 输出"}</strong>
+        <strong>
+          {source ? "课程 Markdown / PPTX / PDF 素材" : "Obsidian Vault 输出"}
+        </strong>
         <span title={value || undefined}>
           {value || (source ? "选择需要递归扫描的目录" : "请选择独立的空目录")}
         </span>
@@ -116,7 +118,7 @@ export function KnowledgeCompilerView() {
   const [targetRoot, setTargetRoot] = useState(
     () => window.localStorage.getItem(TARGET_KEY) ?? "",
   );
-  const [mode, setMode] = useState<KnowledgeCompilerMode>("full");
+  const [mode, setMode] = useState<KnowledgeCompilerMode>("documents");
   const phaseIndicatorId = useSelectionIndicatorId("knowledge-phase");
   const [inspection, setInspection] =
     useState<KnowledgeCompilerInspection | null>(null);
@@ -232,6 +234,7 @@ export function KnowledgeCompilerView() {
       }
       if (
         existing &&
+        mode !== "documents" &&
         !window.confirm(
           "重新开始会从第 1 轮重新生成，输出目录中由本功能生成的笔记将被覆盖更新。确定继续？",
         )
@@ -280,8 +283,8 @@ export function KnowledgeCompilerView() {
           <span className="knowledge-eyebrow">OBSIDIAN COURSE COMPILER</span>
           <h2>把课程文件编译成可生长的知识网络</h2>
           <p>
-            原文只读归档，DeepSeek Chat 负责批量重构，Reasoner
-            负责跨文件推理；每轮结果都写入处理日志。
+            PPTX / PDF 逐页渲染后由 Qwen 图文编译，保留原文、页图和待确认项。
+            增量转换复用已完成页面；3 / 12 轮建库继续由 DeepSeek 重构与推理。
           </p>
         </div>
       </section>
@@ -335,6 +338,10 @@ export function KnowledgeCompilerView() {
           {inspection && (
             <dl className="knowledge-scan-summary" aria-label="素材扫描结果">
               <div>
+                <dt>PPT / PDF</dt>
+                <dd>{inspection.document_files ?? 0}</dd>
+              </div>
+              <div>
                 <dt>Markdown</dt>
                 <dd>{inspection.markdown_files}</dd>
               </div>
@@ -368,6 +375,26 @@ export function KnowledgeCompilerView() {
           </div>
         </div>
         <div className="knowledge-mode-grid">
+          <label
+            className={mode === "documents" ? "knowledge-mode-selected" : ""}
+          >
+            <input
+              type="radio"
+              name="compiler-mode"
+              value="documents"
+              checked={mode === "documents"}
+              disabled={Boolean(running)}
+              onChange={() => setMode("documents")}
+            />
+            <ScanSearch aria-hidden="true" />
+            <span>
+              <strong>逐页多模态转 Markdown</strong>
+              <small>
+                每次最多 100 页调用；断点续编，保留人工修改。PPTX 需
+                LibreOffice，旧 PPT 请先导出 PDF。
+              </small>
+            </span>
+          </label>
           <label
             className={mode === "foundation" ? "knowledge-mode-selected" : ""}
           >

@@ -380,7 +380,7 @@ export interface SettingsStatus {
   theme_mode: ThemeMode;
 }
 
-export type KnowledgeCompilerMode = "foundation" | "full";
+export type KnowledgeCompilerMode = "foundation" | "full" | "documents";
 export type KnowledgeCompilerStatus =
   | "idle"
   | "running"
@@ -393,6 +393,7 @@ export type KnowledgeCompilerStatus =
 export interface KnowledgeCompilerInspection {
   source_name: string;
   markdown_files: number;
+  document_files?: number;
   total_bytes: number;
   image_references: number;
   courses: string[];

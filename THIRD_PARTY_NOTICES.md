@@ -14,6 +14,7 @@
 | typing_extensions | PSF-2.0 | https://github.com/python/typing_extensions |
 | keyring、jaraco.classes、jaraco.context、jaraco.functools、more-itertools | MIT | https://github.com/jaraco/keyring；https://github.com/jaraco/jaraco.classes；https://github.com/jaraco/jaraco.context；https://github.com/jaraco/jaraco.functools；https://github.com/more-itertools/more-itertools |
 | platformdirs | MIT | https://github.com/tox-dev/platformdirs |
+| pypdfium2 / PDFium | Apache-2.0 OR BSD-3-Clause / BSD 风格及内附第三方声明 | https://github.com/pypdfium2-team/pypdfium2；分发包自带 licenses 目录，须随包保留。LibreOffice 为用户自行安装的外部工具，不捆绑分发。 |
 | tzdata（Windows） | Apache-2.0 | https://github.com/python/tzdata |
 | pywebview | BSD-3-Clause | https://github.com/r0x0r/pywebview |
 | bottle、proxy_tools | MIT | https://github.com/bottlepy/bottle；https://github.com/jtushman/proxy_tools |

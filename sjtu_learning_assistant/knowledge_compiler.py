@@ -88,6 +88,8 @@ def _replace_with_retry(source: Path, target: Path) -> None:
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        raise KnowledgeCompilerError("编译输出不能包含符号链接。")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -138,11 +140,14 @@ class KnowledgeCompilerService:
     def __init__(
         self,
         *,
-        ai_runner: Callable[[str, str, str], str],
+        ai_runner: Callable[[str, str, Any], str],
         max_files: int = MAX_FILES,
+        max_document_calls: int = 100,
     ) -> None:
         self.ai_runner = ai_runner
         self.max_files = max_files
+        self.max_document_calls = max_document_calls
+        self._document_texts: dict[Path, Path] = {}
         self._lock = threading.RLock()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -197,18 +202,22 @@ class KnowledgeCompilerService:
         for path in files:
             relative = path.relative_to(root)
             courses.add(relative.parts[0] if len(relative.parts) > 1 else root.name)
-            image_refs += len(re.findall(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\)]+\)", _read_utf8(path)))
-        return {"source_name": root.name, "markdown_files": len(files),
+            if path.suffix.casefold() == ".md":
+                image_refs += len(re.findall(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\)]+\)", _read_utf8(path)))
+        markdown_count = sum(path.suffix.casefold() == ".md" for path in files)
+        return {"source_name": root.name, "markdown_files": markdown_count,
+                "document_files": len(files) - markdown_count,
                 "total_bytes": total_bytes, "image_references": image_refs,
                 "courses": sorted(courses)[:30], "truncated_courses": len(courses) > 30}
 
     def _source_files(self, root: Path) -> list[Path]:
         try:
-            candidates = list(islice(root.rglob("*.md"), max(0, self.max_files + 1)))
+            candidates = list(islice((path for path in root.rglob("*")
+                if path.suffix.casefold() in {".md", ".pptx", ".pdf", ".ppt"}), max(0, self.max_files + 1)))
         except OSError:
             raise KnowledgeCompilerError("素材目录扫描失败。") from None
         if len(candidates) > self.max_files:
-            raise KnowledgeCompilerError(f"Markdown 文件超过 {self.max_files} 个，请拆分后处理。")
+            raise KnowledgeCompilerError(f"课件/Markdown 文件超过 {self.max_files} 个，请拆分后处理。")
         candidates.sort(key=lambda path: path.as_posix().casefold())
         files: list[Path] = []
         total_bytes = 0
@@ -224,14 +233,15 @@ class KnowledgeCompilerService:
                     continue
             except OSError:
                 continue
-            if info.st_size > MAX_FILE_BYTES:
-                raise KnowledgeCompilerError("单个 Markdown 超过 2 MB，请拆分后处理。")
+            limit = MAX_FILE_BYTES if path.suffix.casefold() == ".md" else MAX_TOTAL_BYTES
+            if info.st_size > limit:
+                raise KnowledgeCompilerError("单个 Markdown 超过 2 MB 或课件超过 100 MB，请拆分后处理。")
             total_bytes += info.st_size
             if total_bytes > MAX_TOTAL_BYTES:
-                raise KnowledgeCompilerError("Markdown 总大小超过 100 MB，请拆分后处理。")
+                raise KnowledgeCompilerError("素材总大小超过 100 MB，请拆分后处理。")
             files.append(path)
         if not files:
-            raise KnowledgeCompilerError("素材目录中没有可处理的 Markdown 文件。")
+            raise KnowledgeCompilerError("素材目录中没有可处理的 Markdown、PPTX 或 PDF 文件。")
         return files
 
     def _validate_pair(self, source_root: object, target_root: object) -> tuple[Path, Path]:
@@ -254,14 +264,17 @@ class KnowledgeCompilerService:
         return source, target, inspection
 
     def start(self, source_root: object, target_root: object, mode: object) -> dict[str, Any]:
-        if mode not in {"foundation", "full"}:
+        if mode not in {"foundation", "full", "documents"}:
             raise KnowledgeCompilerError("编译范围不受支持。")
         source, target = self._validate_pair(source_root, target_root)
         files = self._source_files(source)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return {"status": "already_running", "task": self._public_state(self._state)}
-            phases = FOUNDATION_PHASES if mode == "foundation" else PHASES
+            from sjtu_learning_assistant.knowledge_documents import target_lock
+            lease = target_lock(target)
+            lease.__enter__()
+            phases = PHASES[:1] if mode == "documents" else FOUNDATION_PHASES if mode == "foundation" else PHASES
             self._cancel = threading.Event()
             self._state = self._idle_state()
             self._state.update({"status": "running", "task_id": uuid.uuid4().hex,
@@ -269,19 +282,21 @@ class KnowledgeCompilerService:
                                 "source_root": str(source), "target_root": str(target),
                                 "mode": mode, "total_phases": len(phases),
                                 "started_at": _now(), "updated_at": _now()})
-            self._state["counts"]["markdown_files"] = len(files)
-            self._event("info", f"已接收 {len(files)} 个 Markdown，准备开始编译。")
+            self._document_texts = {}
+            self._state["counts"]["markdown_files"] = sum(path.suffix.casefold() == ".md" for path in files)
+            self._event("info", f"已接收 {len(files)} 个素材，准备开始编译。")
             try:
                 self._persist()
-            except OSError:
+            except (OSError, KnowledgeCompilerError):
                 # No worker exists yet: never leave a phantom "running" job that the UI
                 # would poll forever with Start/Cancel unusable until an app restart.
                 self._state = self._idle_state()
+                lease.__exit__(None, None, None)
                 raise KnowledgeCompilerError(
                     "输出目录无法写入，请检查权限、磁盘空间或是否被其他程序占用。"
                 ) from None
             self._thread = threading.Thread(target=self._run,
-                args=(source, target, files, phases), name="knowledge-compiler", daemon=True)
+                args=(source, target, files, phases, lease), name="knowledge-compiler", daemon=True)
             self._thread.start()
             return {"status": "started", "task": self._public_state(self._state)}
 
@@ -344,7 +359,13 @@ class KnowledgeCompilerService:
             _atomic_write(Path(self._state["target_root"]) / STATE_RELATIVE_PATH,
                           json.dumps(self._state, ensure_ascii=False, indent=2) + "\n")
 
-    def _run(self, source: Path, target: Path, files: list[Path], phases: tuple) -> None:
+    def _run(self, source: Path, target: Path, files: list[Path], phases: tuple, lease: Any) -> None:
+        try:
+            self._run_locked(source, target, files, phases)
+        finally:
+            lease.__exit__(None, None, None)
+
+    def _run_locked(self, source: Path, target: Path, files: list[Path], phases: tuple) -> None:
         handlers = {"scan": self._phase_scan, "lectures": self._phase_lectures,
                     "concepts": self._phase_concepts, "links": self._phase_links,
                     "prerequisites": self._phase_prerequisites,
@@ -364,6 +385,8 @@ class KnowledgeCompilerService:
                     self._persist()
                 try:
                     handlers[phase_id](source, target, files)
+                    if phase_id == "scan" and not files and self._state.get("mode") != "documents":
+                        raise KnowledgeCompilerError("没有成功转换的素材，已停止后续推理。")
                 except _CompilerCancelled:
                     break
             with self._lock:
@@ -417,17 +440,43 @@ class KnowledgeCompilerService:
         return f"Lecture-{_safe_name(path.stem)}-{digest}.md"
 
     def _phase_scan(self, source: Path, target: Path, files: list[Path]) -> None:
+        from sjtu_learning_assistant.knowledge_documents import DocumentCompiler, safe_destination
+        from sjtu_learning_assistant.document_text import DocumentTextError
+        converter = DocumentCompiler(self.ai_runner, self._cancel, max_calls=self.max_document_calls)
         for directory in ("00_MOC", "01_Courses", "02_Concepts", "03_Problems",
                           "04_Formulas", "05_Glossary", "06_Review", "07_Connections",
                           "90_Inbox", "99_System"):
-            (target / directory).mkdir(parents=True, exist_ok=True)
+            safe_destination(target, target / directory).mkdir(parents=True, exist_ok=True)
         rows = ["# File Index", "", "| 原始文件 | 课程 | 字节 | 图片引用 | 状态 |",
                 "| --- | --- | ---: | ---: | --- |"]
+        failed: list[Path] = []
         for index, path in enumerate(files, start=1):
             if self._cancel.is_set():
                 return
             relative = path.relative_to(source)
+            if path.suffix.casefold() != ".md":
+                try:
+                    self._document_texts[path] = converter.compile(source, path, target)
+                    destination = "../" + self._document_texts[path].relative_to(target).as_posix()
+                    rows.append(f"| `{relative.as_posix().replace('|', '-')}` | {self._course_for(source, path)} | {path.stat().st_size} | 整页视觉 | [{path.stem}]({destination}) |")
+                except (DocumentTextError, KnowledgeCompilerError) as exc:
+                    if self._cancel.is_set():
+                        return
+                    failed.append(path)
+                    warning = f"{path.name}：{exc}"[:400]
+                    self._state["warnings"].append(warning)
+                    self._state["counts"]["warnings"] += 1
+                    self._event("warning", warning)
+                    rows.append(f"| `{relative.as_posix().replace('|', '-')}` | — | {path.stat().st_size} | — | 待处理 |")
+                self._set_progress(index, len(files), relative.name)
+                continue
             destination = target / "90_Inbox" / relative
+            safe_destination(target, destination)
+            if self._state.get("mode") == "documents" and destination.exists():
+                # 转换模式不覆盖已归档 Markdown（可能包含用户笔记）。
+                rows.append(f"| `{relative.as_posix().replace('|', '-')}` | {self._course_for(source, path)} | {path.stat().st_size} | — | 保留已有归档 |")
+                self._set_progress(index, len(files), relative.name)
+                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.is_file() and not os.access(destination, os.W_OK):
                 os.chmod(destination, stat.S_IREAD | stat.S_IWRITE)
@@ -440,7 +489,15 @@ class KnowledgeCompilerService:
                         f"{path.stat().st_size} | {images} | 已归档原文 |")
             self._set_progress(index, len(files), relative.name)
         _atomic_write(target / "99_System" / "File-Index.md", "\n".join(rows) + "\n")
+        files[:] = [path for path in files if path not in failed]
+        self._state["counts"]["document_calls"] = converter.calls
+        self._state["counts"]["cached_pages"] = converter.cached_pages
+        if self._state.get("mode") == "documents":
+            self._state["counts"]["processed_files"] = len(files)
         self._generated()
+
+    def _source_text(self, path: Path) -> str:
+        return _read_utf8(self._document_texts.get(path, path))
 
     def _ask(self, model: str, purpose: str, data: str) -> str:
         if self._cancel.is_set():
@@ -468,7 +525,7 @@ class KnowledgeCompilerService:
             course = self._course_for(source, path)
             sections = [self._ask("deepseek-chat", purpose,
                 f"来源：{path.name}\n分块：{chunk_index}\n<source>\n{chunk}\n</source>")
-                for chunk_index, chunk in enumerate(_chunks(_read_utf8(path)), start=1)]
+                for chunk_index, chunk in enumerate(_chunks(self._source_text(path)), start=1)]
             name = self._lecture_name(source, path)
             note = (_frontmatter("lecture", course=course, chapter=path.stem,
                     source=path.relative_to(source).as_posix()) + "\n\n".join(sections) + "\n")
@@ -554,7 +611,7 @@ class KnowledgeCompilerService:
 
     def _phase_gaps(self, source: Path, target: Path, files: list[Path]) -> None:
         images = [path.relative_to(source).as_posix() for path in files
-                  if re.search(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\)]+\)", _read_utf8(path))]
+                  if path.suffix.casefold() == ".md" and re.search(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\)]+\)", self._source_text(path))]
         context = self._concept_snapshot(target, 700)
         if images:
             context += "\n\n含图片、需 qwen3.8-27b 后续核验：\n" + "\n".join(images[:100])
@@ -571,7 +628,7 @@ class KnowledgeCompilerService:
             course = self._course_for(source, path)
             lecture_path = target / "01_Courses" / course / self._lecture_name(source, path)
             lecture = _read_utf8(lecture_path) if lecture_path.is_file() else "（未找到 Lecture）"
-            data = f"<original>\n{_read_utf8(path)[:5000]}\n</original>\n<lecture>\n{lecture[:5000]}\n</lecture>"
+            data = f"<original>\n{self._source_text(path)[:5000]}\n</original>\n<lecture>\n{lecture[:5000]}\n</lecture>"
             result = self._ask("deepseek-reasoner", "对照原文与 Lecture，列出遗漏、曲解、虚构、"
                 "公式/变量错误、过度合并。只给核验结论和修改建议，不直接重写原笔记。", data)
             rows.extend((f"## {path.relative_to(source).as_posix()}", "", result, ""))
@@ -606,7 +663,7 @@ class KnowledgeCompilerService:
                 return
             result = self._ask("deepseek-reasoner", "仅提取材料中真实出现的例题、作业、习题、考试题或课堂问题。"
                 "每题包含 Question、Knowledge、Idea、Solution、Common Mistakes、Variations。"
-                "无题目则写“未发现可核验题目”，不得主动编题。", _read_utf8(path)[:AI_CHUNK_CHARS])
+                "无题目则写“未发现可核验题目”，不得主动编题。", self._source_text(path)[:AI_CHUNK_CHARS])
             rows.extend((f"## {path.relative_to(source).as_posix()}", result))
             self._set_progress(index, len(files), path.name)
         note = _frontmatter("problem", course="全库", topic="课程材料题库",
