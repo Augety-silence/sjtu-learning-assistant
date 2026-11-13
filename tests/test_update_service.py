@@ -100,6 +100,16 @@ def multi_platform_release_payload(artifact_names):
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_deep_release_json_is_a_controlled_metadata_error(self) -> None:
+        service = UpdateService(
+            "1.8.7",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text="[" * 50000 + "0" + "]" * 50000)
+            ),
+        )
+        with self.assertRaisesRegex(InvalidUpdateMetadataError, "嵌套过深"):
+            service.fetch_release()
+
     def test_strict_semver_comparison(self) -> None:
         self.assertEqual(1, compare_versions("v1.10.0", "1.9.9"))
         self.assertEqual(-1, compare_versions("1.0.0-alpha.2", "1.0.0-alpha.10"))

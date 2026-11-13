@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+from office_fixtures import build_pptx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,7 +22,7 @@ from sjtu_learning_assistant.agent_runtime import (
 )
 from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
 from sjtu_learning_assistant.agent_runtime.tools import _clip, _hide_cut_url_tail, _redact_body
-from sjtu_learning_assistant.ai_classifier import OpenAIClassificationClient
+from sjtu_learning_assistant.ai_classifier import AIClassificationError, OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.dashboard_service import DashboardService
@@ -248,6 +249,131 @@ class AgentRuntimeTests(unittest.TestCase):
                 allowed,
             )
 
+    def _course_pptx(self, source_id: str, *, local: bool = True) -> Path:
+        path = build_pptx(
+            self.root / f"{source_id}.pptx",
+            extra={
+                "ppt/slides/slide2.xml": (
+                    '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>'
+                    "<p:sp><p:txBody><a:p><a:r><a:t>封面 token=slide-secret 资料在 /Users/private/a.txt</a:t></a:r></a:p>"
+                    + "".join(f"<a:p><a:r><a:t>要点{index:03d}" + "甲" * 40 + "</a:t></a:r></a:p>" for index in range(30))
+                    + "</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+                )
+            },
+        )
+        with Session(self.engine) as session, session.begin():
+            course = session.scalar(select(Course).where(Course.source_id == "course-1"))
+            session.add(
+                CourseFile(
+                    source_id=source_id,
+                    course_id=course.id,
+                    display_name="第一章 导论.pptx",
+                    filename="chapter1.pptx",
+                    size=path.stat().st_size,
+                    local_path=str(path) if local else None,
+                    download_status="downloaded" if local else "pending",
+                    is_active=True,
+                    last_seen_at=datetime.now(timezone.utc),
+                    raw_data={},
+                )
+            )
+        return path
+
+    def test_course_file_text_tool_pages_redacts_and_never_returns_paths(self) -> None:
+        path = self._course_pptx("ppt-1")
+        self._course_pptx("ppt-remote", local=False)
+        resolved: list[str] = []
+
+        def resolver(source_id: str) -> Path:
+            resolved.append(source_id)
+            return path
+
+        registry = ReadOnlyToolRegistry(self.engine, course_file_resolver=resolver)
+        allowed = ("search_course_files", "read_course_file_text")
+        self.assertIn(
+            "read_course_file_text",
+            {item["function"]["name"] for item in registry.definitions(allowed)},
+        )
+
+        first = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "max_chars": 1000}, allowed
+        ).result
+        self.assertEqual(("ready", "pptx", "页", 2), (first["status"], first["format"], first["unit_label"], first["unit_count"]))
+        self.assertEqual((1, 1, 2), (first["start_page"], first["end_page"], first["next_page"]))
+        self.assertTrue(first["page_text_clipped"])
+        self.assertTrue(first["text"].startswith("【第 1 页 / 共 2 页】\n封面"))
+        self.assertNotIn("slide-secret", first["text"])
+        self.assertNotIn("/Users/private", first["text"])
+        self.assertLessEqual(len(json.dumps(first["text"], ensure_ascii=False)), 1000)
+
+        summary = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "max_chars": 1000}, allowed
+        ).result_summary
+        # 安全摘要带页码范围，执行详情可显示“已读第 1 页 / 共 2 页”。
+        self.assertEqual(
+            {"content_status": "ready", "start_page": 1, "end_page": 1, "next_page": 2, "unit_count": 2, "unit_label": "页"},
+            {key: summary[key] for key in ("content_status", "start_page", "end_page", "next_page", "unit_count", "unit_label")},
+        )
+        second = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "start_page": 2}, allowed
+        ).result
+        self.assertEqual((2, None), (second["end_page"], second["next_page"]))
+        self.assertIn("[表格]\n概念 | 定义", second["text"])
+        self.assertIn("[演讲者备注]", second["text"])
+        self.assertEqual(1, second["embedded_image_count"])
+        self.assertIn("Qwen", second["image_note"])
+        encoded = json.dumps([first, second], ensure_ascii=False)
+        self.assertNotIn(str(self.root), encoded)
+        # 同一轮内重复读取复用解析结果，不再次解析文件路径。
+        self.assertEqual(["ppt-1"], resolved)
+
+        beyond = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-1", "start_page": 9}, allowed
+        ).result
+        self.assertEqual("out_of_range", beyond["status"])
+        remote = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-remote"}, allowed
+        ).result
+        self.assertEqual("unavailable", remote["status"])
+        with self.assertRaisesRegex(AgentToolError, "未找到"):
+            registry.execute("read_course_file_text", {"source_id": "missing"}, allowed)
+        for bad in ({"source_id": "ppt-1", "path": "/etc/passwd"}, {"source_id": "ppt-1", "max_chars": 20_000}, {"source_id": "ppt-1", "start_page": 0}):
+            with self.assertRaises(AgentToolError):
+                registry.execute("read_course_file_text", bad, allowed)
+
+    def test_course_file_text_tool_maps_resolver_and_format_failures(self) -> None:
+        self._course_pptx("ppt-escape")
+
+        def escaped(_source_id: str) -> Path:
+            raise RuntimeError("/Users/private/outside.pptx is outside archive")
+
+        registry = ReadOnlyToolRegistry(self.engine, course_file_resolver=escaped)
+        result = registry.execute(
+            "read_course_file_text", {"source_id": "ppt-escape"}, ("read_course_file_text",)
+        ).result
+        self.assertEqual("unavailable", result["status"])
+        self.assertNotIn("/Users/private", json.dumps(result, ensure_ascii=False))
+
+        legacy = self.root / "legacy.ppt"
+        legacy.write_bytes(b"\xd0\xcf\x11\xe0 legacy binary")
+        with Session(self.engine) as session, session.begin():
+            file = session.scalar(select(CourseFile).where(CourseFile.source_id == "ppt-escape"))
+            file.display_name = "旧版课件.ppt"
+        unsupported = ReadOnlyToolRegistry(
+            self.engine, course_file_resolver=lambda _source_id: legacy
+        ).execute(
+            "read_course_file_text", {"source_id": "ppt-escape"}, ("read_course_file_text",)
+        ).result
+        self.assertEqual("unsupported", unsupported["status"])
+
+    def test_course_file_text_tool_is_absent_without_controlled_resolver(self) -> None:
+        self.assertNotIn("read_course_file_text", self.registry.names)
+        with self.assertRaisesRegex(AgentToolError, "未知工具"):
+            self.registry.execute(
+                "read_course_file_text", {"source_id": "file-1"}, ("read_course_file_text",)
+            )
+
     def test_deterministic_course_file_prefetch_without_model_tools(self) -> None:
         client = ScriptedClient([{"content": "找到课件。", "reasoning_content": None}])
         result = AgentLoop(client, self.registry, preset(*ALL_TOOLS)).run(
@@ -310,6 +436,29 @@ class AgentRuntimeTests(unittest.TestCase):
         system_content = system_messages[0]["content"]
         self.assertLessEqual(len(system_content), SYSTEM_MESSAGE_CHAR_BUDGET)
         self.assertIn("上下文过长，已截断", system_content)
+
+    def test_tool_runs_record_non_negative_duration_for_prefetch_and_model_calls(self) -> None:
+        client = ScriptedClient(
+            [
+                {"content": "", "reasoning_content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_courses", "arguments": "{}"}}]},
+                {"content": "完成。", "reasoning_content": None},
+            ]
+        )
+        events: list[dict] = []
+        result = AgentLoop(client, self.registry, preset(*ALL_TOOLS)).run(
+            [{"role": "user", "content": "看看截止日期"}],
+            user_text="看看截止日期",
+            max_tokens=500,
+            temperature=0.2,
+            attachment_ids=[1],
+            event_callback=lambda kind, payload: events.append(payload) if kind == "tool" else None,
+        )
+        self.assertTrue(result.tool_runs)
+        for run in result.tool_runs:
+            self.assertIsInstance(run["duration_ms"], int)
+            self.assertGreaterEqual(run["duration_ms"], 0)
+        self.assertEqual({"prefetch", "model"}, {run["phase"] for run in result.tool_runs})
+        self.assertTrue(all("duration_ms" in event for event in events))
 
     def test_model_tool_calls_loop_and_reasoning(self) -> None:
         client = ScriptedClient(
@@ -452,17 +601,46 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("文本附件已读取。", result.content)
         self.assertEqual(1, client.stream_calls)
 
-    def test_finish_reason_length_marks_answer_incomplete(self) -> None:
-        client = ScriptedClient([{
-            "content": "这是被截断的回答",
-            "tool_calls": [],
-            "response_metadata": {"finish_reason": "length"},
-        }])
+    def test_truncated_answer_is_continued_automatically_and_joined(self) -> None:
+        cut = {"tool_calls": [], "response_metadata": {"finish_reason": "length"}}
+        client = ScriptedClient([
+            {**cut, "content": "第一部分：背景"},
+            {**cut, "content": "，第二部分：方法"},
+            {"content": "，第三部分：结论。", "tool_calls": [], "response_metadata": {"finish_reason": "stop"}},
+        ])
+        events: list[tuple[str, dict]] = []
+        result = AgentLoop(client, self.registry, preset("list_courses")).run(
+            [{"role": "user", "content": "概览这份 PDF"}],
+            user_text="概览这份 PDF",
+            max_tokens=5,
+            temperature=0,
+            event_callback=lambda kind, payload: events.append((kind, payload)),
+        )
+        self.assertEqual("completed", result.status)
+        self.assertEqual("第一部分：背景，第二部分：方法，第三部分：结论。", result.content)
+        # 续写不占用工具步数。
+        self.assertEqual(1, result.steps)
+        self.assertEqual(3, len(client.requests))
+        conversation = client.requests[-1][0]
+        self.assertEqual(
+            ["第一部分：背景", "，第二部分：方法"],
+            [item["content"] for item in conversation if item["role"] == "assistant"],
+        )
+        prompts = [item for item in conversation if item["role"] == "user" and "从中断处直接接着写" in item["content"]]
+        self.assertEqual(2, len(prompts))
+        parts = [payload["part"] for kind, payload in events if kind == "status" and payload["state"] == "continuing"]
+        self.assertEqual([2, 3], parts)
+
+    def test_finish_reason_length_after_max_continuations_marks_answer_incomplete(self) -> None:
+        cut = {"content": "段", "tool_calls": [], "response_metadata": {"finish_reason": "length"}}
+        client = ScriptedClient([dict(cut) for _ in range(4)])
         result = AgentLoop(client, self.registry, preset("list_courses")).run(
             [{"role": "user", "content": "总结"}], user_text="总结", max_tokens=5, temperature=0
         )
         self.assertEqual("max_steps", result.status)
-        self.assertIn("可能因长度限制未完成", result.content)
+        self.assertTrue(result.content.startswith("段段段段"))
+        self.assertIn("可以回复“继续”", result.content)
+        self.assertEqual(4, len(client.requests))
 
     def test_tool_context_omission_is_reflected_in_trace(self) -> None:
         class LargeResultRegistry:
@@ -547,6 +725,98 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("list_courses", requests[1]["messages"][-1]["name"])
         self.assertIn(("content_delta", {"delta": "共有"}), deltas)
         self.assertIn(("content_delta", {"delta": "一门课程。"}), deltas)
+
+    def test_stream_timeout_before_any_output_is_retried_with_status_events(self) -> None:
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(1)
+            if len(attempts) == 1:
+                # 网关建立连接后迟迟不返回任何数据 → 读超时。
+                raise httpx.ReadTimeout("no data", request=request)
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"概览完成。"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+
+        client = OpenAIClassificationClient(
+            api_key="fake", model="qwen", transport=httpx.MockTransport(handler), limiter=lambda: None
+        )
+        events: list[tuple[str, dict]] = []
+        sleeps: list[float] = []
+        try:
+            result = AgentLoop(
+                client, self.registry, preset("list_courses"), sleeper=sleeps.append
+            ).run(
+                [{"role": "user", "content": "你好"}],
+                user_text="你好",
+                max_tokens=500,
+                temperature=0,
+                event_callback=lambda kind, payload: events.append((kind, payload)),
+            )
+        finally:
+            client.close()
+        self.assertEqual("completed", result.status)
+        self.assertEqual("概览完成。", result.content)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual([2.0], sleeps)
+        statuses = [payload for kind, payload in events if kind == "status"]
+        self.assertEqual(["model_call", "retrying", "model_call"], [item["state"] for item in statuses])
+        self.assertEqual("模型长时间没有响应", statuses[1]["reason"])
+        self.assertEqual((2, 3), (statuses[1]["attempt"], statuses[1]["max_attempts"]))
+
+    def test_stream_failure_after_partial_output_is_not_retried(self) -> None:
+        class PartialClient:
+            supports_streaming = True
+
+            def __init__(inner_self):
+                inner_self.calls = 0
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+                kwargs["on_delta"]("content", "已经输出一半")
+                error = AIClassificationError("AI 流式请求超时，请稍后重试。", category="timeout")
+                error.emitted_output = True
+                raise error
+
+        client = PartialClient()
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(client, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}],
+                user_text="你好",
+                max_tokens=500,
+                temperature=0,
+                event_callback=lambda *_args: None,
+            )
+        # 已经向界面输出过文字时重试会产生重复内容，必须直接把错误交给用户。
+        self.assertEqual(1, client.calls)
+
+    def test_non_retryable_and_exhausted_errors_surface_without_extra_calls(self) -> None:
+        class FailingClient:
+            supports_streaming = True
+
+            def __init__(inner_self, category):
+                inner_self.category = category
+                inner_self.calls = 0
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                inner_self.calls += 1
+                raise AIClassificationError("失败", category=inner_self.category)
+
+        auth = FailingClient("authentication")
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(auth, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=100, temperature=0
+            )
+        self.assertEqual(1, auth.calls)
+        flaky = FailingClient("upstream_service")
+        with self.assertRaises(AIClassificationError):
+            AgentLoop(flaky, self.registry, preset("list_courses"), sleeper=lambda _s: None).run(
+                [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=100, temperature=0
+            )
+        self.assertEqual(3, flaky.calls)
 
     def test_unauthorized_tool_is_rejected(self) -> None:
         client = ScriptedClient(

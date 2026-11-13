@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import plistlib
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -19,6 +20,25 @@ SPEC.loader.exec_module(bundle_module)
 
 
 class VerifyMacOSBundleTests(unittest.TestCase):
+    def test_non_dictionary_plist_roots_are_controlled(self) -> None:
+        for value in ([], "invalid root", 3, True):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                app = Path(directory) / "App.app"
+                contents = app / "Contents"
+                (contents / "MacOS").mkdir(parents=True)
+                (contents / "Resources").mkdir()
+                (contents / "MacOS" / "SJTU Learning Assistant").write_bytes(b"app")
+                (contents / "Info.plist").write_bytes(plistlib.dumps(value))
+                stderr = io.StringIO()
+                with patch("sys.argv", ["verify_macos_bundle.py", str(app)]), redirect_stderr(stderr):
+                    self.assertEqual(1, bundle_module.main())
+                self.assertIn("根对象必须是字典", stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_database_password_with_empty_user_is_detected(self) -> None:
+        value = b"mysql://:" + b"fake-short-value" + b"@localhost/database"
+        self.assertIsNotNone(bundle_module.DATABASE_CREDENTIAL_PATTERN.search(value))
+
     def test_root_forbidden_path_does_not_match_every_absolute_path(self) -> None:
         self.assertEqual(b"", bundle_module._forbidden_path_bytes("/"))
         self.assertEqual(b"/Users/example/", bundle_module._forbidden_path_bytes("/Users/example/"))

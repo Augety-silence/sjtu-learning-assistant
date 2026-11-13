@@ -45,6 +45,23 @@ export interface AIToolRun {
   status: AIToolRunStatus;
   arguments_summary: unknown;
   result_summary: unknown;
+  /** 单次工具执行耗时（毫秒）；旧记录没有该字段。 */
+  duration_ms?: number | null;
+}
+
+/** 后端推送的本轮进度（模型请求、自动重试）。 */
+export interface AIAgentLiveStatus {
+  state: "model_call" | "retrying" | "continuing";
+  /** continuing：当前是长回答的第几段 / 最多几段。 */
+  part?: number;
+  max_parts?: number;
+  step?: number;
+  attempt?: number;
+  max_attempts?: number;
+  reason?: string;
+  delay_seconds?: number;
+  /** 前端收到该状态的时刻（毫秒）。 */
+  received_at: number;
 }
 
 export interface AIAgentTrace {
@@ -54,6 +71,8 @@ export interface AIAgentTrace {
   steps: number;
   tool_runs: AIToolRun[];
   created_at?: string | null;
+  /** 本轮从发送到完成的耗时（毫秒）；未知时为空。 */
+  duration_ms?: number | null;
 }
 
 export interface AIAgentPreset {
@@ -62,6 +81,44 @@ export interface AIAgentPreset {
   description: string;
   allowed_tools: string[];
   is_default: boolean;
+  /** builtin：内置助手；user：用户自建技能（可编辑）。 */
+  source?: "builtin" | "user";
+  instructions?: string;
+  reference_attachment_ids?: number[];
+}
+
+export interface AISkillDraft {
+  id?: string;
+  name: string;
+  description: string;
+  instructions: string;
+  allowed_tools: string[];
+  reference_attachment_ids: number[];
+}
+
+export interface AIWorkspaceStatus {
+  configured: boolean;
+  available: boolean;
+  name: string | null;
+  path: string | null;
+  reason: string | null;
+  cancelled?: boolean;
+}
+
+export interface AIFileChange {
+  change_id: string;
+  path: string;
+  workspace?: string | null;
+  mode: "create" | "modify";
+  summary: string;
+  added: number;
+  removed: number;
+  diff: string;
+  diff_truncated: boolean;
+  status: "pending" | "applied" | "rejected" | "conflict" | "failed";
+  created_at?: string | null;
+  resolved_at?: string | null;
+  error?: string | null;
 }
 
 export interface AIAgentPresetsResult {

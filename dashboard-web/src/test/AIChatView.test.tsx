@@ -144,6 +144,21 @@ vi.mock("@/lib/api", () => ({
   revealAiAttachment: vi.fn(async () => ({ status: "revealed" })),
   deleteAiChatSession: vi.fn(async () => ({ deleted: true })),
   resumeAiChatMessageTask: vi.fn(),
+  getAiWorkspaceStatus: vi.fn(async () => ({
+    configured: false,
+    available: false,
+    name: null,
+    path: null,
+    reason: null,
+  })),
+  pickAiWorkspace: vi.fn(),
+  clearAiWorkspace: vi.fn(),
+  listAiAttachments: vi.fn(async () => ({ items: [] })),
+  saveAiSkill: vi.fn(),
+  deleteAiSkill: vi.fn(),
+  getAiFileChange: vi.fn(),
+  applyAiFileChange: vi.fn(),
+  rejectAiFileChange: vi.fn(),
 }));
 
 afterEach(() => {
@@ -594,6 +609,82 @@ describe("AIChatView", () => {
     expect(await screen.findByText(/调用 1 次/)).toBeTruthy();
   });
 
+  it("keeps live per-turn execution details in the thread while the answer streams", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "读一下第 4 页课件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    const emit = (detail: Record<string, unknown>) =>
+      window.dispatchEvent(
+        new CustomEvent("sjtu-ai-chat-stream", {
+          detail: { session_id: "session-1", task_id: "task-turn", ...detail },
+        }),
+      );
+    emit({
+      type: "start",
+      started_at: new Date(Date.now() - 65_000).toISOString(),
+    });
+    emit({
+      type: "tool",
+      run: {
+        tool_name: "read_course_file_text",
+        phase: "model",
+        status: "ok",
+        arguments_summary: { start_page: 1, max_chars: 6000 },
+        result_summary: {
+          status: "ok",
+          count: 1,
+          content_status: "ready",
+          start_page: 1,
+          end_page: 20,
+          unit_count: 20,
+          unit_label: "页",
+        },
+        duration_ms: 420,
+      },
+    });
+    // 运行中默认展开，步骤直接出现在对话流里，而不只在 Activity 面板。
+    const running = await waitFor(() => {
+      const node = container.querySelector(
+        ".ai-chat-messages > .ai-inline-execution .ai-turn-trace.is-running",
+      );
+      expect(node?.textContent).toContain("读取课件正文");
+      return node as HTMLElement;
+    });
+    expect(running.textContent).toContain("已读第 1–20 页 / 共 20 页");
+    expect(running.textContent).toContain("0.4 秒");
+    expect(running.textContent).toMatch(
+      /正在执行 · 已用 1 分 \d+ 秒 · 1 个工具调用/,
+    );
+
+    emit({ type: "content_delta", delta: "第 4 页介绍了开课概况。" });
+    // 流式文字按节奏逐步渐显（被拆入渐显元素），最终完整显示在回复气泡中。
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown")
+          ?.textContent,
+      ).toBe("第 4 页介绍了开课概况。"),
+    );
+    // 正文开始流式输出后，执行详情跟随到回复气泡顶部，不会消失。
+    await waitFor(() =>
+      expect(
+        container.querySelector(
+          ".ai-message-assistant .ai-turn-trace.is-running",
+        )?.textContent,
+      ).toContain("正在生成回答…"),
+    );
+    // 独立的运行卡片在退场动画结束后移除，不会与气泡内的详情重复出现。
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-chat-messages > .ai-inline-execution"),
+      ).toBeNull(),
+    );
+  });
+
   it("removes a failed task's temporary running trace before the retry", async () => {
     let rejectFirst: ((reason: Error) => void) | undefined;
     vi.mocked(sendAiChatMessage)
@@ -664,7 +755,8 @@ describe("AIChatView", () => {
     fireEvent.change(input, { target: { value: "最近有什么消息？" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(await screen.findByText("查看过程")).toBeTruthy();
+    // 完成后折叠为一行本轮摘要（耗时 · 工具调用数），点击可展开逐步核对。
+    expect(await screen.findByText("已完成 · 1 个工具调用")).toBeTruthy();
     const animatedReply = document.querySelector(
       '[data-motion-entry="assistant"]',
     );
@@ -681,7 +773,7 @@ describe("AIChatView", () => {
     );
     expect(screen.getAllByText("检索截止日期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("命中 3 项").length).toBeGreaterThan(0);
-    expect(screen.getByText(/已完成 · 1 项操作 · 命中 3 项/)).toBeTruthy();
+    expect(screen.getByText("已完成 · 1 个工具调用")).toBeTruthy();
     expect(screen.getByRole("article", { name: "你的消息" })).toBeTruthy();
     expect(
       document.querySelector(".ai-message-user .ai-message-avatar"),
@@ -795,18 +887,17 @@ describe("AIChatView", () => {
     const { container } = render(<AIChatView onBack={vi.fn()} />);
     expect(await screen.findByText("历史回答")).toBeTruthy();
     const inlineExecution = container.querySelector(
-      ".ai-message-assistant .ai-execution-card > summary",
+      ".ai-message-assistant .ai-turn-trace-toggle",
     );
     expect(inlineExecution).toBeTruthy();
+    expect(inlineExecution?.getAttribute("aria-expanded")).toBe("false");
     expect(
-      (inlineExecution?.parentElement as HTMLDetailsElement | null)?.open,
-    ).toBe(false);
+      container.querySelector(".ai-message-assistant .ai-turn-trace-detail"),
+    ).toBeNull();
     fireEvent.click(inlineExecution as HTMLElement);
-    expect(
-      (inlineExecution?.parentElement as HTMLDetailsElement | null)?.open,
-    ).toBe(true);
+    expect(inlineExecution?.getAttribute("aria-expanded")).toBe("true");
     const inlineTool = container.querySelector(
-      ".ai-message-assistant .ai-execution-detail .ai-tool-run > summary",
+      ".ai-message-assistant .ai-turn-trace-detail .ai-tool-run > summary",
     );
     expect(inlineTool).toBeTruthy();
     expect((inlineTool?.parentElement as HTMLDetailsElement | null)?.open).toBe(

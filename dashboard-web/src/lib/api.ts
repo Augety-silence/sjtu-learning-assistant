@@ -446,6 +446,15 @@ function emitAIStreamEvents(
         run: event.payload,
       });
     }
+    if (event.kind === "status") {
+      // 模型请求 / 自动重试等进度，让长时间等待时界面有明确反馈。
+      emitAIStream({
+        type: "status",
+        task_id: taskId,
+        session_id: sessionId,
+        status: event.payload,
+      });
+    }
   }
 }
 
@@ -462,12 +471,20 @@ async function pollAiChatTask(
   let snapshot = initialSnapshot;
   const taskId = snapshot.task.id;
   let sequence = snapshot.next_sequence;
-  emitAIStream({ type: "start", task_id: taskId, session_id: sessionId });
+  emitAIStream({
+    type: "start",
+    task_id: taskId,
+    session_id: sessionId,
+    // 恢复轮询时也能从后端真实开始时刻计时，而不是从页面重新挂载时算起。
+    started_at:
+      snapshot.task.started_at ?? snapshot.task.created_at ?? undefined,
+  });
   emitAIStreamEvents(snapshot, taskId, sessionId);
   // 空闲超时：只要任务仍在产出事件或状态变化就续期，避免长回答在流式输出中被误取消；
   // 另设绝对上限防止任务永久挂起。
   const idleTimeoutMs = 180_000;
-  const hardDeadline = Date.now() + 600_000;
+  // 长会话：后端整轮上限 5 分钟，最后一步流式输出还可能持续数分钟。
+  const hardDeadline = Date.now() + 900_000;
   let deadline = Math.min(Date.now() + idleTimeoutMs, hardDeadline);
   let lastStatus = snapshot.task.status;
   let transientPollFailures = 0;
@@ -663,6 +680,57 @@ export function revealAiAttachment(attachmentId: number) {
     status: "revealed";
     attachment: import("@/lib/types").AIManagedAttachment;
   }>("ai_attachment_reveal", { attachment_id: attachmentId });
+}
+
+export function listAiAttachments(limit = 100) {
+  return invoke<{ items: import("@/lib/types").AIManagedAttachment[] }>(
+    "ai_attachment_list",
+    { limit },
+  );
+}
+
+type PresetsResult = import("@/lib/types").AIAgentPresetsResult;
+
+export function saveAiSkill(skill: import("@/lib/types").AISkillDraft) {
+  return invoke<PresetsResult & { skill: { id: string } }>("ai_skill_save", {
+    skill,
+  });
+}
+
+export function deleteAiSkill(skillId: string) {
+  return invoke<PresetsResult & { deleted: boolean }>("ai_skill_delete", {
+    skill_id: skillId,
+  });
+}
+
+export function getAiWorkspaceStatus() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_status");
+}
+
+export function pickAiWorkspace() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_pick");
+}
+
+export function clearAiWorkspace() {
+  return invoke<import("@/lib/types").AIWorkspaceStatus>("ai_workspace_clear");
+}
+
+export function getAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_get", {
+    change_id: changeId,
+  });
+}
+
+export function applyAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_apply", {
+    change_id: changeId,
+  });
+}
+
+export function rejectAiFileChange(changeId: string) {
+  return invoke<import("@/lib/types").AIFileChange>("ai_file_change_reject", {
+    change_id: changeId,
+  });
 }
 
 export function deleteAiChatSession(sessionId: string) {

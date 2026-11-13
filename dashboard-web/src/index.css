@@ -2333,7 +2333,7 @@ a {
   background: var(--text-toast-muted);
   transform: scaleX(1);
   transform-origin: left center;
-  animation: toast-countdown var(--toast-duration) linear forwards;
+  animation: toast-countdown var(--toast-duration, 220ms) linear forwards;
 }
 
 .toast[data-paused="true"] .toast-progress {

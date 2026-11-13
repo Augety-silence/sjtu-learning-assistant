@@ -113,6 +113,21 @@ afterEach(() => {
 });
 
 describe("AppShell 侧栏滑动指示器", () => {
+  it("跳到主内容不改路由或卸载当前草稿", () => {
+    window.history.replaceState(null, "", "#/grading");
+    render(<Harness />);
+    const scroll = vi.fn();
+    const main = document.getElementById("main-content");
+    Object.defineProperty(main, "scrollIntoView", {
+      value: scroll,
+      configurable: true,
+    });
+    fireEvent.click(screen.getByRole("link", { name: "跳到主内容" }));
+    expect(window.location.hash).toBe("#/grading");
+    expect(document.activeElement).toBe(main);
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
+
   it("同步中保留按钮焦点并阻止重复触发", () => {
     emitViewport(1024);
     const onSync = vi.fn();

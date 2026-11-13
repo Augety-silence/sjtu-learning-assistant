@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlencode, urlparse
 
 import httpx
+import idna
 
 DEFAULT_BASE_URL = "https://oc.sjtu.edu.cn"
 DEFAULT_PAGE_SIZE = 100
@@ -54,7 +55,19 @@ def _canvas_id(value: int | str, label: str) -> str:
 
 def normalize_base_url(value: str) -> str:
     value = value.strip().rstrip("/")
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+        # 越界/非数字端口、未闭合 IPv6 括号在 urlparse/访问 .port 时才抛 ValueError，
+        # 必须在这里收敛，否则会以裸 ValueError 逃出客户端构造（用户配置错误显示为内部错误）。
+        _ = parsed.port
+        # urlparse 对畸形 A-label（如 xn--000.com）不报错，延迟到 httpx 发送期才抛
+        # idna.IDNAError（ValueError 子类）且不被既有 httpx.HTTPError 捕获；配置期提前拒绝。
+        # parsed.hostname 会去掉 IPv6 方括号（含冒号），IP 字面量不做 IDNA 编码。
+        hostname = parsed.hostname
+        if hostname and ":" not in hostname:
+            idna.encode(hostname.lower().rstrip("."))
+    except ValueError as exc:
+        raise CanvasProtocolError("Canvas base URL 必须是有效的 HTTPS 站点地址。") from exc
     if (
         parsed.scheme != "https"
         or not parsed.netloc
@@ -146,6 +159,12 @@ class CanvasClient:
         self._assert_same_origin(url)
         try:
             response = self._client.request(method, url, follow_redirects=False, **kwargs)
+        except httpx.InvalidURL as exc:
+            # InvalidURL 直接继承 Exception，不被下面的 httpx.HTTPError 分支覆盖。
+            raise CanvasProtocolError("Canvas 请求地址无效，已停止以保护访问令牌。") from exc
+        except ValueError as exc:
+            # 发送期 IDNA 编码失败（idna.IDNAError 是 ValueError 子类）同样无法被 httpx 分支捕获。
+            raise CanvasProtocolError("Canvas 请求地址包含无效主机名，已停止以保护访问令牌。") from exc
         except httpx.ProxyError as exc:
             # 代理 CONNECT/SOCKS 握手失败发生在请求发往 Canvas 之前，写入不可能已到达服务器。
             raise CanvasNetworkError(
@@ -580,13 +599,19 @@ class CanvasClient:
     def upload_file(self, upload: Mapping[str, Any], file_path: str | Path) -> dict[str, Any]:
         """Upload bytes to Canvas' returned URL without forwarding bearer auth."""
         upload_url = str(upload.get("upload_url") or "")
-        parsed = urlparse(upload_url)
-        if (
-            parsed.scheme != "https"
-            or not parsed.netloc
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
+        try:
+            parsed = urlparse(upload_url)
+            _ = parsed.port  # 越界或非数字端口在访问 .port 时才抛 ValueError
+            unsafe = (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+            )
+        except ValueError as exc:
+            # IPv6 括号不闭合（[::1）、越界端口（:99999）等畸形地址在此收敛。
+            raise CanvasProtocolError("Canvas 返回了无效的文件上传地址。") from exc
+        if unsafe:
             raise CanvasProtocolError("Canvas 返回了不安全的文件上传地址。")
         upload_params = upload.get("upload_params") or {}
         if not isinstance(upload_params, Mapping):
@@ -596,14 +621,21 @@ class CanvasClient:
         # Build through the injected client so MockTransport remains testable, then
         # explicitly strip all Canvas credentials before sending cross-origin.
         with path.open("rb") as stream:
-            request = self._client.build_request(
-                "POST", upload_url, data=dict(upload_params), files={"file": (path.name, stream, content_type)}
-            )
+            try:
+                request = self._client.build_request(
+                    "POST", upload_url, data=dict(upload_params), files={"file": (path.name, stream, content_type)}
+                )
+            except (ValueError, httpx.InvalidURL) as exc:
+                # 控制字符（\x7f）触发 InvalidURL，畸形 IDNA（xn--）触发 IDNAError（ValueError 子类）。
+                raise CanvasProtocolError("Canvas 返回了无效的文件上传地址。") from exc
             request.headers.pop("Authorization", None)
             request.headers.pop("Cookie", None)
             request.headers.pop("Proxy-Authorization", None)
             try:
                 response = self._client.send(request, follow_redirects=False)
+            except (httpx.InvalidURL, ValueError) as exc:
+                # 发送期 IDNA/URL 编码失败（InvalidURL 直接继承 Exception，IDNAError 属 ValueError）。
+                raise CanvasProtocolError("Canvas 返回了无效的文件上传地址。") from exc
             except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError) as exc:
                 raise CanvasNetworkError("Canvas 文件上传失败。") from exc
         for _ in range(5):

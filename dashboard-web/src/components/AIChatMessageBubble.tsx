@@ -1,4 +1,4 @@
-import { Check, Copy, FileText } from "lucide-react";
+import { Check, ChevronDown, Copy, FileText } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import {
   Children,
@@ -6,6 +6,7 @@ import {
   memo,
   type ReactNode,
   useEffect,
+  useId,
   useRef,
   useState,
 } from "react";
@@ -14,8 +15,18 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
+import { AIFileChangeCard, fileChangeIds } from "@/components/AIFileChangeCard";
 import { motionDuration, motionEase } from "@/lib/motion";
-import type { AIAgentTrace, AIChatMessage } from "@/lib/types";
+import {
+  rehypeStreamFade,
+  useStreamFade,
+  useStreamReveal,
+} from "@/lib/streamReveal";
+import type {
+  AIAgentLiveStatus,
+  AIAgentTrace,
+  AIChatMessage,
+} from "@/lib/types";
 
 // 桌面端以 file:// 加载，target=_blank 链接由 pywebview 交给系统打开
 // （Windows 为 os.startfile）；只放行绝对 http(s)/mailto，相对、file、UNC 链接一律去掉 href。
@@ -25,6 +36,18 @@ function safeMarkdownUrl(url: string, key: string) {
   if (key !== "href" && /^https?:\/\//i.test(value)) return value;
   return null;
 }
+
+// 旧 WKWebView 不支持 GFM 自动链接内部的 lookbehind，降级 CommonMark。
+export function safeRemarkPlugins() {
+  try {
+    new RegExp("(?<=a)b");
+    return [remarkGfm];
+  } catch {
+    return [];
+  }
+}
+
+const remarkPlugins = safeRemarkPlugins();
 
 function NumberedCodeBlock({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
@@ -51,53 +74,78 @@ function NumberedCodeBlock({ children }: { children?: ReactNode }) {
 const MessageMarkdown = memo(function MessageMarkdown({
   content,
   showCodeLineNumbers,
+  clip = false,
+  fade = null,
 }: {
   content: string;
   showCodeLineNumbers: boolean;
+  clip?: boolean;
+  fade?: ReturnType<typeof useStreamFade>;
 }) {
+  const markdown = (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={
+        fade ? [rehypeSanitize, [rehypeStreamFade, fade]] : [rehypeSanitize]
+      }
+      urlTransform={safeMarkdownUrl}
+      components={{
+        a: ({ node: _node, ...props }) => (
+          <a {...props} target="_blank" rel="noreferrer" />
+        ),
+        // Never auto-load remote images from model output: a prompt-injected
+        // reply could encode local data into the URL and leak it without a
+        // click. Render a text placeholder (no <a>, so `[![x](u)](v)` stays
+        // valid markup) and keep the address visible on hover.
+        img: ({ src, alt }) => (
+          <span title={typeof src === "string" ? src : undefined}>
+            [图片：{alt || "外部图片"}]
+          </span>
+        ),
+        table: ({ node: _node, ...props }) => (
+          <div
+            className="ai-markdown-table"
+            role="region"
+            aria-label="表格内容"
+            tabIndex={0}
+          >
+            <table {...props} />
+          </div>
+        ),
+        ...(showCodeLineNumbers
+          ? {
+              pre: ({ node: _node, children }) => (
+                <NumberedCodeBlock>{children}</NumberedCodeBlock>
+              ),
+            }
+          : {}),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
   return (
     <div className="ai-markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
-        urlTransform={safeMarkdownUrl}
-        components={{
-          a: ({ node: _node, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer" />
-          ),
-          // Never auto-load remote images from model output: a prompt-injected
-          // reply could encode local data into the URL and leak it without a
-          // click. Render a text placeholder (no <a>, so `[![x](u)](v)` stays
-          // valid markup) and keep the address visible on hover.
-          img: ({ src, alt }) => (
-            <span title={typeof src === "string" ? src : undefined}>
-              [图片：{alt || "外部图片"}]
-            </span>
-          ),
-          table: ({ node: _node, ...props }) => (
-            <div
-              className="ai-markdown-table"
-              role="region"
-              aria-label="表格内容"
-              tabIndex={0}
-            >
-              <table {...props} />
-            </div>
-          ),
-          ...(showCodeLineNumbers
-            ? {
-                pre: ({ node: _node, children }) => (
-                  <NumberedCodeBlock>{children}</NumberedCodeBlock>
-                ),
-              }
-            : {}),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+      {clip ? <div className="ai-markdown-clip">{markdown}</div> : markdown}
     </div>
   );
 });
+
+// 超过这个长度或行数的用户消息默认折叠，避免一次粘贴就占满整屏、把回复挤出视野。
+const USER_COLLAPSE_CHARS = 600;
+const USER_COLLAPSE_LINES = 12;
+
+export function isLongUserMessage(content: string) {
+  if (content.length > USER_COLLAPSE_CHARS) return true;
+  let lines = 1;
+  for (const char of content) {
+    if (char === "\n") {
+      lines += 1;
+      if (lines > USER_COLLAPSE_LINES) return true;
+    }
+  }
+  return false;
+}
 
 export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   message,
@@ -108,6 +156,9 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   showCodeLineNumbers,
   animateEntry = false,
   queued = false,
+  running = false,
+  startedAt,
+  liveStatus,
 }: {
   message: AIChatMessage;
   trace?: AIAgentTrace | null;
@@ -117,12 +168,27 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
   showCodeLineNumbers: boolean;
   animateEntry?: boolean;
   queued?: boolean;
+  running?: boolean;
+  startedAt?: number | string | null;
+  liveStatus?: AIAgentLiveStatus | null;
 }) {
+  const collapsible =
+    message.role === "user" && isLongUserMessage(message.content);
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
   const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(
     null,
   );
   const copyTimerRef = useRef<number | null>(null);
   const shouldReduceMotion = useReducedMotion();
+  // 流式回答按平滑节奏逐步显示并渐显；结束后由最终消息整体替换，余下文字一次显现。
+  const streamingAnswer = message.role === "assistant" && running;
+  const visibleContent = useStreamReveal(
+    message.content,
+    streamingAnswer,
+    Boolean(shouldReduceMotion),
+  );
+  const fade = useStreamFade(streamingAnswer && !shouldReduceMotion);
   useEffect(
     () => () => {
       if (copyTimerRef.current !== null)
@@ -189,13 +255,54 @@ export const AIChatMessageBubble = memo(function AIChatMessageBubble({
           <InlineAgentExecution
             trace={trace}
             toolRuns={message.tool_runs}
+            running={running}
+            streaming={running}
+            startedAt={startedAt}
+            liveStatus={liveStatus}
+            agentName={agentName}
             onOpenActivity={onOpenActivity}
           />
         )}
-        <MessageMarkdown
-          content={message.content}
-          showCodeLineNumbers={showCodeLineNumbers}
-        />
+        {collapsible ? (
+          <div
+            id={contentId}
+            className={
+              expanded
+                ? "ai-user-content is-collapsible is-expanded"
+                : "ai-user-content is-collapsible is-collapsed"
+            }
+          >
+            <MessageMarkdown
+              content={message.content}
+              showCodeLineNumbers={showCodeLineNumbers}
+              clip
+            />
+          </div>
+        ) : (
+          <MessageMarkdown
+            content={visibleContent}
+            showCodeLineNumbers={showCodeLineNumbers}
+            fade={fade}
+          />
+        )}
+        {collapsible && (
+          <button
+            type="button"
+            className="ai-user-expand"
+            aria-expanded={expanded}
+            aria-controls={contentId}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            <ChevronDown aria-hidden="true" />
+            {expanded ? "收起" : `展开全文（共 ${message.content.length} 字）`}
+          </button>
+        )}
+        {message.role === "assistant" &&
+          fileChangeIds(trace?.tool_runs ?? message.tool_runs).map(
+            (changeId) => (
+              <AIFileChangeCard key={changeId} changeId={changeId} />
+            ),
+          )}
         {message.attachments && message.attachments.length > 0 && (
           <div
             className="ai-message-attachments"

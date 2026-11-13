@@ -243,8 +243,10 @@ def _numeric_grade(submission: Mapping[str, Any]) -> float | None:
         if value is None or isinstance(value, bool):
             continue
         try:
+            # JSON 大整数（如 10**400）在 float() 时抛 OverflowError（非 ValueError 子类），
+            # 服务端损坏数据不应让整个成绩簿读取失败，按非数值跳过。
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(number):
             return number
@@ -429,7 +431,11 @@ class AcademicFeatureService:
             course_id = course.get("id")
             if course_id is None or isinstance(course_id, bool):
                 continue
-            normalized_id = _canvas_id(course_id, "课程 ID")
+            # 服务端列表中单个畸形 ID 不应让整个能力列表失败；显式传入的 ID 仍由 _canvas_id 严格校验。
+            try:
+                normalized_id = _canvas_id(course_id, "课程 ID")
+            except AcademicValidationError:
+                continue
             result.append(
                 self._capabilities(
                     normalized_id,
@@ -458,11 +464,16 @@ class AcademicFeatureService:
             courses = _records(
                 self._read_call(courses_method, "Canvas 课程列表读取失败。")
             )
-            result = [
-                _canvas_id(item["id"], "课程 ID")
-                for item in courses
-                if item.get("id") is not None and not isinstance(item.get("id"), bool)
-            ]
+            result = []
+            for item in courses:
+                raw_id = item.get("id")
+                if raw_id is None or isinstance(raw_id, bool):
+                    continue
+                # 服务端列表中单个畸形 ID 不应让整个日历查询失败（显式传入的 ID 仍严格校验）。
+                try:
+                    result.append(_canvas_id(raw_id, "课程 ID"))
+                except AcademicValidationError:
+                    continue
         return list(dict.fromkeys(result))
 
     def _calendar_batch(
@@ -582,7 +593,7 @@ class AcademicFeatureService:
                 if month == 12
                 else datetime(year, month + 1, 1, tzinfo=timezone_info)
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise AcademicValidationError("年月格式无效。") from exc
         month_items = self.events_between(month_start, month_end, course_ids=course_ids)
         # The calendar page needs the nearest later deadlines even when the
@@ -803,8 +814,9 @@ class AcademicFeatureService:
         if value is None or isinstance(value, bool):
             return None
         try:
+            # 与 _numeric_grade 同理：超大 Python int（JSON 大整数）转 float 抛 OverflowError。
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         return number if math.isfinite(number) else None
 
@@ -816,7 +828,13 @@ class AcademicFeatureService:
             for member in self._list_members_raw(normalized_id)
             if "student" in self._member_roles(member)
         ]
-        student_ids = [str(member["id"]) for member in students if member.get("id") is not None]
+        # 与 compute_grade_statistics 的布尔 ID 过滤保持一致：布尔 id 无法通过 _canvas_id，
+        # 不应让单个畸形成员使整个成绩簿读取失败。
+        student_ids = [
+            str(member["id"])
+            for member in students
+            if member.get("id") is not None and not isinstance(member.get("id"), bool)
+        ]
         submissions = self._user_submissions(normalized_id, student_ids)
         statistics = self.compute_grade_statistics(assignments, students, submissions)
         return {
@@ -1058,7 +1076,9 @@ class AcademicFeatureService:
                 number = Decimal(str(value).strip())
             except InvalidOperation:
                 return None
-            return number if number.is_finite() else None
+            # decimal.Overflow 不是 InvalidOperation：abs(1e999999999 - 10) 会在默认上下文中
+            # 抛出 Overflow 并逃出 update_submission，因此限制量级（Canvas 分数远小于 1e16）。
+            return number if number.is_finite() and number.adjusted() <= 15 else None
 
         tolerance = Decimal("0.000001")
         expected_text = expected.strip()

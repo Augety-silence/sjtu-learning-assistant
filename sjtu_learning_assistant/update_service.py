@@ -86,7 +86,15 @@ class SemanticVersion:
         build = tuple((match.group(5) or "").split(".")) if match.group(5) else ()
         if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease):
             raise InvalidVersionError("语义版本的预发布数字标识不能有前导零。")
-        return cls(int(match.group(1)), int(match.group(2)), int(match.group(3)), prerelease, build)
+        # Python 3.11+ 对超过 4300 位的整数字符串转换抛 ValueError（sys.set_int_max_str_digits），
+        # 不包装会逃出本模块承诺的 InvalidVersionError 错误契约。
+        try:
+            major = int(match.group(1))
+            minor = int(match.group(2))
+            patch = int(match.group(3))
+        except ValueError as exc:
+            raise InvalidVersionError("版本号数字分量超出允许范围。") from exc
+        return cls(major, minor, patch, prerelease, build)
 
     def _compare_prerelease(self, other: "SemanticVersion") -> int:
         if not self.prerelease and not other.prerelease:
@@ -151,7 +159,16 @@ def is_newer_version(candidate: str, current: str) -> bool:
 def validate_update_url(url: object, *, purpose: str = "asset") -> str:
     """验证 URL 的 scheme、认证信息、端口、主机及固定仓库路径。"""
 
-    if type(url) is not str or not url or len(url) > 4096 or "\x00" in url:
+    # NUL 单独保留早拒绝；其余 ASCII 控制字符（CR/LF/TAB/VT/FF/DEL 等）也必须
+    # 拒绝：validate 放过后 httpx 在构造 Request 时抛 httpx.InvalidURL，
+    # 而 InvalidURL 既不是 httpx.HTTPError 也不是 OSError，会逃出 _get 的归一化
+    # except，破坏本模块“只抛 UpdateServiceError 族”的错误契约。
+    if (
+        type(url) is not str
+        or not url
+        or len(url) > 4096
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in url)
+    ):
         raise UnsafeUpdateURLError("更新地址格式无效。")
     try:
         parsed = urlsplit(url)
@@ -616,6 +633,10 @@ class UpdateService:
             payload = response.json()
         except ValueError as exc:
             raise InvalidUpdateMetadataError("Release JSON 格式无效。") from exc
+        except RecursionError as exc:
+            # 深度嵌套 JSON 触发 json 模块的递归上限（RecursionError 属 RuntimeError，
+            # 不会被上面的 ValueError 分支捕获），必须归一化以保持模块错误类型契约。
+            raise InvalidUpdateMetadataError("Release JSON 嵌套过深。") from exc
         return parse_release_metadata(payload)
 
     def resolve_asset_checksum(self, asset: ReleaseAsset) -> ReleaseAsset:

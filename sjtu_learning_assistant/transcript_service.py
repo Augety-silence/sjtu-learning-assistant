@@ -313,6 +313,10 @@ def _safe_error(value: object) -> str:
     text = re.sub(r"(?i)\b[A-Z]:[\\/]+Users[\\/]+[^\s'\"]+", "[已隐藏]", text)
     text = re.sub(r"(?i)(?:/Users|/home)/\S+", "[已隐藏]", text)
     text = re.sub(r"(?i)(token|password|secret|api[_-]?key)\s*[=:]\s*\S+", r"\1=[已隐藏]", text)
+    # Upstream error text may contain lone surrogates (e.g. undecodable Windows
+    # cp936 bytes); replace them so later UTF-8 JSON persistence cannot fail
+    # with UnicodeEncodeError and overwrite the real failure record.
+    text = text.encode("utf-8", errors="replace").decode("utf-8")
     return text[:400] or "字幕任务失败，请稍后重试。"
 
 
@@ -518,7 +522,10 @@ class TranscriptService:
         try:
             if path.is_symlink() or not path.is_file():
                 raise TranscriptError("字幕任务工件不存在或不安全。")
-            value = json.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig transparently strips a leading UTF-8 BOM: files edited
+            # with Windows Notepad or round-tripped through sync-drive editors
+            # may carry one, and plain utf-8 would reject the whole record.
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
         except TranscriptError:
             raise
         except Exception as exc:
@@ -622,6 +629,11 @@ class TranscriptService:
 
     @staticmethod
     def _validate_video(course_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            # Non-mapping elements (str/None/int from a miswired caller) would
+            # otherwise escape as a raw AttributeError/TypeError (HTTP 500)
+            # instead of the controlled input-validation contract.
+            raise TranscriptError("视频标识不正确。")
         source_id = value.get("source_id")
         if type(source_id) is not str:
             raise TranscriptError("视频标识不正确。")
@@ -652,7 +664,7 @@ class TranscriptService:
         _batch_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = str(course_id).strip()
-        if not key.isdigit() or not 1 <= len(videos) <= 100:
+        if not key.isdigit() or not isinstance(videos, Sequence) or not 1 <= len(videos) <= 100:
             raise TranscriptError("课程或视频数量不正确。")
         if type(course_name) is not str or not course_name.strip() or len(course_name) > 300:
             raise TranscriptError("课程名称不正确。")
@@ -706,7 +718,14 @@ class TranscriptService:
                 batches.append(self._read_json(path))
             except TranscriptError:
                 continue
-        return sorted(batches, key=lambda item: str(item.get("created_at", "")), reverse=True)
+        return sorted(
+            batches,
+            # Explicit id tie-breaker: batches created in the same ISO-8601
+            # second must not depend on filesystem glob order, which decides
+            # the "latest job" semantics of learning_segments/prepare_for_playback.
+            key=lambda item: (str(item.get("created_at", "")), str(item.get("id", ""))),
+            reverse=True,
+        )
 
     @staticmethod
     def _public_job(job: Mapping[str, Any]) -> dict[str, Any]:
@@ -1122,8 +1141,14 @@ class TranscriptService:
         if not path.is_file() or path.is_symlink():
             return None
         manifest = self._read_json(path)
-        record = manifest.get("artifacts", {}).get("raw_vtt", {})
-        if manifest.get("source", {}).get("source_id") != source_id or record.get("path") != "raw.vtt" or record.get("sha256") != manifest.get("raw_sha256") or not self._hashed_file_valid(video_dir / "raw.vtt", record.get("sha256")):
+        artifacts = manifest.get("artifacts")
+        source = manifest.get("source")
+        if type(artifacts) is not dict or type(source) is not dict:
+            return None
+        record = artifacts.get("raw_vtt", {})
+        if type(record) is not dict:
+            return None
+        if source.get("source_id") != source_id or record.get("path") != "raw.vtt" or record.get("sha256") != manifest.get("raw_sha256") or not self._hashed_file_valid(video_dir / "raw.vtt", record.get("sha256")):
             return None
         try:
             raw = (video_dir / "raw.vtt").read_text(encoding="utf-8")
@@ -1143,12 +1168,16 @@ class TranscriptService:
         if quality.get("passed") is not True:
             return None
         corrected = self._read_json(v2_dir / "corrected.json")
-        chunks = json.loads((v2_dir / "semantic_chunks.json").read_text(encoding="utf-8"))
-        if type(chunks) is not list or type(corrected.get("corrections")) is not list:
-            return None
         try:
+            # A sync-drive placeholder or half-written file can surface as
+            # OSError/JSONDecodeError between the hash validation and this
+            # read; degrade like corrected_subtitles instead of letting a raw
+            # exception escape the hot learning_segments endpoint.
+            chunks = json.loads((v2_dir / "semantic_chunks.json").read_text(encoding="utf-8-sig"))
+            if type(chunks) is not list or type(corrected.get("corrections")) is not list:
+                return None
             return corrected_source_cues(normalize_cues(parse_vtt(raw)), chunks, corrected["corrections"])
-        except (ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError):
             return None
 
     def corrected_subtitles(self, source_id: str) -> dict[str, Any] | None:
@@ -1242,8 +1271,35 @@ class TranscriptService:
                 "failed_segments": int(bool(failed)),
             }
         empty = {"segments": [], "available_ranges": [], "status": "processing" if is_processing else "empty", "message": self._learning_message(job, {}, is_processing, False, True), "source_version": "original", "is_processing": is_processing, **dto_fields()}
-        stored = self._stored_learning_input(source_id)
+        try:
+            stored = self._stored_learning_input(source_id)
+        except TranscriptArtifactError:
+            # Hashes match but the file no longer parses: keep the explicit,
+            # actionable error (dashboard maps it to a failure response).
+            raise
         if stored is None:
+            # A manifest that promises a raw subtitle but whose file failed the
+            # hash check means the local copy is corrupt, not that the recording
+            # was never processed: give the UI an actionable code instead of the
+            # silent "waiting for source" empty state.
+            manifest_path = self._manifest_path(source_id)
+            local_corrupt = False
+            if manifest_path.is_file() and not manifest_path.is_symlink():
+                try:
+                    persisted = self._read_json(manifest_path)
+                except TranscriptError:
+                    persisted = {}
+                record = persisted.get("artifacts") if type(persisted.get("artifacts")) is dict else None
+                local_corrupt = type(record) is dict and type(record.get("raw_vtt")) is dict
+            if local_corrupt:
+                empty.update(
+                    status="empty",
+                    message="本地字幕文件已损坏或无法读取，请重新获取字幕。",
+                    error_code="local_subtitle_corrupt",
+                    error_message="本地字幕文件已损坏或无法读取，请重新获取字幕。",
+                    retryable=True,
+                    failed_segments=1,
+                )
             return empty
         video_dir, manifest, raw = stored
         cues = normalize_cues(parse_vtt(raw))
@@ -1254,8 +1310,19 @@ class TranscriptService:
         if synchronized:
             cues = corrected
         mapped = []
-        for index, record in manifest.get("chunks", {}).items():
-            if not str(index).isdigit() or record.get("path") != f"chunks/{int(index):04d}.json":
+        # Persisted manifests may be hand-edited or restored from a sync-drive
+        # copy; tolerate wrong-typed containers instead of 500-ing the hot API.
+        chunk_records = manifest.get("chunks")
+        if type(chunk_records) is not dict:
+            chunk_records = {}
+        for index, record in chunk_records.items():
+            if type(record) is not dict:
+                continue
+            try:
+                expected_path = f"chunks/{int(index):04d}.json"
+            except (TypeError, ValueError):
+                continue
+            if not str(index).isdigit() or record.get("path") != expected_path:
                 continue
             path = video_dir / record["path"]
             if self._hashed_file_valid(path, record.get("sha256")):
@@ -1264,7 +1331,12 @@ class TranscriptService:
                 except (ValueError, TranscriptError):
                     continue
         summary = None
-        record = manifest.get("artifacts", {}).get("summary_json", {})
+        artifact_records = manifest.get("artifacts")
+        if type(artifact_records) is not dict:
+            artifact_records = {}
+        record = artifact_records.get("summary_json", {})
+        if type(record) is not dict:
+            record = {}
         if manifest.get("artifact_learning_source_sha256") == manifest.get("learning_source_sha256") and record.get("path") == "summary.json" and self._hashed_file_valid(video_dir / "summary.json", record.get("sha256")):
             summary = self._read_json(video_dir / "summary.json")
         provisional = not (synchronized or unchanged_verified)
@@ -1297,8 +1369,8 @@ class TranscriptService:
             # accepts objects, which made these counts always (0, 0).
             if chunks_path.is_symlink() or uncertain_path.is_symlink():
                 return 0, 0
-            chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
-            uncertain = json.loads(uncertain_path.read_text(encoding="utf-8"))
+            chunks = json.loads(chunks_path.read_text(encoding="utf-8-sig"))
+            uncertain = json.loads(uncertain_path.read_text(encoding="utf-8-sig"))
             if type(chunks) is not list or type(uncertain) is not list:
                 return 0, 0
             total = len(chunks)
@@ -2127,6 +2199,18 @@ class TranscriptService:
         return type(value) is dict and value == self._current_chunk_context(manifest, job, context)
 
     @staticmethod
+    def _hash_file_streaming(path: Path) -> str:
+        # Stream in fixed-size chunks: read_bytes() materializes the whole
+        # artifact (including v2 payloads and raw.vtt) in memory at once, so a
+        # sync-drive placeholder or memory pressure raises MemoryError outside
+        # the OSError guards of every hashed-file check and 500s hot endpoints.
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
     def _hashed_file_valid(path: Path, expected_hash: object, expected_size: object = None) -> bool:
         try:
             return (
@@ -2136,7 +2220,7 @@ class TranscriptService:
                 and path.is_file()
                 and not path.is_symlink()
                 and (expected_size is None or path.stat().st_size == expected_size)
-                and _sha256(path.read_bytes()) == expected_hash
+                and TranscriptService._hash_file_streaming(path) == expected_hash
             )
         except OSError:
             return False
@@ -2685,7 +2769,7 @@ class TranscriptService:
         ):
             return None
         try:
-            stored_cues = json.loads(cues_path.read_text(encoding="utf-8"))
+            stored_cues = json.loads(cues_path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         if type(stored_cues) is not list or len(stored_cues) != len(cues):
@@ -2787,7 +2871,7 @@ class TranscriptService:
             if (
                 manifest.get("source", {}).get("source_id") == job["source_id"]
                 and raw_path.is_file()
-                and _sha256(raw_path.read_bytes()) == manifest.get("raw_sha256")
+                and self._hash_file_streaming(raw_path) == manifest.get("raw_sha256")
             ):
                 context = self.ai_context_provider()
                 self._refresh_manifest_versions(manifest, job, context)
@@ -3174,7 +3258,13 @@ class TranscriptService:
         video_dir = self._job_video_dir(job)
         manifest = self._read_json(video_dir / "manifest.json")
         items = []
-        for kind, record in manifest.get("artifacts", {}).items():
+        # Sync-conflict copies / hand edits can leave "artifacts" as a list or
+        # string; fail soft like _v2_artifact_items instead of raising a raw
+        # AttributeError (HTTP 500) on the artifact-list UI endpoint.
+        artifacts = manifest.get("artifacts")
+        if type(artifacts) is not dict:
+            artifacts = {}
+        for kind, record in artifacts.items():
             if kind not in ARTIFACT_FILES or type(record) is not dict:
                 continue
             path = video_dir / str(record.get("path"))
@@ -3242,7 +3332,10 @@ class TranscriptService:
         _batch, job = self._find_job(job_id)
         video_dir = self._job_video_dir(job)
         manifest = self._read_json(video_dir / "manifest.json")
-        record = manifest.get("artifacts", {}).get(kind)
+        artifacts = manifest.get("artifacts")
+        if type(artifacts) is not dict:
+            raise TranscriptError("字幕工件不存在。")
+        record = artifacts.get(kind)
         if type(record) is not dict or record.get("path") != ARTIFACT_FILES[kind]:
             raise TranscriptError("字幕工件不存在。")
         path = video_dir / ARTIFACT_FILES[kind]
@@ -3269,7 +3362,9 @@ class TranscriptService:
         try:
             if path.stat().st_size > limit:
                 raise TranscriptError("字幕工件超过预览限制。")
-            content = path.read_text(encoding="utf-8")
+            # utf-8-sig tolerates a leading UTF-8 BOM (sync-drive/Windows
+            # editors) and behaves exactly like utf-8 without one.
+            content = path.read_text(encoding="utf-8-sig")
         except TranscriptError:
             raise
         except (OSError, UnicodeError) as exc:

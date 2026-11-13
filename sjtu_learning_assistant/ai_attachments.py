@@ -22,6 +22,15 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, selectinload
 
+from sjtu_learning_assistant.document_text import (
+    DOCUMENT_EXTENSIONS,
+    DocumentText,
+    DocumentTextError,
+    DocumentUnsupportedError,
+    extract_document,
+    read_document_image,
+    strip_unit_headers,
+)
 from sjtu_learning_assistant.models import AIFileDerivative, AIManagedFile
 
 MANAGED_DIRECTORY_NAME = ".ai_attachments"
@@ -131,9 +140,26 @@ def _decode_text(payload: bytes, *, truncated: bool = False) -> str:
     raise UnicodeError("encoding")
 
 
-def extract_text(path: Path, name: str) -> tuple[str, str]:
-    """Extract supported text formats with stdlib only and hard input/output bounds."""
+def extract_document_units(path: Path, name: str) -> DocumentText:
+    """Return paginated text for text files and supported office/PDF documents."""
     suffix = Path(name).suffix.casefold()
+    if suffix in DOCUMENT_EXTENSIONS:
+        try:
+            return extract_document(path, name, max_chars=MAX_EXTRACT_CHARS)
+        except DocumentUnsupportedError:
+            raise AIFileError("unsupported") from None
+        except DocumentTextError as exc:
+            raise AIFileError(str(exc) or "文档正文提取失败。") from None
+    text, extractor = extract_text(path, name)
+    return DocumentText("text", extractor, "段", (text,), 1, False)
+
+
+def extract_text(path: Path, name: str) -> tuple[str, str]:
+    """Extract supported text formats with hard input/output bounds."""
+    suffix = Path(name).suffix.casefold()
+    if suffix in DOCUMENT_EXTENSIONS:
+        document = extract_document_units(path, name)
+        return document.text[:MAX_EXTRACT_CHARS], document.extractor
     if suffix not in TEXT_EXTENSIONS:
         raise AIFileError("unsupported")
     try:
@@ -190,6 +216,29 @@ def attachment_dto(row: AIManagedFile) -> dict[str, Any]:
         "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else None,
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else None,
     }
+
+
+def _vision_part(stream: Any) -> dict[str, Any]:
+    """Normalize one image stream to a bounded JPEG data-URL message part."""
+    try:
+        with Image.open(stream) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > MAX_VISION_PIXELS:
+                raise AIFileError("图片尺寸无效或像素过大。")
+            source.load()
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((MAX_VISION_EDGE, MAX_VISION_EDGE), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, "JPEG", quality=88, optimize=True)
+            payload = output.getvalue()
+    except AIFileError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        raise AIFileError("图片附件损坏或格式不受支持。") from None
+    if not payload or len(payload) > MAX_VISION_BYTES:
+        raise AIFileError("图片处理后仍超过 4 MiB，请压缩后重试。")
+    encoded = base64.b64encode(payload).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}}
 
 
 class AIManagedFileService:
@@ -292,7 +341,7 @@ class AIManagedFileService:
             else:
                 text_status = "failed"
                 error = str(exc)[:240]
-        summary, tags = heuristic_summary_tags(name, text or "")
+        summary, tags = heuristic_summary_tags(name, strip_unit_headers(text or ""))
         if text is not None and self.summary_enhancer is not None:
             try:
                 enhanced_summary, enhanced_tags = self.summary_enhancer(name, text[:12_000], summary, tags)
@@ -514,32 +563,56 @@ class AIManagedFileService:
                 raise AIFileError("图片附件仅在云端，请先恢复到本机后再识别。")
             path = self.resolve_controlled_copy(attachment_id)
             try:
-                with Image.open(path) as source:
-                    width, height = source.size
-                    if width <= 0 or height <= 0 or width * height > MAX_VISION_PIXELS:
-                        raise AIFileError("图片尺寸无效或像素过大。")
-                    source.load()
-                    image = ImageOps.exif_transpose(source).convert("RGB")
-                    image.thumbnail((MAX_VISION_EDGE, MAX_VISION_EDGE), Image.Resampling.LANCZOS)
-                    output = io.BytesIO()
-                    image.save(output, "JPEG", quality=88, optimize=True)
-                    payload = output.getvalue()
-            except AIFileError:
-                raise
-            except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+                stream = path.open("rb")
+            except OSError:
                 raise AIFileError("图片附件损坏或格式不受支持。") from None
-            if not payload or len(payload) > MAX_VISION_BYTES:
-                raise AIFileError("图片处理后仍超过 4 MiB，请压缩后重试。")
-            encoded = base64.b64encode(payload).decode("ascii")
-            result.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{encoded}",
-                    },
-                }
-            )
+            with stream:
+                result.append(_vision_part(stream))
         return result
+
+    def document_vision_parts(
+        self, attachment_ids: Iterable[int], *, budget: int
+    ) -> tuple[list[dict[str, Any]], list[str], int]:
+        """Pick bounded embedded images from PPTX/DOCX attachments for vision models.
+
+        Returns ``(image_parts, labels, skipped)``. Damaged or oversized embedded
+        images are skipped instead of failing the whole turn; cloud-only documents
+        are never downloaded just to obtain images.
+        """
+        ids = list(dict.fromkeys(attachment_ids))
+        if len(ids) > 20 or any(type(value) is not int or value <= 0 for value in ids):
+            raise AIFileError("附件标识列表无效。")
+        if type(budget) is not int or budget < 0:
+            raise AIFileError("图片预算无效。")
+        parts: list[dict[str, Any]] = []
+        labels: list[str] = []
+        skipped = 0
+        for attachment_id in ids:
+            row = self._get_row(attachment_id)
+            if Path(row.name).suffix.casefold() not in {".pptx", ".docx"}:
+                continue
+            if row.status == "cloud_only" or not row.controlled_relpath:
+                continue
+            try:
+                path = self.resolve_controlled_copy(attachment_id)
+                document = extract_document(path, row.name, max_chars=MAX_EXTRACT_CHARS)
+            except (AIFileError, DocumentTextError):
+                continue
+            for image in document.images:
+                if len(parts) >= budget:
+                    skipped += 1
+                    continue
+                try:
+                    part = _vision_part(io.BytesIO(read_document_image(path, image)))
+                except (AIFileError, DocumentTextError):
+                    skipped += 1
+                    continue
+                parts.append(part)
+                unit = "页" if document.kind == "pptx" else "段"
+                labels.append(
+                    f"图 {len(parts)}：附件 {row.id}《{_safe_display_name(row.name)}》第 {image.unit} {unit}"
+                )
+        return parts, labels, skipped
 
     def search(
         self,

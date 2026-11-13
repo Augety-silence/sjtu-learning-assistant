@@ -31,6 +31,7 @@ hiddenimports = [
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.Windows",
+    "pypdf",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

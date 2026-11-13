@@ -104,8 +104,22 @@ def normalize_page_context(value: object | None) -> dict[str, Any]:
     return result
 
 
-def task_spec_for_context(context: Mapping[str, Any]) -> dict[str, Any]:
-    tasks = ai_task_catalog(str(context["page_id"]))["tasks"]
+def _utc_iso(value: datetime | None) -> str | None:
+    """SQLite 读回的是不带时区的 UTC 时间；补上 +00:00，避免前端按本地时间解析而差 8 小时。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def task_spec_for_context(
+    context: Mapping[str, Any], *, capability_page_id: str | None = None
+) -> dict[str, Any]:
+    # 预算按“实际执行的能力”选取：从概览等页面带上下文进入对话时，
+    # 上下文只限定证据范围，模型调用仍属于学习对话（learning_chat）。
+    page_id = capability_page_id or str(context["page_id"])
+    tasks = ai_task_catalog(page_id)["tasks"]
     if len(tasks) != 1:
         raise AITaskError("页面 AI 能力定义无效。")
     return dict(tasks[0])
@@ -138,14 +152,21 @@ class AITaskLedger:
         session.add(row)
         return row
 
-    def create(self, context: object | None, *, model: str | None = None) -> dict[str, Any]:
+    def create(
+        self,
+        context: object | None,
+        *,
+        model: str | None = None,
+        capability_page_id: str | None = None,
+    ) -> dict[str, Any]:
         normalized = normalize_page_context(context)
-        spec = task_spec_for_context(normalized)
+        spec = task_spec_for_context(normalized, capability_page_id=capability_page_id)
         task_id = str(uuid.uuid4())
         with Session(self.engine) as session, session.begin():
             row = AITask(
                 id=task_id,
-                page_id=str(spec["page_id"]),
+                # 用量仍记在发起页面（按页面统计），能力与预算取实际执行的能力。
+                page_id=str(normalized["page_id"]),
                 capability_id=str(spec["task_id"]),
                 status="queued",
                 model=model,
@@ -417,10 +438,10 @@ class AITaskLedger:
                 "unknown_usage_calls": row.unknown_usage_calls,
                 "status": "partial_or_unknown" if row.unknown_usage_calls else "reported",
             },
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            "started_at": row.started_at.isoformat() if row.started_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "created_at": _utc_iso(row.created_at),
+            "updated_at": _utc_iso(row.updated_at),
+            "started_at": _utc_iso(row.started_at),
+            "finished_at": _utc_iso(row.finished_at),
         }
 
     def get(self, task_id: str, *, after_sequence: int = 0) -> dict[str, Any]:
@@ -446,7 +467,7 @@ class AITaskLedger:
                         "sequence": event.sequence,
                         "kind": event.kind,
                         "payload": dict(event.payload),
-                        "created_at": event.created_at.isoformat() if event.created_at else None,
+                        "created_at": _utc_iso(event.created_at),
                     }
                     for event in events
                 ],

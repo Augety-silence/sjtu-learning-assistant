@@ -247,6 +247,14 @@ class BackupServiceTests(unittest.TestCase):
         )
         return video_dir, {**v1_payloads, **v2_payloads}
 
+    def test_deep_manifest_is_skipped_without_losing_other_candidates(self) -> None:
+        self._add_transcript()
+        expected = self._service().scan()
+        invalid = self.transcripts / "videos" / ("a" * 32)
+        invalid.mkdir()
+        (invalid / "manifest.json").write_text("[" * 50_000 + "0" + "]" * 50_000, encoding="utf-8")
+        self.assertEqual(expected, self._service().scan())
+
     def test_path_cleaning_and_filename_disambiguation_are_stable(self) -> None:
         traversal = safe_path_component("../..\x00")
         self.assertNotIn("/", traversal)

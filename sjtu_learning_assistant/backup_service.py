@@ -266,7 +266,7 @@ def _controlled_json(root: Path, raw_path: str) -> tuple[dict[str, Any], str, in
     )
     try:
         value = json.loads((payload or b"").decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, ValueError, RecursionError):
         raise BackupError("字幕清单过大或格式无效。") from None
     if type(value) is not dict:
         raise BackupError("字幕清单过大或格式无效。")

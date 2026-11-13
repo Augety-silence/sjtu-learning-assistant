@@ -258,7 +258,9 @@ export function SettingsView({
   const removeCredential = async () => {
     if (
       !editing ||
-      !window.confirm(`确定删除${configMeta[editing].secretLabel}？`)
+      !window.confirm(
+        `确定删除${configMeta[editing].secretLabel}？删除后该连接将停止同步，需重新填写凭据才能恢复。`,
+      )
     )
       return;
     startBusy(`delete-${editing}`);
@@ -272,6 +274,8 @@ export function SettingsView({
         ),
       );
       setSecret("");
+      // 关闭弹窗以把焦点还给“修改配置”触发按钮；否则删除后焦点会落到 <body>。
+      setEditing(null);
       showToast({
         id: "settings-credential",
         kind: "success",
@@ -748,6 +752,8 @@ export function SettingsView({
               setMailAccount(status.mail_account);
               setAiBaseUrl(status.ai_base_url);
               setAiModel(status.ai_model);
+              // 关闭即清掉内存中未提交的明文凭据，避免残留在组件 state。
+              setSecret("");
               setEditing(null);
             }}
             onSave={saveConfig}
@@ -824,7 +830,14 @@ function ConfigDialog({
       role="presentation"
       aria-hidden={isPresent ? undefined : true}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        // 仅主键（通常是左键）点空白处关闭，避免右键/中键按下即丢草稿。
+        if (
+          !busy &&
+          event.button === 0 &&
+          event.target === event.currentTarget
+        ) {
+          onClose();
+        }
       }}
     >
       <motion.div
@@ -846,7 +859,9 @@ function ConfigDialog({
               ? motionDuration.control
               : motionDuration.fast,
         }}
-        onMouseDown={onClose}
+        onMouseDown={(event) => {
+          if (!busy && event.button === 0) onClose();
+        }}
       />
       <motion.section
         ref={dialogRef}
@@ -881,6 +896,7 @@ function ConfigDialog({
             variant="ghost"
             size="icon"
             aria-label="关闭配置窗口"
+            disabled={busy}
             onClick={onClose}
           >
             <X aria-hidden="true" />
@@ -900,7 +916,12 @@ function ConfigDialog({
                 value={mailAccount}
                 onChange={(event) => onMailAccount(event.target.value)}
                 placeholder="name@sjtu.edu.cn"
+                inputMode="email"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 autoComplete="username"
+                required
               />
             </label>
           )}
@@ -933,17 +954,25 @@ function ConfigDialog({
             </>
           )}
           <label>
-            <span>
+            <span id={`${kind}-secret-hint`}>
               {meta.secretLabel}
-              {saved ? "（留空则保持不变）" : ""}
+              {saved
+                ? kind === "mail" || kind === "ai"
+                  ? "（留空则保持不变）"
+                  : "（已保存；如需更换请输入新的凭据）"
+                : ""}
             </span>
             <input
               aria-label={meta.secretLabel}
+              aria-describedby={`${kind}-secret-hint`}
               type="password"
               value={secret}
               onChange={(event) => onSecret(event.target.value)}
               placeholder={meta.placeholder}
-              autoComplete="new-password"
+              autoComplete={
+                kind === "mail" && saved ? "current-password" : "new-password"
+              }
+              required={kind !== "mail" && kind !== "ai" && !saved}
             />
           </label>
           <footer>
@@ -951,6 +980,7 @@ function ConfigDialog({
               <Button
                 type="button"
                 variant="ghost"
+                className="aura-tone-danger"
                 disabled={busy}
                 onClick={onDelete}
               >

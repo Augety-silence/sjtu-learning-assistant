@@ -72,7 +72,19 @@ _NEGATIONS = re.compile(
 )
 _NUMBER = re.compile(r"(?<![0-9A-Za-z_])[-+]?\d+(?:[.,]\d+)*(?:%|e[-+]?\d+)?", re.I)
 # Same reason as above: \b fails after CJK ("得sin(x)"), so use an ASCII lookbehind.
-_FORMULA = re.compile(r"(?:[=<>±×÷∑∫√^]|(?<![A-Za-z])(?:sin|cos|log|ln|exp)\s*\()", re.I)
+# Unicode relations, full-width IME operators and super/subscript digits (not \d)
+# are formulas too: "a≤b→a≥b", "x∈A→x∉A" and "x²→x³" must not pass at ordinary
+# confidence.  Whole blocks: U+2200-22FF / U+2A00-2AFF math operators,
+# U+2070-207F / U+2080-208E super/subscripts; ¹²³ live in Latin-1 (U+00B9/B2/B3).
+_FORMULA = re.compile(
+    r"(?:[=<>±×÷^′″‴＝＜＞－＊／¹²³⁰-ⁿ₀-₎∀-⋿⨀-⫿]"
+    # Full-width "（" from a CJK IME is the same math call ("sin（x）") on Windows;
+    # without it a semantic flip like sin（x）→cos（x） passes at ordinary confidence.
+    # －＊／ are the IME full-width counterparts of -* /, matching ＝＜＞ above;
+    # full-width ＋ is intentionally excluded (Ｃ＋＋ is an ordinary term).
+    r"|(?<![A-Za-z])(?:(?:arc)?(?:sin|cos|tan|cot|sec|csc)h?|log|lg|ln|exp)\s*[(（])",
+    re.I,
+)
 _PERSON_TYPE = frozenset({"person", "person_name", "name", "人名", "姓名"})
 
 
@@ -238,7 +250,15 @@ def _input_bytes(raw_vtt: str | None, cues: Sequence[object] | None) -> bytes:
 
 def _to_cues(raw_vtt: str | None, cues: Sequence[object] | None) -> list[Cue]:
     if raw_vtt is not None:
-        return normalize_cues(parse_vtt(raw_vtt))
+        try:
+            return normalize_cues(parse_vtt(raw_vtt))
+        except ValueError as exc:
+            # An empty VTT must degrade to the same structured "no content"
+            # result as cues=[] (status=failed + Chinese warning), not surface
+            # as an uncaught task_error; malformed VTT keeps its original error.
+            if str(exc) == "字幕中没有可用 cue。":
+                return []
+            raise
     assert cues is not None
     converted = []
     for index, source in enumerate(cues):
@@ -1469,7 +1489,11 @@ class CourseLearningOrchestrator:
             final_correction: CorrectionResult | None = None
             final_critic: CriticResult | None = None
             numeric = 0
+            # Each critic loop re-proposes the whole chunk: count only the final
+            # loop's outcome, otherwise one rejected edit accumulates per revision.
+            chunk_unsupported = 0
             for loop_index in range(checked_policy.max_critic_loops):
+                chunk_unsupported = 0
                 correction_data = dict(common)
                 correction_data.update(
                     terminology=[term.to_dict() for term in valid_terms],
@@ -1502,13 +1526,12 @@ class CourseLearningOrchestrator:
                     validated, numeric, unsupported, diff_warnings = _validate_diff(
                         chunk, proposed, context, checked_policy
                     )
-                    numeric_count += numeric
-                    unsupported_count += unsupported
+                    chunk_unsupported = unsupported
                     warnings.extend(diff_warnings)
                 except Exception as exc:
                     schema_pass = False
                     if isinstance(exc, SchemaValidationError):
-                        unsupported_count += 1
+                        chunk_unsupported = 1
                     warnings.append("Correction 调用或校验失败，当前字幕块已降级为原文。")
                     final_correction = _empty_correction(chunk, uncertain=True)
                     final_critic = _fallback_critic("Correction unavailable or invalid")
@@ -1551,6 +1574,8 @@ class CourseLearningOrchestrator:
                     final_correction = _empty_correction(chunk, uncertain=True)
                     final_critic = _fallback_critic("revision loop limit reached")
             assert final_correction is not None and final_critic is not None
+            numeric_count += numeric
+            unsupported_count += chunk_unsupported
             if not self._store_checkpoint(
                 memory_repo, key=checkpoint_key, raw_hash=raw_hash, chunk=chunk,
                 video_id=video_id, chapter_id=chapter_id, index=chunk_index - 1,

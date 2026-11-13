@@ -210,7 +210,14 @@ export function useModalFocus(
         return;
       }
       if (event.key === "Escape") {
-        if (event.defaultPrevented || event.isComposing) return;
+        // keyCode 229 与 isComposing 双判对齐仓内既有约定（SidebarAssistant/AIChatComposer），
+        // 避免中文输入法组词期间的 Esc keydown 误关弹窗/抽屉丢草稿。
+        if (
+          event.defaultPrevented ||
+          event.isComposing ||
+          event.keyCode === 229
+        )
+          return;
         event.preventDefault();
         if (optionsRef.current.dismissible !== false) dismissRef.current();
         return;

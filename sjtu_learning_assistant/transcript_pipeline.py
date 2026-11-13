@@ -28,7 +28,12 @@ SOURCE_TYPES = frozenset(("课堂明确讲述", "根据课堂内容归纳", "自
 PLACEHOLDER_TERMS = frozenset(("要点", "兼容概念说明", "兼容案例、公式或结论"))
 _TIMESTAMP = re.compile(r"^(?:(?P<h>[0-9]{2,}):)?(?P<m>[0-9]{2}):(?P<s>[0-9]{2})[.,](?P<ms>[0-9]{3})$")
 _TIMING = re.compile(r"^(?P<start>\S+)\s+-->\s+(?P<end>\S+)(?:\s+.*)?$")
-_TAG = re.compile(r"<[^>]+>")
+# WebVTT internal cue text tags per W3C WebVTT: class/annotation tags start with a
+# letter (optionally prefixed by "/"), while timestamp tags start with digits.
+# A generic "<...>" pattern also eats literal cue text such as spaced math
+# inequalities ("p < 0.05 且 t > 2"), so only spec-shaped markup is stripped;
+# other angle brackets stay as payload and are escaped later at render time.
+_TAG = re.compile(r"</?[a-zA-Z][^>\n]*>|<(?:[0-9]{2,}:)?[0-9]{2}:[0-9]{2}[.,][0-9]{3}>")
 _SENTENCE = re.compile(r"(?<=[。！？；.!?;])")
 
 MAP_KEYS = frozenset((
@@ -217,10 +222,17 @@ def _timestamp_ms(value: str) -> int:
     match = _TIMESTAMP.fullmatch(value)
     if match is None:
         raise ValueError("WebVTT 时间戳格式无效。")
-    hours = int(match.group("h") or 0)
-    minutes = int(match.group("m"))
-    seconds = int(match.group("s"))
-    millis = int(match.group("ms"))
+    # The hours group is intentionally unbounded by the regex, so a hostile or
+    # corrupt VTT can reach int() with thousands of digits and trigger Python's
+    # integer digit limit (ValueError); keep the user-facing error bounded and
+    # localized instead of leaking the interpreter's English message.
+    try:
+        hours = int(match.group("h") or 0)
+        minutes = int(match.group("m"))
+        seconds = int(match.group("s"))
+        millis = int(match.group("ms"))
+    except ValueError:
+        raise ValueError("WebVTT 时间戳格式无效。") from None
     if minutes >= 60 or seconds >= 60:
         raise ValueError("WebVTT 时间戳范围无效。")
     return ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis
@@ -252,8 +264,16 @@ def parse_vtt(value: str) -> list[Cue]:
         index += 1
         if not line:
             continue
-        if line.startswith(("NOTE", "STYLE", "REGION")):
+        if line == "NOTE" or line.startswith(("NOTE ", "NOTE\t")):
             while index < len(lines) and lines[index].strip():
+                if _TIMING.fullmatch(lines[index].strip()) is not None:
+                    break
+                index += 1
+            continue
+        if line in ("STYLE", "REGION"):
+            while index < len(lines) and lines[index].strip():
+                if _TIMING.fullmatch(lines[index].strip()) is not None:
+                    break
                 index += 1
             continue
         timing = _TIMING.fullmatch(line)
@@ -271,9 +291,18 @@ def parse_vtt(value: str) -> list[Cue]:
         while index < len(lines) and lines[index].strip():
             body.append(lines[index].strip())
             index += 1
-        content = unicodedata.normalize(
-            "NFC", html.unescape(_TAG.sub("", " ".join(body)))
+        # W3C WebVTT cue text is an HTML fragment: numeric character references
+        # may introduce control code points that whitespace collapsing cannot
+        # remove (e.g. NUL -> U+FFFD, raw BEL/ESC from a hostile file). Drop the
+        # disallowed C0/DEL/C1 controls after unescaping so they cannot persist
+        # into prompts, markdown or cached artifacts.
+        decoded = html.unescape(_TAG.sub("", " ".join(body)))
+        decoded = "".join(
+            " " if character.isspace() else character
+            for character in decoded
+            if character.isspace() or (character >= " " and character != "\x7f" and not "\x80" <= character <= "\x9f")
         )
+        content = unicodedata.normalize("NFC", decoded)
         content = " ".join(content.split())
         if content:
             cues.append(Cue(start, end, content, f"cue-{len(cues) + 1:06d}"))

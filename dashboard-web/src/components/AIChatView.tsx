@@ -20,18 +20,22 @@ import { AIChatMessageBubble } from "@/components/AIChatMessageBubble";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { AIChatTracePanel } from "@/components/AIChatTracePanel";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
+import { AISkillManager } from "@/components/AISkillManager";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import {
   AI_CHAT_STREAM_EVENT,
+  clearAiWorkspace,
   createAiChatSession,
   deleteAiChatSession,
   getAiChatSession,
   getAiChatSessions,
   getAiPresets,
+  getAiWorkspaceStatus,
   getSettings,
   ingestAiAttachment,
   pickAiAttachment,
+  pickAiWorkspace,
   resumeAiChatMessageTask,
   revealAiAttachment,
   sendAiChatMessage,
@@ -39,6 +43,7 @@ import {
 } from "@/lib/api";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
+  AIAgentLiveStatus,
   AIAgentPreset,
   AIChatMessage,
   AIChatPreferences,
@@ -47,6 +52,7 @@ import type {
   AIManagedAttachment,
   AIModel,
   AIThinkingDepth,
+  AIWorkspaceStatus,
 } from "@/lib/types";
 import { useResizablePanes } from "@/lib/useResizablePanes";
 
@@ -170,6 +176,50 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [stopping, setStopping] = useState(false);
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  // 当前任务的开始时刻（毫秒或后端 ISO 时间），用于每轮执行详情的实时计时。
+  const [runningStartedAt, setRunningStartedAt] = useState<
+    number | string | null
+  >(null);
+  // 自定义技能管理与 AI 工作区。
+  const [skillManager, setSkillManager] = useState<{
+    skillId: string | null;
+  } | null>(null);
+  const [workspace, setWorkspace] = useState<AIWorkspaceStatus | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // 放进 then 中调用：旧版桥接或测试替身缺少该动作时只当作“未设置工作区”。
+    Promise.resolve()
+      .then(() => getAiWorkspaceStatus())
+      .then((status) => {
+        if (!cancelled) setWorkspace(status);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const changeWorkspace = async (action: "pick" | "clear") => {
+    if (workspaceBusy) return;
+    setWorkspaceBusy(true);
+    try {
+      const status = await (action === "pick"
+        ? pickAiWorkspace()
+        : clearAiWorkspace());
+      if (!status.cancelled) setWorkspace(status);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "设置 AI 工作区失败。",
+      );
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+  // 后端推送的最新进度（请求模型 / 自动重试），只对当前任务生效。
+  const [liveStatus, setLiveStatus] = useState<{
+    taskId: string;
+    status: AIAgentLiveStatus;
+  } | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -285,8 +335,44 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       const taskId = detail.task_id;
       if (typeof sessionId !== "string" || typeof taskId !== "string") return;
       const streamId = `stream-${taskId}`;
+      if (detail.type === "status") {
+        const raw = detail.status;
+        if (!raw || typeof raw !== "object") return;
+        const value = raw as Record<string, unknown>;
+        if (
+          value.state !== "model_call" &&
+          value.state !== "retrying" &&
+          value.state !== "continuing"
+        )
+          return;
+        const number = (key: string) =>
+          typeof value[key] === "number" ? (value[key] as number) : undefined;
+        setLiveStatus({
+          taskId,
+          status: {
+            state: value.state,
+            step: number("step"),
+            attempt: number("attempt"),
+            max_attempts: number("max_attempts"),
+            reason: typeof value.reason === "string" ? value.reason : undefined,
+            delay_seconds: number("delay_seconds"),
+            part: number("part"),
+            max_parts: number("max_parts"),
+            received_at: Date.now(),
+          },
+        });
+        return;
+      }
       if (detail.type === "start") {
         setRunningTaskId(taskId);
+        setLiveStatus((current) =>
+          current?.taskId === taskId ? current : null,
+        );
+        setRunningStartedAt(
+          typeof detail.started_at === "string" && detail.started_at
+            ? detail.started_at
+            : Date.now(),
+        );
         return;
       }
       if (
@@ -297,8 +383,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         const run = detail.run as import("@/lib/types").AIToolRun;
         setActive((current) => {
           if (current?.id !== sessionId) return current;
+          // A tool event can arrive after the first content/reasoning delta
+          // (replayed snapshot ordering, or streamed tool runs mid-answer);
+          // only recycle an empty placeholder stream message, never visible text.
           const messages = current.messages.filter(
-            (message) => message.id !== streamId,
+            (message) =>
+              message.id !== streamId ||
+              Boolean(
+                message.content.trim() || message.reasoning_content?.trim(),
+              ),
           );
           const existing = current.traces.findIndex(
             (trace) => trace.id === streamId,
@@ -564,6 +657,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     const handleEscape = (event: KeyboardEvent) => {
       // A nested popover (settings menu etc.) already handled this Escape.
       if (event.defaultPrevented) return;
+      // IME composition (e.g. 微软拼音 Esc 撤销候选词) must not close panels.
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         setHistoryOpen(false);
         if (activityOpen) {
@@ -581,6 +676,21 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       window.removeEventListener("keydown", handleEscape);
     };
   }, [activityOpen, isPresent, focusIfPresent]);
+
+  useEffect(() => {
+    // 流式渐显时内容逐帧增高、messages 并不变化；运行中观察消息列表尺寸，
+    // 仅当用户停留在底部时保持贴底（直接设置 scrollTop，避免平滑滚动抖动）。
+    if (!busy || !isPresent || typeof ResizeObserver === "undefined") return;
+    const end = endRef.current;
+    const list = end?.parentElement;
+    const thread = end?.closest(".ai-chat-thread") as HTMLElement | null;
+    if (!list || !thread) return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) thread.scrollTop = thread.scrollHeight;
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [busy, isPresent]);
 
   useEffect(() => {
     if (!isPresent || !stickToBottomRef.current) return;
@@ -1191,6 +1301,25 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   // Streaming deltas are kept quiet by aria-live="off" on the stream bubble
   // (AIChatMessageBubble). aria-busy on this live region is avoided on purpose:
   // NVDA/JAWS on Chromium never announce the region after busy clears.
+  // 运行中的临时轨迹（stream-<task>）；任务标识尚未回传时取最近一条临时轨迹。
+  // 不用 Array.prototype.findLast/at：旧版 WKWebView 未实现。
+  const liveStreamTrace = useMemo(() => {
+    const traces = active?.traces ?? [];
+    if (runningTaskId) {
+      const exact = traces.find(
+        (trace) => trace.id === `stream-${runningTaskId}`,
+      );
+      if (exact) return exact;
+    }
+    for (let index = traces.length - 1; index >= 0; index -= 1) {
+      if (traces[index].id.startsWith("stream-")) return traces[index];
+    }
+    return null;
+  }, [active?.traces, runningTaskId]);
+  const currentLiveStatus =
+    liveStatus && liveStatus.taskId === runningTaskId
+      ? liveStatus.status
+      : null;
   const tracesById = useMemo(
     () => new Map(active?.traces.map((trace) => [trace.id, trace]) ?? []),
     [active?.traces],
@@ -1231,7 +1360,32 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           settingsSaving={settingsSaving}
           settingsStatus={settingsStatus}
           onPreferenceChange={(change) => void updatePreference(change)}
+          onManageSkills={(skillId) =>
+            setSkillManager({ skillId: skillId ?? null })
+          }
+          workspace={workspace}
+          workspaceBusy={workspaceBusy}
+          onPickWorkspace={() => void changeWorkspace("pick")}
+          onClearWorkspace={() => void changeWorkspace("clear")}
         />
+        {skillManager && (
+          <AISkillManager
+            presets={presets}
+            initialSkillId={skillManager.skillId}
+            onClose={() => setSkillManager(null)}
+            onSaved={(result, selectedId) => {
+              setPresets(result.items);
+              setSkillManager(null);
+              setSelectedPresetId(
+                (current) =>
+                  selectedId ??
+                  (result.items.some((item) => item.id === current)
+                    ? current
+                    : result.default_preset_id),
+              );
+            }}
+          />
+        )}
         <div
           className="ai-pane-resizer ai-pane-resizer-left"
           role="separator"
@@ -1390,9 +1544,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
             ) : (
               <div className="ai-chat-messages">
                 {active?.messages.map((message) => {
-                  const trace = message.trace_id
-                    ? tracesById.get(message.trace_id)
-                    : null;
+                  const streaming = message.id.startsWith("stream-");
+                  // 还没有正文的流式占位由下方的运行卡片表示，避免出现空白气泡。
+                  if (streaming && !message.content.trim()) return null;
+                  // 流式消息与其临时轨迹共用 stream-<task> 标识，正文出现后执行详情不丢失。
+                  const trace = streaming
+                    ? tracesById.get(message.id)
+                    : message.trace_id
+                      ? tracesById.get(message.trace_id)
+                      : null;
                   return (
                     <AIChatMessageBubble
                       key={message.id}
@@ -1404,13 +1564,16 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                       showCodeLineNumbers={preferences.ai_code_line_numbers}
                       animateEntry={motionMessageIds.includes(message.id)}
                       queued={queuedMessageIds.includes(message.id)}
+                      running={streaming && visibleBusy}
+                      startedAt={streaming ? runningStartedAt : undefined}
+                      liveStatus={streaming ? currentLiveStatus : undefined}
                     />
                   );
                 })}
                 <AnimatePresence>
                   {visibleBusy && !hasVisibleStream && (
                     <motion.div
-                      className="ai-inline-execution"
+                      className="ai-inline-execution ai-message ai-message-assistant"
                       initial={
                         shouldReduceMotion ? false : { opacity: 0.72, y: 3 }
                       }
@@ -1421,11 +1584,22 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                         ease: motionEase.out,
                       }}
                     >
-                      <InlineAgentExecution
-                        running
-                        agentName={selectedPreset?.name ?? "学习 Agent"}
-                        onOpenActivity={openActivity}
-                      />
+                      <div className="ai-message-body">
+                        <header className="ai-message-author">
+                          <img src={aiAgentLogo} alt="" aria-hidden="true" />
+                          <strong>
+                            {selectedPreset?.name ?? "学习 Agent"}
+                          </strong>
+                        </header>
+                        <InlineAgentExecution
+                          running
+                          trace={liveStreamTrace}
+                          startedAt={runningStartedAt}
+                          liveStatus={currentLiveStatus}
+                          agentName={selectedPreset?.name ?? "学习 Agent"}
+                          onOpenActivity={openActivity}
+                        />
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>

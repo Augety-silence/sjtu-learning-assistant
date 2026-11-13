@@ -551,10 +551,15 @@ def fetch_incremental_mail(
                     str(uid),
                     "(BODY.PEEK[] FLAGS INTERNALDATE)",
                 )
-                if status != "OK" or not fetch_data:
-                    raise MailCheckError(f"UID {uid} 邮件读取失败。")
-                metadata, message_bytes = _extract_fetch_parts(fetch_data)
+                if status == "OK" and not any(fetch_data or ()):
+                    # 其他客户端在 SEARCH 之后 EXPUNGE 了该邮件（RFC 3501：OK 但无数据），跳过即可。
+                    continue
+                # 完整邮件元数据尚无回填契约；NO/BAD 时不推进游标，避免永久占位。
+                if status != "OK":
+                    raise MailCheckError(f"UID {uid} 邮件读取失败，请稍后重试。")
+                metadata = b""
                 try:
+                    metadata, message_bytes = _extract_fetch_parts(fetch_data)
                     record = _parse_message(
                         email_address=email_address,
                         uid_validity=uid_validity,
@@ -562,8 +567,11 @@ def fetch_incremental_mail(
                         metadata=metadata,
                         headers=message_bytes,
                     )
+                except imaplib.IMAP4.abort:
+                    # 连接中断不得降级为单封占位，否则会在已断开的连接上继续 FETCH；整批失败。
+                    raise
                 except Exception:
-                    # A single malformed message must not pin the UID cursor forever.
+                    # A single malformed or unavailable message must not pin the UID cursor forever.
                     flags_match = re.search(rb"FLAGS \(([^)]*)\)", metadata)
                     flags = flags_match.group(1).split() if flags_match else []
                     record = EmailRecord(

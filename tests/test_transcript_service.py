@@ -20,6 +20,15 @@ VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n本节课强调成本分析\n"
 
 
 class TranscriptServiceTests(unittest.TestCase):
+    def test_start_batch_wrong_containers_and_elements_are_controlled(self):
+        service = self.service()
+        try:
+            for videos in (None, 3, {}, "video", [None], [3], ["video"]):
+                with self.subTest(videos=videos), self.assertRaises(TranscriptError):
+                    service.start_batch(course_id="12", course_name="假课程", videos=videos)
+        finally:
+            service.close()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "transcripts"

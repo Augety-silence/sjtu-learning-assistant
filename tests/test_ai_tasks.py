@@ -67,6 +67,36 @@ def test_page_context_is_bounded_and_task_budget_is_persisted():
     ]
 
 
+def test_chat_launched_from_a_page_keeps_context_but_uses_chat_budget():
+    store = ledger()
+    context = normalize_page_context({"page_id": "overview", "source": "page-header", "title": "概览"})
+    task = store.create(context, model="deepseek-chat", capability_page_id="ai-chat")["task"]
+    # 上下文仍标注来自概览，但预算是学习对话的多步预算，而不是概览的单次调用。
+    assert task["context"]["page_id"] == "overview"
+    assert (task["page_id"], task["capability_id"]) == ("overview", "learning_chat")
+    assert task["budget"]["max_model_calls"] >= 7
+    store.start(task["id"])
+    for _ in range(6):
+        index, _allowed = store.reserve_call(task["id"], 1400)
+        store.record_call(
+            task["id"], index, model="deepseek-chat", requested_output_tokens=1400,
+            response={"usage": {"prompt_tokens": 6000, "completion_tokens": 150, "total_tokens": 6150}},
+        )
+    # 6 步、每步 6k 输入的工具调用后仍有余量给最终回答。
+    assert store.reserve_call(task["id"], 1400)[0] == 7
+
+
+def test_task_timestamps_are_serialized_with_utc_offset():
+    store = ledger()
+    task_id = store.create(None, model="deepseek-chat")["task"]["id"]
+    store.start(task_id)
+    snapshot = store.get(task_id)
+    # SQLite 读回无时区时间；必须带 +00:00，否则前端按本地时间解析会差 8 小时。
+    for key in ("created_at", "started_at"):
+        assert snapshot["task"][key].endswith("+00:00")
+    assert all(event["created_at"].endswith("+00:00") for event in snapshot["events"])
+
+
 def test_unknown_usage_is_not_reported_as_zero_and_consumes_reserved_output():
     store = ledger()
     task_id = store.create(None, model="deepseek-chat")["task"]["id"]
@@ -278,7 +308,8 @@ def test_sse_parser_rejects_oversized_or_unknown_tool_delta_fields():
     call["function"]["name"] = "x" * 81
     invalid_calls.append(call)
     call = copy.deepcopy(base_call)
-    call["function"]["arguments"] = "x" * 8_001
+    # 写文件内容经工具参数传递，上限为 MAX_TOOL_ARGUMENT_CHARS（32_000）。
+    call["function"]["arguments"] = "x" * 32_001
     invalid_calls.append(call)
     call = copy.deepcopy(base_call)
     call["unexpected"] = "reject"

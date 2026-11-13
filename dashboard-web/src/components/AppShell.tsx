@@ -21,6 +21,7 @@ import {
   LayoutGroup,
   motion,
   useIsPresent,
+  useReducedMotion,
 } from "motion/react";
 import {
   type ReactNode,
@@ -150,6 +151,7 @@ function MobileDrawer({
   const drawerRef = useRef<HTMLElement>(null);
   const currentItemRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
+  const reduceMotion = useReducedMotion();
 
   useModalFocus(drawerRef, close, {
     initialFocusRef: currentItemRef,
@@ -164,11 +166,15 @@ function MobileDrawer({
       data-modal-layer
       data-motion-layer="drawer"
       aria-hidden={isPresent ? undefined : true}
-      initial={{ opacity: 0.01 }}
+      initial={reduceMotion ? false : { opacity: 0.01 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{
-        duration: isPresent ? motionDuration.control : motionDuration.fast,
+        duration: reduceMotion
+          ? 0
+          : isPresent
+            ? motionDuration.control
+            : motionDuration.fast,
       }}
     >
       <button
@@ -188,11 +194,15 @@ function MobileDrawer({
         aria-hidden={isPresent ? undefined : true}
         data-motion-surface="drawer"
         tabIndex={-1}
-        initial={{ opacity: 0.92, x: -12 }}
+        initial={reduceMotion ? false : { opacity: 0.92, x: -12 }}
         animate={{ opacity: 1, x: 0 }}
         exit={{ opacity: 0.92, x: -10 }}
         transition={{
-          duration: isPresent ? motionDuration.panel : motionDuration.control,
+          duration: reduceMotion
+            ? 0
+            : isPresent
+              ? motionDuration.panel
+              : motionDuration.control,
           ease: motionEase.out,
         }}
       >
@@ -270,9 +280,14 @@ export function AppShell({
     media?.addEventListener?.("change", updateViewport);
     window.addEventListener("resize", updateViewport);
     updateViewport();
+    // 浏览器后退/前进（含鼠标 X1 侧键、WebView2 手势）只改 hash 不触发 resize，
+    // 抽屉需随导航收起，避免“视图已回退而抽屉仍遮罩”的手势冲突。
+    const closeDrawerOnHashChange = () => setDrawerOpen(false);
+    window.addEventListener("hashchange", closeDrawerOnHashChange);
     return () => {
       media?.removeEventListener?.("change", updateViewport);
       window.removeEventListener("resize", updateViewport);
+      window.removeEventListener("hashchange", closeDrawerOnHashChange);
     };
   }, [setDrawerOpen]);
 
@@ -305,6 +320,18 @@ export function AppShell({
 
   return (
     <div className="app-shell" data-aura-shell>
+      <a
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          const main = document.getElementById("main-content");
+          main?.focus();
+          main?.scrollIntoView({ block: "start" });
+        }}
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[60] focus:rounded-md focus:bg-surface-elevated focus:px-3 focus:py-2 focus:text-sm focus:text-ink focus:shadow-[var(--shadow-composer)]"
+      >
+        跳到主内容
+      </a>
       <aside className="sidebar" data-aura-surface="navigation">
         <AppBrand />
         <LayoutGroup id="sidebar-nav">
@@ -349,7 +376,12 @@ export function AppShell({
           />
         )}
       </AnimatePresence>
-      <main className="workspace" data-aura-surface="workspace">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="workspace"
+        data-aura-surface="workspace"
+      >
         <header className="page-header">
           <div className="page-heading">
             <Button
@@ -385,7 +417,7 @@ export function AppShell({
             {headerActions}
             {/* 用 aria-disabled 代替 disabled：Chromium/WebView2 会把已聚焦的禁用按钮的焦点丢到 <body>。 */}
             <Button
-              className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50 focus-visible:!opacity-100 forced-colors:aria-disabled:opacity-100"
               aria-disabled={syncing || undefined}
               aria-busy={syncing || undefined}
               onClick={() => {

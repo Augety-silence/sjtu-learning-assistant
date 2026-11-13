@@ -136,9 +136,12 @@ def redact_public_text(value: str) -> str:
     redacted = _redact_sensitive_containers(redacted)
     # Cover scalar access_token / UserToken / tmpSecretKey / AccessKeyId /
     # credential values, JSON/repr closing quotes, URL-encoded '=' and schemes.
+    # Quoted alternatives honour backslash-escaped quotes of the same quote
+    # type; otherwise a serialized JSON body like {"token": "ab\"cdSECRET"}
+    # only redacts up to the inner quote and leaks the secret tail.
     return re.sub(
         r"(?i)" + _SENSITIVE_ASSIGNMENT
-        + r"(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)",
+        + r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|(?:(?:bearer|basic)\s+)?[^\s,;&]+)',
         r"\1\2<redacted>",
         redacted,
     )

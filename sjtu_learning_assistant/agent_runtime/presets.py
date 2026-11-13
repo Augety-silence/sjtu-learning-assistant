@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -21,8 +24,16 @@ KNOWN_TOOLS = frozenset(
         "get_material_tree",
         "search_ai_attachments",
         "read_ai_attachment_text",
+        "read_course_file_text",
+        "list_workspace_files",
+        "read_workspace_file",
+        "propose_file_change",
     }
 )
+USER_SKILL_ID = re.compile(r"^u-[a-z0-9]{4,24}$")
+MAX_USER_SKILLS = 32
+MAX_SKILL_REFERENCES = 10
+MAX_SKILL_INSTRUCTIONS = 20_000
 
 
 class PresetError(RuntimeError):
@@ -36,14 +47,146 @@ class AgentPreset:
     description: str
     allowed_tools: tuple[str, ...]
     skill_prompt: str
+    source: str = "builtin"
+    reference_attachment_ids: tuple[int, ...] = ()
 
     def dto(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
             "allowed_tools": list(self.allowed_tools),
+            "source": self.source,
         }
+        if self.source == "user":
+            # 只有用户自建技能会把指令回传给界面编辑；内置技能提示词不外露。
+            result["instructions"] = self.skill_prompt
+            result["reference_attachment_ids"] = list(self.reference_attachment_ids)
+        return result
+
+
+def _clean_skill_text(value: object, field: str, limit: int, *, required: bool) -> str:
+    if value is None and not required:
+        return ""
+    if type(value) is not str or len(value) > limit or "\x00" in value:
+        raise PresetError(f"技能{field}无效。")
+    clean = value.strip()
+    if required and not clean:
+        raise PresetError(f"技能{field}不能为空。")
+    return clean
+
+
+def validate_user_skill(raw: object, *, existing_ids: Iterable[str] = ()) -> dict[str, object]:
+    """校验一条用户技能；返回可直接写入 JSON 的规范化字典。"""
+    if type(raw) is not dict or set(raw) - {
+        "id", "name", "description", "instructions", "allowed_tools",
+        "reference_attachment_ids", "updated_at",
+    }:
+        raise PresetError("技能字段无效。")
+    skill_id = raw.get("id")
+    if skill_id is None:
+        skill_id = "u-" + uuid.uuid4().hex[:10]
+    if type(skill_id) is not str or USER_SKILL_ID.fullmatch(skill_id) is None:
+        raise PresetError("技能标识无效。")
+    allowed = raw.get("allowed_tools", [])
+    if (
+        type(allowed) is not list
+        or any(type(item) is not str for item in allowed)
+        or len(set(allowed)) != len(allowed)
+        or not set(allowed).issubset(KNOWN_TOOLS)
+    ):
+        raise PresetError("技能包含未知工具。")
+    references = raw.get("reference_attachment_ids", [])
+    if (
+        type(references) is not list
+        or len(references) > MAX_SKILL_REFERENCES
+        or any(type(item) is not int or not 1 <= item <= 2**63 - 1 for item in references)
+    ):
+        raise PresetError(f"技能参考资料最多 {MAX_SKILL_REFERENCES} 个附件。")
+    del existing_ids
+    return {
+        "id": skill_id,
+        "name": _clean_skill_text(raw.get("name"), "名称", 40, required=True),
+        "description": _clean_skill_text(raw.get("description"), "说明", 240, required=False),
+        "instructions": _clean_skill_text(
+            raw.get("instructions"), "指令", MAX_SKILL_INSTRUCTIONS, required=True
+        ),
+        "allowed_tools": [tool for tool in sorted(KNOWN_TOOLS) if tool in set(allowed)],
+        "reference_attachment_ids": list(dict.fromkeys(references)),
+        "updated_at": raw.get("updated_at") if type(raw.get("updated_at")) is str else None,
+    }
+
+
+class UserSkillStore:
+    """用户自建技能：保存在应用数据目录的单个 JSON 文件中，原子写入。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load(self) -> list[dict[str, object]]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            # 文件损坏不应让内置助手不可用；跳过全部用户技能。
+            return []
+        raw_skills = payload.get("skills") if type(payload) is dict else None
+        if type(raw_skills) is not list:
+            return []
+        result: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for raw in raw_skills[:MAX_USER_SKILLS]:
+            try:
+                skill = validate_user_skill(raw)
+            except PresetError:
+                continue
+            if skill["id"] in seen:
+                continue
+            seen.add(str(skill["id"]))
+            result.append(skill)
+        return result
+
+    def _write(self, skills: list[dict[str, object]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".agent-skills-", suffix=".json", dir=self.path.parent
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({"version": 1, "skills": skills}, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        except OSError:
+            Path(temporary).unlink(missing_ok=True)
+            raise PresetError("无法保存技能，请检查应用数据目录权限。") from None
+
+    def save(self, raw: object, *, updated_at: str) -> dict[str, object]:
+        skill = validate_user_skill(raw)
+        skill["updated_at"] = updated_at
+        skills = self.load()
+        index = next((i for i, item in enumerate(skills) if item["id"] == skill["id"]), None)
+        if index is None:
+            if type(raw) is dict and raw.get("id") is not None:
+                raise PresetError("要编辑的技能不存在。")
+            if len(skills) >= MAX_USER_SKILLS:
+                raise PresetError(f"最多保存 {MAX_USER_SKILLS} 个自定义技能。")
+            skills.append(skill)
+        else:
+            skills[index] = skill
+        self._write(skills)
+        return skill
+
+    def delete(self, skill_id: object) -> bool:
+        if type(skill_id) is not str or USER_SKILL_ID.fullmatch(skill_id) is None:
+            raise PresetError("技能标识无效。")
+        skills = self.load()
+        remaining = [item for item in skills if item["id"] != skill_id]
+        if len(remaining) == len(skills):
+            return False
+        self._write(remaining)
+        return True
 
 
 def default_resource_root() -> Path:
@@ -54,9 +197,15 @@ def default_resource_root() -> Path:
 
 
 class PresetLoader:
-    def __init__(self, resource_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        resource_root: Path | None = None,
+        *,
+        user_skills_path: Path | None = None,
+    ) -> None:
         self.resource_root = (resource_root or default_resource_root()).resolve()
         self.preset_root = (self.resource_root / "agent_presets").resolve()
+        self.user_skills = UserSkillStore(user_skills_path) if user_skills_path else None
 
     @staticmethod
     def _text(value: object, *, field: str, limit: int) -> str:
@@ -136,6 +285,19 @@ class PresetLoader:
         default_id = self._text(manifest["default_preset"], field="default_preset", limit=32)
         if default_id not in result:
             raise PresetError("默认 agent preset 不存在。")
+        if self.user_skills is not None:
+            for skill in self.user_skills.load():
+                if skill["id"] in result:
+                    continue
+                result[str(skill["id"])] = AgentPreset(
+                    id=str(skill["id"]),
+                    name=str(skill["name"]),
+                    description=str(skill["description"]) or "自定义技能",
+                    allowed_tools=tuple(skill["allowed_tools"]),  # type: ignore[arg-type]
+                    skill_prompt=str(skill["instructions"]),
+                    source="user",
+                    reference_attachment_ids=tuple(skill["reference_attachment_ids"]),  # type: ignore[arg-type]
+                )
         return default_id, result
 
     def get(self, preset_id: object | None = None) -> AgentPreset:
