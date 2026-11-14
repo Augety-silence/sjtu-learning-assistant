@@ -59,6 +59,8 @@ class DiagnosticBundleTests(unittest.TestCase):
                 "last_run_at": "2026-09-29T00:00:00+08:00",
             },
             log_path=log_path,
+            desktop_log_path=log_path.parent / "desktop.log",
+            stage_log_path=log_path.parent / "sync-stages.jsonl",
         )
 
     def test_sanitizer_redacts_credentials_urls_email_and_user_paths(self) -> None:
@@ -166,6 +168,7 @@ class DiagnosticBundleTests(unittest.TestCase):
                         "logs/sync.jsonl",
                         "manifest.json",
                         "status/summary.json",
+                        "status/sync_details.json",
                     },
                     set(bundle.namelist()),
                 )

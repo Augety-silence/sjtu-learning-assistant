@@ -6,9 +6,11 @@ import json
 import os
 import platform
 import re
+import stat
 import sys
 import tempfile
 import zipfile
+import certifi
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +21,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from sjtu_learning_assistant import __version__
+from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.mail_sync import IMAP_HOST, IMAP_PORT, DEFAULT_TIMEOUT_SECONDS
+from sjtu_learning_assistant.mail_client import DEFAULT_INITIAL_LIMIT
+from sjtu_learning_assistant.sync_diagnostics import DEFAULT_STAGE_LOG_PATH
 
 try:
     from sync_runner import DEFAULT_JSONL_PATH
@@ -34,16 +40,22 @@ ZIP_ENTRY_ALLOWLIST = frozenset(
         "manifest.json",
         "app_info.json",
         "status/summary.json",
+        "status/sync_details.json",
         "logs/sync.jsonl",
+        "logs/sync-stages.jsonl",
+        "logs/sync-stages.jsonl.1",
+        "logs/desktop.log",
+        "logs/desktop.log.1",
     }
 )
 REQUIRED_ENTRIES = frozenset(
-    {"manifest.json", "app_info.json", "status/summary.json"}
+    {"manifest.json", "app_info.json", "status/summary.json", "status/sync_details.json"}
 )
 MAX_ENTRY_BYTES = 256 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 768 * 1024
 MAX_ZIP_BYTES = 1024 * 1024
 MAX_SANITIZE_INPUT_CHARS = 2 * 1024 * 1024
+MAX_LOG_EXPORT_BYTES = 96 * 1024
 
 _URL_PATTERN = re.compile(r"(?i:https?)://[^\s<>\"']+")
 # 用后顾断言锚定 scheme 起点、并限定 userinfo 长度：原先 `\b` + 无界量词在
@@ -181,17 +193,50 @@ def _safe_status(value: object) -> str:
 
 def _error_category(value: object) -> str:
     error = str(value or "").lower()
-    if any(word in error for word in ("401", "403", "auth", "token", "credential")):
+    if any(word in error for word in ("401", "403", "auth", "token", "credential", "密码", "凭据")):
         return "authentication"
-    if any(word in error for word in ("timeout", "timed out")):
+    if any(word in error for word in ("timeout", "timed out", "超时")):
         return "timeout"
-    if any(word in error for word in ("network", "connect", "dns", "ssl")):
+    if any(word in error for word in ("network", "connect", "dns", "ssl", "tls", "网络", "连接")):
         return "network"
     if any(word in error for word in ("permission", "denied", "forbidden")):
         return "permission"
     if any(word in error for word in ("database", "sqlite", "postgres", "sql")):
         return "database"
     return "other"
+
+
+def _timestamp(value: object) -> str | None:
+    result = str(value or "")
+    return result if re.fullmatch(r"[0-9TtZz:.+ -]{10,40}", result) else None
+
+
+def _source(value: object) -> str:
+    return str(value) if value in ("canvas", "email", "sync") else "other"
+
+
+def _safe_error_details(value: object) -> dict[str, str] | None:
+    if not value:
+        return None
+    # 历史异常可能包含邮件/HTTP正文，不能只靠敏感词正则后原样导出。
+    # 精确阶段和底层错误码由新 sync-stages 日志提供；旧数据仅导出分类。
+    message = str(value)
+    code = "unspecified"
+    for needle, label in (
+        ("尚未保存邮箱密码", "mail_credentials_missing"),
+        ("无法读取系统凭据库", "credential_store_unavailable"),
+        ("TLS", "tls_failure"),
+        ("超时", "timeout"),
+        ("IMAP 连接被中断", "imap_disconnected"),
+        ("IMAP 登录", "imap_auth_or_protocol"),
+        ("无法以只读方式打开 INBOX", "inbox_select_failed"),
+        ("无法读取 INBOX UID", "inbox_search_failed"),
+        ("邮件读取失败", "mail_fetch_failed"),
+    ):
+        if needle in message:
+            code = label
+            break
+    return {"category": _error_category(message), "code": code}
 
 
 class DiagnosticBundleService:
@@ -204,12 +249,16 @@ class DiagnosticBundleService:
         config_status_provider: Callable[[], Mapping[str, Any]] | None = None,
         status_provider: Callable[[], Mapping[str, Any]] | None = None,
         log_path: Path | None = None,
+        desktop_log_path: Path | None = None,
+        stage_log_path: Path | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.engine = engine
         self.config_status_provider = config_status_provider
         self.status_provider = status_provider
         self.log_path = Path(log_path or DEFAULT_JSONL_PATH)
+        self.desktop_log_path = Path(desktop_log_path or APP_SUPPORT_DIR / "logs" / "desktop.log")
+        self.stage_log_path = Path(stage_log_path or DEFAULT_STAGE_LOG_PATH)
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
     def _database_reachable(self) -> bool:
@@ -244,6 +293,26 @@ class DiagnosticBundleService:
                 "reachable": self._database_reachable(),
             },
             "config_status_available": config_status_available,
+            "runtime_environment": {
+                "profile_override_set": bool(os.environ.get("SJTU_APP_SUPPORT_DIR")),
+                "database_override_set": bool(os.environ.get("SJTU_DATABASE_URL")),
+                "profile_exists": APP_SUPPORT_DIR.is_dir(),
+                "profile_writable": os.access(APP_SUPPORT_DIR, os.W_OK),
+                "executable_exists": Path(sys.executable).is_file(),
+                "bundle_resources_exist": Path(getattr(sys, "_MEIPASS", Path(__file__).parent)).is_dir(),
+                "credential_status_error": bool(config.get("credential_status_error")),
+                "mail_account_configured": bool(config.get("mail_account")),
+            },
+            "mail_sync_contract": {
+                "host": IMAP_HOST, "port": IMAP_PORT,
+                "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+                "folder": "INBOX", "initial_limit": DEFAULT_INITIAL_LIMIT,
+                "history_auto_backfill": False,
+                "credentials_are_per_os_user": True,
+                "configured_does_not_prove_authentication": True,
+                "bundled_ca_available": Path(certifi.where()).is_file(),
+                "certificate_verification_required": True,
+            },
             "config": {
                 "canvas_configured": bool(config.get("canvas_token_saved", False)),
                 "mail_configured": bool(config.get("mail_password_saved", False)),
@@ -299,6 +368,9 @@ class DiagnosticBundleService:
         return {
             "available": True,
             "running": status.get("status") == "syncing",
+            "last_run_at": _timestamp(status.get("last_run_at")),
+            "last_success_at": _timestamp(status.get("last_success_at")),
+            "last_canvas_success_at": _timestamp(status.get("last_canvas_success_at")),
             "last_run_status": (
                 _safe_status(status.get("last_run_status"))
                 if status.get("last_run_status") is not None
@@ -306,11 +378,64 @@ class DiagnosticBundleService:
             ),
         }
 
-    def _read_log(self) -> str | None:
-        if not self.log_path.is_file():
-            return None
+    def _sync_details(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"recent_by_source": {}, "recent_failures": [], "states": [], "available": False}
         try:
-            with self.log_path.open("rb") as handle:
+            inspector = inspect(self.engine)
+            tables = set(inspector.get_table_names())
+            if "sync_runs" in tables:
+                columns = {column["name"] for column in inspector.get_columns("sync_runs")}
+                fields = [name for name in ("source", "resource", "status", "started_at", "finished_at", "fetched_count", "inserted_count", "updated_count", "error") if name in columns]
+                if {"status", "started_at"} <= columns:
+                    with self.engine.connect() as connection:
+                        sources = ("canvas", "email", "sync") if "source" in columns else ("unknown",)
+                        for source in sources:
+                            where = " WHERE source = :source" if "source" in columns else ""
+                            rows = connection.execute(text(f"SELECT {', '.join(fields)} FROM sync_runs{where} ORDER BY started_at DESC LIMIT 20"), {"source": source}).mappings()
+                            result["recent_by_source"][source] = [self._safe_sync_row(row) for row in rows]
+                        rows = connection.execute(text(f"SELECT {', '.join(fields)} FROM sync_runs WHERE status = 'failed' ORDER BY started_at DESC LIMIT 20")).mappings()
+                        result["recent_failures"] = [self._safe_sync_row(row) for row in rows]
+            if "sync_state" in tables:
+                columns = {column["name"] for column in inspector.get_columns("sync_state")}
+                fields = [name for name in ("source", "resource", "status", "last_sync_at", "last_success_at", "last_error") if name in columns]
+                if {"source", "resource"} <= columns:
+                    with self.engine.connect() as connection:
+                        rows = connection.execute(text(f"SELECT {', '.join(fields)} FROM sync_state WHERE resource IN ('inbox', 'run') LIMIT 30")).mappings()
+                        result["states"] = [self._safe_sync_row(row) for row in rows]
+            result["available"] = True
+        except SQLAlchemyError:
+            pass
+        return result
+
+    @staticmethod
+    def _safe_sync_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in row.items():
+            if key == "source":
+                result[key] = _source(value)
+            elif key == "resource":
+                result[key] = value if value in ("run", "inbox", "courses") else "other"
+            elif key == "status":
+                result[key] = _safe_status(value)
+            elif key in ("error", "last_error"):
+                result[key] = _safe_error_details(value)
+            elif key.endswith("_count"):
+                result[key] = value if type(value) is int and 0 <= value <= 10**9 else None
+            else:
+                result[key] = _timestamp(value)
+        return result
+
+    def _read_log(self, path: Path | None = None, *, structured: bool = False, desktop: bool = False) -> tuple[str | None, str]:
+        path = path or self.log_path
+        try:
+            if path.is_symlink():
+                return None, "unsafe_symlink"
+            if not path.is_file():
+                return None, "missing"
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return None, "not_regular_file"
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 read_size = min(size, MAX_ENTRY_BYTES * 2)
@@ -322,15 +447,76 @@ class DiagnosticBundleService:
                     payload = b""
             # 先完整脱敏读取窗口，再保留“最新”的尾部；sanitize_text 的 limit
             # 从头部截断，直接套用会丢掉最近的日志行。
+            decoded = payload.decode("utf-8", errors="replace")
+            if desktop:
+                decoded = self._desktop_metadata(decoded)
+            elif structured:
+                decoded = self._stage_metadata(decoded)
             sanitized = sanitize_text(
-                payload.decode("utf-8", errors="replace"),
+                decoded,
                 limit=MAX_ENTRY_BYTES * 4,
             ).encode("utf-8")
-            if len(sanitized) > MAX_ENTRY_BYTES:
-                _, _, sanitized = sanitized[-MAX_ENTRY_BYTES:].partition(b"\n")
-            return sanitized.decode("utf-8", errors="ignore")
+            if len(sanitized) > MAX_LOG_EXPORT_BYTES:
+                _, _, sanitized = sanitized[-MAX_LOG_EXPORT_BYTES:].partition(b"\n")
+            return sanitized.decode("utf-8", errors="ignore"), "included" if sanitized else "empty_or_filtered"
         except OSError:
-            return None
+            return None, "unreadable"
+
+    @staticmethod
+    def _desktop_metadata(value: str) -> str:
+        lines = []
+        for line in value.splitlines():
+            header = re.match(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) (WARNING|ERROR|CRITICAL) ([a-zA-Z_][a-zA-Z0-9_.]{0,100}):", line)
+            frame = re.match(r'^\s+File "([^"\r\n]+)", line (\d+), in ([a-zA-Z_][a-zA-Z0-9_<>]{0,100})', line)
+            exception = re.match(r"^([a-zA-Z_][a-zA-Z0-9_.]{0,100}(?:Error|Exception|Interrupt|Exit))(?::|$)", line)
+            if header:
+                lines.append(json.dumps({"time": header[1], "level": header[2], "logger": header[3], "message": "[omitted_for_privacy]"}))
+            elif frame:
+                name = frame[1].replace("\\", "/").rsplit("/", 1)[-1]
+                # 只保留工程代码文件名，不保留用户附件路径/文件名。
+                if re.fullmatch(r"[a-z_][a-z0-9_]{0,80}\.py", name):
+                    lines.append(json.dumps({"file": name, "line": int(frame[2]), "function": frame[3]}))
+            elif exception:
+                lines.append(json.dumps({"exception_type": exception[1]}))
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    @staticmethod
+    def _stage_metadata(value: str) -> str:
+        lines = []
+        numeric = {"duration_ms", "exit_code", "attempt", "selected", "incremental", "bootstrap_truncated", "fetched", "inserted", "updated"}
+        for line in value.splitlines():
+            try:
+                row = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            safe = {}
+            for key in ("utc_time", "run_id", "source", "stage", "event"):
+                item = row.get(key)
+                if key == "utc_time":
+                    safe[key] = _timestamp(item)
+                elif key == "run_id":
+                    safe[key] = item if isinstance(item, str) and re.fullmatch(r"[0-9a-f-]{36}", item) else None
+                else:
+                    safe[key] = item if isinstance(item, str) and re.fullmatch(r"[a-z_]{1,40}", item) else "other"
+            for key in numeric:
+                if type(row.get(key)) is int:
+                    safe[key] = row[key]
+            if "local_time" in row:
+                safe["local_time"] = _timestamp(row["local_time"])
+            chain = row.get("exception_chain")
+            if isinstance(chain, list):
+                safe["exception_chain"] = []
+                for item in chain[:4]:
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("type")
+                    clean = {"type": name if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) else "Exception"}
+                    clean.update({key: item[key] for key in ("errno", "winerror", "verify_code", "status_code") if type(item.get(key)) is int})
+                    safe["exception_chain"].append(clean)
+            lines.append(json.dumps(safe, ensure_ascii=False))
+        return "\n".join(lines) + ("\n" if lines else "")
 
     @staticmethod
     def _json_bytes(value: Any) -> bytes:
@@ -357,17 +543,26 @@ class DiagnosticBundleService:
                     "database": self._database_summary(),
                 }
             ),
+            "status/sync_details.json": self._json_bytes(self._sync_details()),
         }
-        log = self._read_log()
-        if log is not None:
-            entries["logs/sync.jsonl"] = log.encode("utf-8")
+        log_status = {}
+        for name, path, structured, desktop in (
+            ("logs/sync.jsonl", self.log_path, True, False),
+            ("logs/sync-stages.jsonl", self.stage_log_path, True, False),
+            ("logs/sync-stages.jsonl.1", self.stage_log_path.with_name(self.stage_log_path.name + ".1"), True, False),
+            ("logs/desktop.log", self.desktop_log_path, False, True),
+            ("logs/desktop.log.1", self.desktop_log_path.with_name(self.desktop_log_path.name + ".1"), False, True),
+        ):
+            log, status = self._read_log(path, structured=structured, desktop=desktop)
+            log_status[name] = status
+            if log is not None:
+                entries[name] = log.encode("utf-8")
         entries["manifest.json"] = self._json_bytes(
             {
-                "schema_version": 1,
-                "entries": sorted(
-                    REQUIRED_ENTRIES
-                    | ({"logs/sync.jsonl"} if log is not None else set())
-                ),
+                "schema_version": 2,
+                "entries": sorted(set(entries) | {"manifest.json"}),
+                "log_status": log_status,
+                "log_policy": "desktop metadata and traceback locations only; no raw exception messages or user content",
                 "limits": {
                     "per_entry_bytes": MAX_ENTRY_BYTES,
                     "total_uncompressed_bytes": MAX_TOTAL_UNCOMPRESSED_BYTES,

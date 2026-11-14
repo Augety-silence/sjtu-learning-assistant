@@ -16,6 +16,7 @@ from sjtu_learning_assistant.database import (
     DATABASE_URL_ENV,
     DEFAULT_SQLITE_PATH,
     DatabaseConfigError,
+    _default_app_support_dir,
     default_sqlite_url,
     get_database_url,
     redact_database_url,
@@ -37,6 +38,7 @@ class DatabaseConfigTests(unittest.TestCase):
             "sjtu_learning_assistant.database.load_keyring_module"
         ) as load_keyring:
             value = get_database_url()
+            default_support = _default_app_support_dir()
         self.assertEqual(default_sqlite_url(DEFAULT_SQLITE_PATH), value)
         expected_support = (
             user_data_path("SJTU Learning Assistant", appauthor=False)
@@ -46,7 +48,9 @@ class DatabaseConfigTests(unittest.TestCase):
             / "Application Support"
             / "SJTU Learning Assistant"
         )
-        self.assertEqual(expected_support / "data" / "app.db", DEFAULT_SQLITE_PATH)
+        # DEFAULT_SQLITE_PATH 在导入时可能已经解析到显式隔离目录；
+        # 默认路径规则应在上面的无环境覆盖上下文中单独验证。
+        self.assertEqual(expected_support, default_support)
         load_keyring.assert_not_called()
 
     def test_environment_postgres_url_explicitly_overrides_sqlite(self) -> None:

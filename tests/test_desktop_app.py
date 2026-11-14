@@ -976,8 +976,12 @@ class DesktopBackgroundSyncTests(unittest.TestCase):
         ["app", "--background-sync", "--email", "student-id"],
     )
     def test_forwards_selected_background_sync_options(self):
-        with patch("sync_data_to_db.main", return_value=0) as sync_main:
+        with (
+            patch("sync_data_to_db.main", return_value=0) as sync_main,
+            patch("desktop_app._configure_desktop_logging") as configure_logging,
+        ):
             self.assertEqual(0, main())
+        configure_logging.assert_called_once_with()
         sync_main.assert_called_once_with(["--email", "student-id"])
 
 

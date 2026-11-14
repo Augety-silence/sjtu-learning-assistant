@@ -27,8 +27,10 @@ from sjtu_learning_assistant.mail_sync import (
     IMAP_HOST,
     IMAP_PORT,
     MailCheckError,
+    create_mail_tls_context,
     decode_mime_text,
 )
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_stage, record_event
 
 DEFAULT_INITIAL_LIMIT = 100
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -424,20 +426,26 @@ def fetch_email_body_backfill(
     if not selected_targets:
         return MailBodyBackfillResult((), 0, 0, 0, 0)
 
-    tls_context = ssl.create_default_context()
+    with diagnostic_stage("email", "tls_context"):
+        tls_context = create_mail_tls_context()
     try:
-        with imaplib.IMAP4_SSL(
-            IMAP_HOST,
-            IMAP_PORT,
-            ssl_context=tls_context,
-            timeout=DEFAULT_TIMEOUT_SECONDS,
-        ) as client:
-            client.login(email_address, password)
-            status, _ = client.select("INBOX", readonly=True)
-            if status != "OK":
-                raise MailCheckError("无法以只读方式打开 INBOX。")
+        with diagnostic_stage("email", "imap_connect"):
+            connection = imaplib.IMAP4_SSL(
+                IMAP_HOST,
+                IMAP_PORT,
+                ssl_context=tls_context,
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        with connection as client:
+            with diagnostic_stage("email", "imap_login"):
+                client.login(email_address, password)
+            with diagnostic_stage("email", "imap_select"):
+                status, _ = client.select("INBOX", readonly=True)
+                if status != "OK":
+                    raise MailCheckError("无法以只读方式打开 INBOX。")
 
-            current_uid_validity = _uid_validity(client)
+            with diagnostic_stage("email", "imap_uidvalidity"):
+                current_uid_validity = _uid_validity(client)
             eligible = [
                 target
                 for target in selected_targets
@@ -510,29 +518,36 @@ def fetch_incremental_mail(
     if initial_limit < 1:
         raise MailCheckError("首次同步邮件数量必须大于 0。")
 
-    tls_context = ssl.create_default_context()
+    with diagnostic_stage("email", "tls_context"):
+        tls_context = create_mail_tls_context()
     try:
-        with imaplib.IMAP4_SSL(
-            IMAP_HOST,
-            IMAP_PORT,
-            ssl_context=tls_context,
-            timeout=DEFAULT_TIMEOUT_SECONDS,
-        ) as client:
-            client.login(email_address, password)
-            status, _ = client.select("INBOX", readonly=True)
-            if status != "OK":
-                raise MailCheckError("无法以只读方式打开 INBOX。")
+        with diagnostic_stage("email", "imap_connect"):
+            connection = imaplib.IMAP4_SSL(
+                IMAP_HOST,
+                IMAP_PORT,
+                ssl_context=tls_context,
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+            )
+        with connection as client:
+            with diagnostic_stage("email", "imap_login"):
+                client.login(email_address, password)
+            with diagnostic_stage("email", "imap_select"):
+                status, _ = client.select("INBOX", readonly=True)
+                if status != "OK":
+                    raise MailCheckError("无法以只读方式打开 INBOX。")
 
-            uid_validity = _uid_validity(client)
+            with diagnostic_stage("email", "imap_uidvalidity"):
+                uid_validity = _uid_validity(client)
             previous_validity, previous_uid = parse_cursor(cursor)
             is_incremental = previous_validity == uid_validity and previous_uid > 0
             search_start = previous_uid + 1 if is_incremental else 1
 
-            status, search_data = client.uid(
-                "search", None, "UID", f"{search_start}:4294967295"
-            )
-            if status != "OK" or not search_data:
-                raise MailCheckError("无法读取 INBOX UID 列表。")
+            with diagnostic_stage("email", "imap_search"):
+                status, search_data = client.uid(
+                    "search", None, "UID", f"{search_start}:4294967295"
+                )
+                if status != "OK" or not search_data:
+                    raise MailCheckError("无法读取 INBOX UID 列表。")
 
             all_uids = sorted(
                 int(value)
@@ -543,20 +558,22 @@ def fetch_incremental_mail(
             highest_uid = all_uids[-1] if all_uids else (previous_uid if is_incremental else 0)
             bootstrap_truncated = not is_incremental and len(all_uids) > initial_limit
             selected_uids = all_uids if is_incremental else all_uids[-initial_limit:]
+            record_event("email", "imap_search", "counts", selected=len(selected_uids), incremental=int(is_incremental), bootstrap_truncated=int(bootstrap_truncated))
 
             messages: list[EmailRecord] = []
             for uid in selected_uids:
-                status, fetch_data = client.uid(
-                    "fetch",
-                    str(uid),
-                    "(BODY.PEEK[] FLAGS INTERNALDATE)",
-                )
+                with diagnostic_stage("email", "imap_fetch"):
+                    status, fetch_data = client.uid(
+                        "fetch",
+                        str(uid),
+                        "(BODY.PEEK[] FLAGS INTERNALDATE)",
+                    )
+                    if status not in ("OK",):
+                        raise MailCheckError("邮件读取失败，请稍后重试。")
                 if status == "OK" and not any(fetch_data or ()):
                     # 其他客户端在 SEARCH 之后 EXPUNGE 了该邮件（RFC 3501：OK 但无数据），跳过即可。
                     continue
                 # 完整邮件元数据尚无回填契约；NO/BAD 时不推进游标，避免永久占位。
-                if status != "OK":
-                    raise MailCheckError(f"UID {uid} 邮件读取失败，请稍后重试。")
                 metadata = b""
                 try:
                     metadata, message_bytes = _extract_fetch_parts(fetch_data)

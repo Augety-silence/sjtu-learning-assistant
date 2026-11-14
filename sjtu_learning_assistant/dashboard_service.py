@@ -85,6 +85,7 @@ from sjtu_learning_assistant.local_projects import (
     LocalProjectService,
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
 from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
 from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
 from sjtu_learning_assistant.archive_service import (
@@ -3919,15 +3920,16 @@ class DashboardService:
         if not self._sync_lock.acquire(blocking=False):
             return {"status": "already_running", "mode": "in_app"}
         try:
-            process = self.process_launcher(
-                self._fallback_sync_command(),
-                cwd=str(PROJECT_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            with diagnostic_run(), diagnostic_stage("sync", "launch"):
+                process = self.process_launcher(
+                    self._fallback_sync_command(),
+                    cwd=str(PROJECT_ROOT),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    start_new_session=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             threading.Thread(
                 target=self._release_sync_when_done,
                 args=(process,),
@@ -3936,6 +3938,7 @@ class DashboardService:
             ).start()
             return {"status": "accepted", "mode": "sync_runner"}
         except Exception:
+            self._last_sync_failed_at = self.now()
             if self._sync_lock.locked():
                 self._sync_lock.release()
             raise DashboardError("无法启动同步，请稍后重试。")

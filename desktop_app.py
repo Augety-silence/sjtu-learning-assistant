@@ -2716,6 +2716,7 @@ def main() -> int:
             engine.dispose()
         return 0
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--background-sync"]:
+        _configure_desktop_logging()
         from sync_data_to_db import main as sync_main
 
         return sync_main(sys.argv[2:])

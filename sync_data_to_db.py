@@ -65,6 +65,7 @@ from sjtu_learning_assistant.mail_sync import (
     normalize_email,
     prompt_email,
 )
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage, record_event
 
 DEFAULT_EMAIL_BODY_BACKFILL_LIMIT = 50
 
@@ -344,7 +345,8 @@ def sync_mail(
     *,
     body_backfill_limit: int = DEFAULT_EMAIL_BODY_BACKFILL_LIMIT,
 ) -> None:
-    password, _ = get_password(email_address, use_keychain=True)
+    with diagnostic_stage("email", "credentials"):
+        password, _ = get_password(email_address, use_keychain=True, interactive=False)
     state = get_sync_state(engine, "email", "inbox")
     result = fetch_incremental_mail(
         email_address,
@@ -352,7 +354,9 @@ def sync_mail(
         state.cursor if state else None,
         initial_limit=initial_limit,
     )
-    persisted = persist_emails(engine, result.messages, cursor=result.cursor)
+    with diagnostic_stage("email", "persist"):
+        persisted = persist_emails(engine, result.messages, cursor=result.cursor)
+    record_event("email", "persist", "counts", fetched=persisted.fetched, inserted=persisted.inserted, updated=persisted.updated)
     print(
         "邮箱同步成功："
         f"获取 {persisted.fetched}，新增 {persisted.inserted}，"
@@ -364,8 +368,9 @@ def sync_mail(
             engine, email_address, limit=body_backfill_limit
         )
         if targets:
-            backfill = fetch_email_body_backfill(email_address, password, targets)
-            updated = persist_email_body_backfill(engine, backfill.updates)
+            with diagnostic_stage("email", "body_backfill"):
+                backfill = fetch_email_body_backfill(email_address, password, targets)
+                updated = persist_email_body_backfill(engine, backfill.updates)
             print(
                 "旧邮件正文回填："
                 f"候选 {backfill.selected}，尝试 {backfill.attempted}，"
@@ -407,27 +412,37 @@ def _tolerate_unencodable_output() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    with diagnostic_run():
+        result = _main(argv)
+        record_event("sync", "run", "finished", exit_code=result)
+        return result
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     _tolerate_unencodable_output()
     args = parse_args(argv)
     engine = None
     stage: str | None = None
     try:
-        engine = create_database_engine()
-        if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
-            initialize_desktop_database(engine, skip_import=args.skip_import)
-        health = check_database(engine)
+        with diagnostic_stage("sync", "database"):
+            engine = create_database_engine()
+            if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
+                initialize_desktop_database(engine, skip_import=args.skip_import)
+            health = check_database(engine)
         stage = "sync"
         print(
             f"已连接数据库：{health.database} "
             f"（server {health.server_version}）"
         )
 
-        settings = SettingsStore().resolve(
-            archive_root=args.archive_root,
-            auto_download_current_term=False if args.no_download else None,
-            organize_by_category=False if args.no_organize_by_category else None,
-        )
+        with diagnostic_stage("sync", "settings"):
+            settings = SettingsStore().resolve(
+                archive_root=args.archive_root,
+                auto_download_current_term=False if args.no_download else None,
+                organize_by_category=False if args.no_organize_by_category else None,
+            )
 
+        failed = False
         if not args.mail_only:
             sync_options = {}
             ai_client = None
@@ -453,14 +468,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sync_options["ai_enabled"] = True
             stage = "canvas"
             try:
-                sync_canvas(
-                    engine,
-                    notify=not args.no_notify,
-                    download=settings.auto_download_current_term,
-                    archive_root=Path(settings.archive_root),
-                    current_term=args.current_term,
-                    **sync_options,
-                )
+                with diagnostic_stage("canvas", "sync"):
+                    sync_canvas(
+                        engine,
+                        notify=not args.no_notify,
+                        download=settings.auto_download_current_term,
+                        archive_root=Path(settings.archive_root),
+                        current_term=args.current_term,
+                        **sync_options,
+                    )
+            except (CanvasCheckError, ArchiveError) as exc:
+                # Canvas/下载网络故障不应阻断独立的邮箱；整轮仍保留失败退出码。
+                print(f"Canvas 同步失败：{exc}", file=sys.stderr)
+                _record_failure(engine, stage, f"Canvas 同步失败：{exc}")
+                failed = True
             finally:
                 if ai_client is not None:
                     ai_client.close()
@@ -469,8 +490,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()
             )
-            sync_mail(engine, email_address, args.initial_mail_limit)
-        return 0
+            with diagnostic_stage("email", "sync"):
+                sync_mail(engine, email_address, args.initial_mail_limit)
+        return 1 if failed else 0
     except (
         ArchiveError,
         CanvasCheckError,

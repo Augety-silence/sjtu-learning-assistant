@@ -8,6 +8,7 @@ import socket
 import ssl
 import sys
 import threading
+import certifi
 from dataclasses import dataclass
 from datetime import datetime
 from email import policy
@@ -30,6 +31,13 @@ _cached_passwords: dict[str, str] = {}
 
 class MailCheckError(RuntimeError):
     """A user-facing error raised during mail synchronization."""
+
+
+def create_mail_tls_context() -> ssl.SSLContext:
+    """保留系统信任并加载打包 CA，避免依赖构建机 OpenSSL 证书目录。"""
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
 
 
 @dataclass(frozen=True)
@@ -71,7 +79,7 @@ def clear_mail_credential_cache() -> None:
         _cached_passwords.clear()
 
 
-def get_password(email_address: str, use_keychain: bool) -> tuple[str, bool]:
+def get_password(email_address: str, use_keychain: bool, *, interactive: bool = True) -> tuple[str, bool]:
     """Return ``(password, came_from_keychain)``."""
     if use_keychain:
         with _credential_cache_lock:
@@ -82,14 +90,16 @@ def get_password(email_address: str, use_keychain: bool) -> tuple[str, bool]:
             try:
                 stored = keyring.get_password(KEYCHAIN_SERVICE, email_address)
             except KeyringError as exc:
-                print(f"提示：暂时无法读取 Keychain，将改为安全输入（{exc}）。")
+                if not interactive:
+                    raise MailCheckError("无法读取系统凭据库中的邮箱密码，请在设置中重新保存后重试。") from exc
+                print(f"提示：暂时无法读取 {credential_storage_name()}，将改为安全输入。")
             else:
                 if stored:
                     _cached_passwords[email_address] = stored
                     print(f"已从 {credential_storage_name()} 读取邮箱密码。")
                     return stored, True
 
-    if sys.stdin is None:
+    if not interactive or sys.stdin is None:
         raise MailCheckError("尚未保存邮箱密码，请在设置中配置后重试。")
     try:
         password = getpass.getpass("请输入邮箱密码（输入内容不会显示）：")
@@ -214,7 +224,7 @@ def fetch_recent_messages(
 def connect_and_fetch(
     email_address: str, password: str, limit: int
 ) -> list[MessageSummary]:
-    tls_context = ssl.create_default_context()
+    tls_context = create_mail_tls_context()
     try:
         with imaplib.IMAP4_SSL(
             IMAP_HOST,
