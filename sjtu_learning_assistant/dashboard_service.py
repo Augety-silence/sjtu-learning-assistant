@@ -149,9 +149,9 @@ from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
 from sjtu_learning_assistant.text_content import (
     extract_html_resource_ids,
     html_to_plain_text,
-    sanitize_html,
     sanitize_html_with_resources,
 )
+from sjtu_learning_assistant.mail_images import fetch_mail_image, trusted_mail_image_url
 from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -1628,7 +1628,7 @@ class DashboardService:
                 title = item.subject
                 source_label = _sender_name(item.sender_name)
                 body = item.body_text
-                body_html = sanitize_html(item.body_html)
+                body_html, resource_urls = sanitize_html_with_resources(item.body_html)
                 if not body:
                     body = html_to_plain_text(body_html)
                 raw_data = item.raw_data if isinstance(item.raw_data, Mapping) else {}
@@ -1637,7 +1637,11 @@ class DashboardService:
                     self._email_attachment_dto(attachment)
                     for attachment in sorted(item.attachments, key=lambda value: value.id)
                 ]
-                resources: list[dict[str, str]] = []
+                resources: list[dict[str, Any]] = [
+                    {"id": resource_id, "type": "image", "requires_consent": True}
+                    for resource_id, resource_url in resource_urls.items()
+                    if trusted_mail_image_url(resource_url) is not None
+                ]
                 url = unified.url
             elif kind == "announcement":
                 row = session.execute(
@@ -1996,8 +2000,15 @@ class DashboardService:
                 if email is None:
                     raise NotFoundError("未找到消息资源。")
                 allowed_ids = extract_html_resource_ids(email.body_html)
+                _html, resource_urls = sanitize_html_with_resources(email.body_html)
             if resource_id not in allowed_ids:
                 raise NotFoundError("未找到消息资源。")
+            resource_url = resource_urls.get(resource_id)
+            if resource_url is not None:
+                try:
+                    return {"data_url": fetch_mail_image(resource_url)}
+                except (ValueError, OSError, httpx.HTTPError) as exc:
+                    raise DashboardError("邮件外部图片读取失败；可重试，或在原邮箱查看。") from exc
             attachment = self._email_attachment(source_id, resource_id)
             data_url = self._read_inline_attachment(attachment)
             if data_url is None:

@@ -2016,6 +2016,48 @@ a {
   border: 1px solid var(--border-subtle);
 }
 
+/* 邮件布局表格不是数据表，不给每一层容器/留白格添加网格边框。 */
+.message-detail-html table[data-layout-table] > tbody > tr > td,
+.message-detail-html table[data-layout-table] > tbody > tr > th,
+.message-detail-html table[data-layout-table] > thead > tr > td,
+.message-detail-html table[data-layout-table] > thead > tr > th {
+  padding: 0;
+  border: 0;
+}
+
+.message-detail-html table[align="center"] {
+  margin-inline: auto;
+}
+
+.message-detail-html [align="center"] {
+  text-align: center;
+}
+
+.message-detail-html [align="right"] {
+  text-align: right;
+}
+
+.message-detail-html [align="left"] {
+  text-align: left;
+}
+
+.message-detail-html [align="justify"] {
+  text-align: justify;
+}
+
+.message-detail-html [align="center"] img {
+  margin-inline: auto;
+}
+
+.message-image-consent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .message-resource-failed {
   min-width: 160px;
   min-height: 72px;

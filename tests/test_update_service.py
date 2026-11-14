@@ -106,6 +106,70 @@ def multi_platform_release_payload(artifact_names):
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_api_rate_limit_uses_official_latest_page_without_guessing_assets(self):
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL
+        page = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9"
+        for status in (403, 429):
+            requests = []
+            def handler(request):
+                requests.append(str(request.url))
+                if str(request.url) == DEFAULT_RELEASE_API_URL:
+                    return httpx.Response(status)
+                if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                    return httpx.Response(302, headers={"Location": page})
+                return httpx.Response(200, text=f'<meta property="og:url" content="{httpx.URL(page).path}"><a href="/Augety-silence/sjtu-learning-assistant/releases/latest">Latest</a>')
+            with self.subTest(status=status):
+                result = UpdateService("1.8.8", transport=httpx.MockTransport(handler)).check()
+                self.assertTrue(result.update_available)
+                self.assertEqual("1.8.9", result.latest_version)
+                self.assertIsNone(result.download_plan)
+                self.assertEqual((), result.release.assets)
+                self.assertEqual([DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL, page], requests)
+
+    def test_web_fallback_rejects_untrusted_redirects_and_unconfirmed_html(self):
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL, MAX_METADATA_BYTES
+        page = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9"
+        cases = (
+            ("http://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9", "", {}),
+            ("https://github.com/evil/repo/releases/tag/v1.8.9", "", {}),
+            ("https://evil.test/tag/v1.8.9", "", {}),
+            (page, "<p>login or changed markup</p>", {}),
+            (page, '<meta property="og:url" content="https://evil.test"><a href="/Augety-silence/sjtu-learning-assistant/releases/latest">Latest</a>', {}),
+            (page, "", {"Content-Length": str(MAX_METADATA_BYTES + 1)}),
+        )
+        for redirect, html, headers in cases:
+            visited = []
+            def handler(request):
+                visited.append(str(request.url))
+                if str(request.url) == DEFAULT_RELEASE_API_URL:
+                    return httpx.Response(403)
+                if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                    return httpx.Response(302, headers={"Location": redirect})
+                return httpx.Response(200, text=html, headers=headers)
+            with self.subTest(redirect=redirect, html=html), self.assertRaises(UpdateServiceError):
+                UpdateService("1.8.8", transport=httpx.MockTransport(handler)).fetch_release()
+            self.assertTrue(all(url.startswith("https://github.com/Augety-silence/") or url == DEFAULT_RELEASE_API_URL for url in visited))
+
+    def test_successful_fallback_keeps_api_failure_in_safe_diagnostics(self):
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL
+        page = DEFAULT_RELEASE_WEB_URL.replace("latest", "tag/v1.8.9")
+        def handler(request):
+            if str(request.url) == DEFAULT_RELEASE_API_URL:
+                return httpx.Response(403, text="private network payload")
+            if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                return httpx.Response(302, headers={"Location": page})
+            return httpx.Response(200, text=f'<meta property="og:url" content="{page}"><a href="{DEFAULT_RELEASE_WEB_URL}">Latest</a>')
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "stage.jsonl"
+            with diagnostic_run(log, source="update"):
+                UpdateService("1.8.9", transport=httpx.MockTransport(handler)).check()
+            content = log.read_text()
+            records = [json.loads(row) for row in content.splitlines()]
+            self.assertTrue(any(row["stage"] == "github_api" and row["event"] == "failed" for row in records))
+            self.assertTrue(any(row["stage"] == "github_web_fallback" and row["event"] == "succeeded" for row in records))
+            self.assertNotIn("private", content)
+
     def test_network_failures_are_actionable_and_do_not_echo_remote_payload(self):
         cases = ((httpx.ConnectTimeout, "超时"), (httpx.ReadTimeout, "超时"), (httpx.ConnectError, "网络"), (httpx.InvalidURL, "网络"))
         for kind, expected in cases:

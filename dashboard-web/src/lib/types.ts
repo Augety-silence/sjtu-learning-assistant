@@ -300,6 +300,7 @@ export interface MessageItem {
 }
 
 export interface MessageResource {
+  requires_consent?: boolean;
   id: string;
   type: "image";
 }

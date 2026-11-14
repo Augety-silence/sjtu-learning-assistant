@@ -48,7 +48,7 @@ class HTMLSanitizerTests(unittest.TestCase):
         )
         self.assertIn('<img data-resource-id="logo@example">', cleaned or "")
         self.assertIn(
-            "<table><tbody><tr><th>H</th><td>V</td></tr></tbody></table>",
+            '<table><tbody><tr><th colspan="2">H</th><td>V</td></tr></tbody></table>',
             cleaned or "",
         )
         self.assertNotIn("alert", cleaned or "")
@@ -57,6 +57,27 @@ class HTMLSanitizerTests(unittest.TestCase):
 
     def test_malformed_html_is_closed_and_escaped(self) -> None:
         self.assertEqual("<p>&lt;x&gt;<b>bold</b></p>", sanitize_html("<p>&lt;x&gt;<b>bold"))
+
+    def test_mail_layout_and_trusted_image_survive_repeated_sanitization(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        html = '<table role="presentation" border="0" width="100%" align="center"><tr><td style="text-align:center; background:url(https://evil.test/a)" colspan="2"><img alt="校徽" width="640" src="https://s3.jcloud.sjtu.edu.cn/logo.png"></td></tr></table>'
+        cleaned, resources = sanitize_html_with_resources(html)
+        repeated, repeated_resources = sanitize_html_with_resources(cleaned)
+        self.assertEqual(cleaned, repeated)
+        self.assertEqual(resources, repeated_resources)
+        self.assertEqual(["https://s3.jcloud.sjtu.edu.cn/logo.png"], list(resources.values()))
+        self.assertIn('align="center"', cleaned)
+        self.assertIn('colspan="2"', cleaned)
+        self.assertIn('alt="校徽"', cleaned)
+        self.assertNotIn("style=", cleaned)
+        self.assertNotIn("evil.test", cleaned)
+
+    def test_unsafe_layout_values_and_external_images_are_not_renderable(self) -> None:
+        cleaned = sanitize_html('<table role="button" width="999999" onclick="bad()"><tr><td colspan="999" rowspan="-1" align="url(x)"><img src="https://evil.test/tracker" alt="外部图"></td></tr></table>')
+        self.assertNotIn("evil.test", cleaned)
+        for name in ("width=", "onclick=", "colspan=", "rowspan=", "align=", "role="):
+            self.assertNotIn(name, cleaned)
+        self.assertIn('data-blocked-image="true" alt="外部图"', cleaned)
 
 
 class MIMEParsingTests(unittest.TestCase):

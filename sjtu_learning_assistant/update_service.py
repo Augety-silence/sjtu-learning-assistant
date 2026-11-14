@@ -14,17 +14,20 @@ import re
 import ssl
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence
 from urllib.parse import unquote, urljoin, urlsplit
 
 import httpx
 import certifi
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_stage
 
 DEFAULT_RELEASE_API_URL = (
     "https://api.github.com/repos/Augety-silence/"
     "sjtu-learning-assistant/releases/latest"
 )
+DEFAULT_RELEASE_WEB_URL = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest"
 ALLOWED_UPDATE_HOSTS = frozenset(
     {
         "api.github.com",
@@ -195,6 +198,15 @@ def validate_update_url(url: object, *, purpose: str = "asset") -> str:
             DEFAULT_RELEASE_API_URL
         ).path:
             raise UnsafeUpdateURLError("Release 元数据地址不受信任。")
+    elif purpose == "latest-page":
+        prefix = "/Augety-silence/sjtu-learning-assistant/releases/"
+        tail = decoded_path.removeprefix(prefix)
+        if host != "github.com" or not decoded_path.startswith(prefix) or parsed.query:
+            raise UnsafeUpdateURLError("Latest 页面不属于固定仓库。")
+        if tail != "latest":
+            if not tail.startswith("tag/") or len(tail) > 104:
+                raise UnsafeUpdateURLError("Latest 页面没有有效版本标签。")
+            SemanticVersion.parse(tail[4:])
     elif purpose == "release-page":
         if host != "github.com" or not decoded_path.startswith(
             "/Augety-silence/sjtu-learning-assistant/releases/"
@@ -529,6 +541,23 @@ def require_sha256(
     return actual
 
 
+class _OfficialReleasePage(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.canonical: str | None = None
+        self.has_latest = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "meta" and values.get("property") == "og:url":
+            self.canonical = values.get("content")
+        if tag == "a" and values.get("href") in {
+            DEFAULT_RELEASE_WEB_URL,
+            urlsplit(DEFAULT_RELEASE_WEB_URL).path,
+        }:
+            self.has_latest = True
+
+
 class UpdateService:
     """通过可注入 transport 的 httpx 客户端执行安全更新检查。"""
 
@@ -566,7 +595,7 @@ class UpdateService:
                 trust_env=False,
                 verify=tls_context,
                 headers={
-                    "Accept": "application/vnd.github+json",
+                    "Accept": "text/html" if purpose == "latest-page" else "application/vnd.github+json",
                     # 元数据很小；请求明文可让大小上限按真实字节计算，也避免解压炸弹。
                     "Accept-Encoding": "identity",
                     "User-Agent": "SJTU-Learning-Assistant-Update-Checker",
@@ -651,11 +680,19 @@ class UpdateService:
             raise UpdateServiceError(message) from exc
 
     def fetch_release(self) -> ReleaseMetadata:
-        response = self._get(
-            DEFAULT_RELEASE_API_URL,
-            purpose="metadata",
-            maximum=MAX_METADATA_BYTES,
-        )
+        try:
+            with diagnostic_stage("update", "github_api"):
+                response = self._get(
+                    DEFAULT_RELEASE_API_URL,
+                    purpose="metadata",
+                    maximum=MAX_METADATA_BYTES,
+                )
+        except UpdateServiceError as exc:
+            cause = exc.__cause__
+            if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code not in {403, 429}:
+                raise
+            with diagnostic_stage("update", "github_web_fallback"):
+                return self._fetch_web_release()
         try:
             payload = response.json()
         except ValueError as exc:
@@ -665,6 +702,27 @@ class UpdateService:
             # 不会被上面的 ValueError 分支捕获），必须归一化以保持模块错误类型契约。
             raise InvalidUpdateMetadataError("Release JSON 嵌套过深。") from exc
         return parse_release_metadata(payload)
+
+    def _fetch_web_release(self) -> ReleaseMetadata:
+        """仅从官方 Latest 跳转核对版本；不从网页猜测资产或摘要。"""
+        response = self._get(DEFAULT_RELEASE_WEB_URL, purpose="latest-page", maximum=MAX_METADATA_BYTES)
+        page_url = validate_update_url(str(response.url), purpose="latest-page")
+        path = urlsplit(page_url).path
+        prefix = "/Augety-silence/sjtu-learning-assistant/releases/tag/"
+        if not path.startswith(prefix):
+            raise InvalidUpdateMetadataError("GitHub Latest 页面未返回版本标签。")
+        tag = path[len(prefix):]
+        version = SemanticVersion.parse(tag)
+        parser = _OfficialReleasePage()
+        parser.feed(response.text)
+        canonical = urljoin(page_url, parser.canonical or "")
+        if not parser.canonical or canonical != page_url or not parser.has_latest:
+            raise InvalidUpdateMetadataError("GitHub Latest 页面结构无法安全确认，请打开官方发布页。")
+        return ReleaseMetadata(
+            str(version), tag, page_url, None,
+            "GitHub API 暂时受限，已通过官方 Latest 页面核对版本；请在官方发布页查看更新说明与带 SHA-256 的安装包。",
+            bool(version.prerelease), (),
+        )
 
     def resolve_asset_checksum(self, asset: ReleaseAsset) -> ReleaseAsset:
         if asset.sha256 is not None or asset.checksum_url is None:

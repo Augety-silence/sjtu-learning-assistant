@@ -7,6 +7,7 @@ import re
 from html import escape
 from html.parser import HTMLParser
 from urllib.parse import unquote, urlsplit, urlunsplit
+from sjtu_learning_assistant.mail_images import trusted_mail_image_url
 
 _ALLOWED_TAGS = frozenset(
     {
@@ -77,6 +78,40 @@ def _valid_resource_id(value: str) -> bool:
     )
 
 
+def _presentation_attributes(tag: str, values: dict[str, str]) -> list[tuple[str, str]]:
+    """仅转译布局数值/枚举，不保留任意 CSS、URL 或外部 class。"""
+    result: list[tuple[str, str]] = []
+    if tag in {"table", "td", "th", "div", "p"}:
+        align = values.get("align", "").lower()
+        if not align:
+            for declaration in values.get("style", "").split(";"):
+                name, separator, value = declaration.partition(":")
+                if separator and name.strip().lower() == "text-align":
+                    align = value.strip().lower()
+        if align in {"left", "center", "right", "justify"}:
+            result.append(("align", align))
+    if tag in {"td", "th"}:
+        if values.get("valign", "").lower() in {"top", "middle", "bottom"}:
+            result.append(("valign", values["valign"].lower()))
+        for name in ("colspan", "rowspan"):
+            value = values.get(name, "")
+            if re.fullmatch(r"[0-9]{1,3}", value) and 1 <= int(value) <= 100:
+                result.append((name, str(int(value))))
+    if tag == "table":
+        if values.get("role", "").lower() in {"presentation", "table"}:
+            result.append(("role", values["role"].lower()))
+        if values.get("border") in {"0", "1"}:
+            result.append(("border", values["border"]))
+    if tag in {"table", "img"}:
+        for name in (("width", "height") if tag == "img" else ("width",)):
+            value = values.get(name, "")
+            if re.fullmatch(r"[0-9]{1,4}", value) and 1 <= int(value) <= 2048:
+                result.append((name, str(int(value))))
+            elif name == "width" and re.fullmatch(r"[0-9]{1,3}%", value) and 1 <= int(value[:-1]) <= 100:
+                result.append((name, value))
+    return result
+
+
 class _HTMLSanitizer(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -111,17 +146,22 @@ class _HTMLSanitizer(HTMLParser):
                 (values.get("data-api-endpoint") or "").strip()
             )
             canvas_url = canvas_url or _canvas_image_url(src)
+            stored_url = (values.get("data-resource-url") or "").strip()
+            canvas_url = canvas_url or _canvas_image_url(stored_url)
+            canvas_url = canvas_url or trusted_mail_image_url(src) or trusted_mail_image_url(stored_url)
             if canvas_url is not None:
                 resource_id = "canvas-" + hashlib.sha256(
                     canvas_url.encode("utf-8")
                 ).hexdigest()
                 self.resource_ids.add(resource_id)
                 self.resource_urls[resource_id] = canvas_url
-                return [("data-resource-id", resource_id)]
+                return [("data-resource-id", resource_id), ("data-resource-url", canvas_url)]
             resource_id = (values.get("data-resource-id") or "").strip()
             if _valid_resource_id(resource_id):
                 self.resource_ids.add(resource_id)
                 return [("data-resource-id", resource_id)]
+            if src or values.get("data-blocked-image") == "true":
+                return [("data-blocked-image", "true")]
         return []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -138,6 +178,10 @@ class _HTMLSanitizer(HTMLParser):
         safe_attributes = self._safe_attributes(tag, attrs)
         if tag == "img" and not safe_attributes:
             return
+        values = {name.casefold(): value for name, value in attrs if value is not None}
+        safe_attributes.extend(_presentation_attributes(tag, values))
+        if tag == "img" and values.get("alt"):
+            safe_attributes.append(("alt", values["alt"][:500]))
         attributes = "".join(
             f' {name}="{escape(value, quote=True)}"'
             for name, value in safe_attributes

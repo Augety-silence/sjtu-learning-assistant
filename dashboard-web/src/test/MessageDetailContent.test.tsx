@@ -54,6 +54,78 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessageDetailContent", () => {
+  it("邮件布局表格无网格外框，安全居中和跨列保留，数据表仍有语义", () => {
+    const html = sanitizeMessageHtml(
+      '<table border="0" align="center" width="100%"><tr><td align="center" colspan="2"><table><tr><td>通知</td></tr></table></td></tr></table><table role="table"><tr><th>数据</th><td>1</td></tr></table>',
+      true,
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    expect(container.querySelectorAll("[data-layout-table]")).toHaveLength(2);
+    expect(container.querySelector("td")?.getAttribute("colspan")).toBe("2");
+    expect(container.querySelector("table")?.getAttribute("align")).toBe(
+      "center",
+    );
+    expect(
+      container
+        .querySelector('table[role="table"]')
+        ?.hasAttribute("data-layout-table"),
+    ).toBe(false);
+    const unsafe = sanitizeMessageHtml(
+      '<td colspan="999" align="url(x)" style="background:url(https://evil.test)">x</td><table width="999999" role="button"></table>',
+    );
+    expect(unsafe).not.toContain("999");
+    expect(unsafe).not.toContain("url(");
+    expect(unsafe).not.toContain('role="button"');
+  });
+
+  it("外部图片需明确同意，切换邮件后同意状态与图片均不沿用", async () => {
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,logo",
+    });
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="logo" alt="校徽">',
+      resources: [{ id: "logo", type: "image", requires_consent: true }],
+    });
+    const { rerender } = render(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-a" />,
+    );
+    expect(getMessageResource).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "加载此邮件外部图片" }));
+    await waitFor(() =>
+      expect(screen.getByAltText("校徽").getAttribute("src")).toBe(
+        "data:image/png;base64,logo",
+      ),
+    );
+    expect(getMessageResource).toHaveBeenCalledTimes(1);
+    rerender(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-b" />,
+    );
+    expect(screen.getByAltText("校徽").getAttribute("src")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "加载此邮件外部图片" }),
+    ).toBeTruthy();
+    rerender(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-a" />,
+    );
+    expect(screen.getByAltText("校徽").getAttribute("src")).toBeNull();
+    expect(getMessageResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("未知外部图片以拦截说明显示，不静默丢失或请求", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-blocked-image="true" alt="外部图">',
+        })}
+        kind="email"
+        sourceId="mail-a"
+      />,
+    );
+    expect(screen.getByText("[外部图片已拦截：外部图]")).toBeTruthy();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
   it("优先显示清洗后的 HTML，并过滤脚本、事件、样式、危险链接和图片来源属性", () => {
     const html = `
       <div style="color:red" onclick="alert(1)">

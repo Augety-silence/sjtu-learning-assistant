@@ -230,6 +230,29 @@ class DashboardRichResourceTests(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             service.message_resource("email", "mail:one", "invented")
 
+    def test_email_remote_resources_survive_storage_and_do_not_use_canvas_credentials(self) -> None:
+        from dataclasses import replace
+        from sjtu_learning_assistant.mail_client import _message_content
+        from email.message import EmailMessage
+        message = EmailMessage()
+        message.set_content('<table border="0"><tr><td align="center"><img src="https://s3.jcloud.sjtu.edu.cn/logo.png" alt="校徽"></td></tr></table>', subtype="html")
+        body, html, attachments = _message_content(message)
+        record = replace(self.email_record("mail:logo", "unused"), body_text=body, body_html=html, attachments=attachments)
+        persist_emails(self.engine, [record], cursor="cursor", attachment_root=self.attachment_root)
+        service = self.service()
+        detail = service.message_detail("email", "mail:logo")
+        self.assertEqual(1, len(detail["resources"]))
+        resource = detail["resources"][0]
+        self.assertTrue(resource["requires_consent"])
+        with patch.object(service, "_get_canvas_client", side_effect=AssertionError("must not read Canvas keychain")), patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image", return_value="data:image/png;base64,cHVibGlj") as fetch:
+            result = service.message_resource("email", "mail:logo", resource["id"])
+        self.assertTrue(result["data_url"].startswith("data:image/png;"))
+        fetch.assert_called_once_with("https://s3.jcloud.sjtu.edu.cn/logo.png")
+        with patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image") as fetch:
+            with self.assertRaises(NotFoundError):
+                service.message_resource("email", "mail:logo", "invented")
+            fetch.assert_not_called()
+
     def persist_canvas(self) -> None:
         persist_canvas_data(
             self.engine,

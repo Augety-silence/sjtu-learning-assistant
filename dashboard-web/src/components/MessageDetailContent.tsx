@@ -24,6 +24,7 @@ import {
   revealMailAttachment,
 } from "@/lib/api";
 import { formatSize } from "@/lib/format";
+import { isHttpsUrl, sanitizeMessageHtml } from "@/lib/messageHtml";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   MailMessageAttachment,
@@ -32,110 +33,7 @@ import type {
 } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
 
-const ALLOWED_TAGS = new Set([
-  "p",
-  "br",
-  "div",
-  "ul",
-  "ol",
-  "li",
-  "table",
-  "thead",
-  "tbody",
-  "tr",
-  "th",
-  "td",
-  "b",
-  "strong",
-  "i",
-  "em",
-  "u",
-  "pre",
-  "code",
-  "blockquote",
-  "a",
-  "img",
-]);
-const DROP_WITH_CONTENT = new Set([
-  "script",
-  "style",
-  "iframe",
-  "object",
-  "embed",
-  "template",
-  "noscript",
-]);
-
-function isHttpsUrl(value: string) {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function copySafeNode(node: Node, output: Document): Node | null {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return output.createTextNode(node.textContent ?? "");
-  }
-  if (!(node instanceof Element)) return null;
-
-  const tag = node.tagName.toLowerCase();
-  if (DROP_WITH_CONTENT.has(tag)) return null;
-
-  if (!ALLOWED_TAGS.has(tag)) {
-    const fragment = output.createDocumentFragment();
-    for (const child of Array.from(node.childNodes)) {
-      const safeChild = copySafeNode(child, output);
-      if (safeChild) fragment.append(safeChild);
-    }
-    return fragment;
-  }
-
-  const safeElement = output.createElement(tag);
-  if (tag === "a") {
-    const href = node.getAttribute("href");
-    if (href && isHttpsUrl(href)) {
-      safeElement.setAttribute("href", href);
-    } else if (href) {
-      const blocked = output.createElement("span");
-      blocked.setAttribute("data-link-blocked", "true");
-      for (const child of Array.from(node.childNodes)) {
-        const safeChild = copySafeNode(child, output);
-        if (safeChild) blocked.append(safeChild);
-      }
-      blocked.append(output.createTextNode("（已拦截链接）"));
-      return blocked;
-    }
-  } else if (tag === "img") {
-    const resourceId = node.getAttribute("data-resource-id");
-    const alt = node.getAttribute("alt");
-    if (!resourceId) {
-      return output.createTextNode(
-        alt ? `[图片：${alt}]` : "[无可用来源的图片]",
-      );
-    }
-    safeElement.setAttribute("data-resource-id", resourceId);
-    if (alt !== null) safeElement.setAttribute("alt", alt);
-  }
-
-  for (const child of Array.from(node.childNodes)) {
-    const safeChild = copySafeNode(child, output);
-    if (safeChild) safeElement.append(safeChild);
-  }
-  return safeElement;
-}
-
-export function sanitizeMessageHtml(html: string) {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  const output = document.implementation.createHTMLDocument("");
-  const container = output.createElement("div");
-  for (const child of Array.from(parsed.body.childNodes)) {
-    const safeChild = copySafeNode(child, output);
-    if (safeChild) container.append(safeChild);
-  }
-  return container.innerHTML;
-}
+export { sanitizeMessageHtml } from "@/lib/messageHtml";
 
 function isMailAttachment(
   attachment: MessageDetail["attachments"][number],
@@ -293,10 +191,20 @@ export function MessageDetailContent({
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const { showToast } = useToast();
   const messageKey = `${kind}:${sourceId}`;
+  const messageIdentity = useMemo(() => ({ key: messageKey }), [messageKey]);
+  const [imageConsent, setImageConsent] = useState<
+    typeof messageIdentity | null
+  >(null);
+  const needsImageConsent =
+    kind === "email" &&
+    detail.resources.some((resource) => resource.requires_consent);
+  const imagesAllowed = imageConsent === messageIdentity;
   const safeHtml = useMemo(
     () =>
-      detail.body_html?.trim() ? sanitizeMessageHtml(detail.body_html) : "",
-    [detail.body_html],
+      detail.body_html?.trim()
+        ? sanitizeMessageHtml(detail.body_html, kind === "email")
+        : "",
+    [detail.body_html, kind],
   );
 
   useEffect(() => {
@@ -316,6 +224,11 @@ export function MessageDetailContent({
     const resourceIds = new Set(
       detail.resources.map((resource) => resource.id),
     );
+    const consentIds = new Set(
+      detail.resources
+        .filter((resource) => resource.requires_consent)
+        .map((resource) => resource.id),
+    );
     const requests = new Map<string, Promise<string>>();
     const cleanups: Array<() => void> = [];
 
@@ -324,7 +237,17 @@ export function MessageDetailContent({
     )) {
       const resourceId = image.dataset.resourceId;
       if (!resourceId) continue;
-      const originalAlt = image.alt;
+      const originalAlt = image.dataset.originalAlt ?? image.alt;
+      image.dataset.originalAlt = originalAlt;
+      image.alt = originalAlt;
+      image.removeAttribute("src");
+      image.classList.remove(
+        "message-resource-previewable",
+        "message-resource-failed",
+      );
+      image.removeAttribute("tabindex");
+      image.removeAttribute("role");
+      image.removeAttribute("aria-label");
       let retryButton: HTMLButtonElement | null = null;
 
       const clearFailure = () => {
@@ -411,6 +334,10 @@ export function MessageDetailContent({
         markFailed();
         continue;
       }
+      if (consentIds.has(resourceId) && !imagesAllowed) {
+        image.alt = originalAlt || "外部图片未加载";
+        continue;
+      }
       loadRemoteImage();
     }
 
@@ -425,6 +352,7 @@ export function MessageDetailContent({
     kind,
     safeHtml,
     sourceId,
+    imagesAllowed,
   ]);
 
   const openLink = useCallback(
@@ -527,6 +455,22 @@ export function MessageDetailContent({
 
   return (
     <div className="message-content-stack">
+      {needsImageConsent && !imagesAllowed && !detail.pending_body_sync && (
+        <div className="message-image-consent">
+          <span>
+            外部图片默认不加载。加载会向交大图片服务器暴露访问记录，不会发送邮箱或
+            Canvas 凭据。
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setImageConsent(messageIdentity)}
+          >
+            加载此邮件外部图片
+          </Button>
+        </div>
+      )}
       {detail.pending_body_sync ? (
         <div className="message-detail-pending" role="status">
           正文尚未同步，请点击同步后再试

@@ -31,6 +31,7 @@ from sjtu_learning_assistant.mail_sync import (
     decode_mime_text,
 )
 from sjtu_learning_assistant.sync_diagnostics import diagnostic_stage, record_event
+from sjtu_learning_assistant.mail_images import RICH_MAIL_CONTENT_VERSION
 
 DEFAULT_INITIAL_LIMIT = 100
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -409,6 +410,7 @@ def _parse_message(
             "uid_validity": uid_validity,
             "message_id": message_id,
             "rich_content_fetched": True,
+            "rich_content_version": RICH_MAIL_CONTENT_VERSION,
         },
         body_text=body_text,
         body_html=body_html,
