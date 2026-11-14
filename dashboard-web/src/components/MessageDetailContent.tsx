@@ -221,9 +221,12 @@ export function MessageDetailContent({
           attachment.inline_data_url as string,
         ]),
     );
-    const resourceIds = new Set(
-      detail.resources.map((resource) => resource.id),
-    );
+    const resourceIds = new Set([
+      ...detail.resources.map((resource) => resource.id),
+      ...detail.attachments
+        .filter(isMailAttachment)
+        .map((attachment) => attachment.id),
+    ]);
     const consentIds = new Set(
       detail.resources
         .filter((resource) => resource.requires_consent)
@@ -249,6 +252,7 @@ export function MessageDetailContent({
       image.removeAttribute("role");
       image.removeAttribute("aria-label");
       let retryButton: HTMLButtonElement | null = null;
+      let failureNote: HTMLSpanElement | null = null;
 
       const clearFailure = () => {
         image.classList.remove("message-resource-failed");
@@ -258,6 +262,8 @@ export function MessageDetailContent({
         }
         retryButton?.remove();
         retryButton = null;
+        failureNote?.remove();
+        failureNote = null;
       };
       const markPreviewable = () => {
         image.classList.add("message-resource-previewable");
@@ -268,7 +274,7 @@ export function MessageDetailContent({
           originalAlt ? `放大查看：${originalAlt}` : "放大查看正文图片",
         );
       };
-      const markFailed = () => {
+      const markFailed = (reason: "missing" | "load" | "decode" = "load") => {
         image.removeAttribute("src");
         image.classList.remove("message-resource-previewable");
         image.removeAttribute("tabindex");
@@ -276,6 +282,18 @@ export function MessageDetailContent({
         image.removeAttribute("aria-label");
         image.classList.add("message-resource-failed");
         image.alt = originalAlt || "图片加载失败";
+        if (!failureNote) {
+          failureNote = document.createElement("span");
+          failureNote.className = "message-resource-failure-note";
+          failureNote.setAttribute("role", "status");
+          image.insertAdjacentElement("afterend", failureNote);
+        }
+        failureNote.textContent =
+          reason === "missing"
+            ? "图片资源缺失，请同步邮箱后重试。"
+            : reason === "decode"
+              ? "图片数据无法显示，请导出诊断包反馈。"
+              : "图片读取失败，请重试；仍失败请导出诊断包反馈。";
         if (retryButton) return;
         retryButton = document.createElement("button");
         retryButton.type = "button";
@@ -309,7 +327,7 @@ export function MessageDetailContent({
             if (!cancelled) markFailed();
           });
       };
-      const handleImageError = () => markFailed();
+      const handleImageError = () => markFailed("decode");
       const handleRetry = (event: Event) => {
         if (event.target !== retryButton) return;
         event.preventDefault();
@@ -322,6 +340,7 @@ export function MessageDetailContent({
         image.removeEventListener("error", handleImageError);
         container.removeEventListener("click", handleRetry);
         retryButton?.remove();
+        failureNote?.remove();
       });
 
       const inlineUrl = inlineData.get(resourceId);
@@ -331,7 +350,7 @@ export function MessageDetailContent({
         continue;
       }
       if (!resourceIds.has(resourceId)) {
-        markFailed();
+        markFailed("missing");
         continue;
       }
       if (consentIds.has(resourceId) && !imagesAllowed) {

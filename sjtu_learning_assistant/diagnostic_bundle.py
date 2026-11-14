@@ -483,7 +483,13 @@ class DiagnosticBundleService:
     @staticmethod
     def _stage_metadata(value: str) -> str:
         lines = []
-        numeric = {"duration_ms", "exit_code", "attempt", "selected", "incremental", "bootstrap_truncated", "fetched", "inserted", "updated"}
+        numeric = {"duration_ms", "exit_code", "attempt", "selected", "incremental", "bootstrap_truncated", "fetched", "inserted", "updated", "mime_recovered", "image_bytes"}
+        image_enums = {
+            "resource_kind": {"inline", "remote"},
+            "image_type": {"png", "jpeg", "gif", "webp"},
+            "failure_code": {"unsupported_type", "size_limit", "size_or_file_type",
+                             "cache_unavailable_or_unsafe", "unrecognized_raster"},
+        }
         for line in value.splitlines():
             try:
                 row = json.loads(line)
@@ -502,6 +508,9 @@ class DiagnosticBundleService:
                     safe[key] = item if isinstance(item, str) and re.fullmatch(r"[a-z_]{1,40}", item) else "other"
             for key in numeric:
                 if type(row.get(key)) is int:
+                    safe[key] = row[key]
+            for key, values in image_enums.items():
+                if isinstance(row.get(key), str) and row[key] in values:
                     safe[key] = row[key]
             if "local_time" in row:
                 safe["local_time"] = _timestamp(row["local_time"])

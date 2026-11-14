@@ -54,6 +54,110 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessageDetailContent", () => {
+  it("通用 MIME 的已恢复内嵌 PNG 直接显示，不访问外部地址", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-resource-id="generic-inline" alt="内嵌海报">',
+          attachments: [
+            {
+              id: "generic-inline",
+              name: "image.bin",
+              type: "application/octet-stream",
+              size: 34215,
+              is_inline: true,
+              available: true,
+              inline_data_url: "data:image/png;base64,recovered",
+            },
+          ],
+        })}
+        kind="email"
+        sourceId="mail-generic"
+      />,
+    );
+    expect(screen.getByAltText("内嵌海报").getAttribute("src")).toBe(
+      "data:image/png;base64,recovered",
+    );
+    expect(screen.queryByText("图片加载失败")).toBeNull();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
+  it("内嵌缓存缺失仍请求所属邮件资源，失败提示与解码失败分开", async () => {
+    vi.mocked(getMessageResource).mockRejectedValue(
+      new Error("private backend detail"),
+    );
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="inline-cache" alt="缓存图片">',
+      attachments: [
+        {
+          id: "inline-cache",
+          name: "image.bin",
+          type: "application/octet-stream",
+          size: 10,
+          is_inline: true,
+          available: false,
+          inline_data_url: null,
+        },
+      ],
+    });
+    const { rerender } = render(
+      <MessageDetailContent
+        detail={detail}
+        kind="email"
+        sourceId="mail-cache"
+      />,
+    );
+    expect(
+      await screen.findByText("图片读取失败，请重试；仍失败请导出诊断包反馈。"),
+    ).toBeTruthy();
+    expect(getMessageResource).toHaveBeenCalledWith(
+      "email",
+      "mail-cache",
+      "inline-cache",
+    );
+    expect(screen.queryByText("private backend detail")).toBeNull();
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,cached",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "重新加载图片：缓存图片" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByAltText("缓存图片").getAttribute("src")).toBe(
+        "data:image/png;base64,cached",
+      ),
+    );
+    expect(
+      screen.queryByText("图片读取失败，请重试；仍失败请导出诊断包反馈。"),
+    ).toBeNull();
+    fireEvent.error(screen.getByAltText("缓存图片"));
+    expect(
+      screen.getByText("图片数据无法显示，请导出诊断包反馈。"),
+    ).toBeTruthy();
+    rerender(
+      <MessageDetailContent
+        detail={makeDetail({ body_html: "<p>下一封</p>" })}
+        kind="email"
+        sourceId="mail-next"
+      />,
+    );
+    expect(
+      screen.queryByText("图片数据无法显示，请导出诊断包反馈。"),
+    ).toBeNull();
+  });
+
+  it("正文存在但资源元数据缺失时明确提示同步，不自动访问未知来源", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({ body_html: '<img data-resource-id="missing">' })}
+        kind="email"
+        sourceId="mail-missing"
+      />,
+    );
+    expect(screen.getByText("图片资源缺失，请同步邮箱后重试。")).toBeTruthy();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
   it("邮件布局表格无网格外框，安全居中和跨列保留，数据表仍有语义", () => {
     const html = sanitizeMessageHtml(
       '<table border="0" align="center" width="100%"><tr><td align="center" colspan="2"><table><tr><td>通知</td></tr></table></td></tr></table><table role="table"><tr><th>数据</th><td>1</td></tr></table>',

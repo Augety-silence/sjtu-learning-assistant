@@ -2,10 +2,27 @@ import unittest
 import httpx
 from unittest.mock import patch
 
-from sjtu_learning_assistant.mail_images import fetch_mail_image, trusted_mail_image_url
+from sjtu_learning_assistant.mail_images import fetch_mail_image, raster_image_type, trusted_mail_image_url
 
 
 class MailImageTests(unittest.TestCase):
+    def test_raster_headers_do_not_guess_from_filename_or_active_content(self):
+        for payload, expected in (
+            (b"\x89PNG\r\n\x1a\n", "image/png"),
+            (b"\xff\xd8\xff\xe0", "image/jpeg"),
+            (b"GIF87a", "image/gif"),
+            (b"GIF89a", "image/gif"),
+            (b"RIFF\x20\x00\x00\x00WEBPVP8 ", "image/webp"),
+            (b"<svg xmlns='http://www.w3.org/2000/svg'/>", None),
+            (b"<html><script>bad()</script></html>", None),
+            (b"not-an-image.png", None),
+            (b"RIFF\x00\x00\x00\x00WAVEfmt ", None),
+            (b"RIFF\x00\x00\x00\x00WEBPjunk", None),
+            (b"", None),
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(expected, raster_image_type(payload))
+
     def test_streaming_limit_and_redirect_budget_are_enforced(self):
         class Stream(httpx.SyncByteStream):
             def __iter__(self):

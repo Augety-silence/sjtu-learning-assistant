@@ -15,6 +15,20 @@ MAIL_IMAGE_LIMIT = 5 * 1024 * 1024
 RICH_MAIL_CONTENT_VERSION = 2
 
 
+def raster_image_type(payload: bytes) -> str | None:
+    """识别有限栅格图片文件头；不依赖扩展名，也不将 HTML/SVG 作为图片。"""
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if (len(payload) >= 16 and payload[:4] == b"RIFF"
+            and payload[8:12] == b"WEBP" and payload[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}):
+        return "image/webp"
+    return None
+
+
 def trusted_mail_image_url(value: str) -> str | None:
     if not value or len(value) > 4096 or any(ord(c) <= 32 or ord(c) == 127 for c in value):
         return None

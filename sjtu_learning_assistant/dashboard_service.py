@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+import httpx
+
 try:
     import fcntl
 except ImportError:
@@ -85,7 +87,7 @@ from sjtu_learning_assistant.local_projects import (
     LocalProjectService,
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
-from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage, record_event
 from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
 from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
 from sjtu_learning_assistant.archive_service import (
@@ -151,7 +153,7 @@ from sjtu_learning_assistant.text_content import (
     html_to_plain_text,
     sanitize_html_with_resources,
 )
-from sjtu_learning_assistant.mail_images import fetch_mail_image, trusted_mail_image_url
+from sjtu_learning_assistant.mail_images import fetch_mail_image, raster_image_type, trusted_mail_image_url
 from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -1563,14 +1565,23 @@ class DashboardService:
         return resolved
 
     def _read_inline_attachment(self, attachment: EmailAttachment) -> str | None:
-        content_type = (attachment.content_type or "").split(";", 1)[0].casefold()
-        if (
-            not attachment.content_id
-            or not attachment.is_inline
-            or content_type not in INLINE_IMAGE_TYPES
-            or attachment.size > INLINE_IMAGE_LIMIT
-        ):
+        if not attachment.content_id or not attachment.is_inline:
             return None
+        with diagnostic_run(source="mail_image"):
+            return self._read_inline_image_data(attachment)
+
+    def _read_inline_image_data(self, attachment: EmailAttachment) -> str | None:
+        def failed(code: str) -> None:
+            record_event("mail_image", "inline_cache", "failed",
+                         resource_kind="inline", failure_code=code)
+
+        content_type = (attachment.content_type or "").split(";", 1)[0].casefold()
+        generic_type = content_type == "application/octet-stream"
+        if content_type not in INLINE_IMAGE_TYPES and not generic_type:
+            return failed("unsupported_type")
+        if attachment.size > INLINE_IMAGE_LIMIT:
+            return failed("size_limit")
+        record_event("mail_image", "inline_cache", "started", resource_kind="inline")
         try:
             path = self._resolve_controlled_mail_file(attachment.local_path)
             descriptor = os.open(
@@ -1580,15 +1591,23 @@ class DashboardService:
             try:
                 info = os.fstat(descriptor)
                 if not stat.S_ISREG(info.st_mode) or info.st_size > INLINE_IMAGE_LIMIT:
-                    return None
+                    return failed("size_or_file_type")
                 payload = os.read(descriptor, INLINE_IMAGE_LIMIT + 1)
             finally:
                 os.close(descriptor)
         except (DashboardError, OSError):
-            return None
+            return failed("cache_unavailable_or_unsafe")
         if len(payload) > INLINE_IMAGE_LIMIT:
-            return None
+            return failed("size_limit")
+        if generic_type:
+            detected_type = raster_image_type(payload)
+            if detected_type is None:
+                return failed("unrecognized_raster")
+            content_type = detected_type
         encoded = base64.b64encode(payload).decode("ascii")
+        record_event("mail_image", "inline_cache", "succeeded",
+                     resource_kind="inline", image_type=content_type.removeprefix("image/"),
+                     mime_recovered=int(generic_type), image_bytes=len(payload))
         return f"data:{content_type};base64,{encoded}"
 
     def _email_attachment_dto(self, attachment: EmailAttachment) -> dict[str, Any]:
@@ -1984,6 +2003,13 @@ class DashboardService:
     def message_resource(
         self, kind: str, source_id: str, resource_id: str
     ) -> dict[str, str]:
+        source = "mail_image" if kind == "email" else "canvas_image"
+        with diagnostic_run(source=source), diagnostic_stage(source, "resource_request"):
+            return self._message_resource(kind, source_id, resource_id)
+
+    def _message_resource(
+        self, kind: str, source_id: str, resource_id: str
+    ) -> dict[str, str]:
         kind = self._validate_message_kind(kind, allow_all=False)
         if (
             type(source_id) is not str
@@ -2005,8 +2031,10 @@ class DashboardService:
                 raise NotFoundError("未找到消息资源。")
             resource_url = resource_urls.get(resource_id)
             if resource_url is not None:
+                record_event("mail_image", "resource_request", "resolved", resource_kind="remote")
                 try:
-                    return {"data_url": fetch_mail_image(resource_url)}
+                    with diagnostic_stage("mail_image", "remote_fetch"):
+                        return {"data_url": fetch_mail_image(resource_url)}
                 except (ValueError, OSError, httpx.HTTPError) as exc:
                     raise DashboardError("邮件外部图片读取失败；可重试，或在原邮箱查看。") from exc
             attachment = self._email_attachment(source_id, resource_id)
