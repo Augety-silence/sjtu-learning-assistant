@@ -219,7 +219,8 @@ class CompiledKnowledge:
         source, document = self._resolve(document_id)
         text = self._text(source, document)
         end = min(len(text), offset + max_chars)
-        headings = re.findall(r"^#{1,6} .+$", text[:offset], flags=re.MULTILINE)
+        # 保留正文的原始换行与字符偏移，仅从展示标题中去除 CRLF 的回车。
+        headings = re.findall(r"^#{1,6} [^\r\n]+", text[:offset], flags=re.MULTILINE)
         return {**document, "text": text[offset:end], "offset": offset, "next_offset": end if end < len(text) else None,
                 "total_chars": len(text), "section": headings[-1][:200] if headings else "文档开头",
                 "citation": document["source_name"] + "/" + document["relative_path"], "truncated": end < len(text)}

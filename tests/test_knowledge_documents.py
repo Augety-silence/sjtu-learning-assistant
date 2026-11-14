@@ -44,19 +44,19 @@ class KnowledgeDocumentTests(unittest.TestCase):
     def test_both_app_specs_include_pdfium_license_metadata(self):
         root = Path(__file__).resolve().parents[1]
         for filename in ("desktop.spec", "windows.spec"):
-            self.assertIn('*copy_metadata("pypdfium2")', (root / "packaging" / filename).read_text())
+            self.assertIn('*copy_metadata("pypdfium2")', (root / "packaging" / filename).read_text(encoding="utf-8"))
 
     def test_multimodal_pages_and_standard_markdown_provenance(self):
         note = self.converter().compile(self.source, self.path, self.target)
         self.assertEqual(2, len(self.calls))
         self.assertEqual("qwen3.8-27b", self.calls[0][0])
         self.assertEqual(["text", "image_url"], [part["type"] for part in self.calls[0][2]])
-        self.assertIn("原始提取", note.read_text())
-        self.assertIn("AI 解读（需复核）", note.read_text())
-        self.assertIn("(assets/page-0001.jpg)", note.read_text())
+        self.assertIn("原始提取", note.read_text(encoding="utf-8"))
+        self.assertIn("AI 解读（需复核）", note.read_text(encoding="utf-8"))
+        self.assertIn("(assets/page-0001.jpg)", note.read_text(encoding="utf-8"))
         page = note.parent / "pages/page-0001.md"
-        self.assertIn("source_sha256:", page.read_text())
-        self.assertIn("page: 1", page.read_text())
+        self.assertIn("source_sha256:", page.read_text(encoding="utf-8"))
+        self.assertIn("page: 1", page.read_text(encoding="utf-8"))
 
     def test_second_run_reuses_pages_without_api_calls(self):
         self.converter().compile(self.source, self.path, self.target)
@@ -107,7 +107,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         note.write_text("用户知识笔记", encoding="utf-8")
         with self.assertRaisesRegex(DocumentTextError, "已被修改"):
             self.converter().compile(self.source, self.path, self.target)
-        self.assertEqual("用户知识笔记", note.read_text())
+        self.assertEqual("用户知识笔记", note.read_text(encoding="utf-8"))
         self.assertEqual(2, len(self.calls))
 
     def test_changed_source_keeps_old_revision(self):
@@ -140,9 +140,9 @@ class KnowledgeDocumentTests(unittest.TestCase):
     def test_manifest_path_escape_is_rejected(self):
         note = self.converter().compile(self.source, self.path, self.target)
         manifest = note.parent / "manifest.json"
-        payload = json.loads(manifest.read_text())
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
         payload["outputs"]["../../outside.md"] = "bad"
-        manifest.write_text(json.dumps(payload))
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(DocumentTextError, "路径无效"):
             self.converter().compile(self.source, self.path, self.target)
 
@@ -188,7 +188,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
             service.start(str(self.source), str(self.target), "documents")
             service._thread.join(10)
         index = self.target / "99_System/File-Index.md"
-        content = index.read_text()
+        content = index.read_text(encoding="utf-8")
         self.assertIn("笔记.md", content)
         import re
         link = re.search(r"\]\(([^)]+document.md)\)", content).group(1)

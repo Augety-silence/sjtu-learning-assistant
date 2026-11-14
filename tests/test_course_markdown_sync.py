@@ -58,17 +58,17 @@ class CourseMarkdownSyncTests(unittest.TestCase):
     def test_mirror_images_are_relative_and_url_encoded(self):
         self.worker.run_once()
         import re
-        links = re.findall(r"!\[原始页面\]\(([^)]+)\)", self.mirror.read_text())
+        links = re.findall(r"!\[原始页面\]\(([^)]+)\)", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(2, len(links))
         for link in links:
             self.assertTrue((self.mirror.parent / unquote(link)).is_file())
 
     def test_source_revision_updates_generated_mirror_keeps_previous(self):
         self.worker.run_once()
-        old = self.mirror.read_text()
+        old = self.mirror.read_text(encoding="utf-8")
         build_pdf(self.path, ("Changed slide",))
         self.worker.run_once()
-        self.assertNotEqual(old, self.mirror.read_text())
+        self.assertNotEqual(old, self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(2, len(list(self.target.rglob("document.md"))))
 
     def test_manual_edits_protected_even_if_source_changes(self):
@@ -76,7 +76,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.mirror.write_text("我的笔记", encoding="utf-8")
         build_pdf(self.path, ("Changed slide",))
         self.worker.run_once()
-        self.assertEqual("我的笔记", self.mirror.read_text())
+        self.assertEqual("我的笔记", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(2, self.runner.call_count)
         self.assertEqual(1, self.worker.status()["failed"])
 
@@ -84,7 +84,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         self.worker.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertIn("multimodal_status: pending", self.mirror.read_text())
+        self.assertIn("multimodal_status: pending", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual("budget_paused", self.worker.status()["status"])
         restart = self.new_worker()
         restart.run_once()
@@ -107,8 +107,8 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         build_pdf(self.path, tuple("Long text " * 350 for _ in range(130)))
         self.worker.run_once()
         self.assertTrue(self.mirror.is_file())
-        self.assertGreater(len(self.mirror.read_text()), 400_000)
-        self.assertIn("## 第 130 页", self.mirror.read_text())
+        self.assertGreater(len(self.mirror.read_text(encoding="utf-8")), 400_000)
+        self.assertIn("## 第 130 页", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(1, self.worker.status()["text_ready"])
 
     def test_mid_cycle_midnight_resets_quota_before_next_call(self):
@@ -119,7 +119,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
             return "跨日结果"
         self.runner.side_effect = runner
         self.worker.run_once()
-        marker = json.loads((self.target / "99_System/Course-Sync.json").read_text())
+        marker = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
         self.assertEqual({"day": "2026-11-15", "used": 1}, marker["quota"])
         self.worker.run_once()
         self.assertEqual(1, self.worker.status()["calls_today"])
@@ -167,12 +167,12 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = runner
         self.worker.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertNotIn("## AI 解读", self.mirror.read_text())
+        self.assertNotIn("## AI 解读", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(1, self.runner.call_count)
 
     def test_unmanaged_output_and_symlinks_are_rejected(self):
         self.target.mkdir()
-        (self.target / "user.md").write_text("笔记")
+        (self.target / "user.md").write_text("笔记", encoding="utf-8")
         self.worker.run_once()
         self.assertEqual("blocked", self.worker.status()["status"])
         self.assertEqual(["user.md"], [p.name for p in self.target.iterdir()])
@@ -201,7 +201,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         payload = self.settings.to_dict()
         del payload["course_markdown_enabled"]
         del payload["course_markdown_daily_calls"]
-        store.path.write_text(json.dumps(payload))
+        store.path.write_text(json.dumps(payload), encoding="utf-8")
         loaded = store.load(environ={})
         self.assertFalse(loaded.course_markdown_enabled)
         self.assertTrue(loaded.auto_download_current_term)

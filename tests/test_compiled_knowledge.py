@@ -28,7 +28,7 @@ class CompiledKnowledgeTests(unittest.TestCase):
         self.mirror = self.target / "Courses" / (self.relative + ".md")
         self.mirror.parent.mkdir(parents=True)
         self.body = "# 数据库第一讲\n\n## 第 2 页\n\n关系代数与选择运算\n" + "长正文\n" * 3000
-        self.mirror.write_text(self.body, encoding="utf-8")
+        self.mirror.write_text(self.body, encoding="utf-8", newline="\n")
         self.marker = self.target / "99_System/Course-Sync.json"
         self.marker.parent.mkdir()
         self.marker.write_text(json.dumps({"version": 1, "source_root": str(self.archive), "items": {self.relative: {"text_ready": True, "status": "pending"}}}), encoding="utf-8")
@@ -60,6 +60,31 @@ class CompiledKnowledgeTests(unittest.TestCase):
             offset = page["next_offset"]
         self.assertEqual(self.body, "".join(parts))
 
+    def test_crlf_heading_and_pagination_preserve_original_offsets_and_bytes(self):
+        body = "# 数据库\r\n\r\n## 第 2 页\r\nİİİ\r\n关系代数\r\n" + "长正文\r\n" * 200
+        payload = body.encode("utf-8")
+        self.mirror.write_bytes(payload)
+        item = self.service.search("关系代数")["items"][0]
+        self.assertEqual(body.index("关系代数"), item["match_offset"])
+        self.assertEqual("## 第 2 页", self.service.read(item["id"], item["match_offset"])["section"])
+        parts, offset = [], 0
+        while True:
+            page = self.service.read(item["id"], offset, 500)
+            parts.append(page["text"])
+            if page["next_offset"] is None:
+                break
+            offset = page["next_offset"]
+        self.assertEqual(body, "".join(parts))
+        self.assertEqual(payload, self.mirror.read_bytes())
+
+    def test_non_utf8_markdown_is_rejected_without_modification(self):
+        payload = b"# Heading\n\xffprivate"
+        self.mirror.write_bytes(payload)
+        result = self.service.search("private")
+        self.assertEqual(0, result["count"])
+        self.assertIn("知识文件不是 UTF-8 Markdown。", result["issues"])
+        self.assertEqual(payload, self.mirror.read_bytes())
+
     def test_unregistered_markdown_and_revision_duplicates_are_not_catalogued(self):
         (self.target / "Courses/unregistered.md").write_text("not authorized")
         revisions = self.target / "90_Inbox/Documents/revision"
@@ -70,7 +95,7 @@ class CompiledKnowledgeTests(unittest.TestCase):
     def test_user_edited_markdown_is_read_but_never_overwritten(self):
         self.mirror.write_text("# 人工补充\n我的知识点", encoding="utf-8")
         self.assertEqual(1, self.service.search("我的知识点")["count"])
-        self.assertEqual("# 人工补充\n我的知识点", self.mirror.read_text())
+        self.assertEqual("# 人工补充\n我的知识点", self.mirror.read_text(encoding="utf-8"))
 
     def test_missing_original_and_new_files_update_without_restart(self):
         (self.archive / self.relative).unlink()
@@ -149,7 +174,7 @@ class CompiledKnowledgeTests(unittest.TestCase):
         self.assertEqual([], self.service.search(offset=10)["items"])
 
     def test_unicode_search_cursor_indexes_original_text(self):
-        self.mirror.write_text("İİİ\n知识点", encoding="utf-8")
+        self.mirror.write_text("İİİ\n知识点", encoding="utf-8", newline="\n")
         doc = self.service.search("知识点")["items"][0]
         self.assertEqual(4, doc["match_offset"])
         self.assertTrue(self.service.read(doc["id"], doc["match_offset"])["text"].startswith("知识点"))
