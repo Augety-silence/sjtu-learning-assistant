@@ -26,6 +26,7 @@ jobs:
 
   windows-pytest:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,7 +36,8 @@ jobs:
       - name: 安装 Windows Python 测试依赖
         run: python -m pip install -r requirements-dev.txt -r requirements-windows.txt
       - name: 运行 Windows Python 测试
-        run: python -m pytest -q tests
+        # 逐用例输出并在单个测试超过 120 秒时记录线程栈；不跳过任何测试。
+        run: python -m pytest -vv -o faulthandler_timeout=120 tests
 
   frontend:
     runs-on: ubuntu-latest
