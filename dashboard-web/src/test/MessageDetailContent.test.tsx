@@ -54,6 +54,52 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessageDetailContent", () => {
+  it("公网邮件图片自动显示，可暂停与重试，暂停时不接受旧请求结果", async () => {
+    let resolveOld: ((value: { data_url: string }) => void) | undefined;
+    vi.mocked(getMessageResource).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="public-logo" alt="51Job">',
+      resources: [
+        { id: "public-logo", type: "image", requires_consent: false },
+      ],
+    });
+    render(
+      <MessageDetailContent
+        detail={detail}
+        kind="email"
+        sourceId="mail-public"
+      />,
+    );
+    expect(getMessageResource).toHaveBeenCalledWith(
+      "email",
+      "mail-public",
+      "public-logo",
+    );
+    expect(screen.queryByText(/已拦截/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "暂停外部图片" }));
+    resolveOld?.({ data_url: "data:image/png;base64,old" });
+    await waitFor(() =>
+      expect(screen.getByAltText("51Job").getAttribute("src")).toBeNull(),
+    );
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,new",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "加载外部图片" }));
+    await waitFor(() =>
+      expect(screen.getByAltText("51Job").getAttribute("src")).toBe(
+        "data:image/png;base64,new",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "暂停外部图片" }));
+    expect(screen.getByAltText("51Job").getAttribute("src")).toBeNull();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
   it("通用 MIME 的已恢复内嵌 PNG 直接显示，不访问外部地址", () => {
     render(
       <MessageDetailContent

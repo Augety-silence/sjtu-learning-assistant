@@ -199,6 +199,13 @@ export function MessageDetailContent({
     kind === "email" &&
     detail.resources.some((resource) => resource.requires_consent);
   const imagesAllowed = imageConsent === messageIdentity;
+  const [pausedImages, setPausedImages] = useState<
+    typeof messageIdentity | null
+  >(null);
+  const imagesPaused = pausedImages === messageIdentity;
+  const hasPublicImages =
+    kind === "email" &&
+    detail.resources.some((resource) => !resource.requires_consent);
   const safeHtml = useMemo(
     () =>
       detail.body_html?.trim()
@@ -353,7 +360,7 @@ export function MessageDetailContent({
         markFailed("missing");
         continue;
       }
-      if (consentIds.has(resourceId) && !imagesAllowed) {
+      if (imagesPaused || (consentIds.has(resourceId) && !imagesAllowed)) {
         image.alt = originalAlt || "外部图片未加载";
         continue;
       }
@@ -372,6 +379,7 @@ export function MessageDetailContent({
     safeHtml,
     sourceId,
     imagesAllowed,
+    imagesPaused,
   ]);
 
   const openLink = useCallback(
@@ -474,10 +482,15 @@ export function MessageDetailContent({
 
   return (
     <div className="message-content-stack">
+      {kind === "email" && safeHtml.includes('data-blocked-image="true"') && (
+        <p role="status">
+          旧邮件图片地址可能已被旧版本清洗，请同步邮箱后重新打开；不安全来源不会加载。
+        </p>
+      )}
       {needsImageConsent && !imagesAllowed && !detail.pending_body_sync && (
         <div className="message-image-consent">
           <span>
-            外部图片默认不加载。加载会向交大图片服务器暴露访问记录，不会发送邮箱或
+            外部图片默认不加载。加载会向发件方图片服务器暴露访问记录，不会发送邮箱或
             Canvas 凭据。
           </span>
           <Button
@@ -487,6 +500,24 @@ export function MessageDetailContent({
             onClick={() => setImageConsent(messageIdentity)}
           >
             加载此邮件外部图片
+          </Button>
+        </div>
+      )}
+      {hasPublicImages && !detail.pending_body_sync && (
+        <div className="message-image-consent">
+          <span>
+            外部图片匿名加载，发件方可能获知访问记录；不会发送邮箱或 Canvas
+            凭据。
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setPausedImages(imagesPaused ? null : messageIdentity)
+            }
+          >
+            {imagesPaused ? "加载外部图片" : "暂停外部图片"}
           </Button>
         </div>
       )}

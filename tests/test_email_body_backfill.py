@@ -169,7 +169,7 @@ class MailBodyBackfillPersistenceTests(unittest.TestCase):
 
     def test_old_sanitized_html_is_refetched_once_without_changing_read_state(self) -> None:
         from dataclasses import replace
-        old = replace(self.record(1, body_text="kept"), body_html="<table><tr><td>kept</td></tr></table>", raw_data={"rich_content_fetched": True})
+        old = replace(self.record(1, body_text="kept"), body_html="<table><tr><td>kept</td></tr></table>", raw_data={"rich_content_fetched": True, "rich_content_version": 2})
         persist_emails(self.engine, [old], cursor="cursor")
         with Session(self.engine) as session, session.begin():
             session.execute(update(Email).values(is_unread=False))
@@ -185,7 +185,14 @@ class MailBodyBackfillPersistenceTests(unittest.TestCase):
             self.assertEqual("kept", email.body_text)
             self.assertFalse(email.is_unread)
             self.assertTrue(session.scalar(select(UnifiedItem)).is_read)
-            self.assertEqual(2, email.raw_data["rich_content_version"])
+            self.assertEqual(3, email.raw_data["rich_content_version"])
+
+    def test_future_rich_content_is_not_downgraded(self) -> None:
+        from dataclasses import replace
+        future = replace(self.record(1, body_text="kept"), body_html="<p>kept</p>", raw_data={"rich_content_fetched": True, "rich_content_version": 4})
+        persist_emails(self.engine, [future], cursor="cursor")
+        self.assertEqual((), get_email_body_backfill_targets(self.engine, "student@example.com", limit=1))
+        self.assertEqual(0, persist_email_body_backfill(self.engine, [EmailBodyUpdate(future.source_id, "new", "new", "<p>new</p>")]))
 
 
 class SyncMailBackfillIsolationTests(unittest.TestCase):

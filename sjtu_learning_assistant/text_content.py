@@ -175,10 +175,13 @@ class _HTMLSanitizer(HTMLParser):
             return
         if tag not in _ALLOWED_TAGS:
             return
+        values = {name.casefold(): value for name, value in attrs if value is not None}
+        # 邮件声明为 0×0 且无替代文本的计数信标不是正文图片，不变成可见错误框。
+        if tag == "img" and values.get("width") == "0" and values.get("height") == "0" and not values.get("alt"):
+            return
         safe_attributes = self._safe_attributes(tag, attrs)
         if tag == "img" and not safe_attributes:
             return
-        values = {name.casefold(): value for name, value in attrs if value is not None}
         safe_attributes.extend(_presentation_attributes(tag, values))
         if tag == "img" and values.get("alt"):
             safe_attributes.append(("alt", values["alt"][:500]))

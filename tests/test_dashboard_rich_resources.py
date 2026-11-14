@@ -308,7 +308,7 @@ class DashboardRichResourceTests(unittest.TestCase):
         detail = service.message_detail("email", "mail:logo")
         self.assertEqual(1, len(detail["resources"]))
         resource = detail["resources"][0]
-        self.assertTrue(resource["requires_consent"])
+        self.assertFalse(resource["requires_consent"])
         with patch.object(service, "_get_canvas_client", side_effect=AssertionError("must not read Canvas keychain")), patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image", return_value="data:image/png;base64,cHVibGlj") as fetch:
             result = service.message_resource("email", "mail:logo", resource["id"])
         self.assertTrue(result["data_url"].startswith("data:image/png;"))
@@ -317,6 +317,13 @@ class DashboardRichResourceTests(unittest.TestCase):
             with self.assertRaises(NotFoundError):
                 service.message_resource("email", "mail:logo", "invented")
             fetch.assert_not_called()
+
+    def test_general_public_mail_source_cannot_enter_canvas_authenticated_fetch(self) -> None:
+        service = self.service()
+        with patch.object(service, "_get_canvas_client", side_effect=AssertionError("must not read Canvas credentials")) as factory:
+            with self.assertRaises(NotFoundError):
+                service._canvas_image_data_url("https://img01.51jobcdn.com/logo.png")
+            factory.assert_not_called()
 
     def persist_canvas(self) -> None:
         persist_canvas_data(

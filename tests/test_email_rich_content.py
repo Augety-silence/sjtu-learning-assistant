@@ -29,6 +29,25 @@ from sjtu_learning_assistant.text_content import sanitize_html
 
 
 class HTMLSanitizerTests(unittest.TestCase):
+    def test_invisible_zero_sized_mail_beacon_does_not_become_visible_error(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        self.assertEqual(("<p>正文</p>", {}), sanitize_html_with_resources('<p>正文<img src="https://receiver.51job.com/pixel" width="0" height="0"></p>'))
+        cleaned, urls = sanitize_html_with_resources('<img src="https://img01.51jobcdn.com/logo.png" width="0" height="0" alt="可见替代文本">')
+        self.assertIn("可见替代文本", cleaned)
+        self.assertEqual(1, len(urls))
+
+    def test_public_mail_sources_are_retained_but_not_directly_rendered(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        for host in ("img01.51jobcdn.com", "fecdn.51jobcdn.com", "img07.51jobcdn.com", "receiver.51job.com"):
+            with self.subTest(host=host):
+                cleaned, resources = sanitize_html_with_resources(f'<img src="https://{host}/logo.png" alt="公开图片" onerror="bad()" srcset="bad">')
+                self.assertEqual([f"https://{host}/logo.png"], list(resources.values()))
+                self.assertEqual((cleaned, resources), sanitize_html_with_resources(cleaned))
+                self.assertNotIn("data-blocked-image", cleaned)
+                self.assertNotIn(" src=", cleaned)
+                self.assertNotIn("onerror", cleaned)
+                self.assertNotIn("srcset", cleaned)
+
     def test_strict_whitelist_urls_and_suppressed_content(self) -> None:
         dirty = """
         <div style="color:red" onclick="bad()"><custom>kept</custom>

@@ -1657,7 +1657,7 @@ class DashboardService:
                     for attachment in sorted(item.attachments, key=lambda value: value.id)
                 ]
                 resources: list[dict[str, Any]] = [
-                    {"id": resource_id, "type": "image", "requires_consent": True}
+                    {"id": resource_id, "type": "image", "requires_consent": False}
                     for resource_id, resource_url in resource_urls.items()
                     if trusted_mail_image_url(resource_url) is not None
                 ]
