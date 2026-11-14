@@ -50,6 +50,8 @@ class LocalSettingsTests(unittest.TestCase):
             {
                 "archive_root",
                 "auto_download_current_term",
+                "course_markdown_enabled",
+                "course_markdown_daily_calls",
                 "organize_by_category",
                 "ai_enabled",
                 "ai_base_url",

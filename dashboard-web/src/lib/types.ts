@@ -358,6 +358,8 @@ export interface SyncStatus {
 }
 
 export interface SettingsStatus {
+  course_markdown_enabled: boolean;
+  course_markdown_daily_calls: number;
   archive_root_ready: boolean;
   archive_root: string;
   credential_storage_name: string;
@@ -378,6 +380,20 @@ export interface SettingsStatus {
   ai_auto_open_activity: boolean;
   ai_code_line_numbers: boolean;
   theme_mode: ThemeMode;
+}
+
+export interface CourseMarkdownStatus {
+  text_ready?: number;
+  enabled: boolean;
+  status: string;
+  output_root: string;
+  daily_limit: number;
+  calls_today: number;
+  total: number;
+  completed: number;
+  pending: number;
+  failed: number;
+  issues: string[];
 }
 
 export type KnowledgeCompilerMode = "foundation" | "full" | "documents";

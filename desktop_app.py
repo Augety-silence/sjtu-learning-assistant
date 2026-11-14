@@ -513,6 +513,7 @@ class DesktopBridge:
             "knowledge_compiler_start": self._knowledge_compiler_start,
             "knowledge_compiler_status": self._knowledge_compiler_status,
             "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
+            "course_markdown_status": lambda payload: self._without_payload(payload, service.course_markdown_status),
             "local_projects_list": self._local_projects_list,
             "local_projects_add": self._local_projects_add,
             "local_projects_refresh": self._local_projects_refresh,
@@ -656,6 +657,8 @@ class DesktopBridge:
             {
                 "archive_root",
                 "auto_download_current_term",
+                "course_markdown_enabled",
+                "course_markdown_daily_calls",
                 "organize_by_category",
                 "mail_account",
                 "ai_enabled",
@@ -851,7 +854,7 @@ class DesktopBridge:
             payload.get("target_root"), limit=4096, label="输出目录"
         )
         mode = payload.get("mode")
-        if type(mode) is not str or mode not in {"foundation", "full"}:
+        if type(mode) is not str or mode not in {"foundation", "full", "documents"}:
             raise DashboardError("编译范围不受支持。")
         return self._service.knowledge_compiler_start(
             source_root, target_root, mode
@@ -2636,6 +2639,9 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
         )
         scheduler.start()
+        automatic_start = getattr(service, "start_course_markdown_sync", None)
+        if callable(automatic_start):
+            automatic_start()
         start_options = {
             "debug": False,
             "private_mode": False,

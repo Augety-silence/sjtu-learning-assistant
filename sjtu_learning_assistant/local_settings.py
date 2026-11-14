@@ -56,6 +56,9 @@ PRE_AI_KEYS = PRE_PERSONALIZATION_KEYS - {
     "ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"
 }
 LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
+PRE_COURSE_SYNC_KEYS = ALLOWED_KEYS
+COURSE_SYNC_KEYS = frozenset({"course_markdown_enabled", "course_markdown_daily_calls"})
+ALLOWED_KEYS = ALLOWED_KEYS | COURSE_SYNC_KEYS
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
 # ERROR_ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION while a reader or
 # scanner holds settings.json open without FILE_SHARE_DELETE.
@@ -84,6 +87,8 @@ class LocalSettings:
     ai_auto_open_activity: bool = True
     ai_code_line_numbers: bool = False
     theme_mode: str = "system"
+    course_markdown_enabled: bool = False
+    course_markdown_daily_calls: int = 100
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -208,6 +213,11 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         raise SettingsError("没有可更新的设置。")
 
     result: dict[str, Any] = {}
+    if "course_markdown_daily_calls" in payload:
+        value = payload["course_markdown_daily_calls"]
+        if type(value) is not int or not 1 <= value <= 1000:
+            raise SettingsError("自动课件每日调用上限必须为 1—1000 的整数。")
+        result["course_markdown_daily_calls"] = value
     if "archive_root" in payload:
         result["archive_root"] = validate_archive_root(payload["archive_root"])
     if "mail_account" in payload:
@@ -235,6 +245,7 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
             "附件上下文预算",
         )
     for key in (
+        "course_markdown_enabled",
         "auto_download_current_term",
         "organize_by_category",
         "ai_enabled",
@@ -383,6 +394,9 @@ class SettingsStore:
                     for key in PERSONALIZATION_KEYS
                 },
             }
+        if isinstance(payload, dict) and set(payload) == PRE_COURSE_SYNC_KEYS:
+            defaults = LocalSettings()
+            payload = {**payload, **{key: getattr(defaults, key) for key in COURSE_SYNC_KEYS}}
         try:
             values = _validate_mapping(payload, partial=False)
         except SettingsError:

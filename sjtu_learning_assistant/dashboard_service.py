@@ -85,6 +85,7 @@ from sjtu_learning_assistant.local_projects import (
     LocalProjectService,
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
@@ -2151,6 +2152,7 @@ class DashboardService:
                 f"文件下载失败：{detail}" if detail else "文件下载失败，请稍后重试。",
                 retryable=True,
             )
+        self._notify_course_markdown_sync()
         return {
             "source_id": result.source_id,
             "status": result.status,
@@ -3508,6 +3510,36 @@ class DashboardService:
             self._local_projects_instance = service
         return service
 
+    def _course_markdown_paths(self) -> list[Path]:
+        with Session(self.engine) as session:
+            return [Path(path) for path in session.scalars(select(CourseFile.local_path).where(
+                CourseFile.is_active.is_(True), CourseFile.download_status == "downloaded",
+                CourseFile.local_path.is_not(None),
+            ))]
+
+    def start_course_markdown_sync(self) -> None:
+        if getattr(self, "_course_markdown_instance", None) is None:
+            self._course_markdown_instance = CourseMarkdownSync(
+                self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
+            )
+        self._course_markdown_instance.start()
+
+    def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        service = getattr(self, "_course_markdown_instance", None)
+        if service is not None:
+            service.notify(settings_changed=settings_changed)
+
+    def course_markdown_status(self) -> dict[str, Any]:
+        settings = self._effective_settings()
+        service = getattr(self, "_course_markdown_instance", None)
+        state = service.status() if service is not None else {
+            "status": "disabled", "total": 0, "completed": 0, "pending": 0,
+            "failed": 0, "calls_today": 0, "issues": [],
+        }
+        return {**state, "enabled": settings.course_markdown_enabled,
+                "daily_limit": settings.course_markdown_daily_calls,
+                "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
+
     def _run_knowledge_compiler_ai(
         self, model: str, system_prompt: str, user_content: Any
     ) -> str:
@@ -3625,6 +3657,9 @@ class DashboardService:
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        automatic = getattr(self, "_course_markdown_instance", None)
+        if automatic is not None:
+            automatic.close()
         service = getattr(self, "_knowledge_compiler_instance", None)
         if service is not None:
             service.cancel()
@@ -3716,6 +3751,8 @@ class DashboardService:
             self._sync_cloud_archive_root()
         if {"ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"} & set(payload):
             self._discard_ai_client()
+        if {"archive_root", "ai_enabled", "ai_base_url", "ai_key_saved", "course_markdown_enabled", "course_markdown_daily_calls"} & set(payload):
+            self._notify_course_markdown_sync(settings_changed=True)
         return self.settings_status()
 
     def pick_archive_root(self) -> dict[str, Any]:
@@ -3764,6 +3801,7 @@ class DashboardService:
             summary = service.archive_current_term()
         finally:
             self._close_archive_service(service)
+        self._notify_course_markdown_sync()
         return {
             "classified": summary.classified,
             "reused": summary.reused,
@@ -3809,6 +3847,8 @@ class DashboardService:
             "archive_root": str(self.archive_root),
             "credential_storage_name": storage_name,
             "auto_download_current_term": settings.auto_download_current_term,
+            "course_markdown_enabled": settings.course_markdown_enabled,
+            "course_markdown_daily_calls": settings.course_markdown_daily_calls,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,
             "canvas_token_saved": canvas_saved,
@@ -3837,6 +3877,7 @@ class DashboardService:
                     self._last_sync_failed_at = self.now()
                 elif exit_code == 0:
                     self._last_sync_failed_at = None
+                self._notify_course_markdown_sync()
         finally:
             self._sync_lock.release()
 

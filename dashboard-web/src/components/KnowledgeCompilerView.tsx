@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ContentReveal } from "@/components/ContentReveal";
+import { CourseMarkdownSyncPanel } from "@/components/CourseMarkdownSyncPanel";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
 import {
@@ -300,6 +301,8 @@ export function KnowledgeCompilerView() {
           </div>
         </div>
       )}
+
+      <CourseMarkdownSyncPanel />
 
       <section
         className="knowledge-config"

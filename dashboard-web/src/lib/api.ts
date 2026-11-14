@@ -242,6 +242,8 @@ export function updateSettings(
     Pick<
       import("@/lib/types").SettingsStatus,
       | "auto_download_current_term"
+      | "course_markdown_enabled"
+      | "course_markdown_daily_calls"
       | "organize_by_category"
       | "mail_account"
       | "ai_enabled"
@@ -265,6 +267,12 @@ export function updateSettings(
 export function testAiConnection() {
   return invoke<{ ok: boolean; model: string; category: string }>(
     "settings_ai_test",
+  );
+}
+
+export function getCourseMarkdownStatus() {
+  return invoke<import("@/lib/types").CourseMarkdownStatus>(
+    "course_markdown_status",
   );
 }
 

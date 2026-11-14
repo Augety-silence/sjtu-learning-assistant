@@ -14,6 +14,19 @@ import type { KnowledgeCompilerTask, SettingsStatus } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  getCourseMarkdownStatus: vi.fn().mockResolvedValue({
+    status: "disabled",
+    enabled: false,
+    output_root: "/archive/Knowledge Markdown",
+    daily_limit: 100,
+    calls_today: 0,
+    total: 0,
+    completed: 0,
+    pending: 0,
+    failed: 0,
+    issues: [],
+  }),
+  updateSettings: vi.fn(),
   cancelKnowledgeCompiler: vi.fn(),
   getKnowledgeCompilerStatus: vi.fn(),
   getSettings: vi.fn(),

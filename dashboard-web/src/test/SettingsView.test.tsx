@@ -36,6 +36,8 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const status: SettingsStatus = {
+  course_markdown_enabled: false,
+  course_markdown_daily_calls: 100,
   archive_root_ready: true,
   archive_root: "/tmp/SJTU Study",
   auto_download_current_term: true,
