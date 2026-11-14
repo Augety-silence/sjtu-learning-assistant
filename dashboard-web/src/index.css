@@ -3865,6 +3865,14 @@ a {
 .config-dialog footer > span { flex: 1 1 auto; }
 .credential-note { padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-radius: 8px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 12px; }
 .credential-note svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--status-success); }
+.config-secret-field { display: grid; gap: 6px; }
+.config-secret-input { position: relative; }
+.config-dialog .config-secret-input input { padding-right: 42px; }
+.config-secret-toggle { position: absolute; inset: 1px 1px 1px auto; width: 36px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--text-tertiary); cursor: pointer; }
+.config-secret-toggle svg { width: 17px; height: 17px; }
+.config-secret-toggle:hover { background: var(--surface-subtle); }
+.config-secret-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.config-secret-toggle:disabled { opacity: 0.5; cursor: default; }
 
 /* Independent AI agent workspace */
 .ai-workspace {

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+import ssl
+import tempfile
+import json
+from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -10,6 +15,7 @@ from sjtu_learning_assistant.update_service import (
     InvalidUpdateMetadataError,
     InvalidVersionError,
     UpdateService,
+    UpdateServiceError,
     UnsafeUpdateURLError,
     compare_versions,
     parse_release_metadata,
@@ -100,6 +106,52 @@ def multi_platform_release_payload(artifact_names):
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_network_failures_are_actionable_and_do_not_echo_remote_payload(self):
+        cases = ((httpx.ConnectTimeout, "超时"), (httpx.ReadTimeout, "超时"), (httpx.ConnectError, "网络"), (httpx.InvalidURL, "网络"))
+        for kind, expected in cases:
+            with self.subTest(kind=kind):
+                def handler(request):
+                    raise kind("private network payload")
+                service = UpdateService("1.8.8", transport=httpx.MockTransport(handler))
+                with self.assertRaises(UpdateServiceError) as caught:
+                    service.fetch_release()
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("private", str(caught.exception))
+
+    def test_http_status_has_safe_diagnostic_evidence(self):
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
+        from sjtu_learning_assistant.diagnostic_bundle import DiagnosticBundleService
+        for status in (403, 429, 404, 500):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                log = Path(directory) / "stages.jsonl"
+                service = UpdateService("1.8.8", transport=httpx.MockTransport(lambda request: httpx.Response(status, text="private server payload")))
+                with self.assertRaises(UpdateServiceError) as caught, diagnostic_run(log, source="update"), diagnostic_stage("update", "release_metadata"):
+                    service.fetch_release()
+                self.assertIn(str(status), str(caught.exception))
+                exported = DiagnosticBundleService._stage_metadata(log.read_text())
+                rows = [json.loads(line) for line in exported.splitlines()]
+                failed = next(row for row in rows if row["stage"] == "release_metadata" and row["event"] == "failed")
+                self.assertEqual("update", failed["source"])
+                self.assertIn({"type": "HTTPStatusError", "status_code": status}, failed["exception_chain"])
+                self.assertNotIn("private", exported)
+
+    def test_tls_failure_is_not_bypassed(self):
+        def handler(request):
+            try:
+                raise ssl.SSLCertVerificationError(1, "private certificate payload")
+            except ssl.SSLError as exc:
+                raise httpx.ConnectError("private network payload") from exc
+        with self.assertRaisesRegex(UpdateServiceError, "不会跳过 TLS"):
+            UpdateService("1.8.8", transport=httpx.MockTransport(handler)).fetch_release()
+
+    def test_packaged_ca_is_loaded_on_top_of_system_trust(self):
+        context = ssl.create_default_context()
+        with patch("sjtu_learning_assistant.update_service.ssl.create_default_context", return_value=context), patch.object(context, "load_verify_locations", wraps=context.load_verify_locations) as load:
+            UpdateService("1.8.8", transport=httpx.MockTransport(lambda request: httpx.Response(200, json=release_payload()))).fetch_release()
+        load.assert_called_once()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
+
     def test_deep_release_json_is_a_controlled_metadata_error(self) -> None:
         service = UpdateService(
             "1.8.7",

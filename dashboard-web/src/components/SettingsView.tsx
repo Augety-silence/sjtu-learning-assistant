@@ -33,6 +33,7 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
+import { SecretInput } from "@/components/ui/SecretInput";
 import {
   SelectionIndicator,
   useSelectionIndicatorId,
@@ -63,6 +64,8 @@ const AI_MODELS = [
 ] as const;
 const CONFIGURATION_GUIDE_URL =
   "https://my.feishu.cn/wiki/S1RywYx2gilgEtkOne0cTsqpnzd";
+const OFFICIAL_RELEASE_URL =
+  "https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest";
 type ConfigKind = "canvas" | "mail" | "cloud" | "ai";
 
 const themeOptions = [
@@ -123,6 +126,7 @@ export function SettingsView({
   const [aiBaseUrl, setAiBaseUrl] = useState("");
   const [aiModel, setAiModel] = useState("");
   const [secret, setSecret] = useState("");
+  const [updateError, setUpdateError] = useState("");
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(
     null,
   );
@@ -340,6 +344,8 @@ export function SettingsView({
 
   const checkUpdate = async () => {
     startBusy("update-check");
+    setUpdateError("");
+    setUpdateResult(null);
     try {
       const result = await checkForUpdates();
       setUpdateResult(result);
@@ -351,10 +357,12 @@ export function SettingsView({
           : "当前已是最新版本。",
       });
     } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "更新检查失败";
+      setUpdateError(message);
       showToast({
         id: "update-check",
         kind: "error",
-        message: reason instanceof Error ? reason.message : "更新检查失败",
+        message,
       });
     } finally {
       setBusy("");
@@ -364,8 +372,8 @@ export function SettingsView({
   const openReleasePage = async () => {
     const url =
       updateResult?.download_plan?.release_page_url ??
-      updateResult?.release?.page_url;
-    if (!url) return;
+      updateResult?.release?.page_url ??
+      OFFICIAL_RELEASE_URL;
     try {
       await openExternal(url);
     } catch (reason) {
@@ -704,20 +712,17 @@ export function SettingsView({
               <span>
                 {updateResult
                   ? `当前 ${updateResult.current_version} · 最新 ${updateResult.latest_version}`
-                  : "尚未检查"}
+                  : updateError
+                    ? `未能确认最新版本：${updateError}`
+                    : "尚未检查"}
               </span>
             </div>
-            {updateResult?.update_available &&
-              (updateResult.download_plan?.release_page_url ||
-                updateResult.release?.page_url) && (
-                <Button
-                  variant="outline"
-                  onClick={() => void openReleasePage()}
-                >
-                  <ExternalLink aria-hidden="true" />
-                  查看发布页
-                </Button>
-              )}
+            {(updateError || updateResult?.update_available) && (
+              <Button variant="outline" onClick={() => void openReleasePage()}>
+                <ExternalLink aria-hidden="true" />
+                查看发布页
+              </Button>
+            )}
           </div>
         </div>
       </section>
@@ -953,28 +958,25 @@ function ConfigDialog({
               </label>
             </>
           )}
-          <label>
-            <span id={`${kind}-secret-hint`}>
-              {meta.secretLabel}
-              {saved
+          <SecretInput
+            key={kind}
+            label={meta.secretLabel}
+            hint={`${meta.secretLabel}${
+              saved
                 ? kind === "mail" || kind === "ai"
                   ? "（留空则保持不变）"
                   : "（已保存；如需更换请输入新的凭据）"
-                : ""}
-            </span>
-            <input
-              aria-label={meta.secretLabel}
-              aria-describedby={`${kind}-secret-hint`}
-              type="password"
-              value={secret}
-              onChange={(event) => onSecret(event.target.value)}
-              placeholder={meta.placeholder}
-              autoComplete={
-                kind === "mail" && saved ? "current-password" : "new-password"
-              }
-              required={kind !== "mail" && kind !== "ai" && !saved}
-            />
-          </label>
+                : ""
+            }`}
+            value={secret}
+            onChange={onSecret}
+            placeholder={meta.placeholder}
+            autoComplete={
+              kind === "mail" && saved ? "current-password" : "new-password"
+            }
+            required={kind !== "mail" && kind !== "ai" && !saved}
+            active={!busy && isPresent}
+          />
           <footer>
             {saved && (
               <Button

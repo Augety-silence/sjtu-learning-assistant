@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "@/components/SettingsView";
 import {
+  checkForUpdates,
   deleteCredential,
   exportDebugBundle,
   getSettings,
@@ -24,6 +25,7 @@ import {
 } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  checkForUpdates: vi.fn(),
   getSettings: vi.fn(),
   openExternal: vi.fn(),
   organizeArchive: vi.fn(),
@@ -225,6 +227,89 @@ describe("SettingsView", () => {
       "private-password",
       "student@sjtu.edu.cn",
     );
+  });
+
+  it.each([
+    [0, "Canvas Access Token"],
+    [1, "邮箱密码"],
+    [2, "UserToken"],
+    [3, "API Key"],
+  ])("凭据 %s 默认隐藏，可切换且取消后清空并重新隐藏", async (index, label) => {
+    render(<SettingsView />);
+    const buttons = await screen.findAllByRole("button", { name: "修改配置" });
+    fireEvent.click(buttons[index]);
+    const input = screen.getByLabelText(label) as HTMLInputElement;
+    expect(input.type).toBe("password");
+    fireEvent.change(input, { target: { value: "test-only-value" } });
+    const toggle = screen.getByRole("button", { name: "显示密码" });
+    expect(toggle.getAttribute("type")).toBe("button");
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(input.type).toBe("text");
+    expect(input.value).toBe("test-only-value");
+    expect(
+      screen
+        .getByRole("button", { name: "隐藏密码" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(saveCredential).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "隐藏密码" }));
+    expect(input.type).toBe("password");
+    fireEvent.click(screen.getByRole("button", { name: "显示密码" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(buttons[index]);
+    const reopened = screen.getByLabelText(label) as HTMLInputElement;
+    expect(reopened.type).toBe("password");
+    expect(reopened.value).toBe("");
+  });
+
+  it("保存失败也重新隐藏密码，不改变凭据草稿", async () => {
+    vi.mocked(saveCredential).mockRejectedValueOnce(new Error("保存失败"));
+    render(<SettingsView />);
+    const buttons = await screen.findAllByRole("button", { name: "修改配置" });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText(
+      "Canvas Access Token",
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "test-only-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "显示密码" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await screen.findByText("保存失败");
+    expect(input.type).toBe("password");
+    expect(input.value).toBe("test-only-value");
+  });
+
+  it("更新检查失败时保留错误和官方发布页入口，重试清除旧状态", async () => {
+    vi.mocked(checkForUpdates).mockRejectedValueOnce(
+      new Error("GitHub 更新检查超时"),
+    );
+    render(<SettingsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "检查更新" }));
+    expect(
+      await screen.findByText("未能确认最新版本：GitHub 更新检查超时"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "查看发布页" }));
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest",
+    );
+    vi.mocked(checkForUpdates).mockResolvedValueOnce({
+      current_version: "1.8.9",
+      latest_version: "1.8.9",
+      update_available: false,
+      release: {
+        page_url:
+          "https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9",
+        published_at: null,
+        notes: "",
+      },
+      download_plan: null,
+      automatic_install: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText("当前 1.8.9 · 最新 1.8.9")).toBeTruthy();
+    expect(screen.queryByText(/未能确认最新版本/)).toBeNull();
   });
 
   it("exports a debug bundle with loading, success, cancel, and failure states", async () => {

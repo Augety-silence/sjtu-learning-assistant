@@ -1198,7 +1198,10 @@ class DashboardService:
 
     def update_check(self) -> dict[str, Any]:
         """Check metadata and return a plan; this method never installs an update."""
-        result = self.update_service.check()
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
+
+        with diagnostic_run(source="update"), diagnostic_stage("update", "release_metadata"):
+            result = self.update_service.check()
         payload = self._dto(result)
         payload["automatic_install"] = False
         return payload

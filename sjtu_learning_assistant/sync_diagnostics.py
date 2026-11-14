@@ -33,6 +33,8 @@ def exception_metadata(exc: BaseException) -> dict:
         item = {"type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) else "Exception"}
         for field in ("errno", "winerror", "verify_code", "status_code"):
             value = getattr(current, field, None)
+            if field == "status_code" and value is None:
+                value = getattr(getattr(current, "response", None), "status_code", None)
             if type(value) is int:
                 item[field] = value
         chain.append(item)
@@ -89,13 +91,13 @@ def _write_record(path: Path, record: dict) -> None:
 
 
 @contextmanager
-def diagnostic_run(path: Path | None = None):
+def diagnostic_run(path: Path | None = None, *, source: str = "sync"):
     token = _active.set((path or DEFAULT_STAGE_LOG_PATH, str(uuid.uuid4())))
-    record_event("sync", "run", "started")
+    record_event(source, "run", "started")
     try:
         yield
     except BaseException as exc:
-        record_event("sync", "run", "failed", **exception_metadata(exc))
+        record_event(source, "run", "failed", **exception_metadata(exc))
         raise
     finally:
         _active.reset(token)
