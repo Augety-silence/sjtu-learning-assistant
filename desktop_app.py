@@ -518,6 +518,10 @@ class DesktopBridge:
             "local_projects_add": self._local_projects_add,
             "local_projects_refresh": self._local_projects_refresh,
             "local_projects_remove": self._local_projects_remove,
+            "compiled_knowledge_sources": lambda payload: self._without_payload(payload, service.compiled_knowledge_sources),
+            "compiled_knowledge_search": lambda payload: self._compiled_knowledge_call(payload, "search"),
+            "compiled_knowledge_read": lambda payload: self._compiled_knowledge_call(payload, "read"),
+            "compiled_knowledge_open": lambda payload: self._compiled_knowledge_call(payload, "open"),
             "ai_attachment_pick": self._ai_attachment_pick,
             "ai_attachment_ingest": self._ai_attachment_ingest,
             "ai_attachment_restore": self._ai_attachment_restore,
@@ -880,6 +884,17 @@ class DesktopBridge:
     ) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.local_projects_list()
+
+    def _compiled_knowledge_call(self, payload: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        fields = {"search": {"query", "source_id", "offset", "limit"},
+                  "read": {"document_id", "offset", "max_chars"},
+                  "open": {"source_id", "document_id"}}[operation]
+        _only_keys(payload, fields)
+        if operation == "read" and "document_id" not in payload:
+            raise DashboardError("document_id 不能为空。")
+        if operation == "open" and "source_id" not in payload:
+            raise DashboardError("source_id 不能为空。")
+        return getattr(self._service, "compiled_knowledge_" + operation)(**payload)
 
     def _local_projects_add(
         self, payload: Mapping[str, Any]
@@ -2695,7 +2710,8 @@ def main() -> int:
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:
-            run_stdio_server(ReadOnlyToolRegistry(engine))
+            from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+            run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge()))
         finally:
             engine.dispose()
         return 0

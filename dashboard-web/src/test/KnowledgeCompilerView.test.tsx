@@ -13,6 +13,12 @@ import {
 import type { KnowledgeCompilerTask, SettingsStatus } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
+vi.mock("@/components/CompiledKnowledgeBrowser", () => ({
+  CompiledKnowledgeBrowser: () => (
+    <section aria-label="编译结果与知识点">直接查看已有结果</section>
+  ),
+}));
+
 vi.mock("@/lib/api", () => ({
   getCourseMarkdownStatus: vi.fn().mockResolvedValue({
     status: "disabled",
@@ -78,6 +84,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("KnowledgeCompilerView", () => {
+  it("在编译页面直接展示已有结果浏览器", async () => {
+    render(<KnowledgeCompilerView />);
+    expect(await screen.findByLabelText("编译结果与知识点")).toBeTruthy();
+  });
   it("默认选择逐页多模态，显示转换边界", async () => {
     render(<KnowledgeCompilerView />);
     const radio = await screen.findByRole("radio", {

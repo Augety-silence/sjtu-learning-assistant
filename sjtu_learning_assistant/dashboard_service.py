@@ -86,6 +86,7 @@ from sjtu_learning_assistant.local_projects import (
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
+from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
@@ -3092,6 +3093,7 @@ class DashboardService:
                     attachment_ids=scoped_attachment_ids,
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
+                    compiled_knowledge=self._compiled_knowledge_service(),
                 ),
                 preset,
             ).run(
@@ -3509,6 +3511,38 @@ class DashboardService:
             )
             self._local_projects_instance = service
         return service
+
+    def _compiled_knowledge_service(self) -> CompiledKnowledge:
+        return CompiledKnowledge(self._effective_settings, self.local_projects_path)
+
+    def compiled_knowledge_sources(self) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().sources()
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_search(self, **arguments) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().search(**arguments)
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_read(self, **arguments) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().read(**arguments)
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_open(self, source_id: object, document_id: object = "") -> dict[str, str]:
+        try:
+            path = self._compiled_knowledge_service().open_path(source_id, document_id)
+            command = _desktop_open_command(path, reveal=bool(document_id))
+            completed = self.command_runner(command, check=False)
+            if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
+                raise DashboardError("无法打开知识结果目录。")
+            return {"status": "opened"}
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
 
     def _course_markdown_paths(self) -> list[Path]:
         with Session(self.engine) as session:

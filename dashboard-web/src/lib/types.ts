@@ -14,6 +14,43 @@ export type ViewName =
   | "ai-chat"
   | "settings";
 
+export interface CompiledKnowledgeSource {
+  id: string;
+  name: string;
+  kind: "automatic" | "project";
+  root: string;
+  count: number;
+}
+
+export interface CompiledKnowledgeDocument {
+  id: string;
+  source_id: string;
+  source_name: string;
+  title: string;
+  relative_path: string;
+  status: "completed" | "pending" | "failed" | "compiled";
+  match_offset?: number;
+  snippet?: string;
+}
+
+export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {
+  text: string;
+  offset: number;
+  next_offset: number | null;
+  total_chars: number;
+  section: string;
+  citation: string;
+  truncated: boolean;
+}
+
+export interface CompiledKnowledgeSearch {
+  items: CompiledKnowledgeDocument[];
+  count: number;
+  next_offset: number | null;
+  issues: string[];
+  truncated: boolean;
+}
+
 export type AIModel =
   | "auto"
   | "deepseek-chat"

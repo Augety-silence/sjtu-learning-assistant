@@ -334,7 +334,8 @@ def main() -> int:
             if stream is not None and hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
-        run_stdio_server(ReadOnlyToolRegistry(engine))
+        from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+        run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge()))
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

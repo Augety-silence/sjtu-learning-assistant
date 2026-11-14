@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CompiledKnowledgeBrowser } from "@/components/CompiledKnowledgeBrowser";
 import { ContentReveal } from "@/components/ContentReveal";
 import { CourseMarkdownSyncPanel } from "@/components/CourseMarkdownSyncPanel";
 import { ErrorState, LoadingState } from "@/components/States";
@@ -302,6 +303,7 @@ export function KnowledgeCompilerView() {
         </div>
       )}
 
+      <CompiledKnowledgeBrowser />
       <CourseMarkdownSyncPanel />
 
       <section

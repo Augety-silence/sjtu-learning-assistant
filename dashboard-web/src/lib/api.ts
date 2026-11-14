@@ -276,6 +276,44 @@ export function getCourseMarkdownStatus() {
   );
 }
 
+export function listCompiledKnowledgeSources() {
+  return invoke<{
+    items: import("@/lib/types").CompiledKnowledgeSource[];
+    count: number;
+    issues: string[];
+    truncated: boolean;
+  }>("compiled_knowledge_sources");
+}
+
+export function searchCompiledKnowledge(query = "", sourceId = "", offset = 0) {
+  return invoke<import("@/lib/types").CompiledKnowledgeSearch>(
+    "compiled_knowledge_search",
+    { query, source_id: sourceId, offset, limit: 20 },
+  );
+}
+
+export function readCompiledKnowledge(documentId: string, offset = 0) {
+  return invoke<import("@/lib/types").CompiledKnowledgePage>(
+    "compiled_knowledge_read",
+    { document_id: documentId, offset, max_chars: 8000 },
+  );
+}
+
+export function openCompiledKnowledge(sourceId: string, documentId = "") {
+  return invoke<{ status: string }>("compiled_knowledge_open", {
+    source_id: sourceId,
+    document_id: documentId,
+  });
+}
+
+export function getKnowledgeMCPConfig() {
+  return invoke<{
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  }>("mcp_config");
+}
+
 export function saveCredential(
   kind: "canvas" | "mail" | "cloud" | "ai",
   value: string,

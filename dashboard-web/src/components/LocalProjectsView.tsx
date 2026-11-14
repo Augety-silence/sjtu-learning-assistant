@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CompiledKnowledgeBrowser } from "@/components/CompiledKnowledgeBrowser";
 import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
@@ -82,12 +83,14 @@ function ProjectCard({
   onOpen,
   onRefresh,
   onRemove,
+  onResults,
 }: {
   project: LocalProject;
   busy: boolean;
   onOpen: () => void;
   onRefresh: () => void;
   onRemove: () => void;
+  onResults: () => void;
 }) {
   const courseCopy = project.courses.length
     ? project.courses.slice(0, 3).join("、")
@@ -164,6 +167,9 @@ function ProjectCard({
       )}
 
       <div className="local-project-actions">
+        <Button type="button" variant="outline" onClick={onResults}>
+          查看编译结果
+        </Button>
         <Button
           type="button"
           disabled={!project.available || busy}
@@ -205,6 +211,7 @@ export function LocalProjectsView({
   onCompile: (project: LocalProject) => void;
 }) {
   const [projects, setProjects] = useState<LocalProject[]>([]);
+  const [resultSource, setResultSource] = useState("");
   const [sourceRoot, setSourceRoot] = useState("");
   const [targetRoot, setTargetRoot] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -319,6 +326,7 @@ export function LocalProjectsView({
 
   return (
     <ContentReveal className="section-stack local-projects-page" afterLoad>
+      <CompiledKnowledgeBrowser preferredSource={resultSource} />
       <section className="local-projects-hero">
         <div>
           <span className="knowledge-eyebrow">LOCAL PROJECT WORKSPACE</span>
@@ -434,6 +442,12 @@ export function LocalProjectsView({
               onOpen={() => onCompile(project)}
               onRefresh={() => void refresh(project)}
               onRemove={() => void remove(project)}
+              onResults={() => {
+                setResultSource("project-" + project.id);
+                document
+                  .querySelector(".compiled-knowledge")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
             />
           ))}
         </section>
