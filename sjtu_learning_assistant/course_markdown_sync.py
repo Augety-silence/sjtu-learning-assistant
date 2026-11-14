@@ -12,7 +12,7 @@ from urllib.parse import quote
 from sjtu_learning_assistant.document_text import DocumentTextError, extract_document
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, _atomic_write
 from sjtu_learning_assistant.knowledge_documents import (
-    CONTRACT, MAX_MANIFEST_BYTES, MAX_SOURCE_BYTES, VISION_MODEL,
+    CONTRACT, MAX_COMPILED_TEXT_CHARS, MAX_MANIFEST_BYTES, MAX_SOURCE_BYTES, VISION_MODEL,
     DocumentCompiler, digest, safe_destination, target_lock,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
@@ -182,7 +182,7 @@ class CourseMarkdownSync:
                 if item.get("mirror_hash") and not mirror.exists():
                     raise DocumentTextError("对应 MD 已被删除，自动更新暂停。")
                 if item.get("fingerprint") != fingerprint or not item.get("text_ready"):
-                    extracted = extract_document(path, path.name)
+                    extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
                     if extracted.truncated:
                         raise DocumentTextError("正文提取达到上限，未把不完整课件标为完成。")
                     if digest(path.read_bytes()) != source_hash:
@@ -199,6 +199,9 @@ class CourseMarkdownSync:
             except (DocumentTextError, KnowledgeCompilerError) as exc:
                 failed += 1
                 issues.append((relative + "：" if relative else "") + str(exc))
+                if relative is not None:
+                    state["items"].setdefault(relative, {}).update(status="failed", error=str(exc))
+                    persist()
             except Exception:
                 failed += 1
                 issues.append((relative + "：" if relative else "") + "本地正文提取失败；现有文件保留。")

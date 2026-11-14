@@ -102,6 +102,15 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual(2, len(list((self.target / "Courses").rglob("*.md"))))
         self.assertEqual(1, self.runner.call_count)
 
+    def test_text_compilation_does_not_use_chat_preview_400k_limit(self):
+        self.settings = replace(self.settings, course_markdown_daily_calls=1)
+        build_pdf(self.path, tuple("Long text " * 350 for _ in range(130)))
+        self.worker.run_once()
+        self.assertTrue(self.mirror.is_file())
+        self.assertGreater(len(self.mirror.read_text()), 400_000)
+        self.assertIn("## 第 130 页", self.mirror.read_text())
+        self.assertEqual(1, self.worker.status()["text_ready"])
+
     def test_mid_cycle_midnight_resets_quota_before_next_call(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=2)
         def runner(*args):

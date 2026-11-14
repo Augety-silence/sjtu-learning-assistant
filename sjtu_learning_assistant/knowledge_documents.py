@@ -25,6 +25,7 @@ from sjtu_learning_assistant.knowledge_compiler import (
 VISION_MODEL = "qwen3.8-27b"
 CONTRACT = "slide-md-v1"
 MAX_PAGES = 500
+MAX_COMPILED_TEXT_CHARS = MAX_PAGES * 12_000
 MAX_SOURCE_BYTES = 100 * 1024**2
 MAX_MANIFEST_BYTES = 2 * 1024**2
 
@@ -304,7 +305,9 @@ class DocumentCompiler:
                     for item in items:
                         (directory / item["stage"]).unlink(missing_ok=True)
 
-        document = extract_document(path, path.name)
+        # 编译器逐页有 12000 字符输入闸门；总量按 500 页独立限额，
+        # 不沿用聊天预览的 400k 上限截断完整教材。
+        document = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
         if document.truncated:
             raise DocumentTextError("正文提取达到上限，未将不完整课件标为完成。")
         # PPTX 的提取含隐藏页，LibreOffice PDF 通常不含隐藏页：禁止错配页码。
