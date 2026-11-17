@@ -75,10 +75,10 @@ describe("CompiledKnowledgeBrowser", () => {
   it("无需选目录就显示列表和正文，保留视觉未完成状态", async () => {
     render(<CompiledKnowledgeBrowser />);
     expect(await screen.findByText("关系代数")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /第一讲.pptx.md/ })).toBeTruthy();
-    expect(screen.getAllByText(/全文就绪 · 视觉待编译/).length).toBeGreaterThan(
-      0,
-    );
+    expect(screen.getByRole("button", { name: /第一讲/ })).toBeTruthy();
+    expect(
+      screen.getAllByText(/原文已提取 · 知识稿待续编/).length,
+    ).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "打开结果目录" }));
     await waitFor(() =>
       expect(openCompiledKnowledge).toHaveBeenCalledWith(source.id, undefined),
@@ -169,9 +169,60 @@ describe("CompiledKnowledgeBrowser", () => {
       truncated: false,
     });
     render(<CompiledKnowledgeBrowser />);
-    fireEvent.click(await screen.findByRole("button", { name: /第二讲.md/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /第二讲/ }));
     await screen.findByText("关系代数");
     resolveOld({ ...page, text: "过时正文" });
     await waitFor(() => expect(screen.queryByText("过时正文")).toBeNull());
+  });
+  it("按课程课时文件夹筛选，目录来自全部结果而非当前分页", async () => {
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document],
+      count: 87,
+      next_offset: 20,
+      issues: [],
+      truncated: false,
+      folders: [
+        { source_id: source.id, path: "数据库", name: "数据库", count: 87 },
+        {
+          source_id: source.id,
+          path: "数据库/第一讲",
+          name: "第一讲",
+          count: 3,
+        },
+      ],
+    });
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("从一节课开始阅读");
+    fireEvent.click(screen.getByRole("button", { name: /第一讲.*3/ }));
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenCalledWith(
+        "",
+        source.id,
+        0,
+        "数据库/第一讲",
+      ),
+    );
+  });
+  it("继续阅读追加完整后文，不丢弃前段", async () => {
+    const first = {
+      ...page,
+      text: "第一段\n\n",
+      total_chars: 10,
+      next_offset: 5,
+    };
+    vi.mocked(readCompiledKnowledge)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce({
+        ...first,
+        text: "完整后文",
+        offset: 5,
+        next_offset: null,
+      });
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("第一段");
+    fireEvent.click(screen.getByRole("button", { name: "继续阅读" }));
+    await screen.findByText("完整后文");
+    expect(screen.getByText("第一段")).toBeTruthy();
+    expect(screen.getByText(/全文已显示/)).toBeTruthy();
   });
 });

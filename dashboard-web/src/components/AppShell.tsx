@@ -52,8 +52,8 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "grading", label: "作业批改", icon: NotebookPen },
   { id: "videos", label: "课程视频", icon: Video },
   { id: "backup", label: "交大云盘", icon: HardDrive },
-  { id: "local-projects", label: "本地项目", icon: FolderKanban },
-  { id: "knowledge", label: "知识库编译", icon: LibraryBig },
+  { id: "local-projects", label: "资料项目", icon: FolderKanban },
+  { id: "knowledge", label: "课程知识库", icon: LibraryBig },
   { id: "settings", label: "设置", icon: Settings },
 ];
 

@@ -22,6 +22,12 @@ class KnowledgeCompilerError(RuntimeError):
     """A bounded error that is safe to surface in the desktop UI."""
 
 
+class KnowledgeAPIError(KnowledgeCompilerError):
+    def __init__(self, message: str, *, category: str):
+        super().__init__(message)
+        self.category = category
+
+
 class _CompilerCancelled(Exception):
     """Raised internally so a cancelled phase never writes empty AI notes."""
 

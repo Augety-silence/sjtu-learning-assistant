@@ -192,6 +192,17 @@ class AIClientTests(unittest.TestCase):
             OpenAIClassificationClient._clean_chat_messages([malformed])
         self.assertEqual("image_encoding", raised.exception.category)
 
+    def test_png_multimodal_input_keeps_mime_and_rejects_fake_header(self):
+        png = b'\x89PNG\r\n\x1a\n' + b'synthetic-png'
+        url = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+        content = [{'type': 'text', 'text': '合成图片'}, {'type': 'image_url', 'image_url': {'url': url}}]
+        cleaned, _ = OpenAIClassificationClient._clean_chat_messages([{'role': 'user', 'content': content}])
+        self.assertEqual(url, cleaned[0]['content'][1]['image_url']['url'])
+        content[1]['image_url']['url'] = 'data:image/png;base64,' + base64.b64encode(b'not-png').decode('ascii')
+        with self.assertRaises(AIClassificationError) as raised:
+            OpenAIClassificationClient._clean_chat_messages([{'role': 'user', 'content': content}])
+        self.assertEqual('image_encoding', raised.exception.category)
+
     def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
         with patch.dict(os.environ):
             os.environ.pop("SJTU_AI_REQUEST_TIMEOUT_SECONDS", None)

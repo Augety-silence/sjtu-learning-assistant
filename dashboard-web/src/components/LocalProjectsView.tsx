@@ -326,14 +326,14 @@ export function LocalProjectsView({
 
   return (
     <ContentReveal className="section-stack local-projects-page" afterLoad>
-      <CompiledKnowledgeBrowser preferredSource={resultSource} />
+      {resultSource && (
+        <CompiledKnowledgeBrowser preferredSource={resultSource} />
+      )}
       <section className="local-projects-hero">
         <div>
-          <span className="knowledge-eyebrow">LOCAL PROJECT WORKSPACE</span>
-          <h2>集中管理全部本地知识项目</h2>
+          <h2>资料项目管理</h2>
           <p>
-            每个项目绑定只读素材目录与独立 Vault；从这里统一查看状态，再进入现有
-            3 轮或 12 轮编译流程。
+            在这里登记、管理外部素材目录和输出位置。已同步课程的知识稿统一在“课程知识库”按课程与课时阅读。
           </p>
         </div>
         <Button

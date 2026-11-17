@@ -31,6 +31,9 @@ export interface CompiledKnowledgeDocument {
   status: "completed" | "pending" | "failed" | "compiled";
   match_offset?: number;
   snippet?: string;
+  folder?: string;
+  contract?: string;
+  error?: string | null;
 }
 
 export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {
@@ -44,6 +47,7 @@ export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {
 }
 
 export interface CompiledKnowledgeSearch {
+  folders?: { source_id: string; path: string; name: string; count: number }[];
   items: CompiledKnowledgeDocument[];
   count: number;
   next_offset: number | null;

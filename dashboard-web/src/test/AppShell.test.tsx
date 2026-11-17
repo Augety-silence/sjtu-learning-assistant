@@ -212,7 +212,7 @@ describe("AppShell 移动导航", () => {
       within(sidebar as HTMLElement).getByRole("region", { name: "AI 对话" }),
     ).toBeTruthy();
     expect(
-      within(mainNavigation).getByRole("button", { name: "本地项目" }),
+      within(mainNavigation).getByRole("button", { name: "资料项目" }),
     ).toBeTruthy();
     expect(
       within(mainNavigation).queryByRole("button", { name: "截止事项" }),

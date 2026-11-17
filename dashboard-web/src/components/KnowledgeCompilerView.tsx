@@ -282,11 +282,10 @@ export function KnowledgeCompilerView() {
           <BrainCircuit />
         </div>
         <div>
-          <span className="knowledge-eyebrow">OBSIDIAN COURSE COMPILER</span>
-          <h2>把课程文件编译成可生长的知识网络</h2>
+          <h2>课程知识库</h2>
           <p>
-            PPTX / PDF 逐页渲染后由 Qwen 图文编译，保留原文、页图和待确认项。
-            增量转换复用已完成页面；3 / 12 轮建库继续由 DeepSeek 重构与推理。
+            按原课程与课时文件夹阅读知识稿。Qwen 逐页解读图片，DeepSeek
+            按授课顺序整理知识脉络、公式与例题；原文和页图保留备查。
           </p>
         </div>
       </section>
@@ -395,7 +394,8 @@ export function KnowledgeCompilerView() {
             <span>
               <strong>逐页多模态转 Markdown</strong>
               <small>
-                每次最多 100 页调用；断点续编，保留人工修改。PPTX 需
+                每次最多 100 次 API
+                调用（含逐页解读和讲义整理）；断点续编，保留人工修改。PPTX 需
                 LibreOffice，旧 PPT 请先导出 PDF。
               </small>
             </span>

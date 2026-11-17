@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import io
+import json
 import random
 import zipfile
 from pathlib import Path
 
 from PIL import Image
+
+
+def knowledge_response(model, system, content):
+    """符合讲义契约的合成响应，不能视为真实 API 验证。"""
+    if 'covered_pages' in system:
+        pages = [entry['page'] for entry in json.loads(content)]
+        return json.dumps({'covered_pages': pages, 'markdown':
+            '## 讲义脉络\n先定义关系模型，再讨论函数依赖与规范化。'
+            '\n## 知识点\n关系代数用于查询关系，选择运算过滤满足条件的元组。 ' + ' '.join('[第 ' + str(page) + ' 页]' for page in pages)
+            + '\n## 公式与图表\n本组未提供。\n## 例题与易错点\n本组未提供。\n## 待确认项\n本组未提供。'}, ensure_ascii=False)
+    return '## 页面主题\n合成课件。\n## 知识点\n关系模型用于描述数据。\n## 公式与图表\n本页未提供。\n## 例题与易错点\n本页未提供。\n## 待确认项\n本页未提供。'
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"

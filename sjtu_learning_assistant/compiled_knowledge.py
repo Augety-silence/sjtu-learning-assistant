@@ -100,7 +100,10 @@ class CompiledKnowledge:
                         # 已失效或被移出归档的源，不再默默作为当前课程知识。
                         original = _safe(archive, relative)
                         if path.is_file() and original.is_file():
-                            documents.append(self._entry(source, relative + ".md", item.get("status", "pending")))
+                            entry = self._entry(source, relative + ".md", item.get("status", "pending"))
+                            entry.update(error=item.get("error") if type(item.get("error")) is str else None,
+                                         contract=item.get("contract"), original_path=relative)
+                            documents.append(entry)
                     except (CompiledKnowledgeError, TypeError):
                         issues.append("部分自动课件路径不可访问，已跳过。")
         except CompiledKnowledgeError as exc:
@@ -126,12 +129,13 @@ class CompiledKnowledge:
                         source = {"id": "project-" + project["id"], "name": project["name"] + " · 编译输出", "kind": "project", "root": str(root)}
                         sources.append(source)
                         visited = 0
+                        course_documents: dict[str, tuple[tuple[bool, float], dict]] = {}
                         for folder, directories, files in os.walk(root, followlinks=False):
                             visited += 1 + len(directories) + len(files)
                             if visited > MAX_ENTRIES or len(documents) >= MAX_ENTRIES:
                                 truncated = True
                                 break
-                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments"} and not (Path(folder) / name).is_symlink())
+                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments", "pages", "learning", "Previous"} and not (Path(folder) / name).is_symlink())
                             for name in sorted(files):
                                 if name.startswith(".") or Path(name).suffix.casefold() != ".md":
                                     continue
@@ -140,9 +144,25 @@ class CompiledKnowledge:
                                 try:
                                     _safe(root, relative)
                                     if path.is_file():
-                                        documents.append(self._entry(source, relative, "compiled"))
+                                        if relative.startswith("90_Inbox/Documents/"):
+                                            if name != "document.md":
+                                                continue
+                                            manifest = _json(_safe(root, (path.parent / "manifest.json").relative_to(root).as_posix()))
+                                            original = manifest.get("source")
+                                            if manifest.get("status") != "completed" or type(original) is not str or not original:
+                                                continue
+                                            _safe(root, original)
+                                            entry = self._entry(source, relative, "compiled")
+                                            entry.update(title=PurePosixPath(original).name + ".md", folder=PurePosixPath(original).parent.as_posix(), contract=manifest.get("contract"))
+                                            # 同一来源只展示最新知识契约/版本，页稿和旧版本仍留在磁盘。
+                                            rank = (manifest.get("contract") == "course-lecture-v2", path.stat().st_mtime)
+                                            if original not in course_documents or rank > course_documents[original][0]:
+                                                course_documents[original] = (rank, entry)
+                                        else:
+                                            documents.append(self._entry(source, relative, "compiled"))
                                 except CompiledKnowledgeError:
                                     issues.append("部分本地项目路径不可访问，已跳过。")
+                        documents.extend(entry for _, entry in course_documents.values())
                     except (CompiledKnowledgeError, OSError):
                         issues.append("部分本地项目目录不可访问，已跳过。")
         except CompiledKnowledgeError as exc:
@@ -155,7 +175,8 @@ class CompiledKnowledge:
     def _entry(source: dict, relative: str, status: str) -> dict:
         key = hashlib.sha256((source["id"] + "\0" + relative).encode()).hexdigest()[:32]
         return {"id": key, "source_id": source["id"], "source_name": source["name"], "relative_path": relative,
-                "title": Path(relative).name, "status": status if status in {"completed", "pending", "failed", "compiled"} else "pending"}
+                "title": Path(relative).name, "folder": PurePosixPath(relative).parent.as_posix(),
+                "status": status if status in {"completed", "pending", "failed", "compiled"} else "pending"}
 
     def sources(self) -> dict[str, Any]:
         sources, documents, issues, truncated = self._catalog()
@@ -167,9 +188,11 @@ class CompiledKnowledge:
         except UnicodeError:
             raise CompiledKnowledgeError("知识文件不是 UTF-8 Markdown。") from None
 
-    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20) -> dict:
+    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20, folder: object = "") -> dict:
         if type(query) is not str or len(query) > 160 or "\x00" in query or type(source_id) is not str or len(source_id) > 128:
             raise CompiledKnowledgeError("知识搜索参数无效。")
+        if type(folder) is not str or len(folder) > 1024 or "\\" in folder or "\x00" in folder or PurePosixPath(folder).is_absolute() or ".." in PurePosixPath(folder).parts:
+            raise CompiledKnowledgeError("知识文件夹参数无效。")
         offset = _integer(offset, "offset", 0, MAX_ENTRIES)
         limit = _integer(limit, "limit", 1, 50)
         sources, documents, issues, truncated = self._catalog()
@@ -201,7 +224,19 @@ class CompiledKnowledge:
                     continue
             matches.append({**doc, "match_offset": hit, "snippet": snippet})
         end = offset + limit
+        # 文件夹目录来自全部匹配结果，不能只按当前 20 份分页构造课程树。
+        folders: dict[tuple[str, str], dict] = {}
+        for doc in matches:
+            parts = PurePosixPath(doc["folder"]).parts
+            for index in range(1, len(parts) + 1):
+                prefix = PurePosixPath(*parts[:index]).as_posix()
+                key = (doc["source_id"], prefix)
+                summary = folders.setdefault(key, {"source_id": doc["source_id"], "path": prefix, "name": parts[index - 1], "count": 0})
+                summary["count"] += 1
+        if folder:
+            matches = [doc for doc in matches if doc["folder"] == folder or doc["folder"].startswith(folder + "/")]
         return {"items": matches[offset:end], "count": len(matches), "next_offset": end if end < len(matches) else None,
+                "folders": sorted(folders.values(), key=lambda entry: (entry["source_id"], entry["path"])),
                 "issues": list(dict.fromkeys(issues)), "truncated": truncated}
 
     def _resolve(self, document_id: object) -> tuple[dict, dict]:

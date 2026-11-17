@@ -378,8 +378,8 @@ class OpenAIClassificationClient:
                         raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     url = image_url.get("url")
                     detail = image_url.get("detail", "auto")
-                    prefix = "data:image/jpeg;base64,"
-                    if type(url) is not str or not url.startswith(prefix) or detail not in {"auto", "low", "high"}:
+                    prefix = next((value for value in ("data:image/jpeg;base64,", "data:image/png;base64,") if type(url) is str and url.startswith(value)), None)
+                    if prefix is None or detail not in {"auto", "low", "high"}:
                         raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     encoded = url[len(prefix):]
                     if not encoded or len(encoded) > 6 * 1024**2:
@@ -390,6 +390,8 @@ class OpenAIClassificationClient:
                         raise AIClassificationError("AI 图片编码无效。", category="image_encoding") from None
                     if not decoded or len(decoded) > 4 * 1024**2:
                         raise AIClassificationError("AI 图片超过大小限制。", category="image_too_large")
+                    if prefix == "data:image/png;base64," and not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+                        raise AIClassificationError("AI PNG 图片编码无效。", category="image_encoding")
                     image_count += 1
                     if image_count > 4:
                         raise AIClassificationError("单次最多识别 4 张图片。", category="image_count_limit")

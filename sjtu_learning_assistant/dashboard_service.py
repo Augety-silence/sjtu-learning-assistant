@@ -80,6 +80,7 @@ from sjtu_learning_assistant.credential_store import (
 )
 from sjtu_learning_assistant.knowledge_compiler import (
     KnowledgeCompilerError,
+    KnowledgeAPIError,
     KnowledgeCompilerService,
 )
 from sjtu_learning_assistant.local_projects import (
@@ -3632,21 +3633,22 @@ class DashboardService:
                 api_key=key,
                 base_url=settings.ai_base_url,
                 model=model,
+                timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15),
             )
             result = client.chat_completion(
                 [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0.1,
                 system_prompt=False,
             )
             content = result.get("content")
             if (result.get("response_metadata") or {}).get("finish_reason") == "length":
-                raise DashboardError("知识库响应达到长度上限，请拆分页面或素材后重试。")
+                raise KnowledgeCompilerError("知识库响应达到长度上限；页面已保存，自动续编将重试此知识段落。")
             if type(content) is not str or not content.strip():
-                raise DashboardError("AI 未返回可用的知识库内容。")
+                raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
             return content.strip()
         except AIKeychainError:
             # 与 ai_chat_send 临时客户端分支保持一致：凭据类故障不可重试，
@@ -3657,7 +3659,7 @@ class DashboardService:
                 retryable=False,
             ) from None
         except AIClassificationError as exc:
-            raise DashboardError(str(exc)) from None
+            raise KnowledgeAPIError(str(exc), category=exc.category) from None
         finally:
             self._close_client(client)
 

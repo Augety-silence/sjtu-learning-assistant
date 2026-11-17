@@ -137,8 +137,8 @@ const pageAILabels: Record<ViewName, string> = {
   grading: "作业批改",
   videos: "课程视频",
   backup: "交大云盘",
-  "local-projects": "本地项目",
-  knowledge: "知识库编译",
+  "local-projects": "资料项目",
+  knowledge: "课程知识库",
   "ai-chat": "AI 助手",
   settings: "设置",
 };

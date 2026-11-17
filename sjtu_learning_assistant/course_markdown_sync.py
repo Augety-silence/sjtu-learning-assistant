@@ -146,6 +146,13 @@ class CourseMarkdownSync:
             mirror.parent.mkdir(parents=True, exist_ok=True)
             if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed | {payload_hash}):
                 raise DocumentTextError("生成期间对应 MD 已变化，未覆盖。")
+            if mirror.is_file() and digest(mirror.read_bytes()) != payload_hash:
+                old = mirror.read_bytes()
+                backup = safe_destination(target, target / "90_Inbox" / "Previous" / mirror.relative_to(target / "Courses") / (digest(old) + ".md"))
+                if backup.exists() and (not backup.is_file() or backup.read_bytes() != old):
+                    raise DocumentTextError("历史知识稿副本冲突，未覆盖。")
+                if not backup.exists():
+                    _atomic_write(backup, old.decode("utf-8"))
             _atomic_write(safe_destination(target, mirror), body)
             item.update(mirror_hash=payload_hash)
             item.pop("pending_hash", None)
@@ -190,8 +197,10 @@ class CourseMarkdownSync:
                     body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_sha256: {source_hash}\nconverted_by: local-text\nmultimodal_status: pending\n" + "---\n\n"
                             + f"# {path.stem}\n\n> 已提取本地正文；图像、图表与公式的多模态复核待自动续编，不视为视觉编译完成。\n\n"
                             + "\n\n".join(f"## 第 {number} 页\n\n{unit}" for number, unit in enumerate(extracted.units, 1)) + "\n")
-                    item.update(fingerprint=fingerprint, attempts=0, status="pending")
-                    publish(item, mirror, body)
+                    item.update(fingerprint=fingerprint, attempts=0, status="pending", contract=CONTRACT)
+                    # 升级编译契约时保留旧稿，只有完整新稿验收后才原子替换镜像。
+                    if not item.get("text_ready"):
+                        publish(item, mirror, body)
                     item["text_ready"] = True
                     persist()
                 text_ready += 1
@@ -239,7 +248,7 @@ class CourseMarkdownSync:
                 for number in range(1, 501):
                     body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
                 publish(item, mirror, body)
-                item.update(status="completed", document=note.relative_to(target).as_posix())
+                item.update(status="completed", contract=CONTRACT, document=note.relative_to(target).as_posix())
                 item.pop("error", None)
                 persist()
                 completed += 1

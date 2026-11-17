@@ -886,7 +886,7 @@ class DesktopBridge:
         return self._service.local_projects_list()
 
     def _compiled_knowledge_call(self, payload: Mapping[str, Any], operation: str) -> dict[str, Any]:
-        fields = {"search": {"query", "source_id", "offset", "limit"},
+        fields = {"search": {"query", "source_id", "offset", "limit", "folder"},
                   "read": {"document_id", "offset", "max_chars"},
                   "open": {"source_id", "document_id"}}[operation]
         _only_keys(payload, fields)

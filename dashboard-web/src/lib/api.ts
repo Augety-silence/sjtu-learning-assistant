@@ -285,10 +285,21 @@ export function listCompiledKnowledgeSources() {
   }>("compiled_knowledge_sources");
 }
 
-export function searchCompiledKnowledge(query = "", sourceId = "", offset = 0) {
+export function searchCompiledKnowledge(
+  query = "",
+  sourceId = "",
+  offset = 0,
+  folder = "",
+) {
   return invoke<import("@/lib/types").CompiledKnowledgeSearch>(
     "compiled_knowledge_search",
-    { query, source_id: sourceId, offset, limit: 20 },
+    {
+      query,
+      source_id: sourceId,
+      offset,
+      limit: 20,
+      ...(folder ? { folder } : {}),
+    },
   );
 }
 

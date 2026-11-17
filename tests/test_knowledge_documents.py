@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from office_fixtures import build_pdf, build_pptx
+from office_fixtures import build_pdf, build_pptx, knowledge_response
 from sjtu_learning_assistant.document_text import DocumentTextError
-from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, KnowledgeCompilerService
+from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, KnowledgeCompilerService, KnowledgeAPIError
 from sjtu_learning_assistant.knowledge_documents import DocumentCompiler, page_images, target_lock, _validate_renderable_pptx
 from sjtu_learning_assistant.knowledge_sync import main
 
@@ -31,7 +31,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
 
     def runner(self, model, system, content):
         self.calls.append((model, system, content))
-        return "## 知识点\n仅根据本页解读。"
+        return knowledge_response(model, system, content)
 
     def converter(self, **kw):
         return DocumentCompiler(self.runner, self.cancel, **kw)
@@ -48,11 +48,13 @@ class KnowledgeDocumentTests(unittest.TestCase):
 
     def test_multimodal_pages_and_standard_markdown_provenance(self):
         note = self.converter().compile(self.source, self.path, self.target)
-        self.assertEqual(2, len(self.calls))
+        self.assertEqual(3, len(self.calls))
         self.assertEqual("qwen3.8-27b", self.calls[0][0])
         self.assertEqual(["text", "image_url"], [part["type"] for part in self.calls[0][2]])
+        self.assertTrue(self.calls[0][2][1]['image_url']['url'].startswith('data:image/png;base64,'))
         self.assertIn("原始提取", note.read_text(encoding="utf-8"))
-        self.assertIn("AI 解读（需复核）", note.read_text(encoding="utf-8"))
+        self.assertIn("讲义脉络", note.read_text(encoding="utf-8"))
+        self.assertNotIn("AI 解读（需复核）", note.read_text(encoding="utf-8"))
         self.assertIn("(assets/page-0001.jpg)", note.read_text(encoding="utf-8"))
         page = note.parent / "pages/page-0001.md"
         self.assertIn("source_sha256:", page.read_text(encoding="utf-8"))
@@ -62,7 +64,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.converter().compile(self.source, self.path, self.target)
         resumed = self.converter()
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((2, 0, 2), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((2, 0, 3), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_call_budget_and_restart_checkpoint(self):
         compiler = self.converter(max_calls=1)
@@ -70,9 +72,9 @@ class KnowledgeDocumentTests(unittest.TestCase):
             compiler.compile(self.source, self.path, self.target)
         self.assertEqual(1, compiler.calls)
         self.assertFalse(list(self.target.rglob("document.md")))
-        resumed = self.converter(max_calls=1)
+        resumed = self.converter(max_calls=2)
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((1, 1), (resumed.calls, resumed.cached_pages))
+        self.assertEqual((2, 1), (resumed.calls, resumed.cached_pages))
 
     def test_crash_between_page_files_resumes_without_repeated_api(self):
         replace = os.replace
@@ -86,7 +88,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         resumed = self.converter()
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((1, 1, 2), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((1, 2, 3), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_crash_before_document_replace_recovers_offline(self):
         replace = os.replace
@@ -100,7 +102,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         resumed = self.converter()
         note = resumed.compile(self.source, self.path, self.target)
         self.assertTrue(note.is_file())
-        self.assertEqual((2, 0, 2), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((2, 0, 3), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_manual_note_is_preserved(self):
         note = self.converter().compile(self.source, self.path, self.target)
@@ -108,7 +110,22 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(DocumentTextError, "已被修改"):
             self.converter().compile(self.source, self.path, self.target)
         self.assertEqual("用户知识笔记", note.read_text(encoding="utf-8"))
-        self.assertEqual(2, len(self.calls))
+        self.assertEqual(3, len(self.calls))
+
+    def test_incomplete_lecture_is_not_published_and_resumes_from_saved_pages(self):
+        def runner(model, system, content):
+            if model == 'deepseek-chat':
+                return '{"covered_pages":[1],"markdown":"too short"}'
+            return knowledge_response(model, system, content)
+        converter = DocumentCompiler(runner, self.cancel)
+        with self.assertRaisesRegex(DocumentTextError, '覆盖不完整'):
+            converter.compile(self.source, self.path, self.target)
+        self.assertEqual(2, len(list(self.target.rglob('page-*.md'))))
+        self.assertFalse(list(self.target.rglob('document.md')))
+        resumed = self.converter()
+        note = resumed.compile(self.source, self.path, self.target)
+        self.assertEqual((2, 1), (resumed.cached_pages, resumed.calls))
+        self.assertIn('编译覆盖：2/2 页', note.read_text(encoding='utf-8'))
 
     def test_changed_source_keeps_old_revision(self):
         first = self.converter().compile(self.source, self.path, self.target)
@@ -136,6 +153,27 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertNotIn("confidential", str(context.exception))
         self.assertEqual(1, compiler.calls)
         self.assertFalse(list(self.target.rglob("page-0001.md")))
+
+    def test_transient_api_error_retries_once_and_counts_every_attempt(self):
+        attempts = []
+        def runner(model, system, content):
+            attempts.append(model)
+            if len(attempts) == 1:
+                raise KnowledgeAPIError('AI 服务暂时不可用。', category='upstream_service')
+            return knowledge_response(model, system, content)
+        converter = DocumentCompiler(runner, self.cancel)
+        with patch.object(self.cancel, 'wait', return_value=False):
+            note = converter.compile(self.source, self.path, self.target)
+        self.assertTrue(note.is_file())
+        self.assertEqual(4, converter.calls)
+
+    def test_authentication_error_is_not_retried_or_hidden(self):
+        def runner(*_):
+            raise KnowledgeAPIError('AI 认证或访问权限失败。', category='authentication')
+        converter = DocumentCompiler(runner, self.cancel)
+        with self.assertRaisesRegex(KnowledgeCompilerError, '认证'):
+            converter.compile(self.source, self.path, self.target)
+        self.assertEqual(1, converter.calls)
 
     def test_manifest_path_escape_is_rejected(self):
         note = self.converter().compile(self.source, self.path, self.target)
@@ -178,7 +216,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         state = service.status()
         self.assertEqual("completed_with_warnings", state["status"])
         self.assertEqual(1, state["counts"]["warnings"])
-        self.assertEqual(2, state["counts"]["document_calls"])
+        self.assertEqual(3, state["counts"]["document_calls"])
         self.assertEqual(1, len(list(self.target.rglob("document.md"))))
 
     def test_index_links_resolve_and_markdown_rows_survive_resync(self):

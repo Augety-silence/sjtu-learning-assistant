@@ -98,7 +98,7 @@ export function CourseMarkdownSyncPanel() {
         </>
       )}
       <label>
-        每日页面调用上限（失败也计入）{" "}
+        每日 API 调用上限（逐页解读、讲义整理与失败均计入）{" "}
         <input
           type="number"
           min={1}

@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import unquote
 
-from office_fixtures import build_pdf
+from office_fixtures import build_pdf, knowledge_response
 from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
 from sjtu_learning_assistant.dashboard_service import DashboardService
+from sjtu_learning_assistant.ai_classifier import AIClassificationError
+from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError, SettingsStore
 from desktop_app import DesktopBridge
 
@@ -28,7 +30,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.settings = LocalSettings(archive_root=str(self.source), ai_enabled=True, ai_key_saved=True,
                                       course_markdown_enabled=True, course_markdown_daily_calls=100)
         self.paths = [self.path]
-        self.runner = Mock(return_value="## 知识点\n合成页，不是真实课程。")
+        self.runner = Mock(side_effect=knowledge_response)
         self.day = "2026-11-14"
         self.worker = self.new_worker()
         self.target = self.source / "Knowledge Markdown"
@@ -48,11 +50,11 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual("completed", self.worker.status()["status"])
         self.assertEqual(original, self.path.read_bytes())
         self.worker.run_once()
-        self.assertEqual(2, self.runner.call_count)
+        self.assertEqual(3, self.runner.call_count)
         new = build_pdf(self.path.parent / "new.pdf", ("New slide",))
         self.paths.append(new)
         self.worker.run_once()
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(5, self.runner.call_count)
         self.assertEqual(2, self.worker.status()["completed"])
 
     def test_mirror_images_are_relative_and_url_encoded(self):
@@ -77,7 +79,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         build_pdf(self.path, ("Changed slide",))
         self.worker.run_once()
         self.assertEqual("我的笔记", self.mirror.read_text(encoding="utf-8"))
-        self.assertEqual(2, self.runner.call_count)
+        self.assertEqual(3, self.runner.call_count)
         self.assertEqual(1, self.worker.status()["failed"])
 
     def test_daily_budget_persisted_across_restarts_and_next_day_resumes(self):
@@ -116,13 +118,13 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         def runner(*args):
             if self.runner.call_count == 1:
                 self.day = "2026-11-15"
-            return "跨日结果"
+            return knowledge_response(*args)
         self.runner.side_effect = runner
         self.worker.run_once()
         marker = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
         self.assertEqual({"day": "2026-11-15", "used": 1}, marker["quota"])
         self.worker.run_once()
-        self.assertEqual(1, self.worker.status()["calls_today"])
+        self.assertEqual(2, self.worker.status()["calls_today"])
 
     def test_first_database_failure_can_recover_and_lock_scaffold_is_safe(self):
         broken = CourseMarkdownSync(lambda: self.settings, Mock(side_effect=RuntimeError()), self.runner)
@@ -147,7 +149,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual(3, self.runner.call_count)
         self.assertNotIn("secret request", str(self.worker.status()))
         self.assertEqual(3, self.worker.status()["calls_today"])
-        self.runner.side_effect = None
+        self.runner.side_effect = knowledge_response
         good = build_pdf(self.path.parent / "good.pdf", ("Good",))
         self.paths.append(good)
         self.worker.run_once()
@@ -194,7 +196,20 @@ class CourseMarkdownSyncTests(unittest.TestCase):
             self.worker.run_once()
         self.worker.run_once()
         self.assertTrue(self.mirror.is_file())
-        self.assertEqual(2, self.runner.call_count)
+        self.assertEqual(3, self.runner.call_count)
+
+    def test_contract_upgrade_keeps_old_mirror_until_lecture_is_complete(self):
+        self.worker.run_once()
+        previous = self.mirror.read_bytes()
+        marker = self.target / '99_System/Course-Sync.json'
+        state = json.loads(marker.read_text())
+        state['items'][self.path.relative_to(self.source).as_posix()]['fingerprint'] = 'old-contract'
+        marker.write_text(json.dumps(state), encoding='utf-8')
+        # 不依赖模型成功也不能回退覆盖成原文稿。
+        self.settings = replace(self.settings, course_markdown_daily_calls=1)
+        self.worker.run_once()
+        self.assertEqual(previous, self.mirror.read_bytes())
+        self.assertEqual('budget_paused', self.worker.status()['status'])
 
     def test_settings_migration_retains_values_does_not_enable_silently(self):
         store = SettingsStore(self.root / "settings.json")
@@ -236,6 +251,20 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertFalse(bridge.invoke("course_markdown_status", {"bad": True})["ok"])
         dashboard.close()
         automatic.close.assert_called_once()
+
+    def test_knowledge_ai_retains_safe_api_error_and_uses_complete_output_budget(self):
+        dashboard = DashboardService(SimpleNamespace())
+        dashboard._effective_settings = lambda: self.settings
+        dashboard.ai_key_loader = lambda: 'synthetic-test-key'
+        client = Mock()
+        dashboard.ai_client_factory = Mock(return_value=client)
+        client.chat_completion.side_effect = AIClassificationError('AI 请求超时，请检查网络或稍后重试。', category='timeout')
+        with self.assertRaisesRegex(KnowledgeCompilerError, '请求超时'):
+            dashboard._run_knowledge_compiler_ai('qwen', '合成编译任务', '合成课件')
+        self.assertEqual(8192, client.chat_completion.call_args.kwargs['max_tokens'])
+        self.assertEqual(240, dashboard.ai_client_factory.call_args.kwargs['timeout'].read)
+        client.close.assert_called_once()
+        dashboard.close()
 
 
 if __name__ == "__main__":

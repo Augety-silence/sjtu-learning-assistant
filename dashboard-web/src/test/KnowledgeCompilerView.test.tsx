@@ -94,13 +94,11 @@ describe("KnowledgeCompilerView", () => {
       name: /逐页多模态转 Markdown/,
     });
     expect((radio as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/每次最多 100 页调用/)).toBeTruthy();
+    expect(screen.getByText(/每次最多 100 次 API 调用/)).toBeTruthy();
   });
   it("展示 12 轮编译路线和安全目录说明", async () => {
     render(<KnowledgeCompilerView />);
-    expect(
-      await screen.findByText("把课程文件编译成可生长的知识网络"),
-    ).toBeTruthy();
+    expect(await screen.findByText("课程知识库")).toBeTruthy();
     expect(screen.getByText("完整编译 · 12 轮")).toBeTruthy();
     expect(screen.getByText("反向校验")).toBeTruthy();
     expect(screen.getByText(/输出目录必须为空/)).toBeTruthy();

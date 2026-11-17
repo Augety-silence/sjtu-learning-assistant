@@ -60,6 +60,27 @@ class CompiledKnowledgeTests(unittest.TestCase):
             offset = page["next_offset"]
         self.assertEqual(self.body, "".join(parts))
 
+    def test_folder_catalog_is_not_limited_to_document_page(self):
+        state = json.loads(self.marker.read_text())
+        for index in range(25):
+            relative = f'学期/数据库/第{index:02}讲/课件.pdf'
+            original = self.archive / relative
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b'source')
+            mirror = self.target / 'Courses' / (relative + '.md')
+            mirror.parent.mkdir(parents=True)
+            mirror.write_text('# 讲义', encoding='utf-8')
+            state['items'][relative] = {'text_ready': True, 'status': 'completed'}
+        self.marker.write_text(json.dumps(state), encoding='utf-8')
+        result = self.service.search(limit=1)
+        self.assertEqual(1, len(result['items']))
+        self.assertEqual(26, next(x['count'] for x in result['folders'] if x['path'] == '学期/数据库'))
+        result = self.service.search(folder='学期/数据库/第24讲')
+        self.assertEqual(1, result['count'])
+        self.assertEqual('学期/数据库/第24讲', result['items'][0]['folder'])
+        with self.assertRaises(CompiledKnowledgeError):
+            self.service.search(folder='../private')
+
     def test_crlf_heading_and_pagination_preserve_original_offsets_and_bytes(self):
         body = "# 数据库\r\n\r\n## 第 2 页\r\nİİİ\r\n关系代数\r\n" + "长正文\r\n" * 200
         payload = body.encode("utf-8")
@@ -133,6 +154,20 @@ class CompiledKnowledgeTests(unittest.TestCase):
         for value in ("../outside", "f" * 32, 123):
             with self.assertRaises(CompiledKnowledgeError):
                 self.service.read(value)
+
+    def test_project_document_pages_and_old_revisions_are_not_flattened(self):
+        target = self.root / 'vault'
+        for revision, contract in [('old', 'slide-md-v1'), ('new', 'course-lecture-v2')]:
+            directory = target / '90_Inbox/Documents/source-id' / revision
+            (directory / 'pages').mkdir(parents=True)
+            (directory / 'document.md').write_text('# 讲义', encoding='utf-8')
+            (directory / 'pages/page-0001.md').write_text('# 单页', encoding='utf-8')
+            (directory / 'manifest.json').write_text(json.dumps({'source': '学期/课程/第一讲.pptx', 'status': 'completed', 'contract': contract}), encoding='utf-8')
+        self.registry.write_text(json.dumps({'version': 1, 'projects': [{'id': 'a' * 24, 'name': '项目', 'target_root': str(target)}]}), encoding='utf-8')
+        result = self.service.search(source_id='project-' + 'a' * 24)
+        self.assertEqual(1, result['count'])
+        self.assertEqual('学期/课程', result['items'][0]['folder'])
+        self.assertIn('/new/', result['items'][0]['relative_path'])
 
     def test_corrupt_index_reports_issue_without_modification(self):
         raw = "[" * 5000
