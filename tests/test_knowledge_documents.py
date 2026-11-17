@@ -66,6 +66,23 @@ class KnowledgeDocumentTests(unittest.TestCase):
         resumed.compile(self.source, self.path, self.target)
         self.assertEqual((2, 0, 3), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
+    def test_lecture_has_original_text_to_cross_check_visual_interpretation(self):
+        self.converter().compile(self.source, self.path, self.target)
+        pages = json.loads(self.calls[-1][2])
+        self.assertEqual([1, 2], [entry['page'] for entry in pages])
+        self.assertTrue(all(entry['source_text'].strip() and entry['text'].strip() for entry in pages))
+
+    def test_lecture_prompt_upgrade_reuses_pages_and_preserves_prior_lecture(self):
+        from sjtu_learning_assistant.knowledge_documents import LECTURE_PROMPT
+        note = self.converter().compile(self.source, self.path, self.target)
+        original_lectures = tuple(note.parent.rglob('pages-*.md'))
+        with patch('sjtu_learning_assistant.knowledge_documents.LECTURE_PROMPT', LECTURE_PROMPT + '\n改进核对要求。'):
+            resumed = self.converter()
+            resumed.compile(self.source, self.path, self.target)
+        self.assertEqual((2, 1), (resumed.cached_pages, resumed.calls))
+        self.assertTrue(all(path.is_file() for path in original_lectures))
+        self.assertEqual(2, len(tuple(note.parent.rglob('pages-*.md'))))
+
     def test_call_budget_and_restart_checkpoint(self):
         compiler = self.converter(max_calls=1)
         with self.assertRaisesRegex(DocumentTextError, "调用上限"):

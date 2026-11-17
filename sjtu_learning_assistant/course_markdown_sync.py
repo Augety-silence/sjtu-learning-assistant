@@ -13,7 +13,7 @@ from sjtu_learning_assistant.document_text import DocumentTextError, extract_doc
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, _atomic_write
 from sjtu_learning_assistant.knowledge_documents import (
     CONTRACT, MAX_COMPILED_TEXT_CHARS, MAX_MANIFEST_BYTES, MAX_SOURCE_BYTES, VISION_MODEL,
-    DocumentCompiler, digest, safe_destination, target_lock,
+    DocumentCompiler, compilation_fingerprint, digest, safe_destination, target_lock,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
 
@@ -180,7 +180,7 @@ class CourseMarkdownSync:
                 if path.is_relative_to(target):
                     raise DocumentTextError("自动输出不能再次作为来源。")
                 source_hash = digest(path.read_bytes())
-                fingerprint = digest((source_hash + CONTRACT + VISION_MODEL).encode())
+                fingerprint = compilation_fingerprint(source_hash)
                 item = state["items"].setdefault(relative, {})
                 mirror = safe_destination(target, target / "Courses" / Path(relative + ".md"))
                 allowed = {item.get("mirror_hash"), item.get("pending_hash")} - {None}

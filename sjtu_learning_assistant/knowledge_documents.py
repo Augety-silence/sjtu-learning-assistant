@@ -206,6 +206,11 @@ def vision_page_url(jpeg: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+def compilation_fingerprint(source_hash: str) -> str:
+    """讲义提示升级触发同步，但不丢弃同一视觉契约下已经确认的页稿。"""
+    return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT).encode())
+
+
 class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 100, renderer: Callable = page_images):
         if type(max_calls) is not int or not 1 <= max_calls <= 10_000:
@@ -392,7 +397,8 @@ class DocumentCompiler:
         group: list[dict[str, Any]] = []
         for number, note in enumerate(notes, 1):
             interpreted = note.split("## 逐页知识解读\n\n", 1)[-1]
-            entry = {"page": number, "text": interpreted}
+            original_text = note.split("## 原始提取\n\n", 1)[-1].split("\n\n## 逐页知识解读", 1)[0]
+            entry = {"page": number, "source_text": original_text, "text": interpreted}
             if group and (len(group) >= 4 or len(json.dumps(group + [entry], ensure_ascii=False)) > 12_000):
                 groups.append(group)
                 group = []
@@ -404,7 +410,7 @@ class DocumentCompiler:
             if self.cancel.is_set():
                 raise DocumentTextError("课件编译已取消。")
             pages = [entry["page"] for entry in group]
-            name = f"learning/pages-{pages[0]:04d}-{pages[-1]:04d}.md"
+            name = f"learning/{digest(LECTURE_PROMPT.encode())[:12]}/pages-{pages[0]:04d}-{pages[-1]:04d}.md"
             if name in state["outputs"]:
                 lecture = (directory / name).read_text(encoding="utf-8")
             else:
@@ -440,5 +446,6 @@ class DocumentCompiler:
         commit({"document.md": body})
         state["status"] = "completed"
         state["page_count"] = len(notes)
+        state["lecture_prompt_sha256"] = digest(LECTURE_PROMPT.encode())
         persist()
         return directory / "document.md"
