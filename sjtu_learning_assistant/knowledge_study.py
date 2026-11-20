@@ -103,6 +103,9 @@ EXERCISE_AUTHOR_GUIDANCE = "\n优先编写4道开放题，分别覆盖核心概�
 EXERCISE_AUTHOR_GUIDANCE += "\n零和博弈 LP 中博弈值变量 v、u 必须显式声明为实数自由变量；除非已给出并解释支付平移变换，不能默认为非负。"
 EXERCISE_REPAIR_GUIDANCE += EXERCISE_AUTHOR_GUIDANCE
 REVISION_COVERAGE_GUIDANCE = "\n必须合并全部输入主题，不能直接截取前12条丢掉后半讲应用。返回的提纲要点须保留输入要点全部出处页码（可在真实合并主题中用范围引用）；不要添加空泛大范围引用来凑覆盖。按主题合并至1–12条，每条不超过600字符；全部事实和条件保留在正文，提纲连接所有主题。"
+EXERCISE_REVIEW_GUIDANCE = """\n自测题定向验算规则：
+两人零和博弈以M表示A收益、x为A概率、y为B概率时：A选择x，max v, M^T x>=v*1, 1^T x=1, x>=0, v属于R；B选择y，min u, M y<=u*1, 1^T y=1, y>=0, u属于R。不能把对手概率作为自己的决策变量，博弈值变量不是默认非负。
+线性生产题若各联盟共用A,c、资源可加、0为可行生产、且大联盟最优值有限，这是max利润的收益/价值博弈，不是min成本博弈。核心联盟理性为alpha(S)>=v(S)，不是alpha(S)<=v(S)。大联盟对偶最优y*对每个联盟也对偶可行，弱对偶给c^T x_S<=y*^T b^S；取联盟最优值得v(S)<=y*^T b^S=alpha(S)，正好满足核心，不构成过度分配错误。强对偶给alpha(N)=v(N)，保证效率；不能把成本分摊核心方向套入收益分配。只能报告实际违背这些条件的错误，不能反转已经正确的证明。"""
 
 
 def _json(text: str) -> dict:
@@ -297,7 +300,7 @@ def validate_tables(markdown: str) -> None:
 def validate_review(result: dict) -> dict:
     if type(result.get("approved")) is not bool:
         raise ValueError("来源审校没有明确结论。")
-    issues = _strings(result.get("issues"), 0, 30, 1500)
+    issues = _strings(result.get("issues"), 0, 30, 3000)
     if result["approved"] != (not issues):
         raise ValueError("来源审校结论与问题清单矛盾。")
     return result
@@ -420,12 +423,15 @@ class StudyCompiler:
         return result
 
     def _review_key(self, name: str, data: dict) -> str:
-        identity = REVIEW_MODEL + REVIEW_GUIDANCE + json.dumps(data, ensure_ascii=False, sort_keys=True)
+        identity = REVIEW_MODEL + self._review_guidance(data) + json.dumps(data, ensure_ascii=False, sort_keys=True)
         return name.removesuffix('.json') + '-' + hashlib.sha256(identity.encode()).hexdigest()[:12] + '.json'
+
+    def _review_guidance(self, data: dict) -> str:
+        return REVIEW_GUIDANCE + (EXERCISE_REVIEW_GUIDANCE if data.get('kind') == 'teaching_exercises' else '')
 
     def _review(self, name: str, data: dict) -> dict:
         key = self._review_key(name, data)
-        return self._saved(key, REVIEW_PROMPT + REVIEW_GUIDANCE, data, validate_review)
+        return self._saved(key, REVIEW_PROMPT + self._review_guidance(data), data, validate_review)
 
     def _rewrite(self, key: str, data: dict, draft: dict, issues: list[str], covered: list[int]) -> tuple[dict, dict]:
         payload = {**data, 'draft': draft, 'corrections': issues}

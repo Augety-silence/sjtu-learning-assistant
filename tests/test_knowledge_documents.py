@@ -295,6 +295,8 @@ class KnowledgeDocumentTests(unittest.TestCase):
             self.assertNotEqual(before, module.compilation_fingerprint('same-source'))
         with patch.object(module, 'REVISION_COVERAGE_GUIDANCE', 'different-guidance'):
             self.assertNotEqual(before, module.compilation_fingerprint('same-source'))
+        with patch.object(module, 'EXERCISE_REVIEW_GUIDANCE', 'different-exercise-review'):
+            self.assertNotEqual(before, module.compilation_fingerprint('same-source'))
 
     def test_manifest_path_escape_is_rejected(self):
         note = self.converter().compile(self.source, self.path, self.target)

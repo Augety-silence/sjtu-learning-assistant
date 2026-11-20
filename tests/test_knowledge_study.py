@@ -9,6 +9,33 @@ from office_fixtures import knowledge_response
 
 
 class KnowledgeStudyTests(unittest.TestCase):
+    def test_exercise_review_rules_are_scoped_and_bind_approval_identity(self):
+        from unittest.mock import patch
+        import sjtu_learning_assistant.knowledge_study as module
+        seen = []
+        compiler = StudyCompiler(lambda model, prompt, data: seen.append(prompt) or '{"approved":true,"issues":[]}', {}.get, lambda _: None)
+        chapter = {'draft': '章节'}
+        exercises = {'kind': 'teaching_exercises', 'draft': '完整题组'}
+        chapter_key = compiler._review_key('review.json', chapter)
+        exercises_key = compiler._review_key('review.json', exercises)
+        with patch.object(module, 'EXERCISE_REVIEW_GUIDANCE', '新定向审校规则'):
+            self.assertEqual(chapter_key, compiler._review_key('review.json', chapter))
+            self.assertNotEqual(exercises_key, compiler._review_key('review.json', exercises))
+        compiler._review('review.json', exercises)
+        self.assertIn('alpha(S)>=v(S)', seen[-1])
+        self.assertIn('A选择x', seen[-1])
+        compiler._review('review.json', chapter)
+        self.assertNotIn(module.EXERCISE_REVIEW_GUIDANCE, seen[-1])
+
+    def test_review_accepts_bounded_detailed_issues_without_changing_conclusion(self):
+        issue = '第3题具体错误与修正。' * 180
+        self.assertLess(len(issue), 3000)
+        self.assertFalse(validate_review({'approved': False, 'issues': [issue]})['approved'])
+        with self.assertRaises(ValueError):
+            validate_review({'approved': True, 'issues': [issue]})
+        with self.assertRaises(ValueError):
+            validate_review({'approved': False, 'issues': ['过长' * 1501]})
+
     def test_exercise_page_order_normalizes_before_review_but_invalid_pages_still_fail(self):
         import sjtu_learning_assistant.knowledge_study as module
         def run(references, reviewed):
