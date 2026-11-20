@@ -60,7 +60,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
     def test_mirror_images_are_relative_and_url_encoded(self):
         self.worker.run_once()
         import re
-        self.assertIn('[课件 p.1]', self.mirror.read_text())
+        self.assertIn('[课件 p.1]', self.mirror.read_text(encoding='utf-8'))
         evidence = list((self.target / '90_Inbox').rglob('pages/page-*.md'))
         self.assertEqual(2, len(evidence))
         self.assertTrue(all(p.is_file() for p in evidence))
@@ -79,7 +79,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         import re
         evidence = list((self.target / '90_Inbox').rglob('*-visual-*.md'))
         self.assertEqual(1, len(evidence))
-        self.assertIn('原图复核完成', evidence[0].read_text())
+        self.assertIn('原图复核完成', evidence[0].read_text(encoding='utf-8'))
 
     def test_source_revision_updates_generated_mirror_keeps_previous(self):
         self.worker.run_once()
@@ -220,7 +220,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.worker.run_once()
         previous = self.mirror.read_bytes()
         marker = self.target / '99_System/Course-Sync.json'
-        state = json.loads(marker.read_text())
+        state = json.loads(marker.read_text(encoding='utf-8'))
         state['items'][self.path.relative_to(self.source).as_posix()]['fingerprint'] = 'old-contract'
         marker.write_text(json.dumps(state), encoding='utf-8')
         # 不依赖模型成功也不能回退覆盖成原文稿。

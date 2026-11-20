@@ -66,8 +66,8 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertNotIn("自测答案", note.read_text(encoding="utf-8"))
         self.assertIn("contract: course-summary-v1", note.read_text(encoding="utf-8"))
         self.assertNotIn("AI 解读（需复核）", note.read_text(encoding="utf-8"))
-        self.assertLessEqual(len(note.read_text().split('---\n\n', 1)[1]), 2000)
-        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text())['covered_pages'])
+        self.assertLessEqual(len(note.read_text(encoding='utf-8').split('---\n\n', 1)[1]), 2000)
+        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text(encoding='utf-8'))['covered_pages'])
         page = note.parent / "pages/page-0001.md"
         self.assertIn("source_sha256:", page.read_text(encoding="utf-8"))
         self.assertIn("page: 1", page.read_text(encoding="utf-8"))
@@ -90,14 +90,14 @@ class KnowledgeDocumentTests(unittest.TestCase):
                     return '{"approved":false,"issues":["第1页：原图与视觉解读矛盾"]}'
             return knowledge_response(model, system, content)
         note = DocumentCompiler(runner, self.cancel).compile(self.source, self.path, self.target)
-        self.assertTrue(any('原图复核完成' in p.read_text() for p in note.parent.rglob('*-visual-*.md')))
-        self.assertNotIn('原图复核完成', (note.parent / 'pages/page-0001.md').read_text())
+        self.assertTrue(any('原图复核完成' in p.read_text(encoding='utf-8') for p in note.parent.rglob('*-visual-*.md')))
+        self.assertNotIn('原图复核完成', (note.parent / 'pages/page-0001.md').read_text(encoding='utf-8'))
         count = len(self.calls)
         resumed = DocumentCompiler(runner, self.cancel)
         resumed.compile(self.source, self.path, self.target)
         self.assertEqual(0, resumed.calls)
         self.assertEqual(count, len(self.calls))
-        checks = json.loads((note.parent / 'review.json').read_text())['checks']
+        checks = json.loads((note.parent / 'review.json').read_text(encoding='utf-8'))['checks']
         self.assertIn(1, checks[0]['verified_visual_pages'])
 
     def test_lecture_has_original_text_to_cross_check_visual_interpretation(self):
@@ -110,13 +110,26 @@ class KnowledgeDocumentTests(unittest.TestCase):
         from sjtu_learning_assistant.knowledge_summary import SUMMARY_VERSION
         note = self.converter().compile(self.source, self.path, self.target)
         original_lectures = tuple(note.parent.rglob('part-*.json'))
-        original = note.read_text()
+        original = note.read_text(encoding='utf-8')
         with patch('sjtu_learning_assistant.knowledge_summary.SUMMARY_VERSION', SUMMARY_VERSION + '\n改进核对要求。'):
             resumed = self.converter()
             resumed.compile(self.source, self.path, self.target)
         self.assertEqual((2, 2), (resumed.cached_pages, resumed.calls))
         self.assertTrue(all(path.is_file() for path in original_lectures))
-        self.assertTrue(any(p.read_text() == original for p in (note.parent / 'history').glob('document-*.md')))
+        self.assertTrue(any(p.read_text(encoding='utf-8') == original for p in (note.parent / 'history').glob('document-*.md')))
+
+    def test_summary_and_resume_do_not_depend_on_default_text_encoding(self):
+        read_text = Path.read_text
+        def windows_default(path, *args, **kwargs):
+            kwargs.setdefault('encoding', 'cp1252')
+            return read_text(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', windows_default):
+            note = self.converter().compile(self.source, self.path, self.target)
+            resumed = self.converter()
+            resumed.compile(self.source, self.path, self.target)
+            self.assertIn('课程主线', note.read_text(encoding='utf-8'))
+            self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text(encoding='utf-8'))['covered_pages'])
+            self.assertEqual(0, resumed.calls)
 
     def test_call_budget_and_restart_checkpoint(self):
         compiler = self.converter(max_calls=1)
@@ -179,7 +192,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         resumed = self.converter()
         note = resumed.compile(self.source, self.path, self.target)
         self.assertEqual((2, 2), (resumed.cached_pages, resumed.calls))
-        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text())['covered_pages'])
+        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text(encoding='utf-8'))['covered_pages'])
 
     def test_changed_source_keeps_old_revision(self):
         first = self.converter().compile(self.source, self.path, self.target)
@@ -282,7 +295,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         converter = DocumentCompiler(runner, self.cancel)
         with patch.object(self.cancel, 'wait', return_value=False):
             note = converter.compile(self.source, self.path, self.target)
-        report = json.loads((note.parent / 'review.json').read_text())
+        report = json.loads((note.parent / 'review.json').read_text(encoding='utf-8'))
         self.assertEqual(converter.model_fallbacks, report['model_fallbacks'])
         self.assertEqual(1, len(report['model_fallbacks']))
         restored = DocumentCompiler(lambda *_: self.fail('不得重复调用'), self.cancel)
