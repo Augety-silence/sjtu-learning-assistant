@@ -148,7 +148,7 @@ class KnowledgeCompilerService:
         *,
         ai_runner: Callable[[str, str, Any], str],
         max_files: int = MAX_FILES,
-        max_document_calls: int = 100,
+        max_document_calls: int = 0,
     ) -> None:
         self.ai_runner = ai_runner
         self.max_files = max_files

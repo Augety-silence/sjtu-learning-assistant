@@ -1,6 +1,41 @@
 import { ChevronRight, Folder } from "lucide-react";
+import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { CompiledKnowledgeSearch } from "@/lib/types";
+
+function FolderBranch({
+  initiallyOpen,
+  selected,
+  label,
+  onSelect,
+  children,
+}: {
+  initiallyOpen: boolean;
+  selected: boolean;
+  label: ReactNode;
+  onSelect: () => void;
+  children: ReactNode;
+}) {
+  // 展开属于用户操作，不跟随查询／选中状态反复写入 open 属性。
+  const [open, setOpen] = useState(initiallyOpen);
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary
+        aria-current={selected ? "location" : undefined}
+        onClick={() => {
+          if (!selected) onSelect();
+        }}
+      >
+        <ChevronRight aria-hidden="true" />
+        {label}
+      </summary>
+      {children}
+    </details>
+  );
+}
 
 export function KnowledgeFolders({
   folders,
@@ -45,22 +80,16 @@ export function KnowledgeFolders({
           return (
             <li key={`${item.source_id}:${item.path}`}>
               {children ? (
-                <details
-                  open={
+                <FolderBranch
+                  initiallyOpen={
                     parent === "" ||
                     (sameSource &&
                       (selectedHere || selected.startsWith(item.path + "/")))
                   }
+                  selected={selectedHere}
+                  label={label}
+                  onSelect={() => onSelect(item.source_id, item.path)}
                 >
-                  <summary
-                    aria-current={selectedHere ? "location" : undefined}
-                    onClick={() => {
-                      if (!selectedHere) onSelect(item.source_id, item.path);
-                    }}
-                  >
-                    <ChevronRight aria-hidden="true" />
-                    {label}
-                  </summary>
                   <KnowledgeFolders
                     folders={folders}
                     selected={selected}
@@ -69,7 +98,7 @@ export function KnowledgeFolders({
                     parent={item.path}
                     source={item.source_id}
                   />
-                </details>
+                </FolderBranch>
               ) : (
                 <Button
                   variant="ghost"

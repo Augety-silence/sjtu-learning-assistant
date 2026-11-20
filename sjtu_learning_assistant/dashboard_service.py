@@ -3673,7 +3673,7 @@ class DashboardService:
             "failed": 0, "calls_today": 0, "issues": [],
         }
         return {**state, "enabled": settings.course_markdown_enabled,
-                "daily_limit": settings.course_markdown_daily_calls,
+                "daily_limit": 0,
                 "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
 
     def _run_knowledge_compiler_ai(
@@ -3701,6 +3701,7 @@ class DashboardService:
                 max_tokens=8192,
                 temperature=0.1,
                 system_prompt=False,
+                knowledge_compilation=True,
             )
             content = result.get("content")
             if (result.get("response_metadata") or {}).get("finish_reason") == "length":

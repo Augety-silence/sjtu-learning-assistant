@@ -20,6 +20,8 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_CONTEXT_CHARS,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_CHAT_MESSAGES,
+    MAX_KNOWLEDGE_MESSAGE_CHARS,
+    MAX_KNOWLEDGE_CONTEXT_CHARS,
     MAX_SSE_RESPONSE_BYTES,
     MAX_SSE_STREAM_SECONDS,
     MAX_OUTPUT_TOKENS_PER_CALL,
@@ -325,9 +327,11 @@ class OpenAIClassificationClient:
 
     @classmethod
     def _clean_chat_messages(
-        cls, messages: list[dict[str, Any]]
+        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS
     ) -> tuple[list[dict[str, Any]], int]:
         """Validate and normalize OpenAI chat history for both request modes."""
+        if type(max_message_chars) is not int or not 1 <= max_message_chars <= MAX_KNOWLEDGE_MESSAGE_CHARS:
+            raise AIClassificationError("AI 消息长度预算无效。")
         if not messages or len(messages) > MAX_CHAT_MESSAGES:
             raise AIClassificationError("AI 对话消息数量无效。", category="context_too_long")
         clean_messages: list[dict[str, Any]] = []
@@ -352,7 +356,7 @@ class OpenAIClassificationClient:
             clean_content: Any
             content_length = 0
             if type(content) is str:
-                if len(content) > MAX_CHAT_MESSAGE_CHARS or (role in {"user", "system"} and not content.strip()):
+                if len(content) > max_message_chars or (role in {"user", "system"} and not content.strip()):
                     raise AIClassificationError("单条消息不能为空或超过长度限制。", category="context_too_long")
                 clean_content = content.strip()
                 content_length = len(content)
@@ -366,7 +370,7 @@ class OpenAIClassificationClient:
                         if set(part) != {"type", "text"}:
                             raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
                         text = part.get("text")
-                        if type(text) is not str or not text.strip() or len(text) > MAX_CHAT_MESSAGE_CHARS:
+                        if type(text) is not str or not text.strip() or len(text) > max_message_chars:
                             raise AIClassificationError("AI 多模态文字无效。", category="multimodal_invalid")
                         clean_parts.append({"type": "text", "text": text.strip()})
                         content_length += len(text)
@@ -523,13 +527,19 @@ class OpenAIClassificationClient:
         tool_choice: object | None = None,
         system_prompt: bool = True,
         response_format: Mapping[str, str] | None = None,
+        knowledge_compilation: bool = False,
     ) -> dict[str, Any]:
         if response_format is not None and (
             not isinstance(response_format, Mapping) or dict(response_format) != {"type": "json_object"}
         ):
             raise AIClassificationError("AI response_format 仅支持 json_object。")
-        clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > MAX_CHAT_CONTEXT_CHARS or len(context) > 12_000:
+        if type(knowledge_compilation) is not bool or (knowledge_compilation and (system_prompt or context or tools or tool_choice)):
+            raise AIClassificationError("知识编译上下文只用于独立、无工具的编译请求。")
+        if knowledge_compilation and any(type(m) is not dict or m.get('role') not in {'system', 'user'} for m in messages):
+            raise AIClassificationError("知识编译不能混入工具或聊天历史。")
+        clean_messages, total_length = self._clean_chat_messages(messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS)
+        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_CHAT_CONTEXT_CHARS
+        if total_length > context_limit or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:

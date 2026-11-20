@@ -9,7 +9,14 @@ import {
   searchCompiledKnowledge,
 } from "@/lib/api";
 import type { CompiledKnowledgePage } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   invoke: vi.fn().mockResolvedValue({
@@ -78,6 +85,110 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("CompiledKnowledgeBrowser", () => {
+  it("超长讲义续读遇到版本变化保留旧正文，不混入新版本片段", async () => {
+    vi.mocked(readCompiledKnowledge).mockResolvedValueOnce({
+      ...page,
+      text: "# 原版本\n原来的正文",
+      content_sha256: "a".repeat(64),
+      total_chars: 300_000,
+      next_offset: 12,
+    });
+    vi.mocked(readCompiledKnowledge).mockResolvedValueOnce({
+      ...page,
+      text: "不应显示的新版本尾段",
+      content_sha256: "b".repeat(64),
+      offset: 12,
+      total_chars: 300_000,
+      next_offset: null,
+    });
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("原来的正文");
+    fireEvent.click(screen.getByRole("button", { name: "继续阅读" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("版本或分页已变化"),
+    );
+    expect(screen.getByText("原来的正文")).toBeTruthy();
+    expect(screen.queryByText("不应显示的新版本尾段")).toBeNull();
+  });
+  it.each([
+    ["course-lecture-v2", "旧版知识稿"],
+    ["course-study-v3", "完整课程讲义"],
+  ])("区分 %s 而不把旧机械稿标为新讲义", async (contract, label) => {
+    vi.mocked(readCompiledKnowledge).mockResolvedValue({
+      ...page,
+      status: "completed",
+      contract,
+    });
+    render(<CompiledKnowledgeBrowser />);
+    expect(await screen.findByText(new RegExp(label))).toBeTruthy();
+  });
+  it("延迟切换和失败不卸载目录、焦点及旧正文", async () => {
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document],
+      count: 1,
+      next_offset: null,
+      issues: [],
+      truncated: false,
+      folders: [
+        { source_id: source.id, path: "数据库", name: "数据库", count: 1 },
+      ],
+    });
+    render(<CompiledKnowledgeBrowser />);
+    const folder = await screen.findByRole("button", { name: /数据库.*1/ });
+    fireEvent.click(folder);
+    await screen.findByText("关系代数");
+    let reject: (reason: Error) => void = () => {};
+    vi.mocked(searchCompiledKnowledge).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    folder.focus();
+    fireEvent.click(folder);
+    expect(screen.getByRole("button", { name: /数据库.*1/ })).toBe(folder);
+    expect(folder.ownerDocument.activeElement).toBe(folder);
+    expect(screen.getByText("关系代数")).toBeTruthy();
+    await act(async () => reject(new Error("请求失败")));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "请求失败",
+    );
+    expect(screen.getByText("关系代数")).toBeTruthy();
+  });
+  it("真实版本分页会自动读完，不把预览截断当作编译完成", async () => {
+    const hash = "c".repeat(64);
+    vi.mocked(readCompiledKnowledge).mockResolvedValueOnce({
+      ...page,
+      text: "# 完整讲义\n",
+      content_sha256: hash,
+      total_chars: 14,
+      next_offset: 7,
+    });
+    vi.mocked(readCompiledKnowledge).mockResolvedValueOnce({
+      ...page,
+      text: "\n最后的知识点",
+      content_sha256: hash,
+      offset: 7,
+      total_chars: 14,
+      next_offset: null,
+    });
+    render(<CompiledKnowledgeBrowser />);
+    expect(await screen.findByText("最后的知识点")).toBeTruthy();
+    expect(screen.getByText(/全文已显示/)).toBeTruthy();
+  });
+  it("公式能显示，但不能借数学命令加载外部资源", async () => {
+    vi.mocked(readCompiledKnowledge).mockResolvedValue({
+      ...page,
+      next_offset: null,
+      text: "$x^2 + y^2$\n\n$\\\\href{https://example.invalid}{unsafe}$",
+    });
+    const { container } = render(<CompiledKnowledgeBrowser />);
+    await waitFor(() => expect(container.querySelector(".katex")).toBeTruthy());
+    expect(container.querySelector("a[href^='https:']")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
   it("无需选目录就显示列表和正文，保留视觉未完成状态", async () => {
     render(<CompiledKnowledgeBrowser />);
     expect(await screen.findByText("关系代数")).toBeTruthy();

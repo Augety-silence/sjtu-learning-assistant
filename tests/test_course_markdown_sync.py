@@ -50,20 +50,36 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual("completed", self.worker.status()["status"])
         self.assertEqual(original, self.path.read_bytes())
         self.worker.run_once()
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(8, self.runner.call_count)
         new = build_pdf(self.path.parent / "new.pdf", ("New slide",))
         self.paths.append(new)
         self.worker.run_once()
-        self.assertEqual(5, self.runner.call_count)
+        self.assertEqual(15, self.runner.call_count)
         self.assertEqual(2, self.worker.status()["completed"])
 
     def test_mirror_images_are_relative_and_url_encoded(self):
         self.worker.run_once()
         import re
-        links = re.findall(r"!\[原始页面\]\(([^)]+)\)", self.mirror.read_text(encoding="utf-8"))
+        links = re.findall(r"\[课件 p.\d+ 原文与页图\]\(([^)]+)\)", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual(2, len(links))
         for link in links:
             self.assertTrue((self.mirror.parent / unquote(link)).is_file())
+
+    def test_reverified_visual_evidence_links_resolve_in_course_mirror(self):
+        def runner(model, system, content):
+            if '这是来源矛盾的原图复核' in system:
+                return knowledge_response(model, system, content) + '\n原图复核完成'
+            if '来源审校员' in system:
+                payload = json.loads(content)
+                if payload.get('pages') and '原图复核完成' not in payload['pages'][0]['text']:
+                    return '{"approved":false,"issues":["第1页：转写矛盾"]}'
+            return knowledge_response(model, system, content)
+        self.runner.side_effect = runner
+        self.worker.run_once()
+        import re
+        links = re.findall(r'\[课件 p.\d+ 最新图文复核\]\(([^)]+)\)', self.mirror.read_text())
+        self.assertEqual(1, len(links))
+        self.assertTrue((self.mirror.parent / unquote(links[0])).is_file())
 
     def test_source_revision_updates_generated_mirror_keeps_previous(self):
         self.worker.run_once()
@@ -79,34 +95,36 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         build_pdf(self.path, ("Changed slide",))
         self.worker.run_once()
         self.assertEqual("我的笔记", self.mirror.read_text(encoding="utf-8"))
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(8, self.runner.call_count)
         self.assertEqual(1, self.worker.status()["failed"])
 
-    def test_daily_budget_persisted_across_restarts_and_next_day_resumes(self):
+    def test_legacy_daily_budget_does_not_stop_compilation_and_restarts_reuse_all(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         self.worker.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertIn("multimodal_status: pending", self.mirror.read_text(encoding="utf-8"))
-        self.assertEqual("budget_paused", self.worker.status()["status"])
+        self.assertIn("contract: course-study-v3", self.mirror.read_text(encoding="utf-8"))
+        self.assertEqual("completed", self.worker.status()["status"])
         restart = self.new_worker()
         restart.run_once()
-        self.assertEqual(1, self.runner.call_count)
+        self.assertEqual(8, self.runner.call_count)
         self.day = "2026-11-15"
         restart.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertEqual(2, self.runner.call_count)
+        self.assertEqual(8, self.runner.call_count)
 
-    def test_all_text_markdown_ready_even_when_vision_budget_exhausted(self):
+    def test_all_text_markdown_ready_even_when_visual_service_fails(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         self.paths.append(build_pdf(self.path.parent / "second.pdf", ("Second",)))
+        self.runner.side_effect = RuntimeError("unavailable")
         self.worker.run_once()
         self.assertEqual(2, self.worker.status()["text_ready"])
         self.assertEqual(2, len(list((self.target / "Courses").rglob("*.md"))))
-        self.assertEqual(1, self.runner.call_count)
+        self.assertEqual(2, self.runner.call_count)
 
     def test_text_compilation_does_not_use_chat_preview_400k_limit(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         build_pdf(self.path, tuple("Long text " * 350 for _ in range(130)))
+        self.runner.side_effect = RuntimeError("unavailable")
         self.worker.run_once()
         self.assertTrue(self.mirror.is_file())
         self.assertGreater(len(self.mirror.read_text(encoding="utf-8")), 400_000)
@@ -122,9 +140,9 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = runner
         self.worker.run_once()
         marker = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
-        self.assertEqual({"day": "2026-11-15", "used": 1}, marker["quota"])
+        self.assertEqual({"day": "2026-11-15", "used": 7}, marker["quota"])
         self.worker.run_once()
-        self.assertEqual(2, self.worker.status()["calls_today"])
+        self.assertEqual(7, self.worker.status()["calls_today"])
 
     def test_first_database_failure_can_recover_and_lock_scaffold_is_safe(self):
         broken = CourseMarkdownSync(lambda: self.settings, Mock(side_effect=RuntimeError()), self.runner)
@@ -196,7 +214,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
             self.worker.run_once()
         self.worker.run_once()
         self.assertTrue(self.mirror.is_file())
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(8, self.runner.call_count)
 
     def test_contract_upgrade_keeps_old_mirror_until_lecture_is_complete(self):
         self.worker.run_once()
@@ -207,9 +225,11 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         marker.write_text(json.dumps(state), encoding='utf-8')
         # 不依赖模型成功也不能回退覆盖成原文稿。
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
-        self.worker.run_once()
+        self.runner.side_effect = RuntimeError("unavailable")
+        with patch('sjtu_learning_assistant.course_markdown_sync.compilation_fingerprint', return_value='new-prompt'), patch('sjtu_learning_assistant.knowledge_documents.PROMPT_VERSION', 'new-prompt'):
+            self.worker.run_once()
         self.assertEqual(previous, self.mirror.read_bytes())
-        self.assertEqual('budget_paused', self.worker.status()['status'])
+        self.assertEqual('completed_with_warnings', self.worker.status()['status'])
 
     def test_settings_migration_retains_values_does_not_enable_silently(self):
         store = SettingsStore(self.root / "settings.json")
@@ -221,7 +241,8 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertFalse(loaded.course_markdown_enabled)
         self.assertTrue(loaded.auto_download_current_term)
         self.assertEqual(str(self.source), loaded.archive_root)
-        for value in (True, 0, 1001, 1.5):
+        self.assertEqual(0, store.update({"course_markdown_daily_calls": 0}).course_markdown_daily_calls)
+        for value in (True, -1, 1001, 1.5):
             with self.assertRaises(SettingsError):
                 store.update({"course_markdown_daily_calls": value})
 

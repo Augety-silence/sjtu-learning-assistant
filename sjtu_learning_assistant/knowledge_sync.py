@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = client.chat_completion(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                max_tokens=8192, temperature=0.1, system_prompt=False,
+                max_tokens=8192, temperature=0.1, system_prompt=False, knowledge_compilation=True,
             )
             if (result.get("response_metadata") or {}).get("finish_reason") == "length" or result.get("finish_reason") == "length":
                 raise RuntimeError("输出截断，请拆分页面")

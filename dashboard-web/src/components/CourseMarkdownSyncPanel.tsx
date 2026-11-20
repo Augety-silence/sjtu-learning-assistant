@@ -9,29 +9,22 @@ const labels: Record<string, string> = {
   running: "自动转换中",
   completed: "已完成当前同步",
   completed_with_warnings: "部分课件需要处理",
-  budget_paused: "今日额度已用完，次日自动续编",
   paused: "已暂停",
   blocked: "需要检查配置或输出目录",
 };
 
 export function CourseMarkdownSyncPanel() {
   const [state, setState] = useState<CourseMarkdownStatus | null>(null);
-  const [limit, setLimit] = useState(100);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    let initialized = false;
     const load = () =>
       getCourseMarkdownStatus()
         .then((value) => {
           if (active) {
             setState(value);
             setError("");
-            if (!initialized) {
-              setLimit(value.daily_limit);
-              initialized = true;
-            }
           }
         })
         .catch((reason: unknown) => {
@@ -54,7 +47,7 @@ export function CourseMarkdownSyncPanel() {
         enabled
           ? {
               course_markdown_enabled: true,
-              course_markdown_daily_calls: limit,
+              course_markdown_daily_calls: 0,
             }
           : { course_markdown_enabled: false },
       );
@@ -93,33 +86,16 @@ export function CourseMarkdownSyncPanel() {
             {labels[state.status] ?? state.status} · 文本 MD 就绪{" "}
             {state.text_ready ?? 0}/{state.total}份 · 多模态完成{" "}
             {state.completed} · 待续编 {state.pending} · 异常 {state.failed} ·
-            今日调用 {state.calls_today}/{state.daily_limit}
+            今日调用 {state.calls_today}（无每日上限）
           </p>
         </>
       )}
-      <label>
-        每日 API 调用上限（逐页解读、讲义整理与失败均计入）{" "}
-        <input
-          type="number"
-          min={1}
-          max={1000}
-          value={limit}
-          disabled={busy}
-          onChange={(event) => setLimit(Number(event.target.value))}
-        />
-      </label>
+      <p>
+        逐页证据会重组为完整主题讲义，含复习、自测和文末答案。没有每日调用上限，仍遵守接口速率限制；失败有限重试，人工笔记不覆盖。
+      </p>
       <div className="knowledge-scan-row">
-        <Button
-          disabled={
-            !state ||
-            busy ||
-            !Number.isInteger(limit) ||
-            limit < 1 ||
-            limit > 1000
-          }
-          onClick={() => void save(true)}
-        >
-          {state?.enabled ? "保存上限并继续自动同步" : "开启课件自动同步"}
+        <Button disabled={!state || busy} onClick={() => void save(true)}>
+          {state?.enabled ? "继续自动同步" : "开启课件自动同步"}
         </Button>
         <Button
           variant="outline"

@@ -1,7 +1,11 @@
 import { FileText, Folder, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
+import { CopyKnowledgeButton } from "@/components/CopyKnowledgeButton";
 import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import { Button } from "@/components/ui/Button";
 import {
@@ -11,6 +15,10 @@ import {
   readCompiledKnowledge,
   searchCompiledKnowledge,
 } from "@/lib/api";
+import {
+  completeKnowledgeText,
+  knowledgeTextLength,
+} from "@/lib/compiledKnowledgeCopy";
 import type {
   CompiledKnowledgeDocument,
   CompiledKnowledgePage,
@@ -30,6 +38,14 @@ function documentTitle(doc: CompiledKnowledgeDocument) {
   return doc.title.replace(/\.(pptx?|pdf)\.md$/i, "").replace(/\.md$/i, "");
 }
 
+function documentStatus(doc: CompiledKnowledgeDocument) {
+  if (doc.status === "completed" && doc.contract === "course-study-v3")
+    return "完整课程讲义";
+  if (doc.status === "completed" && doc.contract === "course-lecture-v2")
+    return "旧版知识稿";
+  return statusLabels[doc.status];
+}
+
 export function CompiledKnowledgeBrowser({
   preferredSource = "",
 }: {
@@ -41,6 +57,9 @@ export function CompiledKnowledgeBrowser({
   const [activeQuery, setActiveQuery] = useState("");
   const [searchOffset, setSearchOffset] = useState(0);
   const [search, setSearch] = useState<CompiledKnowledgeSearch | null>(null);
+  const [folders, setFolders] = useState<
+    NonNullable<CompiledKnowledgeSearch["folders"]>
+  >([]);
   const [page, setPage] = useState<CompiledKnowledgePage | null>(null);
   const [loading, setLoading] = useState(false);
   const [reading, setReading] = useState(false);
@@ -51,27 +70,53 @@ export function CompiledKnowledgeBrowser({
   const searchGeneration = useRef(0);
   const readGeneration = useRef(0);
   const sourceGeneration = useRef(0);
+  const displayedPage = useRef<CompiledKnowledgePage | null>(null);
 
   const read = useCallback(
     async (doc: CompiledKnowledgeDocument, offset = 0, append = false) => {
       const generation = ++readGeneration.current;
       setReading(true);
-      if (!append) setPage(null);
       setError("");
       try {
-        const result = await readCompiledKnowledge(doc.id, offset);
-        if (generation === readGeneration.current)
-          setPage((previous) =>
+        let result = await readCompiledKnowledge(doc.id, offset);
+        if (
+          result.offset === 0 &&
+          result.content_sha256 &&
+          result.total_chars <= 240_000 &&
+          result.next_offset !== null
+        ) {
+          const text = await completeKnowledgeText(
+            doc.id,
+            () => generation === readGeneration.current,
+            result,
+          );
+          result = { ...result, text, next_offset: null, truncated: false };
+        }
+        if (generation === readGeneration.current) {
+          const previous = displayedPage.current;
+          if (
             append &&
-            previous?.id === result.id &&
-            previous.offset + previous.text.length === result.offset
+            (!previous ||
+              previous.id !== result.id ||
+              previous.offset + knowledgeTextLength(previous.text) !==
+                result.offset ||
+              previous.total_chars !== result.total_chars ||
+              previous.content_sha256 !== result.content_sha256)
+          )
+            throw new Error(
+              "讲义版本或分页已变化，请重新打开文件；旧正文已保留。",
+            );
+          const next =
+            append && previous
               ? {
                   ...result,
                   offset: previous.offset,
                   text: previous.text + result.text,
                 }
-              : result,
-          );
+              : result;
+          displayedPage.current = next;
+          setPage(next);
+        }
       } catch (reason) {
         if (generation === readGeneration.current)
           setError(reason instanceof Error ? reason.message : "结果读取失败");
@@ -92,9 +137,7 @@ export function CompiledKnowledgeBrowser({
       const generation = ++searchGeneration.current;
       ++readGeneration.current;
       setReading(false);
-      setPage(null);
       setLoading(true);
-      setSearch(null);
       setActiveQuery(keywords);
       setSearchOffset(offset);
       setFolder(selectedFolder);
@@ -105,14 +148,16 @@ export function CompiledKnowledgeBrowser({
           : searchCompiledKnowledge(keywords, selected, offset));
         if (generation !== searchGeneration.current) return;
         setSearch(result);
+        if (!selectedFolder) setFolders(result.folders ?? []);
         if (
           result.items[0] &&
           (selectedFolder || keywords || !result.folders?.length)
         )
-          void read(
-            result.items[0],
-            Math.max(0, (result.items[0].match_offset ?? 0) - 200),
-          );
+          void read(result.items[0], 0);
+        else {
+          displayedPage.current = null;
+          setPage(null);
+        }
       } catch (reason) {
         if (generation === searchGeneration.current)
           setError(
@@ -194,6 +239,7 @@ export function CompiledKnowledgeBrowser({
     <section
       className="knowledge-config compiled-knowledge"
       aria-label="编译结果与知识点"
+      aria-busy={loading || reading}
     >
       <form
         className="compiled-knowledge-toolbar compiled-knowledge-searchbar"
@@ -238,13 +284,15 @@ export function CompiledKnowledgeBrowser({
       </form>
       {error && <p role="alert">{error}</p>}
       {message && <p role="status">{message}</p>}
-      {loading && <p role="status">正在读取编译结果…</p>}
-      {search && (
-        <p role="status">
-          找到 {search.count} 份结果
-          {search.truncated ? "（范围截断，请缩小来源）" : ""}
-        </p>
-      )}
+      <p role="status" className="compiled-knowledge-progress">
+        {loading
+          ? "正在切换目录，保留当前内容…"
+          : reading
+            ? "正在读取讲义，保留当前内容…"
+            : search
+              ? `找到 ${search.count} 份结果${search.truncated ? "（请进入更具体的文件夹搜索）" : ""}`
+              : "正在读取编译结果…"}
+      </p>
       {search?.issues.map((issue) => (
         <p key={issue} role="status">
           {issue}
@@ -282,7 +330,7 @@ export function CompiledKnowledgeBrowser({
             全部课程
           </Button>
           <KnowledgeFolders
-            folders={search?.folders ?? []}
+            folders={folders}
             selected={folder}
             selectedSource={sourceId}
             onSelect={(source, path) => {
@@ -305,20 +353,13 @@ export function CompiledKnowledgeBrowser({
                 variant="ghost"
                 aria-pressed={page?.id === doc.id}
                 className="compiled-knowledge-item"
-                onClick={() =>
-                  void read(doc, Math.max(0, (doc.match_offset ?? 0) - 200))
-                }
+                onClick={() => void read(doc)}
               >
                 <strong>
                   <FileText aria-hidden="true" />
                   {documentTitle(doc)}
                 </strong>
-                <span>
-                  {doc.status === "completed" &&
-                  doc.contract === "course-lecture-v2"
-                    ? "完整知识稿"
-                    : statusLabels[doc.status]}
-                </span>
+                <span>{documentStatus(doc)}</span>
                 {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
               </Button>
             ))}
@@ -353,7 +394,6 @@ export function CompiledKnowledgeBrowser({
           className="compiled-knowledge-reader"
           aria-label="Markdown 正文预览"
         >
-          {reading && <p role="status">正在读取正文…</p>}
           {browsingRoot && (
             <div className="compiled-knowledge-welcome">
               <Folder aria-hidden="true" />
@@ -364,7 +404,7 @@ export function CompiledKnowledgeBrowser({
             <>
               <h3>{documentTitle(page)}</h3>
               <p>
-                {statusLabels[page.status]} · {page.section}
+                {documentStatus(page)} · {page.section}
               </p>
               <p className="compiled-knowledge-citation">
                 来源：{page.citation}
@@ -378,6 +418,10 @@ export function CompiledKnowledgeBrowser({
                 <Button variant="outline" onClick={() => void open(page)}>
                   定位 Markdown 文件及原图
                 </Button>
+                <CopyKnowledgeButton
+                  id={page.id}
+                  version={page.content_sha256}
+                />
                 <Button
                   variant="ghost"
                   disabled={page.offset === 0}
@@ -395,7 +439,18 @@ export function CompiledKnowledgeBrowser({
               </div>
               <div className="rich-preview-markdown">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[
+                    [
+                      rehypeKatex,
+                      {
+                        trust: false,
+                        throwOnError: false,
+                        maxExpand: 1000,
+                        maxSize: 10,
+                      },
+                    ],
+                  ]}
                   skipHtml
                   components={{
                     img: ({ alt }) => (
@@ -425,8 +480,11 @@ export function CompiledKnowledgeBrowser({
               </div>
               <p>
                 正文分页预览：已加载{" "}
-                {Math.min(page.offset + page.text.length, page.total_chars)} /{" "}
-                {page.total_chars} 字符
+                {Math.min(
+                  page.offset + knowledgeTextLength(page.text),
+                  page.total_chars,
+                )}{" "}
+                / {page.total_chars} 字符
                 {page.next_offset == null
                   ? " · 全文已显示"
                   : " · 继续阅读会追加后文；这不是编译进度"}

@@ -126,7 +126,7 @@ describe("KnowledgeCompilerView", () => {
       name: /逐页多模态转 Markdown/,
     });
     expect((radio as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/每次最多 100 次 API 调用/)).toBeTruthy();
+    expect(screen.getByText(/不设每日或每次总调用额度/)).toBeTruthy();
   });
   it("展示 12 轮编译路线和安全目录说明", async () => {
     await renderCompiler();

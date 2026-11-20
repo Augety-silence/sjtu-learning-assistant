@@ -89,7 +89,7 @@ class LocalSettings:
     ai_code_line_numbers: bool = False
     theme_mode: str = "system"
     course_markdown_enabled: bool = False
-    course_markdown_daily_calls: int = 100
+    course_markdown_daily_calls: int = 0  # 兼容旧设置字段；自动同步不再使用每日额度。
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -212,8 +212,8 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if "course_markdown_daily_calls" in payload:
         value = payload["course_markdown_daily_calls"]
-        if type(value) is not int or not 1 <= value <= 1000:
-            raise SettingsError("自动课件每日调用上限必须为 1—1000 的整数。")
+        if type(value) is not int or not 0 <= value <= 1000:
+            raise SettingsError("旧每日额度字段必须为 0—1000 的整数；0 表示不限。")
         result["course_markdown_daily_calls"] = value
     if "archive_root" in payload:
         result["archive_root"] = validate_archive_root(payload["archive_root"])

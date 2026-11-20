@@ -160,9 +160,10 @@ class CompiledKnowledge:
                                                 continue
                                             _safe(root, original)
                                             entry = self._entry(source, relative, "compiled")
-                                            entry.update(title=PurePosixPath(original).name + ".md", folder=PurePosixPath(original).parent.as_posix(), contract=manifest.get("contract"))
+                                            contract = manifest.get("study_contract") or manifest.get("contract")
+                                            entry.update(title=PurePosixPath(original).name + ".md", folder=PurePosixPath(original).parent.as_posix(), contract=contract)
                                             # 同一来源只展示最新知识契约/版本，页稿和旧版本仍留在磁盘。
-                                            rank = (manifest.get("contract") == "course-lecture-v2", path.stat().st_mtime)
+                                            rank = (contract == "course-study-v3", path.stat().st_mtime)
                                             if original not in course_documents or rank > course_documents[original][0]:
                                                 course_documents[original] = (rank, entry)
                                         else:
@@ -273,6 +274,7 @@ class CompiledKnowledge:
         # 保留正文的原始换行与字符偏移，仅从展示标题中去除 CRLF 的回车。
         headings = re.findall(r"^#{1,6} [^\r\n]+", text[:offset], flags=re.MULTILINE)
         return {**document, "text": text[offset:end], "offset": offset, "next_offset": end if end < len(text) else None,
+                "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "total_chars": len(text), "section": headings[-1][:200] if headings else "文档开头",
                 "citation": document["source_name"] + "/" + document["relative_path"], "truncated": end < len(text)}
 

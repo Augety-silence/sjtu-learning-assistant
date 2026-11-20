@@ -130,9 +130,7 @@ class CourseMarkdownSync:
                 raise DocumentTextError("课件同步已暂停或配置已变更。")
             if quota["day"] != self.today():
                 quota.update(day=self.today(), used=0)
-            if quota["used"] >= current.course_markdown_daily_calls:
-                raise DocumentTextError("今日调用额度已用完，次日自动续编。")
-            # 先保留额度再请求；崩溃/失败也消耗额度，不以重启绕过上限。
+            # 仅统计，不限制每日总量；接口全局速率限制、取消与有限重试仍生效。
             quota["used"] += 1
             persist()
             self._set(calls_today=quota["used"])
@@ -159,7 +157,7 @@ class CourseMarkdownSync:
             persist()
 
         persist()
-        compiler = self.compiler_factory(call, self._cancel, max_calls=settings.course_markdown_daily_calls)
+        compiler = self.compiler_factory(call, self._cancel, max_calls=0)
         candidates = sorted(set(self.paths()), key=lambda path: str(path).casefold())
         candidates = [path for path in candidates if path.suffix.casefold() in {".pptx", ".pdf", ".ppt"}]
         completed, failed, pending, text_ready = 0, 0, 0, 0
@@ -231,9 +229,6 @@ class CourseMarkdownSync:
                     failed += 1
                     issues.append(relative + "：今日已重试 3 次；次日重试。")
                     continue
-                if quota["used"] >= settings.course_markdown_daily_calls:
-                    pending += 1
-                    continue
                 # 已编辑镜像即使源更新也不能调用模型/覆盖。
                 allowed_hashes = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed_hashes):
@@ -245,21 +240,23 @@ class CourseMarkdownSync:
                 # 同一文件映射保留扩展名，避免 lecture.pdf / lecture.pptx 重名。
                 body = note.read_text(encoding="utf-8")
                 asset_prefix = Path(os.path.relpath(note.parent / "assets", mirror.parent)).as_posix()
+                page_prefix = Path(os.path.relpath(note.parent / "pages", mirror.parent)).as_posix()
+                study_prefix = Path(os.path.relpath(note.parent / 'study', mirror.parent)).as_posix()
+                body = body.replace('(study/', '(' + quote(study_prefix, safe='/') + '/')
                 for number in range(1, 501):
                     body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
+                    body = body.replace(f"(pages/page-{number:04d}.md)", "(" + quote(page_prefix + f"/page-{number:04d}.md", safe="/") + ")")
                 publish(item, mirror, body)
-                item.update(status="completed", contract=CONTRACT, document=note.relative_to(target).as_posix())
+                from sjtu_learning_assistant.knowledge_study import STUDY_CONTRACT
+                item.update(status="completed", contract=STUDY_CONTRACT, document=note.relative_to(target).as_posix())
                 item.pop("error", None)
                 persist()
                 completed += 1
             except (DocumentTextError, KnowledgeCompilerError) as exc:
-                if quota["used"] >= settings.course_markdown_daily_calls:
-                    pending += 1
-                else:
-                    failed += 1
+                failed += 1
                 message = str(exc)
                 if relative is not None:
-                    state["items"].setdefault(relative, {}).update(status="pending" if quota["used"] >= settings.course_markdown_daily_calls else "failed", error=message)
+                    state["items"].setdefault(relative, {}).update(status="failed", error=message)
                 issues.append((relative + "：" if relative else "") + message)
                 persist()
             except Exception:
@@ -267,5 +264,5 @@ class CourseMarkdownSync:
                 issues.append((relative + "：" if relative else "") + "处理失败；已有文件保留。")
             finally:
                 self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
-        self._set(status="paused" if self._cancel.is_set() else "budget_paused" if pending and quota["used"] >= settings.course_markdown_daily_calls else "completed_with_warnings" if failed else "completed",
+        self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed else "completed",
                   completed=completed, failed=failed, pending=pending, calls_today=quota["used"], issues=issues[:20])

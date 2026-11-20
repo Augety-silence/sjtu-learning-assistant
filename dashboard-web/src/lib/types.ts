@@ -41,6 +41,7 @@ export interface CompiledKnowledgeDocument {
 }
 
 export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {
+  content_sha256?: string;
   text: string;
   offset: number;
   next_offset: number | null;

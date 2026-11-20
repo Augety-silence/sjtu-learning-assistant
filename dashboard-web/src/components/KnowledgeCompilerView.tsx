@@ -398,8 +398,7 @@ export function KnowledgeCompilerView() {
                 <span>
                   <strong>逐页多模态转 Markdown</strong>
                   <small>
-                    每次最多 100 次 API
-                    调用（含逐页解读和讲义整理）；断点续编，保留人工修改。PPTX
+                    不设每日或每次总调用额度；遵守接口限速，断点续编，保留人工修改。PPTX
                     需 LibreOffice，旧 PPT 请先导出 PDF。
                   </small>
                 </span>

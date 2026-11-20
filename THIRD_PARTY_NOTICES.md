@@ -33,8 +33,37 @@ Apple 的系统框架由 macOS 提供；Windows WebView2、.NET 运行时与系�
 | clsx | MIT | https://github.com/lukeed/clsx |
 | tailwind-merge | MIT | https://github.com/dcastil/tailwind-merge |
 | csstype | MIT | https://github.com/frenic/csstype |
+| KaTeX 0.19.1（含随包数学字体） | MIT | https://github.com/KaTeX/KaTeX；下方保留许可证全文。 |
+| remark-math 6.0.0、rehype-katex 7.0.1 | MIT | https://github.com/remarkjs/remark-math；包内 README 署名 Junyoung Choi。 |
+| mdast-util-math、micromark-extension-math | MIT | https://github.com/syntax-tree/mdast-util-math；https://github.com/micromark/micromark-extension-math；包内许可证署名 Titus Wormer。 |
 
 前端生产依赖的精确闭包与版本由 `dashboard-web/package-lock.json` 固定，并由 `scripts/check_licenses.mjs` 读取实际安装包的 `package.json` 验证。
+
+### 数学渲染新增组件 MIT 许可
+
+KaTeX: Copyright (c) 2013-2020 Khan Academy and other contributors
+
+remark-math / rehype-katex: MIT © Junyoung Choi
+
+mdast-util-math / micromark-extension-math: Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## 仅开发/构建依赖（不作为默认应用运行时 API）
 
