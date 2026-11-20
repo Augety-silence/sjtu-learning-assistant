@@ -512,6 +512,11 @@ class StudyCompiler:
             for exercise in exercises:
                 if type(exercise) is not dict:
                     raise ValueError("自测题结构无效。")
+                references = exercise.get('pages')
+                # 自测出处是集合，不是放映顺序；只规范化已确认合法的整数页码。
+                if (type(references) is list and references and all(type(n) is int for n in references)
+                        and set(references) <= set(pages)):
+                    exercise['pages'] = sorted(set(references))
                 _pages(exercise.get("pages"), pages)
                 for field in ("question", "answer"):
                     text = _strings([exercise.get(field)], 1, 1, 3000)[0]

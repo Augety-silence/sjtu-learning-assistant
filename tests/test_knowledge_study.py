@@ -9,6 +9,27 @@ from office_fixtures import knowledge_response
 
 
 class KnowledgeStudyTests(unittest.TestCase):
+    def test_exercise_page_order_normalizes_before_review_but_invalid_pages_still_fail(self):
+        import sjtu_learning_assistant.knowledge_study as module
+        def run(references, reviewed):
+            stored = {}
+            def request(model, prompt, data):
+                payload = json.loads(data)
+                if '来源审校员' in prompt and payload.get('kind') == 'teaching_exercises':
+                    reviewed.extend(row['pages'] for row in payload['draft']['exercises'])
+                result = json.loads(knowledge_response(model, prompt, data))
+                if prompt.startswith(module.EXERCISE_PROMPT):
+                    for row in result['exercises']:
+                        row['pages'] = references
+                return json.dumps(result, ensure_ascii=False)
+            return StudyCompiler(request, stored.get, stored.update).compile([dict(page=1, text='定义'), dict(page=2, text='应用')])
+        reviewed = []
+        self.assertTrue(run([2, 1, 2], reviewed)[2]['exercise_review']['approved'])
+        self.assertEqual([[1, 2]] * 4, reviewed)
+        for invalid in ([1, 99], [True, 1], ['1', 2], []):
+            with self.subTest(pages=invalid), self.assertRaisesRegex(ValueError, '页码无效'):
+                run(invalid, [])
+
     def test_revision_cannot_slice_first_twelve_and_drop_later_topics(self):
         from sjtu_learning_assistant.knowledge_study import validate_revision
         points = [f'主题{n}及条件 [课件 p.{n}]' for n in range(1, 15)]
