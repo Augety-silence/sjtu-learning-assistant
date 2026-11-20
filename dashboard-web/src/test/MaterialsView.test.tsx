@@ -9,7 +9,14 @@ import {
   restoreMaterialAuto,
 } from "@/lib/api";
 import type { MaterialTree } from "@/lib/types";
-import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
   invoke: vi.fn(),
@@ -199,6 +206,46 @@ afterEach(() => {
 });
 
 describe("MaterialsView manual filing", () => {
+  it("顶部只保留搜索，默认展示所有学期文件夹且搜索覆盖历史课件", async () => {
+    const allTerms = structuredClone(tree);
+    const historicalTerm = structuredClone(allTerms.root.children?.[0]);
+    if (!historicalTerm) throw new Error("missing fixture term");
+    historicalTerm.id = "term:previous";
+    historicalTerm.name = "2025 Spring";
+    const course = historicalTerm.children?.[0];
+    if (!course) throw new Error("missing fixture course");
+    course.id = "course:previous";
+    course.name = "往期课程";
+    course.children = [
+      {
+        id: "file:previous",
+        kind: "file",
+        name: "往期讲义.pptx",
+        source_id: "previous",
+        course_id: "previous",
+        category: "courseware",
+        download_status: "pending",
+      },
+    ];
+    allTerms.root.children?.push(historicalTerm);
+    vi.mocked(invoke).mockResolvedValue(allTerms);
+    render(<MaterialsView />);
+    const search = await screen.findByRole("textbox", { name: "搜索文件名" });
+    expect(invoke).toHaveBeenCalledWith("material_tree");
+    const toolbar = within(screen.getByRole("search"));
+    expect(toolbar.getAllByRole("textbox")).toHaveLength(1);
+    expect(toolbar.queryByRole("combobox")).toBeNull();
+    expect(toolbar.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "资料库" })).toBeNull();
+    expect(
+      await screen.findByRole("listitem", { name: "2025 Spring" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("listitem", { name: "2026 Fall" })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "往期讲义" } });
+    expect(
+      await screen.findByRole("listitem", { name: "往期讲义.pptx" }),
+    ).toBeTruthy();
+  });
   it("shows the empty state when the root has no children array", async () => {
     vi.mocked(invoke).mockResolvedValue({
       ...tree,
@@ -369,7 +416,7 @@ describe("MaterialsView selection and responsive states", () => {
       "polite",
     );
     expect(screen.getByText("没有匹配资料")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    fireEvent.click(screen.getByRole("button", { name: "清除搜索" }));
     expect((search as HTMLInputElement).value).toBe("");
     expect(screen.queryByText("没有匹配资料")).toBeNull();
   });
@@ -487,7 +534,7 @@ describe("MaterialsView selection and responsive states", () => {
       }),
     );
   });
-  it("uses one availability state for labels, filters and retry actions", async () => {
+  it("uses one availability state for labels and retry actions", async () => {
     const statusTree = structuredClone(tree);
     const localCloudFile = findMaterial(statusTree.root, "file-3");
     const failedFile = findMaterial(statusTree.root, "file-1");

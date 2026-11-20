@@ -74,47 +74,12 @@ describe("历史课程入口", () => {
       expect(invoke).toHaveBeenCalledWith("course_catalog", { refresh: true }),
     );
   });
-  it("无学期禁止批量同步，发送固定课程范围和下载选项", async () => {
-    vi.mocked(invoke).mockImplementation(async (operation) => {
-      if (operation === "course_catalog") return catalog as never;
-      if (operation === "course_history_start")
-        return {
-          status: "running",
-          course_ids: ["1"],
-          completed: 0,
-          total: 1,
-        } as never;
-      return idle as never;
-    });
+  it("默认展示全部缓存学期，不再提供重复的范围同步工具栏", () => {
     render(<CourseMaterialsView />);
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "同步并下载所选课件",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
-    await screen.findByRole("option", { name: /2026 春/ });
-    fireEvent.change(screen.getByLabelText("课程学期"), {
-      target: { value: "term:10" },
-    });
-    fireEvent.change(screen.getByLabelText("学期课程"), {
-      target: { value: "1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "同步并下载所选课件" }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("course_history_start", {
-        term_id: "term:10",
-        course_ids: ["1"],
-        download: true,
-      }),
-    );
-    await screen.findByText(/任务固定范围：1 门/);
-    fireEvent.change(screen.getByLabelText("课程学期"), {
-      target: { value: "term:20" },
-    });
-    expect(screen.getByTestId("scope").textContent).toBe("term:20/");
-    expect(screen.getByText(/任务固定范围：1 门/)).toBeTruthy();
+    expect(screen.getByTestId("scope").textContent).toBe("/");
+    expect(screen.queryByLabelText("课程学期")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
   it("刷新失败保留缓存并展示可重试错误", async () => {
     render(<Picker />);

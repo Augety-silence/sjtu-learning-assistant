@@ -383,9 +383,20 @@ def sync_canvas(
             )
 
 
+    history_result = {"courses": 0, "files": 0, "issues": []}
+    if not historical:
+        from sjtu_learning_assistant.course_material_sync import sync_historical_materials
+        with build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS) as history_client:
+            history_result = sync_historical_materials(
+                engine, history_client, {str(course["id"]) for course in raw_courses},
+                progress=progress,
+            )
+        print(f"往期资料目录：{history_result['courses']} 门课程，更新 {history_result['files']} 个文件，受限资源 {len(history_result['issues'])} 项。")
+
     if progress:
         progress(len(raw_courses), len(raw_courses), "资料处理结束")
     return {"courses": len(raw_courses), "issues": issues,
+            "historical_materials": history_result,
             "downloaded": archive_result.downloaded if download else 0,
             "download_failed": archive_result.failed if download else 0}
 
