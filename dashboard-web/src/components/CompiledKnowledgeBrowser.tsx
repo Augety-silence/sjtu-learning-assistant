@@ -2,6 +2,10 @@ import { ChevronRight, FileText, Folder } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  type CourseScope,
+  CourseScopePicker,
+} from "@/components/CourseScopePicker";
 import { Button } from "@/components/ui/Button";
 import {
   getKnowledgeMCPConfig,
@@ -108,6 +112,7 @@ export function CompiledKnowledgeBrowser({
   preferredSource?: string;
 }) {
   const [sources, setSources] = useState<CompiledKnowledgeSource[]>([]);
+  const [scope, setScope] = useState<CourseScope>({ termId: "", courseId: "" });
   const [sourceId, setSourceId] = useState(preferredSource);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
@@ -165,13 +170,27 @@ export function CompiledKnowledgeBrowser({
       setReading(false);
       setPage(null);
       setLoading(true);
+      setSearch(null);
       setActiveQuery(keywords);
       setFolder(selectedFolder);
       setError("");
       try {
-        const result = await (selectedFolder
-          ? searchCompiledKnowledge(keywords, selected, offset, selectedFolder)
-          : searchCompiledKnowledge(keywords, selected, offset));
+        const result = await (scope.termId || scope.courseId
+          ? searchCompiledKnowledge(
+              keywords,
+              selected,
+              offset,
+              selectedFolder,
+              scope,
+            )
+          : selectedFolder
+            ? searchCompiledKnowledge(
+                keywords,
+                selected,
+                offset,
+                selectedFolder,
+              )
+            : searchCompiledKnowledge(keywords, selected, offset));
         if (generation !== searchGeneration.current) return;
         setSearch(result);
         if (
@@ -191,7 +210,7 @@ export function CompiledKnowledgeBrowser({
         if (generation === searchGeneration.current) setLoading(false);
       }
     },
-    [read],
+    [read, scope],
   );
 
   const refresh = useCallback(async () => {
@@ -280,6 +299,7 @@ export function CompiledKnowledgeBrowser({
           刷新结果
         </Button>
       </div>
+      <CourseScopePicker scope={scope} onChange={setScope} />
       <form
         className="compiled-knowledge-toolbar"
         onSubmit={(event) => {

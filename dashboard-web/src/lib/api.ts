@@ -290,6 +290,7 @@ export function searchCompiledKnowledge(
   sourceId = "",
   offset = 0,
   folder = "",
+  scope?: { termId: string; courseId: string },
 ) {
   return invoke<import("@/lib/types").CompiledKnowledgeSearch>(
     "compiled_knowledge_search",
@@ -299,6 +300,8 @@ export function searchCompiledKnowledge(
       offset,
       limit: 20,
       ...(folder ? { folder } : {}),
+      ...(scope?.termId ? { term_id: scope.termId } : {}),
+      ...(scope?.courseId ? { course_id: scope.courseId } : {}),
     },
   );
 }

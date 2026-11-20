@@ -34,6 +34,10 @@ export interface CompiledKnowledgeDocument {
   folder?: string;
   contract?: string;
   error?: string | null;
+  course_id?: string;
+  course_name?: string;
+  term_id?: string;
+  term_name?: string;
 }
 
 export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {

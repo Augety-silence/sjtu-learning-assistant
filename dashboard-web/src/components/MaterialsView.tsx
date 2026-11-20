@@ -199,7 +199,13 @@ function defaultExpandedIds(root: MaterialNode) {
   return expanded;
 }
 
-export function MaterialsView() {
+export function MaterialsView({
+  termId = "",
+  courseId = "",
+}: {
+  termId?: string;
+  courseId?: string;
+} = {}) {
   const [tree, setTree] = useState<MaterialTree | null>(null);
   const [selectedId, setSelectedId] = useState("root");
   const [activeId, setActiveId] = useState("root");
@@ -241,7 +247,12 @@ export function MaterialsView() {
     const requestId = ++loadRequestRef.current;
     setError("");
     try {
-      const nextTree = await invoke<MaterialTree>("material_tree");
+      const nextTree = await (termId || courseId
+        ? invoke<MaterialTree>("material_tree", {
+            term_id: termId,
+            ...(courseId ? { course_ids: [courseId] } : {}),
+          })
+        : invoke<MaterialTree>("material_tree"));
       if (requestId !== loadRequestRef.current) return;
       setTree(nextTree);
       setExpandedIds((current) =>
@@ -257,7 +268,7 @@ export function MaterialsView() {
       if (requestId !== loadRequestRef.current) return;
       setError(reason instanceof Error ? reason.message : "资料加载失败");
     }
-  }, []);
+  }, [termId, courseId]);
   useEffect(() => {
     void load();
   }, [load]);

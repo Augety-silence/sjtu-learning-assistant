@@ -361,6 +361,10 @@ class NotificationServiceTests(unittest.TestCase):
             def execute(self, _statement):
                 return FakeQueryResult()
 
+            def scalar(self, _statement):
+                # 此测试模拟尚无默认课程范围标记的旧库。
+                return None
+
         with patch(
             "sjtu_learning_assistant.notifications.Session", FakeSession
         ):

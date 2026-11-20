@@ -72,14 +72,19 @@ def _integer(value: object, name: str, minimum: int, maximum: int) -> int:
 
 class CompiledKnowledge:
     def __init__(self, settings: Callable = lambda: SettingsStore().load(),
-                 projects_path: Path = APP_SUPPORT_DIR / "local-projects.json"):
+                 projects_path: Path = APP_SUPPORT_DIR / "local-projects.json", metadata: Callable | None = None, engine=None):
         self.settings = settings
         self.projects_path = projects_path
+        if metadata is None and engine is not None:
+            from sjtu_learning_assistant.course_scope import knowledge_metadata
+            metadata = lambda: knowledge_metadata(engine, self.settings().archive_root)
+        self.metadata = metadata or (lambda: {})
 
     def _catalog(self) -> tuple[list[dict], list[dict], list[str], bool]:
         sources, documents, issues = [], [], []
         truncated = False
         archive = Path(self.settings().archive_root)
+        metadata = self.metadata()
         automatic = archive / "Knowledge Markdown"
         try:
             marker = _safe(automatic, "99_System/Course-Sync.json")
@@ -103,6 +108,7 @@ class CompiledKnowledge:
                             entry = self._entry(source, relative + ".md", item.get("status", "pending"))
                             entry.update(error=item.get("error") if type(item.get("error")) is str else None,
                                          contract=item.get("contract"), original_path=relative)
+                            entry.update(metadata.get(relative, {}))
                             documents.append(entry)
                     except (CompiledKnowledgeError, TypeError):
                         issues.append("部分自动课件路径不可访问，已跳过。")
@@ -188,7 +194,14 @@ class CompiledKnowledge:
         except UnicodeError:
             raise CompiledKnowledgeError("知识文件不是 UTF-8 Markdown。") from None
 
-    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20, folder: object = "") -> dict:
+    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20, folder: object = "", term_id: object = "", course_id: object = "") -> dict:
+        from sjtu_learning_assistant.course_scope import validate_scope
+        try:
+            validate_scope(term_id, [course_id] if course_id else None)
+            if type(course_id) is not str:
+                raise ValueError()
+        except ValueError:
+            raise CompiledKnowledgeError("知识课程范围无效。") from None
         if type(query) is not str or len(query) > 160 or "\x00" in query or type(source_id) is not str or len(source_id) > 128:
             raise CompiledKnowledgeError("知识搜索参数无效。")
         if type(folder) is not str or len(folder) > 1024 or "\\" in folder or "\x00" in folder or PurePosixPath(folder).is_absolute() or ".." in PurePosixPath(folder).parts:
@@ -203,6 +216,8 @@ class CompiledKnowledge:
         needle = query.strip().lower()
         for doc in documents:
             if source_id and doc["source_id"] != source_id:
+                continue
+            if (term_id and doc.get("term_id") != term_id) or (course_id and doc.get("course_id") != course_id):
                 continue
             hit, snippet = 0, ""
             if needle:

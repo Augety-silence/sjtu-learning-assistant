@@ -23,6 +23,7 @@ from sjtu_learning_assistant.ai_workspace import AIWorkspace, AIWorkspaceError
 from sjtu_learning_assistant.document_text import DocumentText
 from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
 from sjtu_learning_assistant.material_tree import build_material_tree
+from sjtu_learning_assistant.course_scope import default_conditions, term_identity, validate_scope
 from sjtu_learning_assistant.text_content import content_to_plain_text
 from sjtu_learning_assistant.models import (
     Announcement,
@@ -262,6 +263,9 @@ class ReadOnlyToolRegistry:
             "propose_file_change": ("在 AI 工作区内新建或修改文本文件。修改不会立即生效：会生成差异预览，由用户在界面确认后才写入。mode=create 新建；overwrite 整体替换；replace 按 edits 中每个 find（必须在文件中恰好出现一次）替换为 replace；append 在末尾追加（长文档请先 create 再多次 append，每次不超过约 6000 字）。", {"type": "object", "properties": {"path": {"type": "string", "maxLength": 512}, "mode": {"type": "string", "enum": ["create", "overwrite", "replace", "append"]}, "content": {"type": "string"}, "edits": {"type": "array", "maxItems": 30, "items": {"type": "object", "properties": {"find": {"type": "string"}, "replace": {"type": "string"}}, "required": ["find", "replace"], "additionalProperties": False}}, "summary": {"type": "string", "maxLength": 300, "description": "一句话说明这次修改做了什么"}}, "required": ["path", "mode"], "additionalProperties": False}),
             "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1, "maximum": MAX_ATTACHMENT_ID}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
+        # 学期范围共用 desktop/MCP 契约，禁止用同名课程或文件夹名猜身份。
+        schemas["list_courses"][1]["properties"].update({"term_id": {"type": "string", "maxLength": 140}, "offset": {"type": "integer", "minimum": 0, "maximum": 10000}})
+        schemas["search_compiled_knowledge"][1]["properties"].update({"term_id": {"type": "string", "maxLength": 140}, "course_id": {"type": "string", "maxLength": 128}})
         # 只声明本次实际注册的工具：未配置工作区时文件工具不出现在模型可选项中。
         return [
             {"type": "function", "function": {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
@@ -305,17 +309,25 @@ class ReadOnlyToolRegistry:
         return ToolExecution(name, result, arg_summary, summary)
 
     def _list_courses(self, raw: object):
-        args = _only(raw, {"query", "limit"})
+        args = _only(raw, {"query", "limit", "term_id", "offset"})
         query = _bounded_text(args.get("query"), "query", limit=120, required=False)
         limit = _bounded_limit(args.get("limit"))
-        statement = select(Course).order_by(Course.term_name.desc(), Course.name.asc()).limit(limit)
+        try:
+            term, _ = validate_scope(args.get("term_id", ""))
+        except ValueError as exc:
+            raise AgentToolError(str(exc)) from None
+        offset = args.get("offset", 0)
+        if type(offset) is not int or not 0 <= offset <= 10000:
+            raise AgentToolError("offset 无效。")
+        statement = select(Course).order_by(Course.term_name.desc(), Course.name.asc(), Course.source_id.asc())
         if query:
             pattern = _like_pattern(query)
             statement = statement.where(or_(func.lower(Course.name).like(pattern, escape="\\"), func.lower(Course.course_code).like(pattern, escape="\\")))
         with Session(self.engine) as session:
             rows = session.scalars(statement).all()
-        items = [{"course_id": row.source_id, "name": _clip(row.name, 180), "course_code": _clip(row.course_code, 80) or None, "term": _clip(row.term_name, 100) or None} for row in rows]
-        return {"items": items, "count": len(items)}, {"has_query": bool(query), "limit": limit}
+        rows = [row for row in rows if not term or term_identity(row.raw_data or {}, row.term_name)[0] == term]
+        items = [{"course_id": row.source_id, "name": _clip(row.name, 180), "course_code": _clip(row.course_code, 80) or None, "term": _clip(row.term_name, 100) or None, "term_id": term_identity(row.raw_data or {}, row.term_name)[0]} for row in rows[offset:offset + limit]]
+        return {"items": items, "count": len(rows), "next_offset": offset + limit if offset + limit < len(rows) else None}, {"has_query": bool(query), "limit": limit, "term_id": term}
 
     def _knowledge_call(self, operation: str, arguments: Mapping):
         try:
@@ -357,7 +369,7 @@ class ReadOnlyToolRegistry:
         return result
 
     def _knowledge_search(self, raw: object):
-        args = _only(raw, {"query", "source_id", "offset", "limit"})
+        args = _only(raw, {"query", "source_id", "offset", "limit", "term_id", "course_id"})
         result = self._knowledge_call("search", args)
         return self._knowledge_page_budget(result, args.get("offset", 0)), {"has_query": bool(args.get("query"))}
 
@@ -441,6 +453,8 @@ class ReadOnlyToolRegistry:
         if course_id:
             statement = statement.where(Course.source_id == course_id)
         with Session(self.engine) as session:
+            if not course_id:
+                statement = statement.where(*default_conditions(session, Assignment.course_id))
             rows = session.execute(statement).all()
         items = [{"title": _clip(item.name, 240), "course_id": course.source_id, "course": _clip(course.name, 180), "due_at": _iso(item.due_at), "submission_state": item.submission_state or "unsubmitted"} for item, course in rows]
         return {"items": items, "count": len(items), "window_hours": hours}, {"hours": hours, "course_filtered": bool(course_id), "limit": limit}
@@ -500,6 +514,7 @@ class ReadOnlyToolRegistry:
                     .where(
                         Announcement.is_active.is_(True),
                         UnifiedItem.is_active.is_(True),
+                        *default_conditions(session, Announcement.course_id),
                     )
                 )
                 if query:
@@ -532,6 +547,7 @@ class ReadOnlyToolRegistry:
                     .where(
                         Assignment.is_active.is_(True),
                         UnifiedItem.is_active.is_(True),
+                        *default_conditions(session, Assignment.course_id),
                     )
                 )
                 if query:

@@ -51,6 +51,7 @@ from sjtu_learning_assistant.canvas_sync import (
     DEFAULT_TIMEOUT_SECONDS,
     build_http_client,
     fetch_active_courses,
+    fetch_all_courses,
     fetch_course_announcements_incremental,
     fetch_course_assignments_incremental,
     fetch_course_files_incremental,
@@ -116,9 +117,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_INITIAL_LIMIT,
         help=f"首次导入最近邮件数量，默认 {DEFAULT_INITIAL_LIMIT}。",
     )
+    parser.add_argument("--term-id", help="仅同步指定学期，如 term:123。")
+    parser.add_argument("--course-id", action="append", help="仅同步指定课程，可重复指定。")
     args = parser.parse_args(argv)
     if args.canvas_only and args.mail_only:
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
+    from sjtu_learning_assistant.course_scope import validate_scope
+    try:
+        validate_scope(args.term_id or "", args.course_id)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.mail_only and (args.term_id or args.course_id):
+        parser.error("邮箱同步不能携带课程范围。")
     if args.initial_mail_limit < 1 or args.initial_mail_limit > 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
     if args.archive_root is not None:
@@ -143,13 +153,30 @@ def sync_canvas(
     organize_by_category: bool = True,
     ai_client: OpenAIClassificationClient | None = None,
     ai_enabled: bool = False,
-) -> None:
-    token, _ = get_token(use_keychain=True)
+    selected_courses: list[dict] | None = None,
+    term_id: str = "",
+    course_ids: list[str] | None = None,
+    progress=None,
+    saved_token: str | None = None,
+) -> dict:
+    token = saved_token
+    if token is None:
+        token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
     with build_http_client(
         DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
     ) as client:
-        raw_courses = fetch_active_courses(client)
+        historical = selected_courses is not None or bool(term_id) or course_ids is not None
+        if historical:
+            notify = False
+        if selected_courses is not None:
+            raw_courses = selected_courses
+        elif historical:
+            from sjtu_learning_assistant.course_scope import select_scope
+            raw_courses = select_scope(fetch_all_courses(client), term_id, course_ids)
+        else:
+            raw_courses = fetch_active_courses(client)
+        issues = []
         announcements_by_course = {}
         assignments_by_course = {}
         folders_by_course = {}
@@ -163,8 +190,13 @@ def sync_canvas(
         unchanged_assignments = 0
         unchanged_files = 0
 
-        for course in raw_courses:
+        for index, course in enumerate(raw_courses):
             source_id = str(course["id"])
+            if progress:
+                progress(index, len(raw_courses), "同步课程资料")
+            if course.get("access_restricted_by_date") is True:
+                issues.append({"course_id": source_id, "resource": "course", "http": 403})
+                continue
             announcement_resource = f"course:{source_id}:announcements"
             assignment_resource = f"course:{source_id}:assignments"
             file_resource = f"course:{source_id}:files"
@@ -186,6 +218,7 @@ def sync_canvas(
                 if exc.status_code not in (403, 404):
                     raise
                 announcement_result = None
+                issues.append({"course_id": source_id, "resource": "announcements", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的公告暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -200,12 +233,12 @@ def sync_canvas(
                 if exc.status_code not in (403, 404):
                     raise
                 assignment_result = None
+                issues.append({"course_id": source_id, "resource": "assignments", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的作业暂不可读，已跳过：{exc}",
                     file=sys.stderr,
                 )
-            # 教师可对学生隐藏“文件/模块”栏目，Canvas 会对该课程返回 401/403；
-            # 只跳过该课程的对应资源（不推进游标、不触发失活），不中止整轮同步。
+            # 隐藏栏目（403/404）仅跳过资源；认证、限流或网络故障必须中止。
             try:
                 file_result = fetch_course_files_incremental(
                     client,
@@ -214,7 +247,10 @@ def sync_canvas(
                 )
                 folders = fetch_course_folders(client, source_id)
             except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
                 file_result = None
+                issues.append({"course_id": source_id, "resource": "files", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的文件列表暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -230,7 +266,10 @@ def sync_canvas(
                         fetch_course_module_items(client, source_id, module_id)
                     )
             except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
                 modules = None
+                issues.append({"course_id": source_id, "resource": "modules", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的模块暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -265,6 +304,8 @@ def sync_canvas(
             else:
                 files_by_course[source_id] = file_result.records
 
+    if progress:
+        progress(len(raw_courses), len(raw_courses), "保存课程资料")
     result = persist_canvas_data(
         engine,
         raw_courses=raw_courses,
@@ -277,6 +318,7 @@ def sync_canvas(
         announcement_cursors=announcement_cursors,
         assignment_cursors=assignment_cursors,
         file_cursors=file_cursors,
+        default_scope=not historical,
     )
     print(
         "Canvas 同步成功："
@@ -293,6 +335,8 @@ def sync_canvas(
         f"模块 {result.modules.fetched}，模块项 {result.module_items.fetched}。"
     )
     if download:
+        if progress:
+            progress(len(raw_courses), len(raw_courses), "下载课程资料")
         with build_http_client(
             DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
         ) as archive_client:
@@ -302,9 +346,10 @@ def sync_canvas(
                 archive_root=archive_root,
                 current_term=current_term,
                 organize_by_category=organize_by_category,
-                active_course_source_ids={str(course["id"]) for course in raw_courses},
+                active_course_source_ids={str(course["id"]) for course in raw_courses if not course.get("access_restricted_by_date")},
                 ai_client=ai_client,
                 ai_enabled=ai_enabled,
+                checkpoint=(lambda: progress(len(raw_courses), len(raw_courses), "下载课程资料")) if progress else None,
             ).archive_current_term()
         if archive_result.skipped:
             print("文件归档跳过：%s" % archive_result.message)
@@ -336,6 +381,13 @@ def sync_canvas(
                 f"警告：通知处理失败，但数据同步已成功：{type(exc).__name__}",
                 file=sys.stderr,
             )
+
+
+    if progress:
+        progress(len(raw_courses), len(raw_courses), "资料处理结束")
+    return {"courses": len(raw_courses), "issues": issues,
+            "downloaded": archive_result.downloaded if download else 0,
+            "download_failed": archive_result.failed if download else 0}
 
 
 def sync_mail(
@@ -445,6 +497,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
         failed = False
         if not args.mail_only:
             sync_options = {}
+            if args.term_id or args.course_id:
+                sync_options.update(term_id=args.term_id or "", course_ids=args.course_id)
             ai_client = None
             if (
                 settings.auto_download_current_term
@@ -471,7 +525,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
                 with diagnostic_stage("canvas", "sync"):
                     sync_canvas(
                         engine,
-                        notify=not args.no_notify,
+                        notify=not args.no_notify and not (args.term_id or args.course_id),
                         download=settings.auto_download_current_term,
                         archive_root=Path(settings.archive_root),
                         current_term=args.current_term,

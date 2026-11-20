@@ -474,9 +474,10 @@ class DesktopBridge:
             "mail_attachment_open": self._mail_attachment_open,
             "mail_attachment_reveal": self._mail_attachment_reveal,
             "message_mark_read": self._message_mark_read,
-            "material_tree": lambda payload: self._without_payload(
-                payload, service.material_tree
-            ),
+            "material_tree": lambda payload: self._course_scope_call(payload, "material_tree"),
+            "course_catalog": lambda payload: self._course_scope_call(payload, "course_catalog"),
+            "course_history_start": lambda payload: self._course_scope_call(payload, "course_history_start"),
+            "course_history_status": lambda payload: self._without_payload(payload, service.course_history_status),
             "sync_status": lambda payload: self._without_payload(
                 payload, service.sync_status
             ),
@@ -886,7 +887,7 @@ class DesktopBridge:
         return self._service.local_projects_list()
 
     def _compiled_knowledge_call(self, payload: Mapping[str, Any], operation: str) -> dict[str, Any]:
-        fields = {"search": {"query", "source_id", "offset", "limit", "folder"},
+        fields = {"search": {"query", "source_id", "offset", "limit", "folder", "term_id", "course_id"},
                   "read": {"document_id", "offset", "max_chars"},
                   "open": {"source_id", "document_id"}}[operation]
         _only_keys(payload, fields)
@@ -895,6 +896,12 @@ class DesktopBridge:
         if operation == "open" and "source_id" not in payload:
             raise DashboardError("source_id 不能为空。")
         return getattr(self._service, "compiled_knowledge_" + operation)(**payload)
+
+    def _course_scope_call(self, payload, operation):
+        fields = {"course_catalog": {"refresh"}, "material_tree": {"term_id", "course_ids"},
+                  "course_history_start": {"term_id", "course_ids", "download"}}[operation]
+        _only_keys(payload, fields)
+        return getattr(self._service, operation)(**payload)
 
     def _local_projects_add(
         self, payload: Mapping[str, Any]
@@ -2711,7 +2718,7 @@ def main() -> int:
         engine = create_database_engine()
         try:
             from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
-            run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge()))
+            run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine)))
         finally:
             engine.dispose()
         return 0

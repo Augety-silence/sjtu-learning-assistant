@@ -85,7 +85,7 @@ def material_placement(
     return category, archive_folder_names(category, chain), manual_override
 
 
-def build_material_tree(session: Any) -> dict[str, Any]:
+def build_material_tree(session: Any, course_ids: set[int] | None = None) -> dict[str, Any]:
     """Build semester → course → category → Canvas folders → files."""
     from sqlalchemy import select
 
@@ -93,7 +93,7 @@ def build_material_tree(session: Any) -> dict[str, Any]:
 
     courses = list(
         session.scalars(
-            select(Course).order_by(Course.term_name.desc(), Course.name.asc())
+            select(Course).where(*(() if course_ids is None else (Course.id.in_(course_ids),))).order_by(Course.term_name.desc(), Course.name.asc())
         ).all()
     )
     files = list(
@@ -115,9 +115,10 @@ def build_material_tree(session: Any) -> dict[str, Any]:
     category_nodes: dict[tuple[int, str], dict[str, Any]] = {}
 
     for course in courses:
-        term = course.term_name or "未分组学期"
+        from sjtu_learning_assistant.course_scope import term_identity
+        term, label = term_identity(course.raw_data or {}, course.term_name)
         if term not in term_nodes:
-            term_nodes[term] = _new_node(f"term:{len(term_nodes)}", "term", term)
+            term_nodes[term] = _new_node(term, "term", label)
             roots.append(term_nodes[term])
         course_node = _new_node(f"course:{course.source_id}", "course", course.name)
         course_node["course_id"] = course.source_id

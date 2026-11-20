@@ -131,6 +131,8 @@ from sjtu_learning_assistant.local_settings import (
     validate_ai_model,
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
+from sjtu_learning_assistant.course_scope import default_conditions, scoped_database_ids, knowledge_metadata
+from sjtu_learning_assistant.course_history import CourseHistoryService, CourseHistoryError
 from sjtu_learning_assistant.models import (
     ArchiveJob,
     AIAgentTrace,
@@ -558,6 +560,8 @@ class DashboardService:
             )
 
         with Session(self.engine) as session:
+            if not course_ids:
+                statement = statement.where(*default_conditions(session, Assignment.course_id))
             rows = session.execute(statement).all()
 
         def event_dto(assignment: Assignment, course: Course) -> dict[str, Any]:
@@ -1263,7 +1267,8 @@ class DashboardService:
             courses = session.scalar(select(func.count(Course.id))) or 0
             deadlines = session.scalar(
                 select(func.count(Assignment.id)).where(
-                    *self._unfinished_assignment_conditions(now, until)
+                    *self._unfinished_assignment_conditions(now, until),
+                    *default_conditions(session, Assignment.course_id),
                 )
             ) or 0
             unread = session.scalar(
@@ -1295,7 +1300,7 @@ class DashboardService:
             rows = session.execute(
                 select(Assignment, Course)
                 .join(Course, Course.id == Assignment.course_id)
-                .where(*self._unfinished_assignment_conditions(now, until))
+                .where(*self._unfinished_assignment_conditions(now, until), *default_conditions(session, Assignment.course_id))
                 .order_by(Assignment.due_at.asc(), Assignment.id.asc())
                 .limit(limit)
             ).all()
@@ -1343,6 +1348,7 @@ class DashboardService:
                         UnifiedItem.item_type == "announcement",
                         UnifiedItem.is_active.is_(True),
                         Announcement.is_active.is_(True),
+                        *default_conditions(session, Announcement.course_id),
                     )
                     .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
@@ -1368,6 +1374,7 @@ class DashboardService:
                         UnifiedItem.item_type == "assignment",
                         UnifiedItem.is_active.is_(True),
                         Assignment.is_active.is_(True),
+                        *default_conditions(session, Assignment.course_id),
                     )
                     .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
@@ -2099,9 +2106,59 @@ class DashboardService:
             )
         return {"updated": max(int(result.rowcount or 0), 0)}
 
-    def material_tree(self) -> dict[str, Any]:
+    def material_tree(self, term_id="", course_ids=None) -> dict[str, Any]:
         with Session(self.engine) as session:
-            return build_material_tree(session)
+            try:
+                ids = scoped_database_ids(session, term_id, course_ids)
+            except ValueError as exc:
+                raise DashboardError(str(exc)) from None
+            return build_material_tree(session, ids)
+
+    def _history_service(self):
+        with self._client_lock:
+            if self._closed:
+                raise DashboardError("应用正在关闭。")
+            service = getattr(self, "_course_history_instance", None)
+            if service is None:
+                def saved_token():
+                    from check_canvas_token import get_saved_token
+                    token = get_saved_token()
+                    if not token:
+                        raise CourseHistoryError("请先保存 Canvas 凭据。")
+                    return token
+
+                def fetch_rows():
+                    from check_canvas_token import build_http_client, DEFAULT_BASE_URL, DEFAULT_TIMEOUT_SECONDS
+                    from sjtu_learning_assistant.canvas_sync import fetch_all_courses
+                    with build_http_client(DEFAULT_BASE_URL, saved_token(), DEFAULT_TIMEOUT_SECONDS) as client:
+                        return fetch_all_courses(client)
+
+                def synchronize(rows, download, progress):
+                    from sync_data_to_db import sync_canvas
+                    settings = self._effective_settings()
+                    return sync_canvas(self.engine, selected_courses=rows, download=download, notify=False,
+                                       archive_root=Path(settings.archive_root), organize_by_category=settings.organize_by_category,
+                                       progress=progress, saved_token=saved_token())
+
+                service = CourseHistoryService(self.engine, fetch_rows=fetch_rows, synchronize=synchronize,
+                                               sync_lock=self._sync_lock, on_finished=self._notify_course_markdown_sync)
+                self._course_history_instance = service
+            return service
+
+    def course_catalog(self, refresh=False):
+        try:
+            return self._history_service().catalog(refresh)
+        except CourseHistoryError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def course_history_start(self, term_id="", course_ids=None, download=False):
+        try:
+            return self._history_service().start(term_id, course_ids, download)
+        except CourseHistoryError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def course_history_status(self):
+        return self._history_service().status()
 
     def _effective_settings(self) -> LocalSettings:
         return self.settings_store.resolve(archive_root=self._archive_root_override)
@@ -3557,7 +3614,8 @@ class DashboardService:
         return service
 
     def _compiled_knowledge_service(self) -> CompiledKnowledge:
-        return CompiledKnowledge(self._effective_settings, self.local_projects_path)
+        return CompiledKnowledge(self._effective_settings, self.local_projects_path,
+                                 metadata=lambda: knowledge_metadata(self.engine, self._effective_settings().archive_root))
 
     def compiled_knowledge_sources(self) -> dict[str, Any]:
         try:
@@ -3736,6 +3794,9 @@ class DashboardService:
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        history = getattr(self, "_course_history_instance", None)
+        if history is not None:
+            history.close()
         automatic = getattr(self, "_course_markdown_instance", None)
         if automatic is not None:
             automatic.close()

@@ -1,0 +1,7 @@
+.course-history-panel { margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--border-workspace); border-radius: 12px; background: var(--surface-elevated); }
+.course-scope-picker, .course-history-actions { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.course-scope-picker label { display: grid; gap: .3rem; flex: 1 1 200px; min-width: 0; }
+.course-scope-picker select { width: 100%; min-height: 36px; border: 1px solid var(--border-workspace); border-radius: 8px; background: var(--surface-page); color: var(--text-primary); padding: .4rem; font-size: 1rem; }
+.course-scope-picker select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.course-history-actions { margin-top: .75rem; }
+.course-history-panel p, .course-scope-picker small { font-size: .85rem; color: var(--text-secondary); overflow-wrap: anywhere; }

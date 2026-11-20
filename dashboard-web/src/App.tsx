@@ -16,6 +16,7 @@ import {
 import type { CalendarEventItem } from "@/components/CalendarView";
 import { CloudDriveView } from "@/components/CloudDriveView";
 import { ContentReveal } from "@/components/ContentReveal";
+import { CourseMaterialsView } from "@/components/CourseMaterialsView";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
   type GradeAssignment,
@@ -26,7 +27,6 @@ import {
 import { type GradingSubmission, GradingView } from "@/components/GradingView";
 import { KnowledgeCompilerView } from "@/components/KnowledgeCompilerView";
 import { LocalProjectsView } from "@/components/LocalProjectsView";
-import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
 import {
@@ -1834,7 +1834,7 @@ export default function App() {
                 onInitialTargetHandled={clearAssignmentTarget}
               />
             )}
-            {view === "materials" && <MaterialsView key={dataVersion} />}
+            {view === "materials" && <CourseMaterialsView key={dataVersion} />}
             {view === "grades" && (
               <div className="section-stack">
                 {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}

@@ -12,6 +12,12 @@ import type { CompiledKnowledgePage } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  invoke: vi.fn().mockResolvedValue({
+    terms: [],
+    count: 0,
+    complete: false,
+    refreshed_at: null,
+  }),
   getKnowledgeMCPConfig: vi.fn(),
   listCompiledKnowledgeSources: vi.fn(),
   openCompiledKnowledge: vi.fn(),

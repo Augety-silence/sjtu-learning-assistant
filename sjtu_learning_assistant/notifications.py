@@ -423,6 +423,11 @@ def _course_subtitle(course_name: str | None) -> str:
 
 
 class NotificationService:
+    @staticmethod
+    def _default_conditions(session, column):
+        from sjtu_learning_assistant.course_scope import default_conditions
+        return default_conditions(session, column)
+
     def __init__(
         self,
         engine: Engine,
@@ -557,7 +562,7 @@ class NotificationService:
             rows = session.execute(
                 select(UnifiedItem, Course.name)
                 .outerjoin(Course, UnifiedItem.course_id == Course.id)
-                .where(*conditions)
+                .where(*conditions, *self._default_conditions(session, UnifiedItem.course_id))
                 .order_by(UnifiedItem.id)
             ).all()
         event_type = f"new_{item_type}"
@@ -587,6 +592,7 @@ class NotificationService:
                 .outerjoin(UnifiedItem, UnifiedItem.assignment_id == Assignment.id)
                 .where(
                     Assignment.is_active.is_(True),
+                    *self._default_conditions(session, Assignment.course_id),
                     Assignment.due_at.is_not(None),
                     Assignment.due_at >= self.now,
                     Assignment.due_at <= deadline,
