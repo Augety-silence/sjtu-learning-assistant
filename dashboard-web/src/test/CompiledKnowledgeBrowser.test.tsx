@@ -62,6 +62,7 @@ const page: CompiledKnowledgePage = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(listCompiledKnowledgeSources).mockResolvedValue({
     items: [source],
     count: 87,
@@ -85,6 +86,61 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("CompiledKnowledgeBrowser", () => {
+  it("每份文件独立恢复阅读位置，新文件从头开始，版本变化也从头开始", async () => {
+    const second = { ...document, id: "b".repeat(32), title: "第二讲.pptx.md" };
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document, second],
+      count: 2,
+      next_offset: null,
+      issues: [],
+      truncated: false,
+    });
+    let version = "c".repeat(64);
+    vi.mocked(readCompiledKnowledge).mockImplementation(async (id) => ({
+      ...page,
+      id,
+      text: `正文${id}`,
+      next_offset: null,
+      content_sha256: version,
+    }));
+    const { unmount } = render(<CompiledKnowledgeBrowser />);
+    await screen.findByText(`正文${document.id}`);
+    const reader = screen.getByLabelText("Markdown 正文预览");
+    reader.scrollTop = 800;
+    // 包括程序性位置改变没有派发 scroll 的情形：切换前必须主动保存。
+    fireEvent.click(screen.getByRole("button", { name: /第二讲/ }));
+    await screen.findByText(`正文${second.id}`);
+    expect(reader.scrollTop).toBe(0);
+    reader.scrollTop = 200;
+    fireEvent.scroll(reader);
+    fireEvent.click(screen.getByRole("button", { name: /第一讲/ }));
+    await screen.findByText(`正文${document.id}`);
+    expect(reader.scrollTop).toBe(800);
+    unmount();
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText(`正文${document.id}`);
+    expect(screen.getByLabelText("Markdown 正文预览").scrollTop).toBe(800);
+    fireEvent.click(screen.getByRole("button", { name: "从头阅读" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Markdown 正文预览").scrollTop).toBe(0),
+    );
+    const active = screen.getByLabelText("Markdown 正文预览");
+    active.scrollTop = 900;
+    fireEvent.scroll(active);
+    version = "d".repeat(64);
+    fireEvent.click(screen.getByRole("button", { name: /第一讲/ }));
+    await waitFor(() => expect(active.scrollTop).toBe(0));
+  });
+
+  it("可收起目录扩大正文，切换不销毁正文", async () => {
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("关系代数");
+    const reader = screen.getByLabelText("Markdown 正文预览");
+    fireEvent.click(screen.getByRole("button", { name: "收起课程目录" }));
+    expect(screen.getByLabelText("Markdown 正文预览")).toBe(reader);
+    expect(screen.getByRole("button", { name: "展开课程目录" })).toBeTruthy();
+  });
+
   it("超长讲义续读遇到版本变化保留旧正文，不混入新版本片段", async () => {
     vi.mocked(readCompiledKnowledge).mockResolvedValueOnce({
       ...page,
@@ -114,6 +170,7 @@ describe("CompiledKnowledgeBrowser", () => {
   it.each([
     ["course-lecture-v2", "旧版知识稿"],
     ["course-study-v3", "完整课程讲义"],
+    ["course-summary-v1", "精炼课程总结"],
   ])("区分 %s 而不把旧机械稿标为新讲义", async (contract, label) => {
     vi.mocked(readCompiledKnowledge).mockResolvedValue({
       ...page,

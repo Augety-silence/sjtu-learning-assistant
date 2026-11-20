@@ -50,20 +50,20 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual("completed", self.worker.status()["status"])
         self.assertEqual(original, self.path.read_bytes())
         self.worker.run_once()
-        self.assertEqual(8, self.runner.call_count)
+        self.assertEqual(4, self.runner.call_count)
         new = build_pdf(self.path.parent / "new.pdf", ("New slide",))
         self.paths.append(new)
         self.worker.run_once()
-        self.assertEqual(15, self.runner.call_count)
+        self.assertEqual(7, self.runner.call_count)
         self.assertEqual(2, self.worker.status()["completed"])
 
     def test_mirror_images_are_relative_and_url_encoded(self):
         self.worker.run_once()
         import re
-        links = re.findall(r"\[课件 p.\d+ 原文与页图\]\(([^)]+)\)", self.mirror.read_text(encoding="utf-8"))
-        self.assertEqual(2, len(links))
-        for link in links:
-            self.assertTrue((self.mirror.parent / unquote(link)).is_file())
+        self.assertIn('[课件 p.1]', self.mirror.read_text())
+        evidence = list((self.target / '90_Inbox').rglob('pages/page-*.md'))
+        self.assertEqual(2, len(evidence))
+        self.assertTrue(all(p.is_file() for p in evidence))
 
     def test_reverified_visual_evidence_links_resolve_in_course_mirror(self):
         def runner(model, system, content):
@@ -77,9 +77,9 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = runner
         self.worker.run_once()
         import re
-        links = re.findall(r'\[课件 p.\d+ 最新图文复核\]\(([^)]+)\)', self.mirror.read_text())
-        self.assertEqual(1, len(links))
-        self.assertTrue((self.mirror.parent / unquote(links[0])).is_file())
+        evidence = list((self.target / '90_Inbox').rglob('*-visual-*.md'))
+        self.assertEqual(1, len(evidence))
+        self.assertIn('原图复核完成', evidence[0].read_text())
 
     def test_source_revision_updates_generated_mirror_keeps_previous(self):
         self.worker.run_once()
@@ -95,22 +95,22 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         build_pdf(self.path, ("Changed slide",))
         self.worker.run_once()
         self.assertEqual("我的笔记", self.mirror.read_text(encoding="utf-8"))
-        self.assertEqual(8, self.runner.call_count)
+        self.assertEqual(4, self.runner.call_count)
         self.assertEqual(1, self.worker.status()["failed"])
 
     def test_legacy_daily_budget_does_not_stop_compilation_and_restarts_reuse_all(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         self.worker.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertIn("contract: course-study-v3", self.mirror.read_text(encoding="utf-8"))
+        self.assertIn("contract: course-summary-v1", self.mirror.read_text(encoding="utf-8"))
         self.assertEqual("completed", self.worker.status()["status"])
         restart = self.new_worker()
         restart.run_once()
-        self.assertEqual(8, self.runner.call_count)
+        self.assertEqual(4, self.runner.call_count)
         self.day = "2026-11-15"
         restart.run_once()
         self.assertTrue(self.mirror.exists())
-        self.assertEqual(8, self.runner.call_count)
+        self.assertEqual(4, self.runner.call_count)
 
     def test_all_text_markdown_ready_even_when_visual_service_fails(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
@@ -140,9 +140,9 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = runner
         self.worker.run_once()
         marker = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
-        self.assertEqual({"day": "2026-11-15", "used": 7}, marker["quota"])
+        self.assertEqual({"day": "2026-11-15", "used": 3}, marker["quota"])
         self.worker.run_once()
-        self.assertEqual(7, self.worker.status()["calls_today"])
+        self.assertEqual(3, self.worker.status()["calls_today"])
 
     def test_first_database_failure_can_recover_and_lock_scaffold_is_safe(self):
         broken = CourseMarkdownSync(lambda: self.settings, Mock(side_effect=RuntimeError()), self.runner)
@@ -214,7 +214,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
             self.worker.run_once()
         self.worker.run_once()
         self.assertTrue(self.mirror.is_file())
-        self.assertEqual(8, self.runner.call_count)
+        self.assertEqual(4, self.runner.call_count)
 
     def test_contract_upgrade_keeps_old_mirror_until_lecture_is_complete(self):
         self.worker.run_once()
@@ -226,7 +226,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         # 不依赖模型成功也不能回退覆盖成原文稿。
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         self.runner.side_effect = RuntimeError("unavailable")
-        with patch('sjtu_learning_assistant.course_markdown_sync.compilation_fingerprint', return_value='new-prompt'), patch('sjtu_learning_assistant.knowledge_documents.PROMPT_VERSION', 'new-prompt'):
+        with patch('sjtu_learning_assistant.course_markdown_sync.compilation_fingerprint', return_value='new-prompt'), patch('sjtu_learning_assistant.knowledge_summary.SUMMARY_VERSION', 'new-prompt'):
             self.worker.run_once()
         self.assertEqual(previous, self.mirror.read_bytes())
         self.assertEqual('completed_with_warnings', self.worker.status()['status'])

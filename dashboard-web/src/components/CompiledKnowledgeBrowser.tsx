@@ -1,4 +1,11 @@
-import { FileText, Folder, RefreshCw, Search } from "lucide-react";
+import {
+  FileText,
+  Folder,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -19,6 +26,10 @@ import {
   completeKnowledgeText,
   knowledgeTextLength,
 } from "@/lib/compiledKnowledgeCopy";
+import {
+  savedKnowledgePosition,
+  useKnowledgeReadingPosition,
+} from "@/lib/knowledgeReadingPosition";
 import type {
   CompiledKnowledgeDocument,
   CompiledKnowledgePage,
@@ -39,6 +50,8 @@ function documentTitle(doc: CompiledKnowledgeDocument) {
 }
 
 function documentStatus(doc: CompiledKnowledgeDocument) {
+  if (doc.status === "completed" && doc.contract === "course-summary-v1")
+    return "精炼课程总结";
   if (doc.status === "completed" && doc.contract === "course-study-v3")
     return "完整课程讲义";
   if (doc.status === "completed" && doc.contract === "course-lecture-v2")
@@ -67,18 +80,36 @@ export function CompiledKnowledgeBrowser({
   const [message, setMessage] = useState("");
   const [config, setConfig] = useState("");
   const [folder, setFolder] = useState("");
+  const [navigationOpen, setNavigationOpen] = useState(true);
+  const readingPosition = useKnowledgeReadingPosition(page);
   const searchGeneration = useRef(0);
   const readGeneration = useRef(0);
   const sourceGeneration = useRef(0);
   const displayedPage = useRef<CompiledKnowledgePage | null>(null);
 
   const read = useCallback(
-    async (doc: CompiledKnowledgeDocument, offset = 0, append = false) => {
+    async (
+      doc: CompiledKnowledgeDocument,
+      offset = 0,
+      append = false,
+      restart = false,
+    ) => {
+      readingPosition.capture();
       const generation = ++readGeneration.current;
       setReading(true);
       setError("");
       try {
         let result = await readCompiledKnowledge(doc.id, offset);
+        if (
+          !append &&
+          !restart &&
+          result.content_sha256 &&
+          result.total_chars > 240_000
+        ) {
+          const saved = savedKnowledgePosition(doc.id, result.content_sha256);
+          if (saved && saved.offset > 0)
+            result = await readCompiledKnowledge(doc.id, saved.offset);
+        }
         if (
           result.offset === 0 &&
           result.content_sha256 &&
@@ -116,6 +147,7 @@ export function CompiledKnowledgeBrowser({
               : result;
           displayedPage.current = next;
           setPage(next);
+          if (restart) readingPosition.restart();
         }
       } catch (reason) {
         if (generation === readGeneration.current)
@@ -124,7 +156,7 @@ export function CompiledKnowledgeBrowser({
         if (generation === readGeneration.current) setReading(false);
       }
     },
-    [],
+    [readingPosition.restart, readingPosition.capture],
   );
 
   const load = useCallback(
@@ -134,6 +166,7 @@ export function CompiledKnowledgeBrowser({
       offset = 0,
       selectedFolder = "",
     ) => {
+      readingPosition.capture();
       const generation = ++searchGeneration.current;
       ++readGeneration.current;
       setReading(false);
@@ -167,7 +200,7 @@ export function CompiledKnowledgeBrowser({
         if (generation === searchGeneration.current) setLoading(false);
       }
     },
-    [read],
+    [read, readingPosition.capture],
   );
 
   const refresh = useCallback(async () => {
@@ -308,92 +341,113 @@ export function CompiledKnowledgeBrowser({
       <div
         className="compiled-knowledge-layout"
         data-browsing={browsingRoot ? "root" : "folder"}
+        data-navigation={navigationOpen ? "open" : "closed"}
       >
-        <nav
-          className="compiled-knowledge-folders"
-          aria-label="课程与课时文件夹"
+        <aside
+          className="compiled-knowledge-navigation"
+          hidden={!navigationOpen}
         >
-          <h3>课程目录</h3>
-          <Button
-            variant="ghost"
-            aria-pressed={!folder}
-            onClick={() => {
-              const selected = sources.some(
-                (source) => source.id === preferredSource,
-              )
-                ? preferredSource
-                : "";
-              setSourceId(selected);
-              void load(selected, activeQuery);
-            }}
+          <nav
+            className="compiled-knowledge-folders"
+            aria-label="课程与课时文件夹"
           >
-            全部课程
-          </Button>
-          <KnowledgeFolders
-            folders={folders}
-            selected={folder}
-            selectedSource={sourceId}
-            onSelect={(source, path) => {
-              setSourceId(source);
-              void load(source, activeQuery, 0, path);
-            }}
-          />
-        </nav>
-        {!browsingRoot && (
-          <div
-            className="compiled-knowledge-list"
-            aria-label="Markdown 结果列表"
-          >
-            <p className="compiled-knowledge-folder-path">
-              {folder || "全部课程"}
-            </p>
-            {search?.items.map((doc) => (
-              <Button
-                key={doc.id}
-                variant="ghost"
-                aria-pressed={page?.id === doc.id}
-                className="compiled-knowledge-item"
-                onClick={() => void read(doc)}
-              >
-                <strong>
-                  <FileText aria-hidden="true" />
-                  {documentTitle(doc)}
-                </strong>
-                <span>{documentStatus(doc)}</span>
-                {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
-              </Button>
-            ))}
-            {search?.next_offset != null && (
-              <Button
-                variant="outline"
-                onClick={() =>
-                  void load(
-                    sourceId,
-                    activeQuery,
-                    search.next_offset ?? 0,
-                    folder,
-                  )
-                }
-                disabled={loading}
-              >
-                下一组结果
-              </Button>
-            )}
-            {search && searchOffset > 0 && (
-              <Button
-                variant="ghost"
-                onClick={() => void load(sourceId, activeQuery, 0, folder)}
-                disabled={loading}
-              >
-                返回首组结果
-              </Button>
-            )}
-          </div>
-        )}
+            <h3>课程目录</h3>
+            <Button
+              variant="ghost"
+              aria-pressed={!folder}
+              onClick={() => {
+                const selected = sources.some(
+                  (source) => source.id === preferredSource,
+                )
+                  ? preferredSource
+                  : "";
+                setSourceId(selected);
+                void load(selected, activeQuery);
+              }}
+            >
+              全部课程
+            </Button>
+            <KnowledgeFolders
+              folders={folders}
+              selected={folder}
+              selectedSource={sourceId}
+              onSelect={(source, path) => {
+                setSourceId(source);
+                void load(source, activeQuery, 0, path);
+              }}
+            />
+          </nav>
+          {!browsingRoot && (
+            <div
+              className="compiled-knowledge-list"
+              aria-label="Markdown 结果列表"
+            >
+              <p className="compiled-knowledge-folder-path">
+                {folder || "全部课程"}
+              </p>
+              {search?.items.map((doc) => (
+                <Button
+                  key={doc.id}
+                  variant="ghost"
+                  aria-pressed={page?.id === doc.id}
+                  className="compiled-knowledge-item"
+                  onClick={() => void read(doc)}
+                >
+                  <strong>
+                    <FileText aria-hidden="true" />
+                    {documentTitle(doc)}
+                  </strong>
+                  <span>{documentStatus(doc)}</span>
+                  {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
+                </Button>
+              ))}
+              {search?.next_offset != null && (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    void load(
+                      sourceId,
+                      activeQuery,
+                      search.next_offset ?? 0,
+                      folder,
+                    )
+                  }
+                  disabled={loading}
+                >
+                  下一组结果
+                </Button>
+              )}
+              {search && searchOffset > 0 && (
+                <Button
+                  variant="ghost"
+                  onClick={() => void load(sourceId, activeQuery, 0, folder)}
+                  disabled={loading}
+                >
+                  返回首组结果
+                </Button>
+              )}
+            </div>
+          )}
+        </aside>
         <div
+          ref={readingPosition.ref}
+          onScroll={readingPosition.onScroll}
           className="compiled-knowledge-reader"
           aria-label="Markdown 正文预览"
         >
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={navigationOpen ? "收起课程目录" : "展开课程目录"}
+            title={navigationOpen ? "收起课程目录" : "展开课程目录"}
+            onClick={() => setNavigationOpen((value) => !value)}
+          >
+            {navigationOpen ? (
+              <PanelLeftClose aria-hidden="true" />
+            ) : (
+              <PanelLeftOpen aria-hidden="true" />
+            )}
+          </Button>
           {browsingRoot && (
             <div className="compiled-knowledge-welcome">
               <Folder aria-hidden="true" />
@@ -424,8 +478,7 @@ export function CompiledKnowledgeBrowser({
                 />
                 <Button
                   variant="ghost"
-                  disabled={page.offset === 0}
-                  onClick={() => void read(page)}
+                  onClick={() => void read(page, 0, false, true)}
                 >
                   从头阅读
                 </Button>

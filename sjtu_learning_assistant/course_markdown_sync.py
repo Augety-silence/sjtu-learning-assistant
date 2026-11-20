@@ -247,8 +247,8 @@ class CourseMarkdownSync:
                     body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
                     body = body.replace(f"(pages/page-{number:04d}.md)", "(" + quote(page_prefix + f"/page-{number:04d}.md", safe="/") + ")")
                 publish(item, mirror, body)
-                from sjtu_learning_assistant.knowledge_study import STUDY_CONTRACT
-                item.update(status="completed", contract=STUDY_CONTRACT, document=note.relative_to(target).as_posix())
+                from sjtu_learning_assistant.knowledge_summary import SUMMARY_CONTRACT
+                item.update(status="completed", contract=SUMMARY_CONTRACT, document=note.relative_to(target).as_posix())
                 item.pop("error", None)
                 persist()
                 completed += 1

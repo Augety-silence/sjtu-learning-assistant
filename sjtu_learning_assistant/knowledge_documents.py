@@ -23,6 +23,7 @@ from sjtu_learning_assistant.knowledge_compiler import (
 )
 from sjtu_learning_assistant.knowledge_prompts import PAGE_PROMPT, LECTURE_PROMPT, lecture_markdown, page_markdown
 from sjtu_learning_assistant.knowledge_study import StudyCompiler, STUDY_CONTRACT, PROMPT_VERSION, REVIEW_GUIDANCE, REWRITE_GUIDANCE, STRUCTURE_REPAIR_GUIDANCE, CONTEXT_REPAIR_GUIDANCE, SEMANTIC_REPAIR_GUIDANCE, EXERCISE_REPAIR_GUIDANCE, EXERCISE_SELECTION_POLICY, REVIEW_MODEL, AUTHOR_SEMANTIC_POLICY, REVISION_COVERAGE_POLICY, REVISION_COVERAGE_GUIDANCE, EXERCISE_REVIEW_GUIDANCE
+from sjtu_learning_assistant.knowledge_summary import SummaryCompiler, SUMMARY_CONTRACT, SUMMARY_VERSION, MAX_SUMMARY_CHARS
 
 VISION_MODEL = "qwen3.8-27b"
 WRITER_FALLBACK_POLICY = "bounded-text-fallback-v1"
@@ -215,14 +216,15 @@ def vision_page_url(jpeg: bytes) -> str:
 
 def compilation_fingerprint(source_hash: str) -> str:
     """讲义提示升级触发同步，但不丢弃同一视觉契约下已经确认的页稿。"""
-    return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT + PROMPT_VERSION + REVIEW_GUIDANCE + REWRITE_GUIDANCE + STRUCTURE_REPAIR_GUIDANCE + CONTEXT_REPAIR_GUIDANCE + SEMANTIC_REPAIR_GUIDANCE + EXERCISE_REPAIR_GUIDANCE + EXERCISE_SELECTION_POLICY + AUTHOR_SEMANTIC_POLICY + REVISION_COVERAGE_POLICY + REVISION_COVERAGE_GUIDANCE + EXERCISE_REVIEW_GUIDANCE + WRITER_FALLBACK_POLICY + REVIEW_MODEL + SOURCE_RECHECK_PROMPT).encode())
+    return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT + PROMPT_VERSION + REVIEW_GUIDANCE + REWRITE_GUIDANCE + STRUCTURE_REPAIR_GUIDANCE + CONTEXT_REPAIR_GUIDANCE + SEMANTIC_REPAIR_GUIDANCE + EXERCISE_REPAIR_GUIDANCE + EXERCISE_SELECTION_POLICY + AUTHOR_SEMANTIC_POLICY + REVISION_COVERAGE_POLICY + REVISION_COVERAGE_GUIDANCE + EXERCISE_REVIEW_GUIDANCE + WRITER_FALLBACK_POLICY + REVIEW_MODEL + SOURCE_RECHECK_PROMPT + SUMMARY_CONTRACT + SUMMARY_VERSION).encode())
 
 
 def preferred_visual_output(outputs: dict, page: int) -> str | None:
     """仅复用本讲义／原图复核契约下已注册并已验哈希的页证据。"""
-    prefix = 'study/' + digest((LECTURE_PROMPT + PROMPT_VERSION).encode())[:12] + '/'
+    prefixes = ('study/' + digest((LECTURE_PROMPT + PROMPT_VERSION).encode())[:12] + '/',
+                'summary/' + digest(SUMMARY_VERSION.encode())[:12] + '/')
     suffix = '-visual-' + digest(SOURCE_RECHECK_PROMPT.encode())[:12] + f'-page-{page:04d}.md'
-    return next((name for name in reversed(outputs) if name.startswith(prefix) and name.endswith(suffix)), None)
+    return next((name for name in reversed(outputs) if name.startswith(prefixes) and name.endswith(suffix)), None)
 
 
 class DocumentCompiler:
@@ -461,7 +463,7 @@ class DocumentCompiler:
                 verified.append({**entry, 'text': response, 'visual_rechecked': True})
             return verified
         try:
-            study, plan, report = StudyCompiler(self._request, cached, commit, LECTURE_PROMPT + PROMPT_VERSION, verify_sources=verify_sources).compile(entries)
+            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
@@ -469,19 +471,24 @@ class DocumentCompiler:
             raise DocumentTextError("课件编译已取消。")
         if digest(original.read_bytes()) != source_hash:
             raise DocumentTextError("编译期间素材已变化；已完成旧版本页面保留，请重试。")
-        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {STUDY_CONTRACT}\nquality_status: source-reviewed\n"
+        if len(study) > MAX_SUMMARY_CHARS:
+            raise DocumentTextError("精炼总结超过2000字符；旧正式稿保留。")
+        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: source-reviewed\nsummary_chars: {len(study)}\n"
                 + f"abstract: {json.dumps(plan['abstract'], ensure_ascii=False)}\nauto_tags: {json.dumps(plan['tags'], ensure_ascii=False)}\nsynonyms: {json.dumps(plan['synonyms'], ensure_ascii=False)}\n" + "---\n\n"
-                + f"# {_safe_name(plan['title'])}\n\n{plan['abstract']}\n\n编译覆盖：{len(notes)}/{document.unit_count} 页 · 主题结构与来源审校通过。\n\n"
-                + study + "\n\n## 来源与逐页证据\n\n来源：`" + relative + "`\n\n"
-                + "\n".join(f"- [课件 p.{number} 原文与页图](pages/page-{number:04d}.md)" for number in range(1, len(notes) + 1)) + "\n")
-        if verification_outputs:
-            body += '\n原图复核证据（历史转写保留）：\n\n' + '\n'.join(f'- [课件 p.{number} 最新图文复核]({name})' for number, name in sorted(verification_outputs.items())) + '\n'
+                + study)
+        # 契约升级保留旧完整稿和审校记录，不只留下页级原文；人工修改已在上面的哈希闸门阻断。
+        for name in ('document.md', 'review.json'):
+            previous = cached(name)
+            if previous is not None:
+                historical = 'history/' + name.removesuffix(Path(name).suffix) + '-' + digest(previous.encode()) + Path(name).suffix
+                if historical not in state['outputs']:
+                    commit({historical: previous})
         commit({"review.json": json.dumps(report, ensure_ascii=False, indent=2)})
         commit({"document.md": body})
         state["status"] = "completed"
         state["page_count"] = len(notes)
         state["lecture_prompt_sha256"] = digest(LECTURE_PROMPT.encode())
-        state["study_contract"] = STUDY_CONTRACT
-        state["study_prompt_sha256"] = digest(PROMPT_VERSION.encode())
+        state["study_contract"] = SUMMARY_CONTRACT
+        state["study_prompt_sha256"] = digest(SUMMARY_VERSION.encode())
         persist()
         return directory / "document.md"

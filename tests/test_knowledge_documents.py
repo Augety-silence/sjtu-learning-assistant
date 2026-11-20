@@ -57,16 +57,17 @@ class KnowledgeDocumentTests(unittest.TestCase):
 
     def test_multimodal_pages_and_standard_markdown_provenance(self):
         note = self.converter().compile(self.source, self.path, self.target)
-        self.assertEqual(8, len(self.calls))
+        self.assertEqual(4, len(self.calls))
         self.assertEqual("qwen3.8-27b", self.calls[0][0])
         self.assertEqual(["text", "image_url"], [part["type"] for part in self.calls[0][2]])
         self.assertTrue(self.calls[0][2][1]['image_url']['url'].startswith('data:image/png;base64,'))
         self.assertNotIn("原始提取", note.read_text(encoding="utf-8"))
-        self.assertIn("学习目标与建议顺序", note.read_text(encoding="utf-8"))
-        self.assertIn("自测答案", note.read_text(encoding="utf-8"))
-        self.assertIn("contract: course-study-v3", note.read_text(encoding="utf-8"))
+        self.assertIn("课程主线", note.read_text(encoding="utf-8"))
+        self.assertNotIn("自测答案", note.read_text(encoding="utf-8"))
+        self.assertIn("contract: course-summary-v1", note.read_text(encoding="utf-8"))
         self.assertNotIn("AI 解读（需复核）", note.read_text(encoding="utf-8"))
-        self.assertIn("(pages/page-0001.md)", note.read_text(encoding="utf-8"))
+        self.assertLessEqual(len(note.read_text().split('---\n\n', 1)[1]), 2000)
+        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text())['covered_pages'])
         page = note.parent / "pages/page-0001.md"
         self.assertIn("source_sha256:", page.read_text(encoding="utf-8"))
         self.assertIn("page: 1", page.read_text(encoding="utf-8"))
@@ -75,7 +76,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.converter().compile(self.source, self.path, self.target)
         resumed = self.converter()
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((2, 0, 8), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((2, 0, 4), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_source_conflict_uses_registered_page_image_and_preserves_old_visual(self):
         def runner(model, system, content):
@@ -89,7 +90,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
                     return '{"approved":false,"issues":["第1页：原图与视觉解读矛盾"]}'
             return knowledge_response(model, system, content)
         note = DocumentCompiler(runner, self.cancel).compile(self.source, self.path, self.target)
-        self.assertIn('最新图文复核', note.read_text())
+        self.assertTrue(any('原图复核完成' in p.read_text() for p in note.parent.rglob('*-visual-*.md')))
         self.assertNotIn('原图复核完成', (note.parent / 'pages/page-0001.md').read_text())
         count = len(self.calls)
         resumed = DocumentCompiler(runner, self.cancel)
@@ -106,15 +107,16 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertTrue(all(entry['source_text'].strip() and entry['text'].strip() for entry in pages))
 
     def test_lecture_prompt_upgrade_reuses_pages_and_preserves_prior_lecture(self):
-        from sjtu_learning_assistant.knowledge_documents import LECTURE_PROMPT
+        from sjtu_learning_assistant.knowledge_summary import SUMMARY_VERSION
         note = self.converter().compile(self.source, self.path, self.target)
-        original_lectures = tuple(note.parent.rglob('chapter-*.json'))
-        with patch('sjtu_learning_assistant.knowledge_documents.LECTURE_PROMPT', LECTURE_PROMPT + '\n改进核对要求。'):
+        original_lectures = tuple(note.parent.rglob('part-*.json'))
+        original = note.read_text()
+        with patch('sjtu_learning_assistant.knowledge_summary.SUMMARY_VERSION', SUMMARY_VERSION + '\n改进核对要求。'):
             resumed = self.converter()
             resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((2, 6), (resumed.cached_pages, resumed.calls))
+        self.assertEqual((2, 2), (resumed.cached_pages, resumed.calls))
         self.assertTrue(all(path.is_file() for path in original_lectures))
-        self.assertEqual(4, len(tuple(note.parent.rglob('chapter-*.json'))))
+        self.assertTrue(any(p.read_text() == original for p in (note.parent / 'history').glob('document-*.md')))
 
     def test_call_budget_and_restart_checkpoint(self):
         compiler = self.converter(max_calls=1)
@@ -124,7 +126,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertFalse(list(self.target.rglob("document.md")))
         resumed = self.converter(max_calls=7)
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((7, 1), (resumed.calls, resumed.cached_pages))
+        self.assertEqual((3, 1), (resumed.calls, resumed.cached_pages))
 
     def test_crash_between_page_files_resumes_without_repeated_api(self):
         replace = os.replace
@@ -138,7 +140,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         resumed = self.converter()
         resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((1, 7, 8), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((1, 3, 4), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_crash_before_document_replace_recovers_offline(self):
         replace = os.replace
@@ -152,7 +154,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         resumed = self.converter()
         note = resumed.compile(self.source, self.path, self.target)
         self.assertTrue(note.is_file())
-        self.assertEqual((2, 0, 8), (resumed.cached_pages, resumed.calls, len(self.calls)))
+        self.assertEqual((2, 0, 4), (resumed.cached_pages, resumed.calls, len(self.calls)))
 
     def test_manual_note_is_preserved(self):
         note = self.converter().compile(self.source, self.path, self.target)
@@ -160,24 +162,24 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(DocumentTextError, "已被修改"):
             self.converter().compile(self.source, self.path, self.target)
         self.assertEqual("用户知识笔记", note.read_text(encoding="utf-8"))
-        self.assertEqual(8, len(self.calls))
+        self.assertEqual(4, len(self.calls))
 
     def test_incomplete_lecture_is_not_published_and_resumes_from_saved_pages(self):
         def runner(model, system, content):
-            if 'chapters 1–80' in system:
+            if '精炼课程总结' in system:
                 result = json.loads(knowledge_response(model, system, content))
-                result['chapters'][0]['pages'] = [1]
+                result['covered_pages'] = [1]
                 return json.dumps(result)
             return knowledge_response(model, system, content)
         converter = DocumentCompiler(runner, self.cancel)
-        with self.assertRaisesRegex(DocumentTextError, '覆盖不完整'):
+        with self.assertRaisesRegex(DocumentTextError, '遗漏输入页面'):
             converter.compile(self.source, self.path, self.target)
         self.assertEqual(2, len(list(self.target.rglob('page-*.md'))))
         self.assertFalse(list(self.target.rglob('document.md')))
         resumed = self.converter()
         note = resumed.compile(self.source, self.path, self.target)
-        self.assertEqual((2, 6), (resumed.cached_pages, resumed.calls))
-        self.assertIn('编译覆盖：2/2 页', note.read_text(encoding='utf-8'))
+        self.assertEqual((2, 2), (resumed.cached_pages, resumed.calls))
+        self.assertEqual([1, 2], json.loads((note.parent / 'review.json').read_text())['covered_pages'])
 
     def test_changed_source_keeps_old_revision(self):
         first = self.converter().compile(self.source, self.path, self.target)
@@ -217,7 +219,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with patch.object(self.cancel, 'wait', return_value=False):
             note = converter.compile(self.source, self.path, self.target)
         self.assertTrue(note.is_file())
-        self.assertEqual(9, converter.calls)
+        self.assertEqual(5, converter.calls)
 
     def test_authentication_error_is_not_retried_or_hidden(self):
         def runner(*_):
@@ -339,7 +341,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         state = service.status()
         self.assertEqual("completed_with_warnings", state["status"])
         self.assertEqual(1, state["counts"]["warnings"])
-        self.assertEqual(8, state["counts"]["document_calls"])
+        self.assertEqual(4, state["counts"]["document_calls"])
         self.assertEqual(1, len(list(self.target.rglob("document.md"))))
 
     def test_index_links_resolve_and_markdown_rows_survive_resync(self):

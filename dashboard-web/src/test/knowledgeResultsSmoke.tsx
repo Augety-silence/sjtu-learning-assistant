@@ -1,7 +1,11 @@
 /** 合成数据 UI 验收；没有真实课程或外部模型请求。 */
+
+import { FolderSync, HardDrive } from "lucide-react";
 import ReactDOM from "react-dom/client";
 import { CompiledKnowledgeBrowser } from "@/components/CompiledKnowledgeBrowser";
 import { ToastProvider } from "@/components/Toast";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
+import "@/components/cloud-drive.css";
 import "@/index.css";
 
 const source = {
@@ -59,7 +63,12 @@ window.pywebview = {
       else if (action === "compiled_knowledge_read")
         data = {
           ...documents.find((doc) => doc.id === payload?.document_id),
-          text: "# 关系代数\n\n## 讲义脉络\n\n从关系模型出发，用选择和投影描述查询，再用连接建立表间关系。\n\n## 知识点\n\n关系代数包括选择、投影、连接等运算。[第 1 页]\n\n## 公式与图表\n\n|运算|作用|\n|---|---|\n|选择|按谓词过滤元组|\n|投影|保留指定属性|\n\n## 例题与易错点\n\n先选择符合条件的元组，再投影所需属性。[第 1 页]\n\n## 待确认项\n\n本组合成数据，不代表真实课程。",
+          text: Array.from(
+            { length: payload?.document_id === documents[0].id ? 40 : 25 },
+            (_, index) =>
+              `## 知识主题 ${index + 1}\n\n关系模型组织实体和关系，先检查适用条件，再使用选择、投影与连接构造查询。本组合成数据只用于测试长文滚动，不代表真实编译长度。\n\n`,
+          ).join(""),
+          content_sha256: String(payload?.document_id).padEnd(64, "0"),
           offset: 0,
           next_offset: null,
           total_chars: 180,
@@ -85,6 +94,20 @@ if (root)
   ReactDOM.createRoot(root).render(
     <ToastProvider>
       <main style={{ padding: 16 }}>
+        <div className="drive-page-head">
+          <Tabs defaultValue="files">
+            <TabsList indicator aria-label="交大云盘视图">
+              <TabsTrigger value="files">
+                <HardDrive className="drive-tab-icon" aria-hidden="true" />
+                我的文件
+              </TabsTrigger>
+              <TabsTrigger value="sync">
+                <FolderSync className="drive-tab-icon" aria-hidden="true" />
+                本地同步
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         <CompiledKnowledgeBrowser />
       </main>
     </ToastProvider>,

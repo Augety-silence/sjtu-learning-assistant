@@ -142,7 +142,7 @@ class CompiledKnowledge:
                             if visited > MAX_ENTRIES or len(documents) >= MAX_ENTRIES:
                                 truncated = True
                                 break
-                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments", "pages", "learning", "Previous"} and not (Path(folder) / name).is_symlink())
+                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments", "pages", "learning", "Previous", "history"} and not (Path(folder) / name).is_symlink())
                             for name in sorted(files):
                                 if name.startswith(".") or Path(name).suffix.casefold() != ".md":
                                     continue
@@ -163,7 +163,7 @@ class CompiledKnowledge:
                                             contract = manifest.get("study_contract") or manifest.get("contract")
                                             entry.update(title=PurePosixPath(original).name + ".md", folder=PurePosixPath(original).parent.as_posix(), contract=contract)
                                             # 同一来源只展示最新知识契约/版本，页稿和旧版本仍留在磁盘。
-                                            rank = (contract == "course-study-v3", path.stat().st_mtime)
+                                            rank = ({"course-summary-v1": 2, "course-study-v3": 1}.get(contract, 0), path.stat().st_mtime)
                                             if original not in course_documents or rank > course_documents[original][0]:
                                                 course_documents[original] = (rank, entry)
                                         else:

@@ -18,6 +18,13 @@ def knowledge_response(model, system, content):
         return json.dumps({'title': '课程主题讲义', 'abstract': '从问题出发理解概念、条件与应用。', 'tags': ['关系模型'], 'synonyms': ['relational model'], 'goals': ['理解模型的适用条件'], 'chapters': [{'title': '模型与应用', 'pages': pages}]}, ensure_ascii=False)
     if '来源审校员' in system:
         return '{"approved":true,"issues":[]}'
+    if '精炼课程总结' in system:
+        payload = json.loads(content)
+        pages = ([entry['page'] for entry in payload['pages']] if 'pages' in payload else
+                 sorted({n for item in payload['input_summaries'] for n in item['covered_pages']}))
+        return json.dumps({'title': '关系模型课程总结', 'abstract': '理解模型与查询的联系。', 'tags': ['关系模型'], 'synonyms': ['relational model'],
+                          'covered_pages': pages, 'covered_topics': payload['topic_ids'], 'topics': [{'name': '模型与应用', 'pages': pages}],
+                          'markdown': '## 课程主线\n从关系模型的定义出发，理解数据组织与查询的联系。\n## 核心知识\n关系代数以关系为对象，选择运算过滤满足条件的元组。\n## 适用条件与易错点\n先明确变量与约束，再判断可行查询；不省略模型前提。 [课件 p.' + str(pages[0]) + ']'}, ensure_ascii=False)
     if '"exercises"' in system:
         return json.dumps({'exercises': [{'question': '请解释关系模型的适用条件，并给出完整示例。', 'answer': '教学补充：先给出实体与关系，再依据适用条件说明模型。', 'pages': [1]} for _ in range(4)]}, ensure_ascii=False)
     if '一页复习提纲' in system:
