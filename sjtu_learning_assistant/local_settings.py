@@ -22,6 +22,7 @@ from sjtu_learning_assistant.ai_classifier import (
 )
 from sjtu_learning_assistant.archive_service import DEFAULT_ARCHIVE_ROOT
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.path_safety import is_macos_system_alias
 
 SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
 AI_CHAT_SEND_SHORTCUTS = frozenset({"enter", "cmd_enter"})
@@ -124,11 +125,7 @@ def validate_archive_root(value: object) -> str:
             # user's root instead of crashing every load() at startup.
             break
         if stat.S_ISLNK(mode):
-            # tempfile returns /var/... on macOS although /var is a fixed system
-            # alias for /private/var. Keep that one platform alias test-friendly;
-            # user-controlled symlink components remain forbidden.
-            system_aliases = dict(((Path("/var"), Path("/private/var")), (Path("/tmp"), Path("/private/tmp"))))
-            if current in system_aliases and current.resolve() == system_aliases[current]:
+            if is_macos_system_alias(current):
                 continue
             raise SettingsError("归档目录不能包含符号链接。")
         if not stat.S_ISDIR(mode):

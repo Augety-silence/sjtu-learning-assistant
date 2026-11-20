@@ -11,6 +11,7 @@ from typing import Callable, Any
 
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.local_settings import SettingsStore
+from sjtu_learning_assistant.path_safety import is_macos_system_alias
 
 MAX_INDEX_BYTES = 2 * 1024**2
 MAX_DOCUMENT_BYTES = 24 * 1024**2
@@ -31,8 +32,8 @@ def _safe(root: Path, relative: str = "") -> Path:
     if not root.is_absolute():
         raise CompiledKnowledgeError("知识目录无效。")
     target = root.joinpath(*parts)
-    # 根目录及父链也不能是链接；不把解析后的越界目录当作新的授权根。
-    if any(path.is_symlink() for path in (target, *target.parents)):
+    # 仅允许固定 macOS 系统别名；不把用户链接解析后的目录当作授权根。
+    if any(path.is_symlink() and not is_macos_system_alias(path) for path in (target, *target.parents)):
         raise CompiledKnowledgeError("知识目录不能包含符号链接。")
     if not target.resolve().is_relative_to(root.resolve()):
         raise CompiledKnowledgeError("知识路径越界。")

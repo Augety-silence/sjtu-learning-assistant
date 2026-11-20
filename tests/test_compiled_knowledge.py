@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 
-from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
+from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError, _safe
+from sjtu_learning_assistant.local_settings import validate_archive_root, SettingsError
+from sjtu_learning_assistant.path_safety import is_macos_system_alias
 from sjtu_learning_assistant.agent_runtime.tools import AgentToolError, ReadOnlyToolRegistry
 from sjtu_learning_assistant.mcp_server import MCPServer
 
@@ -48,6 +52,53 @@ class CompiledKnowledgeTests(unittest.TestCase):
         page = self.service.read(item["id"], item["match_offset"])
         self.assertEqual("## 第 2 页", page["section"])
         self.assertIn(self.relative, page["citation"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS 固定系统目录别名专项")
+    def test_macos_default_temp_directory_is_readable_without_resolving_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(str(root), validate_archive_root(str(root)))
+            self.assertEqual(root, _safe(root))
+            archive = root / "archive"
+            source = archive / self.relative
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"source")
+            mirror = archive / "Knowledge Markdown" / "Courses" / (self.relative + ".md")
+            mirror.parent.mkdir(parents=True)
+            mirror.write_text("# 完整讲义\n关系代数", encoding="utf-8")
+            marker = archive / "Knowledge Markdown/99_System/Course-Sync.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text(json.dumps({"version": 1, "source_root": str(archive), "items": {self.relative: {"text_ready": True, "status": "completed"}}}), encoding="utf-8")
+            service = CompiledKnowledge(lambda: SimpleNamespace(archive_root=str(archive)), root / "projects.json")
+            result = service.search("关系代数")
+            self.assertEqual(1, result["count"])
+            self.assertIn("关系代数", service.read(result["items"][0]["id"])["text"])
+
+    @unittest.skipIf(os.name == "nt", "符号链接权限在 Windows 真机单独验收")
+    def test_alias_exception_never_allows_user_parent_or_root_symlinks(self):
+        real = self.root / "real-directory"
+        real.mkdir()
+        link = self.root / "user-alias"
+        link.symlink_to(real, target_is_directory=True)
+        for root in (link, link / "child"):
+            with self.subTest(root=root), self.assertRaises(CompiledKnowledgeError):
+                _safe(root)
+            with self.assertRaises(SettingsError):
+                validate_archive_root(str(root))
+
+    def test_only_exact_macos_alias_with_expected_target_is_recognized(self):
+        with patch("sjtu_learning_assistant.path_safety.sys.platform", "darwin"):
+            for alias, expected in (("/var", "/private/var"), ("/tmp", "/private/tmp")):
+                with self.subTest(alias=alias), patch.object(Path, "resolve", return_value=Path(expected)):
+                    self.assertTrue(is_macos_system_alias(Path(alias)))
+                    self.assertFalse(is_macos_system_alias(Path(alias) / "user-link"))
+                with patch.object(Path, "resolve", return_value=Path("/different-target")):
+                    self.assertFalse(is_macos_system_alias(Path(alias)))
+            for error in (OSError(), RuntimeError()):
+                with patch.object(Path, "resolve", side_effect=error):
+                    self.assertFalse(is_macos_system_alias(Path("/var")))
+        with patch("sjtu_learning_assistant.path_safety.sys.platform", "linux"), patch.object(Path, "resolve", return_value=Path("/private/var")):
+            self.assertFalse(is_macos_system_alias(Path("/var")))
 
     def test_pagination_round_trip_has_no_missing_characters(self):
         doc = self.service.search()["items"][0]
