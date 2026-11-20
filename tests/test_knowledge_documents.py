@@ -11,7 +11,7 @@ from unittest.mock import patch
 from office_fixtures import build_pdf, build_pptx, knowledge_response
 from sjtu_learning_assistant.document_text import DocumentTextError
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, KnowledgeCompilerService, KnowledgeAPIError
-from sjtu_learning_assistant.knowledge_documents import DocumentCompiler, page_images, target_lock, _validate_renderable_pptx, preferred_visual_output, SOURCE_RECHECK_PROMPT, digest
+from sjtu_learning_assistant.knowledge_documents import DocumentCompiler, page_images, target_lock, _validate_renderable_pptx, preferred_visual_output, SOURCE_RECHECK_PROMPT, digest, VISION_MODEL
 from sjtu_learning_assistant.knowledge_prompts import LECTURE_PROMPT
 from sjtu_learning_assistant.knowledge_study import PROMPT_VERSION
 from sjtu_learning_assistant.knowledge_sync import main
@@ -226,6 +226,67 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(KnowledgeCompilerError, '认证'):
             converter.compile(self.source, self.path, self.target)
         self.assertEqual(1, converter.calls)
+
+    def test_text_timeout_uses_one_bounded_qwen_retry_and_records_actual_model(self):
+        attempts = []
+        def runner(model, *_):
+            attempts.append(model)
+            if model == 'deepseek-chat':
+                raise KnowledgeAPIError('请求超时。', category='timeout')
+            return '完整响应'
+        converter = DocumentCompiler(runner, self.cancel)
+        with patch.object(self.cancel, 'wait', return_value=False):
+            self.assertEqual('完整响应', converter._request('deepseek-chat', '作者', '证据'))
+        self.assertEqual(['deepseek-chat', VISION_MODEL], attempts)
+        self.assertEqual(2, converter.calls)
+        self.assertEqual([dict(requested_model='deepseek-chat', used_model=VISION_MODEL, category='timeout')], converter.model_fallbacks)
+
+    def test_auth_and_quota_do_not_switch_models_and_fallback_failure_is_bounded(self):
+        for category, expected in (('authentication', ['deepseek-chat']),
+                                   ('rate_limit_or_quota', ['deepseek-chat', 'deepseek-chat']),
+                                   ('network', ['deepseek-chat', VISION_MODEL])):
+            attempts = []
+            def runner(model, *_):
+                attempts.append(model)
+                raise KnowledgeAPIError('服务不可用。', category=category)
+            converter = DocumentCompiler(runner, self.cancel)
+            with self.subTest(category=category), patch.object(self.cancel, 'wait', return_value=False):
+                with self.assertRaises(KnowledgeCompilerError):
+                    converter._request('deepseek-chat', '作者', '证据')
+                self.assertEqual(expected, attempts)
+                self.assertEqual(len(expected), converter.calls)
+
+    def test_cancel_and_explicit_validation_budget_stop_before_fallback(self):
+        for cancelled, budget in ((True, 0), (False, 1)):
+            attempts = []
+            def runner(model, *_):
+                attempts.append(model)
+                raise KnowledgeAPIError('请求超时。', category='timeout')
+            converter = DocumentCompiler(runner, self.cancel, max_calls=budget)
+            with self.subTest(cancelled=cancelled), patch.object(self.cancel, 'wait', return_value=cancelled):
+                with self.assertRaises(DocumentTextError):
+                    converter._request('deepseek-chat', '作者', '证据')
+                self.assertEqual(['deepseek-chat'], attempts)
+                self.assertEqual([], converter.model_fallbacks)
+
+    def test_fallback_provenance_persists_across_zero_call_restore(self):
+        failed = False
+        def runner(model, system, content):
+            nonlocal failed
+            if model == 'deepseek-chat' and not failed:
+                failed = True
+                raise KnowledgeAPIError('服务端错误。', category='upstream_service')
+            return knowledge_response(model, system, content)
+        converter = DocumentCompiler(runner, self.cancel)
+        with patch.object(self.cancel, 'wait', return_value=False):
+            note = converter.compile(self.source, self.path, self.target)
+        report = json.loads((note.parent / 'review.json').read_text())
+        self.assertEqual(converter.model_fallbacks, report['model_fallbacks'])
+        self.assertEqual(1, len(report['model_fallbacks']))
+        restored = DocumentCompiler(lambda *_: self.fail('不得重复调用'), self.cancel)
+        self.assertEqual(note, restored.compile(self.source, self.path, self.target))
+        self.assertEqual(converter.model_fallbacks, restored.model_fallbacks)
+        self.assertEqual(0, restored.calls)
 
     def test_manifest_path_escape_is_rejected(self):
         note = self.converter().compile(self.source, self.path, self.target)

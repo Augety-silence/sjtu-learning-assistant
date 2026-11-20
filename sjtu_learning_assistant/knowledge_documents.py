@@ -22,9 +22,10 @@ from sjtu_learning_assistant.knowledge_compiler import (
     KnowledgeCompilerError, KnowledgeAPIError, _atomic_write, _safe_name,
 )
 from sjtu_learning_assistant.knowledge_prompts import PAGE_PROMPT, LECTURE_PROMPT, lecture_markdown, page_markdown
-from sjtu_learning_assistant.knowledge_study import StudyCompiler, STUDY_CONTRACT, PROMPT_VERSION, REVIEW_GUIDANCE, REWRITE_GUIDANCE, STRUCTURE_REPAIR_GUIDANCE, CONTEXT_REPAIR_GUIDANCE, EXERCISE_REPAIR_GUIDANCE, REVIEW_MODEL
+from sjtu_learning_assistant.knowledge_study import StudyCompiler, STUDY_CONTRACT, PROMPT_VERSION, REVIEW_GUIDANCE, REWRITE_GUIDANCE, STRUCTURE_REPAIR_GUIDANCE, CONTEXT_REPAIR_GUIDANCE, SEMANTIC_REPAIR_GUIDANCE, EXERCISE_REPAIR_GUIDANCE, EXERCISE_SELECTION_POLICY, REVIEW_MODEL, AUTHOR_SEMANTIC_POLICY
 
 VISION_MODEL = "qwen3.8-27b"
+WRITER_FALLBACK_POLICY = "bounded-text-fallback-v1"
 CONTRACT = "course-lecture-v2"
 MAX_PAGES = 500
 MAX_COMPILED_TEXT_CHARS = MAX_PAGES * 12_000
@@ -214,7 +215,7 @@ def vision_page_url(jpeg: bytes) -> str:
 
 def compilation_fingerprint(source_hash: str) -> str:
     """讲义提示升级触发同步，但不丢弃同一视觉契约下已经确认的页稿。"""
-    return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT + PROMPT_VERSION + REVIEW_GUIDANCE + REWRITE_GUIDANCE + STRUCTURE_REPAIR_GUIDANCE + CONTEXT_REPAIR_GUIDANCE + EXERCISE_REPAIR_GUIDANCE + REVIEW_MODEL + SOURCE_RECHECK_PROMPT).encode())
+    return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT + PROMPT_VERSION + REVIEW_GUIDANCE + REWRITE_GUIDANCE + STRUCTURE_REPAIR_GUIDANCE + CONTEXT_REPAIR_GUIDANCE + SEMANTIC_REPAIR_GUIDANCE + EXERCISE_REPAIR_GUIDANCE + EXERCISE_SELECTION_POLICY + AUTHOR_SEMANTIC_POLICY + WRITER_FALLBACK_POLICY + REVIEW_MODEL + SOURCE_RECHECK_PROMPT).encode())
 
 
 def preferred_visual_output(outputs: dict, page: int) -> str | None:
@@ -230,20 +231,30 @@ class DocumentCompiler:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
         self.max_calls, self.calls, self.cached_pages = max_calls, 0, 0
+        self.model_fallbacks: list[dict[str, str]] = []
+        self._persist_model_fallbacks: Callable | None = None
 
     def _request(self, model: str, system: str, content: Any) -> str:
         from sjtu_learning_assistant.ai_classifier import AIClassificationError
+        request_model, fallback_category = model, None
         for attempt in range(2):
             if self.cancel.is_set():
                 raise DocumentTextError("课件编译已取消。")
             if self.max_calls and self.calls >= self.max_calls:
                 raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
+            if request_model != model:
+                self.model_fallbacks.append({'requested_model': model, 'used_model': request_model,
+                                             'category': fallback_category})
+                if self._persist_model_fallbacks is not None:
+                    self._persist_model_fallbacks()
             self.calls += 1
             try:
-                return self.runner(model, system, content)
+                return self.runner(request_model, system, content)
             except (AIClassificationError, KnowledgeAPIError) as exc:
                 if attempt or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}:
                     raise KnowledgeCompilerError(str(exc)) from None
+                if model == 'deepseek-chat' and exc.category in {'timeout', 'network', 'upstream_service'}:
+                    request_model, fallback_category = VISION_MODEL, exc.category
                 if self.cancel.wait(12):
                     raise DocumentTextError("课件编译已取消。")
         raise DocumentTextError("课件接口不可用；已完成页面保留。")
@@ -287,6 +298,20 @@ class DocumentCompiler:
 
         def persist():
             _atomic_write(safe_destination(target, manifest_path), json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+
+        events = state.get('model_fallbacks', [])
+        if (type(events) is not list or len(events) > 2000
+                or any(type(event) is not dict or set(event) != {'requested_model', 'used_model', 'category'}
+                       or event.get('requested_model') != 'deepseek-chat' or event.get('used_model') != VISION_MODEL
+                       or event.get('category') not in {'timeout', 'network', 'upstream_service'} for event in events)):
+            raise DocumentTextError('课件模型备用记录损坏，未覆盖输出。')
+        self.model_fallbacks = list(events)
+        def persist_model_fallbacks():
+            if len(self.model_fallbacks) > 2000:
+                raise DocumentTextError('课件模型备用记录超过上限，保留检查点。')
+            state['model_fallbacks'] = self.model_fallbacks
+            persist()
+        self._persist_model_fallbacks = persist_model_fallbacks
 
         def recover():
             pending = state.get("pending")
@@ -437,6 +462,7 @@ class DocumentCompiler:
             return verified
         try:
             study, plan, report = StudyCompiler(self._request, cached, commit, LECTURE_PROMPT + PROMPT_VERSION, verify_sources=verify_sources).compile(entries)
+            report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
         if self.cancel.is_set():
