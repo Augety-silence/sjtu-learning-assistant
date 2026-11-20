@@ -83,13 +83,45 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
+async function renderCompiler() {
+  render(<KnowledgeCompilerView />);
+  const summary = await screen.findByText("编译设置与任务");
+  if (!summary.closest("details")?.open) fireEvent.click(summary);
+}
+
 describe("KnowledgeCompilerView", () => {
-  it("在编译页面直接展示已有结果浏览器", async () => {
+  it("默认只展示结果浏览器，编译控件收纳且仍可主动展开", async () => {
     render(<KnowledgeCompilerView />);
+    const summary = await screen.findByText("编译设置与任务");
+    expect(summary.closest("details")?.open).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "开始编译" }).closest("details"),
+    ).toBe(summary.closest("details"));
+    expect(screen.queryByRole("heading", { name: "课程知识库" })).toBeNull();
+    fireEvent.click(summary);
+    await waitFor(() => expect(summary.closest("details")?.open).toBe(true));
+    expect(
+      await screen.findByRole("button", { name: "开始编译" }),
+    ).toBeTruthy();
+  });
+  it("已有任务运行时自动展开任务区，仍可安全停止", async () => {
+    vi.mocked(getKnowledgeCompilerStatus).mockResolvedValue({
+      ...idleTask,
+      status: "running",
+      task_id: "running-task",
+    });
+    render(<KnowledgeCompilerView />);
+    const summary = await screen.findByText("编译设置与任务");
+    await waitFor(() => expect(summary.closest("details")?.open).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /停止/ }));
+    await waitFor(() => expect(cancelKnowledgeCompiler).toHaveBeenCalled());
+  });
+  it("在编译页面直接展示已有结果浏览器", async () => {
+    await renderCompiler();
     expect(await screen.findByLabelText("编译结果与知识点")).toBeTruthy();
   });
   it("默认选择逐页多模态，显示转换边界", async () => {
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
     const radio = await screen.findByRole("radio", {
       name: /逐页多模态转 Markdown/,
     });
@@ -97,8 +129,8 @@ describe("KnowledgeCompilerView", () => {
     expect(screen.getByText(/每次最多 100 次 API 调用/)).toBeTruthy();
   });
   it("展示 12 轮编译路线和安全目录说明", async () => {
-    render(<KnowledgeCompilerView />);
-    expect(await screen.findByText("课程知识库")).toBeTruthy();
+    await renderCompiler();
+    expect(screen.queryByRole("heading", { name: "课程知识库" })).toBeNull();
     expect(screen.getByText("完整编译 · 12 轮")).toBeTruthy();
     expect(screen.getByText("反向校验")).toBeTruthy();
     expect(screen.getByText(/输出目录必须为空/)).toBeTruthy();
@@ -159,7 +191,7 @@ describe("KnowledgeCompilerView", () => {
       task: running,
     });
 
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
     const pickButtons = await screen.findAllByRole("button", {
       name: "选择目录",
     });
@@ -196,7 +228,7 @@ describe("KnowledgeCompilerView", () => {
       ...settings,
       ai_enabled: false,
     });
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
     expect(await screen.findByText("需要先配置 AI 连接")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "开始编译" }).hasAttribute("disabled"),
@@ -210,7 +242,7 @@ describe("KnowledgeCompilerView", () => {
       progress: { done: 12, total: 12, current_file: null },
     });
 
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
 
     expect(await screen.findByText("编译已完成")).toBeTruthy();
     expect(screen.getByText("本次任务已结束")).toBeTruthy();

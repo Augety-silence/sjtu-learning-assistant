@@ -85,9 +85,19 @@ describe("CompiledKnowledgeBrowser", () => {
     expect(
       screen.getAllByText(/原文已提取 · 知识稿待续编/).length,
     ).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "打开结果目录" }));
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开结果目录" })).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "课程讲义与知识点" }),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "定位 Markdown 文件及原图" }),
+    );
     await waitFor(() =>
-      expect(openCompiledKnowledge).toHaveBeenCalledWith(source.id, undefined),
+      expect(openCompiledKnowledge).toHaveBeenCalledWith(
+        source.id,
+        document.id,
+      ),
     );
   });
   it("检索正文并按返回的字符位置继续读取", async () => {
@@ -198,7 +208,19 @@ describe("CompiledKnowledgeBrowser", () => {
       ],
     });
     render(<CompiledKnowledgeBrowser />);
-    await screen.findByText("从一节课开始阅读");
+    await screen.findByText("选择文件夹或搜索知识点。");
+    expect(screen.queryByText("查看此文件夹全部课件")).toBeNull();
+    const summary = screen.getByText("数据库").closest("summary");
+    expect(summary).toBeTruthy();
+    fireEvent.click(summary as HTMLElement);
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenCalledWith(
+        "",
+        source.id,
+        0,
+        "数据库",
+      ),
+    );
     fireEvent.click(screen.getByRole("button", { name: /第一讲.*3/ }));
     await waitFor(() =>
       expect(searchCompiledKnowledge).toHaveBeenCalledWith(
@@ -206,6 +228,46 @@ describe("CompiledKnowledgeBrowser", () => {
         source.id,
         0,
         "数据库/第一讲",
+      ),
+    );
+  });
+  it("返回全部课程清除文件夹来源，恢复全来源浏览", async () => {
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document],
+      count: 1,
+      next_offset: null,
+      issues: [],
+      truncated: false,
+      folders: [
+        { source_id: source.id, path: "数据库", name: "数据库", count: 1 },
+      ],
+    });
+    render(<CompiledKnowledgeBrowser />);
+    fireEvent.click(await screen.findByRole("button", { name: /数据库.*1/ }));
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenCalledWith(
+        "",
+        source.id,
+        0,
+        "数据库",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "全部课程" }));
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenLastCalledWith("", "", 0),
+    );
+  });
+  it("资料项目首选来源仍固定，返回根目录不会混入其他项目", async () => {
+    render(<CompiledKnowledgeBrowser preferredSource={source.id} />);
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenCalledWith("", source.id, 0),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "全部课程" }));
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenLastCalledWith(
+        "",
+        source.id,
+        0,
       ),
     );
   });

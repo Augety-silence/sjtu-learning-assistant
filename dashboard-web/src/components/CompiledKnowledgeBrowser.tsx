@@ -1,11 +1,8 @@
-import { ChevronRight, FileText, Folder } from "lucide-react";
+import { FileText, Folder, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  type CourseScope,
-  CourseScopePicker,
-} from "@/components/CourseScopePicker";
+import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import { Button } from "@/components/ui/Button";
 import {
   getKnowledgeMCPConfig,
@@ -33,89 +30,16 @@ function documentTitle(doc: CompiledKnowledgeDocument) {
   return doc.title.replace(/\.(pptx?|pdf)\.md$/i, "").replace(/\.md$/i, "");
 }
 
-function KnowledgeFolders({
-  folders,
-  selected,
-  onSelect,
-  parent = "",
-  source = "",
-}: {
-  folders: NonNullable<CompiledKnowledgeSearch["folders"]>;
-  selected: string;
-  onSelect: (source: string, path: string) => void;
-  parent?: string;
-  source?: string;
-}) {
-  return (
-    <ul className="knowledge-folder-tree">
-      {folders
-        .filter(
-          (item) =>
-            (item.path.includes("/")
-              ? item.path.slice(0, item.path.lastIndexOf("/"))
-              : "") === parent &&
-            (!source || item.source_id === source),
-        )
-        .map((item) => {
-          const children = folders.some(
-            (child) =>
-              child.source_id === item.source_id &&
-              child.path.startsWith(item.path + "/"),
-          );
-          return (
-            <li key={`${item.source_id}:${item.path}`}>
-              {children ? (
-                <details
-                  open={parent === "" || selected.startsWith(item.path + "/")}
-                >
-                  <summary>
-                    <ChevronRight aria-hidden="true" />
-                    <Folder aria-hidden="true" />
-                    <span>{item.name}</span>
-                    <small>{item.count}</small>
-                  </summary>
-                  <Button
-                    variant="ghost"
-                    onClick={() => onSelect(item.source_id, item.path)}
-                  >
-                    查看此文件夹全部课件
-                  </Button>
-                  <KnowledgeFolders
-                    folders={folders}
-                    selected={selected}
-                    onSelect={onSelect}
-                    parent={item.path}
-                    source={item.source_id}
-                  />
-                </details>
-              ) : (
-                <Button
-                  variant="ghost"
-                  aria-pressed={selected === item.path}
-                  onClick={() => onSelect(item.source_id, item.path)}
-                >
-                  <Folder aria-hidden="true" />
-                  <span>{item.name}</span>
-                  <small>{item.count}</small>
-                </Button>
-              )}
-            </li>
-          );
-        })}
-    </ul>
-  );
-}
-
 export function CompiledKnowledgeBrowser({
   preferredSource = "",
 }: {
   preferredSource?: string;
 }) {
   const [sources, setSources] = useState<CompiledKnowledgeSource[]>([]);
-  const [scope, setScope] = useState<CourseScope>({ termId: "", courseId: "" });
   const [sourceId, setSourceId] = useState(preferredSource);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
+  const [searchOffset, setSearchOffset] = useState(0);
   const [search, setSearch] = useState<CompiledKnowledgeSearch | null>(null);
   const [page, setPage] = useState<CompiledKnowledgePage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -172,25 +96,13 @@ export function CompiledKnowledgeBrowser({
       setLoading(true);
       setSearch(null);
       setActiveQuery(keywords);
+      setSearchOffset(offset);
       setFolder(selectedFolder);
       setError("");
       try {
-        const result = await (scope.termId || scope.courseId
-          ? searchCompiledKnowledge(
-              keywords,
-              selected,
-              offset,
-              selectedFolder,
-              scope,
-            )
-          : selectedFolder
-            ? searchCompiledKnowledge(
-                keywords,
-                selected,
-                offset,
-                selectedFolder,
-              )
-            : searchCompiledKnowledge(keywords, selected, offset));
+        const result = await (selectedFolder
+          ? searchCompiledKnowledge(keywords, selected, offset, selectedFolder)
+          : searchCompiledKnowledge(keywords, selected, offset));
         if (generation !== searchGeneration.current) return;
         setSearch(result);
         if (
@@ -210,7 +122,7 @@ export function CompiledKnowledgeBrowser({
         if (generation === searchGeneration.current) setLoading(false);
       }
     },
-    [read, scope],
+    [read],
   );
 
   const refresh = useCallback(async () => {
@@ -283,49 +195,17 @@ export function CompiledKnowledgeBrowser({
       className="knowledge-config compiled-knowledge"
       aria-label="编译结果与知识点"
     >
-      <div className="section-header">
-        <div>
-          <h2>课程讲义与知识点</h2>
-          <p>
-            先选择课程与课时文件夹，再阅读知识稿。搜索覆盖完整 Markdown；内置 AI
-            和外部工具读取同一份本地知识库。
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          onClick={() => void refresh()}
-          disabled={loading}
-        >
-          刷新结果
-        </Button>
-      </div>
-      <CourseScopePicker scope={scope} onChange={setScope} />
       <form
-        className="compiled-knowledge-toolbar"
+        className="compiled-knowledge-toolbar compiled-knowledge-searchbar"
+        role="search"
+        aria-label="知识点搜索"
         onSubmit={(event) => {
           event.preventDefault();
           void load(sourceId, query, 0, folder);
         }}
       >
         <label>
-          知识来源
-          <select
-            value={sourceId}
-            onChange={(event) => {
-              setSourceId(event.target.value);
-              void load(event.target.value, query);
-            }}
-          >
-            <option value="">全部编译结果</option>
-            {sources.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.name}（{source.count}）
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          搜索知识点
+          <span className="sr-only">搜索知识点</span>
           <input
             type="search"
             maxLength={160}
@@ -334,16 +214,26 @@ export function CompiledKnowledgeBrowser({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <Button type="submit" disabled={loading}>
-          搜索正文
+        <Button
+          type="submit"
+          variant="ghost"
+          size="icon"
+          aria-label="搜索正文"
+          title="搜索正文"
+          disabled={loading}
+        >
+          <Search aria-hidden="true" />
         </Button>
         <Button
           type="button"
-          variant="outline"
-          disabled={!sources.length}
-          onClick={() => void open()}
+          variant="ghost"
+          size="icon"
+          aria-label="刷新结果"
+          title="刷新结果"
+          disabled={loading}
+          onClick={() => void refresh()}
         >
-          打开结果目录
+          <RefreshCw aria-hidden="true" />
         </Button>
       </form>
       {error && <p role="alert">{error}</p>}
@@ -379,13 +269,22 @@ export function CompiledKnowledgeBrowser({
           <Button
             variant="ghost"
             aria-pressed={!folder}
-            onClick={() => void load(sourceId, activeQuery)}
+            onClick={() => {
+              const selected = sources.some(
+                (source) => source.id === preferredSource,
+              )
+                ? preferredSource
+                : "";
+              setSourceId(selected);
+              void load(selected, activeQuery);
+            }}
           >
             全部课程
           </Button>
           <KnowledgeFolders
             folders={search?.folders ?? []}
             selected={folder}
+            selectedSource={sourceId}
             onSelect={(source, path) => {
               setSourceId(source);
               void load(source, activeQuery, 0, path);
@@ -420,8 +319,7 @@ export function CompiledKnowledgeBrowser({
                     ? "完整知识稿"
                     : statusLabels[doc.status]}
                 </span>
-                <small>{doc.relative_path}</small>
-                {doc.snippet && <small>{doc.snippet}</small>}
+                {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
               </Button>
             ))}
             {search?.next_offset != null && (
@@ -440,7 +338,7 @@ export function CompiledKnowledgeBrowser({
                 下一组结果
               </Button>
             )}
-            {search && (
+            {search && searchOffset > 0 && (
               <Button
                 variant="ghost"
                 onClick={() => void load(sourceId, activeQuery, 0, folder)}
@@ -459,12 +357,7 @@ export function CompiledKnowledgeBrowser({
           {browsingRoot && (
             <div className="compiled-knowledge-welcome">
               <Folder aria-hidden="true" />
-              <h3>从一节课开始阅读</h3>
-              <p>
-                展开左侧课程，选择对应的课时或课件文件夹。每份原课件对应一份
-                Markdown，知识稿与原文证据分开整理。
-              </p>
-              <p>也可以搜索知识点，在全部课程正文中查找并引用来源。</p>
+              <p>选择文件夹或搜索知识点。</p>
             </div>
           )}
           {page && (

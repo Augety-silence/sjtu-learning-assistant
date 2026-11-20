@@ -9578,14 +9578,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 /* Obsidian course compiler */
 .knowledge-page { max-width: 1120px; margin: 0 auto; }
-.knowledge-hero { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 22px; overflow: hidden; padding: 28px; border: 1px solid var(--border-accent-soft); border-radius: 18px; background: var(--surface-accent-soft); box-shadow: 0 1px 2px var(--shadow-action-subtle); }
-.knowledge-hero::after { position: absolute; right: -32px; bottom: -70px; width: 190px; height: 190px; border: 30px solid color-mix(in srgb, var(--action-primary) 9%, transparent); border-radius: 50%; content: ""; }
-.knowledge-hero-mark { z-index: 1; display: grid; width: 58px; height: 58px; place-items: center; border-radius: 16px; color: var(--action-primary); background: var(--surface-elevated); box-shadow: var(--shadow-ai-mark); }
-.knowledge-hero-mark svg { width: 30px; height: 30px; }
-.knowledge-hero > div:last-child { z-index: 1; }
-.knowledge-eyebrow { color: var(--action-primary); font-size: 11px; font-weight: 700; letter-spacing: .13em; }
-.knowledge-hero h2 { margin: 5px 0 7px; font-size: clamp(23px, 3vw, 32px); line-height: 1.25; }
-.knowledge-hero p, .knowledge-config .section-header p { margin: 0; color: var(--text-secondary); line-height: 1.65; }
+.knowledge-config .section-header p { margin: 0; color: var(--text-secondary); line-height: 1.65; }
 .knowledge-notice { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border: 1px solid var(--border-info); border-radius: 12px; color: var(--status-info); background: var(--status-info-bg); }
 .knowledge-notice svg { flex: 0 0 auto; }
 .knowledge-notice div { display: grid; gap: 2px; }
@@ -9651,7 +9644,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 @media (max-width: 640px) {
-  .knowledge-hero { grid-template-columns: 1fr; padding: 20px; }
   .knowledge-path-card { grid-template-columns: auto minmax(0, 1fr); }
   .knowledge-path-card button { grid-column: 1 / -1; }
   .knowledge-scan-row, .knowledge-run-heading { align-items: stretch; flex-direction: column; }
@@ -10722,7 +10714,7 @@ body {
   backdrop-filter: blur(18px) saturate(1.08);
 }
 
-:where(.knowledge-hero, .local-projects-hero) {
+:where(.local-projects-hero) {
   border-color: color-mix(in srgb, var(--action-primary) 24%, var(--aura-border));
   border-radius: 18px;
   background: color-mix(in srgb, var(--action-primary) 7%, var(--aura-panel));

@@ -128,10 +128,15 @@ export function KnowledgeCompilerView() {
   const [aiReady, setAiReady] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [error, setError] = useState("");
 
   const running = task?.status === "running";
   const terminal = task && !["idle", "running"].includes(task.status);
+
+  useEffect(() => {
+    if (running) setToolsOpen(true);
+  }, [running]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -277,319 +282,327 @@ export function KnowledgeCompilerView() {
 
   return (
     <ContentReveal className="section-stack knowledge-page" afterLoad>
-      <section className="knowledge-hero">
-        <div className="knowledge-hero-mark" aria-hidden="true">
-          <BrainCircuit />
-        </div>
-        <div>
-          <h2>课程知识库</h2>
-          <p>
-            按原课程与课时文件夹阅读知识稿。Qwen 逐页解读图片，DeepSeek
-            按授课顺序整理知识脉络、公式与例题；原文和页图保留备查。
-          </p>
-        </div>
-      </section>
-
-      {!aiReady && (
-        <div className="knowledge-notice" role="alert">
-          <Sparkles aria-hidden="true" />
-          <div>
-            <strong>需要先配置 AI 连接</strong>
-            <span>
-              请到“设置 → AI 模型”保存 API Key 并启用 AI，再返回开始编译。
-            </span>
-          </div>
-        </div>
-      )}
-
       <CompiledKnowledgeBrowser />
-      <CourseMarkdownSyncPanel />
-
-      <section
-        className="knowledge-config"
-        aria-labelledby="knowledge-config-title"
+      <details
+        className="knowledge-tools"
+        open={toolsOpen}
+        onToggle={(event) => setToolsOpen(event.currentTarget.open)}
       >
-        <div className="section-header">
-          <div>
-            <h2 id="knowledge-config-title">1. 选择输入与输出</h2>
-            <p>输出目录必须为空或由本功能创建，且不能位于素材目录内部。</p>
-          </div>
-        </div>
-        <div className="knowledge-paths">
-          <PathPicker
-            kind="source"
-            value={sourceRoot}
-            disabled={Boolean(running) || working}
-            onPick={() => void pick("source")}
-          />
-          <PathPicker
-            kind="target"
-            value={targetRoot}
-            disabled={Boolean(running) || working}
-            onPick={() => void pick("target")}
-          />
-        </div>
-        <div className="knowledge-scan-row">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!sourceRoot || Boolean(running) || working}
-            onClick={() => void inspect()}
-          >
-            <ScanSearch aria-hidden="true" />
-            扫描素材
-          </Button>
-          {inspection && (
-            <dl className="knowledge-scan-summary" aria-label="素材扫描结果">
+        <summary>编译设置与任务</summary>
+        <div className="section-stack">
+          {!aiReady && (
+            <div className="knowledge-notice" role="alert">
+              <Sparkles aria-hidden="true" />
               <div>
-                <dt>PPT / PDF</dt>
-                <dd>{inspection.document_files ?? 0}</dd>
+                <strong>需要先配置 AI 连接</strong>
+                <span>
+                  请到“设置 → AI 模型”保存 API Key 并启用 AI，再返回开始编译。
+                </span>
               </div>
-              <div>
-                <dt>Markdown</dt>
-                <dd>{inspection.markdown_files}</dd>
-              </div>
-              <div>
-                <dt>文本体积</dt>
-                <dd>{formatBytes(inspection.total_bytes)}</dd>
-              </div>
-              <div>
-                <dt>图片引用</dt>
-                <dd>{inspection.image_references}</dd>
-              </div>
-              <div>
-                <dt>课程范围</dt>
-                <dd>{inspection.courses.length}</dd>
-              </div>
-            </dl>
-          )}
-        </div>
-      </section>
-
-      <section
-        className="knowledge-config"
-        aria-labelledby="knowledge-mode-title"
-      >
-        <div className="section-header">
-          <div>
-            <h2 id="knowledge-mode-title">2. 选择编译深度</h2>
-            <p>
-              完整编译会多轮回读全库，适合长期运行；基础建库可先验证目录与内容质量。
-            </p>
-          </div>
-        </div>
-        <div className="knowledge-mode-grid">
-          <label
-            className={mode === "documents" ? "knowledge-mode-selected" : ""}
-          >
-            <input
-              type="radio"
-              name="compiler-mode"
-              value="documents"
-              checked={mode === "documents"}
-              disabled={Boolean(running)}
-              onChange={() => setMode("documents")}
-            />
-            <ScanSearch aria-hidden="true" />
-            <span>
-              <strong>逐页多模态转 Markdown</strong>
-              <small>
-                每次最多 100 次 API
-                调用（含逐页解读和讲义整理）；断点续编，保留人工修改。PPTX 需
-                LibreOffice，旧 PPT 请先导出 PDF。
-              </small>
-            </span>
-          </label>
-          <label
-            className={mode === "foundation" ? "knowledge-mode-selected" : ""}
-          >
-            <input
-              type="radio"
-              name="compiler-mode"
-              value="foundation"
-              checked={mode === "foundation"}
-              disabled={Boolean(running)}
-              onChange={() => setMode("foundation")}
-            />
-            <BookOpenCheck aria-hidden="true" />
-            <span>
-              <strong>基础建库 · 3 轮</strong>
-              <small>原文归档、Lecture 重构、Concept 提取</small>
-            </span>
-          </label>
-          <label className={mode === "full" ? "knowledge-mode-selected" : ""}>
-            <input
-              type="radio"
-              name="compiler-mode"
-              value="full"
-              checked={mode === "full"}
-              disabled={Boolean(running)}
-              onChange={() => setMode("full")}
-            />
-            <BrainCircuit aria-hidden="true" />
-            <span>
-              <strong>完整编译 · 12 轮</strong>
-              <small>双链、图谱、查缺、反向验证、题库与复习系统</small>
-            </span>
-          </label>
-        </div>
-        <ol className="knowledge-phase-strip" aria-label="完整编译轮次">
-          {phaseLabels.map((label, index) => (
-            <li
-              key={label}
-              data-selection-layout-id={phaseIndicatorId}
-              className={
-                (task?.phase_index ?? 0) > index + 1
-                  ? "selection-host knowledge-phase-done"
-                  : (task?.phase_index ?? 0) === index + 1
-                    ? "selection-host selection-active knowledge-phase-active"
-                    : "selection-host"
-              }
-            >
-              {(task?.phase_index ?? 0) === index + 1 && (
-                <SelectionIndicator
-                  layoutId={phaseIndicatorId}
-                  radius={8}
-                  className="knowledge-phase-indicator"
-                />
-              )}
-              <span>{index + 1}</span>
-              <span className="selection-label">{label}</span>
-            </li>
-          ))}
-        </ol>
-      </section>
-
-      <section
-        className="knowledge-run-card"
-        aria-labelledby="knowledge-run-title"
-      >
-        <div className="knowledge-run-heading">
-          <div>
-            <span
-              className={`status-dot ${running ? "status-running" : ""}`}
-              aria-hidden="true"
-            />
-            <div>
-              <h2 id="knowledge-run-title">
-                {statusLabel(task?.status ?? "idle")}
-              </h2>
-              <p>
-                {task?.current_phase
-                  ? `${task.current_phase.label} · ${task.current_phase.model}`
-                  : "选择目录后即可启动。"}
-              </p>
             </div>
-          </div>
-          <div className="knowledge-run-actions">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={working}
-              onClick={() => void loadStatus()}
-            >
-              <RefreshCw aria-hidden="true" />
-              刷新
-            </Button>
-            {running ? (
+          )}
+
+          <CourseMarkdownSyncPanel />
+
+          <section
+            className="knowledge-config"
+            aria-labelledby="knowledge-config-title"
+          >
+            <div className="section-header">
+              <div>
+                <h2 id="knowledge-config-title">1. 选择输入与输出</h2>
+                <p>输出目录必须为空或由本功能创建，且不能位于素材目录内部。</p>
+              </div>
+            </div>
+            <div className="knowledge-paths">
+              <PathPicker
+                kind="source"
+                value={sourceRoot}
+                disabled={Boolean(running) || working}
+                onPick={() => void pick("source")}
+              />
+              <PathPicker
+                kind="target"
+                value={targetRoot}
+                disabled={Boolean(running) || working}
+                onPick={() => void pick("target")}
+              />
+            </div>
+            <div className="knowledge-scan-row">
               <Button
                 type="button"
                 variant="outline"
-                disabled={working}
-                onClick={() => void stop()}
+                disabled={!sourceRoot || Boolean(running) || working}
+                onClick={() => void inspect()}
               >
-                <OctagonX aria-hidden="true" />
-                安全停止
+                <ScanSearch aria-hidden="true" />
+                扫描素材
               </Button>
-            ) : (
-              <Button
-                type="button"
-                disabled={!sourceRoot || !targetRoot || !aiReady || working}
-                loading={working}
-                loadingLabel="正在启动…"
-                onClick={() => void start()}
-              >
-                <Sparkles aria-hidden="true" />
-                开始编译
-              </Button>
-            )}
-          </div>
-        </div>
+              {inspection && (
+                <dl
+                  className="knowledge-scan-summary"
+                  aria-label="素材扫描结果"
+                >
+                  <div>
+                    <dt>PPT / PDF</dt>
+                    <dd>{inspection.document_files ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>Markdown</dt>
+                    <dd>{inspection.markdown_files}</dd>
+                  </div>
+                  <div>
+                    <dt>文本体积</dt>
+                    <dd>{formatBytes(inspection.total_bytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>图片引用</dt>
+                    <dd>{inspection.image_references}</dd>
+                  </div>
+                  <div>
+                    <dt>课程范围</dt>
+                    <dd>{inspection.courses.length}</dd>
+                  </div>
+                </dl>
+              )}
+            </div>
+          </section>
 
-        {error && (
-          <p className="knowledge-error" role="alert">
-            {error}
-          </p>
-        )}
-        {!error &&
-          task?.error &&
-          (task.status === "failed" || task.status === "interrupted") && (
-            <p className="knowledge-error" role="alert">
-              {task.error}
-            </p>
-          )}
-        {(running || terminal) && task && (
-          <>
-            <dl className="knowledge-metrics">
+          <section
+            className="knowledge-config"
+            aria-labelledby="knowledge-mode-title"
+          >
+            <div className="section-header">
               <div>
-                <dt>当前轮次</dt>
-                <dd>
-                  {task.phase_index} / {task.total_phases}
-                </dd>
+                <h2 id="knowledge-mode-title">2. 选择编译深度</h2>
+                <p>
+                  完整编译会多轮回读全库，适合长期运行；基础建库可先验证目录与内容质量。
+                </p>
               </div>
-              <div>
-                <dt>原始文件</dt>
-                <dd>{task.counts.markdown_files}</dd>
-              </div>
-              <div>
-                <dt>生成笔记</dt>
-                <dd>{task.counts.generated_notes}</dd>
-              </div>
-              <div>
-                <dt>待确认</dt>
-                <dd>{task.counts.warnings}</dd>
-              </div>
-            </dl>
-            <div className="knowledge-progress-copy">
-              <strong>{percentage}%</strong>
-              {/* 后端在完成/停止时会清空 current_file；终态不能再显示"正在切换"。 */}
-              <span>
-                {progress?.current_file ||
-                  (running ? "正在切换到下一轮…" : "本次任务已结束")}
-              </span>
             </div>
-            <div
-              className="knowledge-progress"
-              role="progressbar"
-              aria-label="知识库编译进度"
-              aria-valuemin={0}
-              aria-valuemax={progressTotal}
-              aria-valuenow={progressDone}
-            >
-              <span style={{ width: `${percentage}%` }} />
+            <div className="knowledge-mode-grid">
+              <label
+                className={
+                  mode === "documents" ? "knowledge-mode-selected" : ""
+                }
+              >
+                <input
+                  type="radio"
+                  name="compiler-mode"
+                  value="documents"
+                  checked={mode === "documents"}
+                  disabled={Boolean(running)}
+                  onChange={() => setMode("documents")}
+                />
+                <ScanSearch aria-hidden="true" />
+                <span>
+                  <strong>逐页多模态转 Markdown</strong>
+                  <small>
+                    每次最多 100 次 API
+                    调用（含逐页解读和讲义整理）；断点续编，保留人工修改。PPTX
+                    需 LibreOffice，旧 PPT 请先导出 PDF。
+                  </small>
+                </span>
+              </label>
+              <label
+                className={
+                  mode === "foundation" ? "knowledge-mode-selected" : ""
+                }
+              >
+                <input
+                  type="radio"
+                  name="compiler-mode"
+                  value="foundation"
+                  checked={mode === "foundation"}
+                  disabled={Boolean(running)}
+                  onChange={() => setMode("foundation")}
+                />
+                <BookOpenCheck aria-hidden="true" />
+                <span>
+                  <strong>基础建库 · 3 轮</strong>
+                  <small>原文归档、Lecture 重构、Concept 提取</small>
+                </span>
+              </label>
+              <label
+                className={mode === "full" ? "knowledge-mode-selected" : ""}
+              >
+                <input
+                  type="radio"
+                  name="compiler-mode"
+                  value="full"
+                  checked={mode === "full"}
+                  disabled={Boolean(running)}
+                  onChange={() => setMode("full")}
+                />
+                <BrainCircuit aria-hidden="true" />
+                <span>
+                  <strong>完整编译 · 12 轮</strong>
+                  <small>双链、图谱、查缺、反向验证、题库与复习系统</small>
+                </span>
+              </label>
             </div>
-            <div className="knowledge-events">
-              <h3>运行记录</h3>
-              <ol>
-                {task.events
-                  .slice(-8)
-                  .reverse()
-                  .map((event, index) => (
-                    <li key={`${event.time}-${index}`} data-level={event.level}>
-                      <span>
-                        {new Date(event.time).toLocaleTimeString("zh-CN", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-                      <p>{event.message}</p>
-                    </li>
-                  ))}
-              </ol>
+            <ol className="knowledge-phase-strip" aria-label="完整编译轮次">
+              {phaseLabels.map((label, index) => (
+                <li
+                  key={label}
+                  data-selection-layout-id={phaseIndicatorId}
+                  className={
+                    (task?.phase_index ?? 0) > index + 1
+                      ? "selection-host knowledge-phase-done"
+                      : (task?.phase_index ?? 0) === index + 1
+                        ? "selection-host selection-active knowledge-phase-active"
+                        : "selection-host"
+                  }
+                >
+                  {(task?.phase_index ?? 0) === index + 1 && (
+                    <SelectionIndicator
+                      layoutId={phaseIndicatorId}
+                      radius={8}
+                      className="knowledge-phase-indicator"
+                    />
+                  )}
+                  <span>{index + 1}</span>
+                  <span className="selection-label">{label}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          <section
+            className="knowledge-run-card"
+            aria-labelledby="knowledge-run-title"
+          >
+            <div className="knowledge-run-heading">
+              <div>
+                <span
+                  className={`status-dot ${running ? "status-running" : ""}`}
+                  aria-hidden="true"
+                />
+                <div>
+                  <h2 id="knowledge-run-title">
+                    {statusLabel(task?.status ?? "idle")}
+                  </h2>
+                  <p>
+                    {task?.current_phase
+                      ? `${task.current_phase.label} · ${task.current_phase.model}`
+                      : "选择目录后即可启动。"}
+                  </p>
+                </div>
+              </div>
+              <div className="knowledge-run-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={working}
+                  onClick={() => void loadStatus()}
+                >
+                  <RefreshCw aria-hidden="true" />
+                  刷新
+                </Button>
+                {running ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={working}
+                    onClick={() => void stop()}
+                  >
+                    <OctagonX aria-hidden="true" />
+                    安全停止
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    disabled={!sourceRoot || !targetRoot || !aiReady || working}
+                    loading={working}
+                    loadingLabel="正在启动…"
+                    onClick={() => void start()}
+                  >
+                    <Sparkles aria-hidden="true" />
+                    开始编译
+                  </Button>
+                )}
+              </div>
             </div>
-          </>
-        )}
-      </section>
+
+            {error && (
+              <p className="knowledge-error" role="alert">
+                {error}
+              </p>
+            )}
+            {!error &&
+              task?.error &&
+              (task.status === "failed" || task.status === "interrupted") && (
+                <p className="knowledge-error" role="alert">
+                  {task.error}
+                </p>
+              )}
+            {(running || terminal) && task && (
+              <>
+                <dl className="knowledge-metrics">
+                  <div>
+                    <dt>当前轮次</dt>
+                    <dd>
+                      {task.phase_index} / {task.total_phases}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>原始文件</dt>
+                    <dd>{task.counts.markdown_files}</dd>
+                  </div>
+                  <div>
+                    <dt>生成笔记</dt>
+                    <dd>{task.counts.generated_notes}</dd>
+                  </div>
+                  <div>
+                    <dt>待确认</dt>
+                    <dd>{task.counts.warnings}</dd>
+                  </div>
+                </dl>
+                <div className="knowledge-progress-copy">
+                  <strong>{percentage}%</strong>
+                  {/* 后端在完成/停止时会清空 current_file；终态不能再显示"正在切换"。 */}
+                  <span>
+                    {progress?.current_file ||
+                      (running ? "正在切换到下一轮…" : "本次任务已结束")}
+                  </span>
+                </div>
+                <div
+                  className="knowledge-progress"
+                  role="progressbar"
+                  aria-label="知识库编译进度"
+                  aria-valuemin={0}
+                  aria-valuemax={progressTotal}
+                  aria-valuenow={progressDone}
+                >
+                  <span style={{ width: `${percentage}%` }} />
+                </div>
+                <div className="knowledge-events">
+                  <h3>运行记录</h3>
+                  <ol>
+                    {task.events
+                      .slice(-8)
+                      .reverse()
+                      .map((event, index) => (
+                        <li
+                          key={`${event.time}-${index}`}
+                          data-level={event.level}
+                        >
+                          <span>
+                            {new Date(event.time).toLocaleTimeString("zh-CN", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                          <p>{event.message}</p>
+                        </li>
+                      ))}
+                  </ol>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      </details>
     </ContentReveal>
   );
 }
