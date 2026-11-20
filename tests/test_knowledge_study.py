@@ -9,6 +9,36 @@ from office_fixtures import knowledge_response
 
 
 class KnowledgeStudyTests(unittest.TestCase):
+    def test_revision_cannot_slice_first_twelve_and_drop_later_topics(self):
+        from sjtu_learning_assistant.knowledge_study import validate_revision
+        points = [f'主题{n}及条件 [课件 p.{n}]' for n in range(1, 15)]
+        with self.assertRaisesRegex(ValueError, '遗漏输入主题出处页.*13, 14'):
+            validate_revision({'key_points': points[:12]}, points, list(range(1, 15)))
+        merged = points[:11] + ['合并后续应用与条件 [课件 p.12–14]']
+        self.assertEqual(merged, validate_revision({'key_points': merged}, points, list(range(1, 15)))['key_points'])
+        with self.assertRaisesRegex(ValueError, '有效来源'):
+            validate_revision({'key_points': ['空泛知识 [课件 p.99]']}, points, list(range(1, 15)))
+
+    def test_truncated_revision_cache_is_repaired_without_reauthoring_chapters(self):
+        import sjtu_learning_assistant.knowledge_study as module
+        stored, seen = {}, []
+        def request(model, prompt, data):
+            seen.append(prompt)
+            result = json.loads(knowledge_response(model, prompt, data))
+            if prompt.startswith(module.CHAPTER_PROMPT):
+                result['key_points'] = ['定义与条件 [课件 p.1]', '后半讲应用 [课件 p.2]']
+            return json.dumps(result, ensure_ascii=False)
+        compiler = StudyCompiler(request, stored.get, stored.update)
+        entries = [dict(page=1, text='定义'), dict(page=2, text='应用')]
+        original = compiler.compile(entries)[0]
+        key = next(name for name in stored if '/revision-0-0-' in name)
+        stored[key] = json.dumps({'key_points': ['定义与条件 [课件 p.1]']})
+        count = len(seen)
+        self.assertEqual(original, compiler.compile(entries)[0])
+        self.assertEqual(1, len(seen) - count)
+        self.assertTrue(seen[-1].startswith(module.REVISION_PROMPT))
+        self.assertIn('遗漏输入主题出处页', seen[-1])
+
     def test_zero_shadow_price_cannot_claim_strict_slack_despite_later_disclaimer(self):
         from sjtu_learning_assistant.knowledge_study import validate_math_notation
         for text in (r'$y_1=0$ 表明原约束是非紧的。注意反向不成立。',

@@ -288,6 +288,14 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(converter.model_fallbacks, restored.model_fallbacks)
         self.assertEqual(0, restored.calls)
 
+    def test_revision_coverage_policy_changes_course_mirror_fingerprint(self):
+        import sjtu_learning_assistant.knowledge_documents as module
+        before = module.compilation_fingerprint('same-source')
+        with patch.object(module, 'REVISION_COVERAGE_POLICY', 'different-policy'):
+            self.assertNotEqual(before, module.compilation_fingerprint('same-source'))
+        with patch.object(module, 'REVISION_COVERAGE_GUIDANCE', 'different-guidance'):
+            self.assertNotEqual(before, module.compilation_fingerprint('same-source'))
+
     def test_manifest_path_escape_is_rejected(self):
         note = self.converter().compile(self.source, self.path, self.target)
         manifest = note.parent / "manifest.json"
