@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -100,10 +101,11 @@ class TranscriptNotesTests(unittest.TestCase):
             dashboard._transcript_ai_context = lambda: AIContext(None, "", "", False)
             dashboard.video_subtitles = lambda source: self.fail("不应重新抓取或启动旧校对")
             dashboard.engine = object()
-            with patch("sjtu_learning_assistant.dashboard_service.transcript_course_metadata", return_value={}):
+            with patch("sjtu_learning_assistant.dashboard_service.transcript_course_metadata", return_value={}), ExitStack() as worker_scope:
                 dashboard.start_transcript_markdown_sync()
                 service = dashboard._transcript_service_instance
-                self.addCleanup(service.close)
+                # 后台线程必须先于临时目录释放，断言失败时也不能留下 Windows 文件锁。
+                worker_scope.callback(service.close)
                 self.assertEqual(initial.root, service.root)
                 until = time.monotonic() + 3
                 while not (directory / "lesson.md").exists() and time.monotonic() < until:
@@ -111,6 +113,7 @@ class TranscriptNotesTests(unittest.TestCase):
                 self.assertIn("机会成本", (directory / "lesson.md").read_text(encoding="utf-8"))
                 dashboard.start_transcript_markdown_sync()
                 self.assertIs(service, dashboard._transcript_service_instance)
+            self.assertFalse(service._thread.is_alive(), "临时目录清理前后台字幕线程必须退出")
 
     def test_original_text_is_not_rewritten_and_markdown_payload_is_literal(self):
         raw = RAW.replace("机会成本是放弃的最好选择。", "# 原话\n<script>not a command</script>\n[x](https://example.org)")
