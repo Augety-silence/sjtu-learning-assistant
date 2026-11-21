@@ -98,3 +98,17 @@ RAG 本身并不排斥 Markdown。本次正文不可达的主要原因是 Agent 
 已安装 App：`/Applications/SJTU Learning Assistant.app`，版本仍为 1.8.12；可执行文件 SHA-256 为 `bf33e67ac4d4f628c24f18c0e41e05e7eee25b90ada400f51c77f9eca283956f`，结束核验时 PID 仍为 52386。未结束该进程、未替换安装包，不能宣称正在运行的版本已经具有本轮修复。当前安装包精确来源提交没有从包内重新确认，不猜测。
 
 两个旧脏工作树 `/Users/bytedance/Projects/sjtu-learning-assistant` 与 `/Users/bytedance/Projects/sjtu-m9-nightly-20261025` 仅只读核验状态，未修改、清理、覆盖或搬运任何内容；原本已有的用户修改保留。
+
+## 用户授权替换后的实际部署（2026-11-21）
+
+用户明确要求“替换”后重新核验：本机 HEAD 为 `ddd3b02c9d97759d1f5a98477d6bfb6388a84e75`，分支仍为 `aime/1793618241-ai-document-multimodal`，工作树干净，origin/main 本地引用仍为 `d71c19bd34c4d53dba1201aa63999d77ae94a63c`。新包来源提交、版本、签名和 SHA-256 与上文一致。
+
+旧界面已退出，但有 PID 27202 的后台同步进程；发送 SIGINT 正常取消并等待退出，未使用 SIGKILL。确认没有 App 进程后，先将新包复制到 `/Applications` 的独立临时目录并再次验签，再把旧 App 完整保留到新的时间戳回退目录，最后安装新包。空临时目录已移除，没有删除旧 App、已有回退或学习数据。
+
+- 已部署：`/Applications/SJTU Learning Assistant.app`；版本 1.8.12，精确构建来源仍为 `80bf437ca7029a811e3c9fbee0b9db9115206f67`。
+- 部署后 deep/strict 验签及 plist 检查通过。
+- 部署后主二进制 SHA-256：`69b8012c5f5b215d5241400306774ea7ba7188b809513441837cc808c7d4e04d`。
+- 新时间戳回退：`/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_101853-wiki-reader/SJTU Learning Assistant.app`。
+- 回退主二进制 SHA-256：`bf33e67ac4d4f628c24f18c0e41e05e7eee25b90ada400f51c77f9eca283956f`，与替换前一致。
+- 已启动新 App，核验主进程 PID 28547。当前章节更新的是实际安装状态，不表示全库 Wiki 已完成，也不代替 Cmd+C 或 Windows 真机交互验证。
+- 本次仅新增部署记录，没有代码、版本或 Release 变更；没有 push、PR、合并或远端分支操作。两个旧脏工作树未被本次部署访问或修改。
