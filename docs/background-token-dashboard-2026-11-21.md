@@ -46,4 +46,13 @@
 
 ## 精确提交、构建与部署
 
-待完成部署后补录确切提交、签名、回退、SHA-256、进程与结束状态。不得将本节待验证项解释为已完成。
+- 功能Mac提交 `baca0d3a4ecb052224934f9859bf4219d9b23d37`，沙盒对应 `e8f54540c30b990106fef9a50004a0e129f0f56b`，共同tree `9e18cf14aa8abc0711531700f1e4a6fbb20f7399`。提交用途为本地后台生命周期、视频同行与模型计量修复。
+- 从上述精确Mac提交git archive到 `/private/tmp/sjtu-toolbar-build.4ML8sJ`，独立生成图标、前端生产构建与PyInstaller打包；没有用脏工作树构建。
+- 候选与安装后App通过codesign deep/strict和包内plist／第一方路径／秘密／禁止模块检查；使用ad-hoc签名，未Apple公证。
+- 已替换并打开 `/Applications/SJTU Learning Assistant.app`，版本仍 **1.8.12**。主程序SHA-256 `ba52bc6a738e8b90bcce5121e2f4630a4c373147adb5d9f6b9e6d601791e624c`，运行PID **73413**，安装后32秒仍在。
+- 部署前核对旧App主程序SHA与起点相同；新回退 `/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_140955-background-token/SJTU Learning Assistant.app` 经签名／SHA核验。旧安装目录随后移动为同目录 `previous-installed.app`；旧应用不再占据Applications位置，但可恢复，所有更旧回退未删除。
+- 部署时旧App PID70166正常菜单退出；其子进程73019继续运行，待自然结束后才替换。没有SIGTERM／SIGKILL或强制终止同步。
+- 安装后生产库只读核对Alembic为 **0022**，新计量表已出现1条App运行记录；这不是合成探针写入生产库，不读取其提示词或响应。
+- 迁移前0021快照额外保留为回退目录的 `app-pre-0022.db`（目录700／文件600），完整性quick_check通过，SHA-256 `f75846f3f640f9c00a191277db6ae959070ebe6c40003d65dd7642ad684bdfca`。系统sqlite3只读打开无WAL伴随文件的快照失败，改用只针对闭合快照的immutable只读验证脚本通过；没有回滚或覆盖生产库。未来回退须先核对新增数据，不直接恢复旧快照。
+- 结束功能提交两端工作树干净，原分支不变。Mac再次fetch后origin/main仍 `d71c19bd34c4d53dba1201aa63999d77ae94a63c`，开放PR仍0。沙盒仍没有origin/main。
+- 最后的本地交接提交仅补此部署记录及只读快照验证脚本，不改变已部署功能源码。没有推送、PR创建／合并、版本号变化、远端分支删除或Release发布；两个禁止旧工作树未进入或修改。
