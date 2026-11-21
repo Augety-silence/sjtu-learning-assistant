@@ -87,6 +87,70 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("CompiledKnowledgeBrowser", () => {
+  it("来源说明只在独立提示中，正文没有常驻注释，图标细小且可键盘关闭提示", async () => {
+    const { container } = render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("关系代数");
+    const reader = screen.getByLabelText("Markdown 正文预览");
+    expect(within(reader).queryByText(/来源：/)).toBeNull();
+    const info = screen.getByRole("button", { name: "文档来源与状态" });
+    const tooltip = screen.getByRole("tooltip", { hidden: true });
+    expect(info.getAttribute("aria-describedby")).toBe(tooltip.id);
+    expect(tooltip.textContent).toContain(page.citation);
+    fireEvent.focus(info);
+    fireEvent.keyDown(info, { key: "Escape" });
+    expect(info.parentElement?.getAttribute("data-dismissed")).toBe("true");
+    const icon = container.querySelector(
+      ".compiled-knowledge-navigation-toggle svg",
+    );
+    expect(icon?.getAttribute("width")).toBe("16");
+    expect(icon?.getAttribute("stroke-width")).toBe("1.5");
+  });
+
+  it("统一目录选择保留两类全部文件，定位字幕时使用原来源而非虚拟范围", async () => {
+    const transcript = {
+      ...document,
+      id: "b".repeat(32),
+      source_id: "automatic-transcripts",
+      title: "第一讲字幕.md",
+    };
+    const scope = "automatic-learning:term30";
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document, transcript],
+      count: 2,
+      next_offset: null,
+      issues: [],
+      truncated: false,
+      folders: [{ source_id: scope, path: "秋", name: "秋", count: 2 }],
+    });
+    vi.mocked(readCompiledKnowledge).mockImplementation(async (id) => ({
+      ...page,
+      ...(id === transcript.id ? transcript : document),
+      next_offset: null,
+    }));
+    render(<CompiledKnowledgeBrowser />);
+    fireEvent.click(await screen.findByRole("button", { name: /秋.*2/ }));
+    await waitFor(() =>
+      expect(searchCompiledKnowledge).toHaveBeenCalledWith("", scope, 0, "秋"),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /第一讲字幕/ }));
+    await waitFor(() =>
+      expect(readCompiledKnowledge).toHaveBeenCalledWith(transcript.id, 0),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "在本地显示" }));
+    await waitFor(() =>
+      expect(openCompiledKnowledge).toHaveBeenCalledWith(
+        transcript.source_id,
+        transcript.id,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "收起课程目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开课程目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "全部课程" }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Markdown 正文预览")).toBeNull(),
+    );
+    expect(screen.getByLabelText("课程与课时文件夹")).toBeTruthy();
+  });
   it("长课程树不挤走文件列表，同一文件夹全部六份文件均可切换", async () => {
     const docs = Array.from({ length: 6 }, (_, index) => ({
       ...document,
@@ -334,7 +398,7 @@ describe("CompiledKnowledgeBrowser", () => {
     expect(
       screen.queryByRole("heading", { name: "课程讲义与知识点" }),
     ).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "定位文件" }));
+    fireEvent.click(screen.getByRole("button", { name: "在本地显示" }));
     await waitFor(() =>
       expect(openCompiledKnowledge).toHaveBeenCalledWith(
         source.id,
@@ -450,7 +514,10 @@ describe("CompiledKnowledgeBrowser", () => {
       ],
     });
     render(<CompiledKnowledgeBrowser />);
-    await screen.findByText("选择文件夹或搜索知识点。");
+    await screen.findByText("数据库");
+    expect(screen.queryByLabelText("Markdown 正文预览")).toBeNull();
+    expect(screen.queryByRole("toolbar", { name: "阅读操作" })).toBeNull();
+    expect(screen.queryByText("选择文件夹或搜索知识点。")).toBeNull();
     expect(screen.queryByText("查看此文件夹全部课件")).toBeNull();
     const summary = screen.getByText("数据库").closest("summary");
     expect(summary).toBeTruthy();

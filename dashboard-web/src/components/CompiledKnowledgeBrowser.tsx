@@ -1,6 +1,5 @@
 import {
   FileText,
-  Folder,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
@@ -12,6 +11,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
+import { KnowledgeDocumentInfo } from "@/components/KnowledgeDocumentInfo";
 import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import { Button } from "@/components/ui/Button";
 import {
@@ -340,11 +340,11 @@ export function CompiledKnowledgeBrowser({
       <div
         className="compiled-knowledge-layout"
         data-browsing={browsingRoot ? "root" : "folder"}
-        data-navigation={navigationOpen ? "open" : "closed"}
+        data-navigation={browsingRoot || navigationOpen ? "open" : "closed"}
       >
         <aside
           className="compiled-knowledge-navigation"
-          hidden={!navigationOpen}
+          hidden={!browsingRoot && !navigationOpen}
         >
           <nav
             className="compiled-knowledge-folders"
@@ -431,137 +431,147 @@ export function CompiledKnowledgeBrowser({
             </div>
           )}
         </aside>
-        <div className="compiled-knowledge-reading-pane">
-          <div
-            className="compiled-knowledge-reader-actions"
-            role="toolbar"
-            aria-label="阅读操作"
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={navigationOpen ? "收起课程目录" : "展开课程目录"}
-              title={navigationOpen ? "收起课程目录" : "展开课程目录"}
-              onClick={() => setNavigationOpen((value) => !value)}
+        {!browsingRoot && (
+          <div className="compiled-knowledge-reading-pane">
+            <div
+              className="compiled-knowledge-reader-actions"
+              role="toolbar"
+              aria-label="阅读操作"
             >
-              {navigationOpen ? (
-                <PanelLeftClose aria-hidden="true" />
-              ) : (
-                <PanelLeftOpen aria-hidden="true" />
-              )}
-            </Button>
-            {page && (
-              <>
-                <span
-                  className="compiled-knowledge-reader-title"
-                  title={documentTitle(page)}
-                >
-                  {documentTitle(page)}
-                </span>
-                <Button
-                  variant="ghost"
-                  disabled={reading}
-                  onClick={() => void read(page, 0, false, true)}
-                >
-                  从头阅读
-                </Button>
-                <Button variant="ghost" onClick={() => void open(page)}>
-                  定位文件
-                </Button>
-              </>
-            )}
-          </div>
-          <div
-            ref={readingPosition.ref}
-            onScroll={readingPosition.onScroll}
-            className="compiled-knowledge-reader"
-            aria-label="Markdown 正文预览"
-            tabIndex={0}
-          >
-            {browsingRoot && (
-              <div className="compiled-knowledge-welcome">
-                <Folder aria-hidden="true" />
-                <p>选择文件夹或搜索知识点。</p>
-              </div>
-            )}
-            {page && (
-              <>
-                <p>
-                  {documentStatus(page)} · {page.section}
-                </p>
-                <p className="compiled-knowledge-citation">
-                  来源：{page.citation}
-                </p>
-                {page.error && (
-                  <p role="alert">
-                    尚未完成：{page.error} 当前显示已保存原文，不是完整知识稿。
-                  </p>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="compiled-knowledge-navigation-toggle"
+                aria-label={navigationOpen ? "收起课程目录" : "展开课程目录"}
+                title={navigationOpen ? "收起课程目录" : "展开课程目录"}
+                onClick={() => setNavigationOpen((value) => !value)}
+              >
+                {navigationOpen ? (
+                  <PanelLeftClose
+                    aria-hidden="true"
+                    size={16}
+                    strokeWidth={1.5}
+                  />
+                ) : (
+                  <PanelLeftOpen
+                    aria-hidden="true"
+                    size={16}
+                    strokeWidth={1.5}
+                  />
                 )}
-                <div className="rich-preview-markdown">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[
-                      [
-                        rehypeKatex,
-                        {
-                          trust: false,
-                          throwOnError: false,
-                          maxExpand: 1000,
-                          maxSize: 10,
-                        },
-                      ],
-                    ]}
-                    skipHtml
-                    components={{
-                      img: ({ alt }) => (
-                        <span>［{alt || "页图"}：请在结果目录查看］</span>
-                      ),
-                      a: ({ children, href }) =>
-                        href?.startsWith("#") ? (
-                          <a href={href}>{children}</a>
-                        ) : (
-                          <span>{children}</span>
-                        ),
-                      h1: ({ children }) => (
-                        <h1
-                          id={String(children)
-                            .replace(/[–—]/g, "-")
-                            .replace(/\s+/g, "-")}
-                        >
-                          {children}
-                        </h1>
-                      ),
-                    }}
+              </Button>
+              {page && (
+                <>
+                  <span
+                    className="compiled-knowledge-reader-title"
+                    title={documentTitle(page)}
                   >
-                    {page.offset === 0
-                      ? page.text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
-                      : page.text}
-                  </ReactMarkdown>
-                </div>
-                {page.next_offset != null && (
+                    {documentTitle(page)}
+                  </span>
+                  <KnowledgeDocumentInfo
+                    status={documentStatus(page)}
+                    section={page.section}
+                    citation={page.citation}
+                  />
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     disabled={reading}
-                    onClick={() => void read(page, page.next_offset ?? 0, true)}
+                    onClick={() => void read(page, 0, false, true)}
                   >
-                    继续阅读
+                    从头阅读
                   </Button>
-                )}
-                <p>
-                  正文分页预览：已加载{" "}
-                  {Math.min(
-                    page.offset + knowledgeTextLength(page.text),
-                    page.total_chars,
-                  )}{" "}
-                  / {page.total_chars} 字符
-                  {page.next_offset == null
-                    ? " · 全文已显示"
-                    : " · 继续阅读会追加后文；这不是编译进度"}
-                </p>
-              </>
-            )}
+                  <Button variant="ghost" onClick={() => void open(page)}>
+                    在本地显示
+                  </Button>
+                </>
+              )}
+            </div>
+            <div
+              ref={readingPosition.ref}
+              onScroll={readingPosition.onScroll}
+              className="compiled-knowledge-reader"
+              aria-label="Markdown 正文预览"
+              tabIndex={0}
+            >
+              {page && (
+                <>
+                  {page.error && (
+                    <p role="alert">
+                      尚未完成：{page.error}{" "}
+                      当前显示已保存原文，不是完整知识稿。
+                    </p>
+                  )}
+                  <div className="rich-preview-markdown">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[
+                        [
+                          rehypeKatex,
+                          {
+                            trust: false,
+                            throwOnError: false,
+                            maxExpand: 1000,
+                            maxSize: 10,
+                          },
+                        ],
+                      ]}
+                      skipHtml
+                      components={{
+                        img: ({ alt }) => (
+                          <span>［{alt || "页图"}：请在结果目录查看］</span>
+                        ),
+                        a: ({ children, href }) =>
+                          href?.startsWith("#") ? (
+                            <a href={href}>{children}</a>
+                          ) : (
+                            <span>{children}</span>
+                          ),
+                        h1: ({ children }) => (
+                          <h1
+                            id={String(children)
+                              .replace(/[–—]/g, "-")
+                              .replace(/\s+/g, "-")}
+                          >
+                            {children}
+                          </h1>
+                        ),
+                      }}
+                    >
+                      {page.offset === 0
+                        ? page.text.replace(
+                            /^---\r?\n[\s\S]*?\r?\n---\r?\n/,
+                            "",
+                          )
+                        : page.text}
+                    </ReactMarkdown>
+                  </div>
+                  {page.next_offset != null && (
+                    <Button
+                      variant="outline"
+                      disabled={reading}
+                      onClick={() =>
+                        void read(page, page.next_offset ?? 0, true)
+                      }
+                    >
+                      继续阅读
+                    </Button>
+                  )}
+                  <p>
+                    正文分页预览：已加载{" "}
+                    {Math.min(
+                      page.offset + knowledgeTextLength(page.text),
+                      page.total_chars,
+                    )}{" "}
+                    / {page.total_chars} 字符
+                    {page.next_offset == null
+                      ? " · 全文已显示"
+                      : " · 继续阅读会追加后文；这不是编译进度"}
+                  </p>
+                </>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <details className="compiled-knowledge-connection">
         <summary>外部 AI 工具只读接入</summary>

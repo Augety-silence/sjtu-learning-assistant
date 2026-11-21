@@ -296,7 +296,10 @@ class CompiledKnowledge:
         limit = _integer(limit, "limit", 1, 50)
         sources, documents, issues, truncated = self._catalog()
         by_id = {source["id"]: source for source in sources}
-        if source_id and source_id not in by_id:
+        from sjtu_learning_assistant.knowledge_navigation import navigation_scopes
+        navigation = navigation_scopes(documents)
+        virtual_scope = source_id in set(navigation.values())
+        if source_id and source_id not in by_id and not virtual_scope:
             raise CompiledKnowledgeError("知识来源已失效，请刷新结果。")
         matches, read_bytes = [], 0
         needle = query.strip().lower()
@@ -306,7 +309,7 @@ class CompiledKnowledge:
         if len(terms) > 10:
             raise CompiledKnowledgeError("单次最多检索10个关键词，请缩小范围。")
         for doc in documents:
-            if source_id and doc["source_id"] != source_id:
+            if source_id and (navigation.get(doc["id"]) != source_id if virtual_scope else doc["source_id"] != source_id):
                 continue
             if (term_id and doc.get("term_id") != term_id) or (course_id and doc.get("course_id") != course_id):
                 continue
@@ -338,8 +341,10 @@ class CompiledKnowledge:
             parts = PurePosixPath(doc["folder"]).parts
             for index in range(1, len(parts) + 1):
                 prefix = PurePosixPath(*parts[:index]).as_posix()
-                key = (doc["source_id"], prefix)
-                summary = folders.setdefault(key, {"source_id": doc["source_id"], "path": prefix, "name": parts[index - 1], "count": 0})
+                # 显式物理来源过滤仍只浏览该来源；全库／统一目录才跨来源。
+                scope = navigation.get(doc["id"], doc["source_id"]) if not source_id or virtual_scope else doc["source_id"]
+                key = (scope, prefix)
+                summary = folders.setdefault(key, {"source_id": scope, "path": prefix, "name": parts[index - 1], "count": 0})
                 summary["count"] += 1
         if folder:
             matches = [doc for doc in matches if doc["folder"] == folder or doc["folder"].startswith(folder + "/")]
