@@ -62,6 +62,7 @@ from sjtu_learning_assistant.cloud_drive_service import (
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
+from sjtu_learning_assistant.transcript_service import ARTIFACT_FILES
 from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import (
@@ -326,7 +327,7 @@ def _artifact_id(value: object) -> str:
         not separator
         or len(job_id) != 32
         or any(character not in "0123456789abcdef" for character in job_id)
-        or kind not in {"raw_vtt", "cues", "cleaned", "summary_json", "summary"}
+        or kind not in ARTIFACT_FILES
     ):
         raise DashboardError("字幕工件标识不正确。")
     return result

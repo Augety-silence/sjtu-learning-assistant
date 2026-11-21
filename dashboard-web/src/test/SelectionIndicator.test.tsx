@@ -47,23 +47,34 @@ describe("Tabs sliding indicator", () => {
     expect(indicators()).toHaveLength(0);
   });
 
-  it("每个分组只有一个矩形，跟随受控与非受控的选中项移动", () => {
+  it("每组只有一个底层矩形，文字与点击目标始终在其上方", () => {
     render(<Harness indicator />);
     expect(indicators()).toHaveLength(2);
-    expect(
-      screen.getByRole("tab", { name: "甲" }).contains(indicators()[0]),
-    ).toBe(true);
+    const first = screen.getByRole("tablist", { name: "first" });
+    expect(indicators()[0].parentElement).toBe(first);
+    expect(indicators()[0].classList.contains("tabs-group-indicator")).toBe(
+      true,
+    );
+    expect(first.firstElementChild).toBe(indicators()[0]);
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(tab.classList.contains("tabs-sliding-trigger")).toBe(true);
+      expect(tab.querySelector("[data-selection-indicator]")).toBeNull();
+      expect(tab.querySelector(".selection-label")).not.toBeNull();
+    }
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "乙" }), { button: 0 });
     expect(
-      screen.getByRole("tab", { name: "乙" }).contains(indicators()[0]),
-    ).toBe(true);
+      screen.getByRole("tab", { name: "乙" }).getAttribute("data-state"),
+    ).toBe("active");
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "丁" }), { button: 0 });
     expect(indicators()).toHaveLength(2);
     expect(
-      screen.getByRole("tab", { name: "丁" }).contains(indicators()[1]),
-    ).toBe(true);
+      screen.getByRole("tab", { name: "丁" }).getAttribute("data-state"),
+    ).toBe("active");
+    expect(indicators()[1].parentElement).toBe(
+      screen.getByRole("tablist", { name: "second" }),
+    );
     expect(indicators()[1].getAttribute("aria-hidden")).toBe("true");
   });
 });

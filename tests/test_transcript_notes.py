@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from desktop_app import DesktopBridge
 from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
 from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.knowledge_wiki import CourseWiki
@@ -42,6 +43,45 @@ class NotesClient:
 
 
 class TranscriptNotesTests(unittest.TestCase):
+    def test_desktop_bridge_reads_and_reveals_all_new_markdown_ids_from_service(self):
+        with tempfile.TemporaryDirectory() as temp:
+            revealed = []
+            service = TranscriptService(Path(temp) / "transcripts", autostart_worker=False,
+                subtitle_fetcher=lambda source: {"status": "ready", "vtt": RAW},
+                ai_context_provider=lambda: AIContext(NotesClient(), "deepseek-chat", "endpoint", True),
+                revealer=revealed.append)
+            self.addCleanup(service.close)
+            batch = service.start_batch(course_id="12", course_name="经济学",
+                videos=[{"source_id": SOURCE, "title": "第三讲"}])
+            batch = service._read_json(service._batch_path(batch["id"]))
+            job = batch["jobs"][0]
+            service._fetch_and_store(batch, job)
+            directory = service._video_dir(SOURCE)
+            manifest = service._read_json(directory / "manifest.json")
+            manifest["status"] = "completed"
+            service._write_json(directory / "manifest.json", manifest)
+            service._backfill_next_lesson()
+            dashboard = DashboardService.__new__(DashboardService)
+            dashboard._client_lock = threading.RLock()
+            dashboard._transcript_service_instance = service
+            bridge = DesktopBridge(dashboard)
+            listed = bridge.invoke("transcript_artifacts", {"job_id": job["id"]})
+            self.assertTrue(listed["ok"], listed)
+            for item in listed["data"]["items"]:
+                if item["kind"] not in {"lesson", "lesson_summary", "original"}:
+                    continue
+                with self.subTest(kind=item["kind"]):
+                    result = bridge.invoke("transcript_artifact_read", {"artifact_id": item["id"]})
+                    self.assertTrue(result["ok"], result)
+                    self.assertIn("机会成本", result["data"]["content"])
+                    self.assertTrue(bridge.invoke("transcript_artifact_reveal", {"artifact_id": item["id"]})["ok"])
+            self.assertEqual(3, len(revealed))
+            for kind in ("../original", "original.md", "original:extra", "secret", "v2:../raw.vtt"):
+                with self.subTest(kind=kind):
+                    result = bridge.invoke("transcript_artifact_read", {"artifact_id": f"{job['id']}:{kind}"})
+                    self.assertFalse(result["ok"])
+            self.assertEqual(3, len(revealed))
+
     def test_app_startup_backfills_saved_subtitles_without_entering_video_page(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

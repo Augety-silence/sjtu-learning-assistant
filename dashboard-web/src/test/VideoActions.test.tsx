@@ -16,8 +16,8 @@ vi.mock("@/lib/api", () => ({
   getTranscriptArtifacts: vi.fn(async () => ({
     items: [
       {
-        id: "summary",
-        kind: "summary",
+        id: "lesson_summary",
+        kind: "lesson_summary",
         label: "讲义",
         content_type: "text/markdown",
       },
