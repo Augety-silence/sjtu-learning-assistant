@@ -88,7 +88,7 @@ class TranscriptNotesTests(unittest.TestCase):
             initial = TranscriptService(root / "transcripts" / "v1", autostart_worker=False)
             directory = initial._video_dir(SOURCE)
             directory.mkdir()
-            (directory / "raw.vtt").write_text(RAW)
+            (directory / "raw.vtt").write_text(RAW, encoding="utf-8", newline="\n")
             initial._write_json(directory / "manifest.json", {"source": {"source_id": SOURCE},
                 "course": {"id": "12", "name": "经济学"}, "video": {"title": "课堂"},
                 "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}})
@@ -108,7 +108,7 @@ class TranscriptNotesTests(unittest.TestCase):
                 until = time.monotonic() + 3
                 while not (directory / "lesson.md").exists() and time.monotonic() < until:
                     service._wake.wait(0.02)
-                self.assertIn("机会成本", (directory / "lesson.md").read_text())
+                self.assertIn("机会成本", (directory / "lesson.md").read_text(encoding="utf-8"))
                 dashboard.start_transcript_markdown_sync()
                 self.assertIs(service, dashboard._transcript_service_instance)
 
@@ -212,11 +212,11 @@ class TranscriptNotesTests(unittest.TestCase):
             kinds = {item["kind"] for item in service.list_artifacts(job["id"])["items"]}
             self.assertTrue({"lesson", "lesson_summary", "original"} <= kinds)
             self.assertEqual(original, (directory / "raw.vtt").read_bytes())
-            modified = (directory / "lesson.md").read_text() + "\n人工笔记\n"
-            (directory / "lesson.md").write_text(modified)
+            modified = (directory / "lesson.md").read_text(encoding="utf-8") + "\n人工笔记\n"
+            (directory / "lesson.md").write_text(modified, encoding="utf-8", newline="\n")
             current = service._read_json(directory / "manifest.json")
             self.assertFalse(service._save_lesson_notes(directory, current, RAW, "新的总结"))
-            self.assertEqual(modified, (directory / "lesson.md").read_text())
+            self.assertEqual(modified, (directory / "lesson.md").read_text(encoding="utf-8"))
             self.assertEqual("user_modified", service._read_json(directory / "manifest.json")["lesson_notes"]["status"])
 
     def test_failed_upgrade_keeps_readable_raw_md_and_cools_down(self):
@@ -226,13 +226,13 @@ class TranscriptNotesTests(unittest.TestCase):
             self.addCleanup(service.close)
             directory = service._video_dir(SOURCE)
             directory.mkdir()
-            (directory / "raw.vtt").write_text(RAW)
+            (directory / "raw.vtt").write_text(RAW, encoding="utf-8", newline="\n")
             manifest = {"source": {"source_id": SOURCE}, "course": {"id": "12", "name": "经济学"}, "video": {"title": "第一堂"},
                         "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}}
             service._write_json(directory / "manifest.json", manifest)
             with patch("sjtu_learning_assistant.transcript_service.compile_summary", side_effect=TimeoutError):
                 service._backfill_next_lesson()
-            self.assertIn("机会成本", (directory / "lesson.md").read_text())
+            self.assertIn("机会成本", (directory / "lesson.md").read_text(encoding="utf-8"))
             self.assertFalse((directory / "lecture-summary.md").exists())
             current = service._read_json(directory / "manifest.json")
             self.assertEqual("pending", current["lesson_notes"]["status"])
@@ -252,10 +252,26 @@ class TranscriptNotesTests(unittest.TestCase):
             for source_id in (SOURCE, "sjtu-video:12:100"):
                 directory = service._video_dir(source_id)
                 directory.mkdir()
-                (directory / "raw.vtt").write_text(RAW)
+                (directory / "raw.vtt").write_text(RAW, encoding="utf-8", newline="\n")
                 service._write_json(directory / "manifest.json", {"source": {"source_id": source_id},
                     "course": {"id": "12", "name": "经济学"}, "video": {"title": "课堂"},
                     "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}})
                 directories.append(directory)
             service._backfill_next_lesson()
             self.assertTrue(all((directory / "lesson.md").is_file() for directory in directories))
+
+    def test_saved_and_manual_chinese_notes_ignore_system_text_defaults(self):
+        read_text, write_text = Path.read_text, Path.write_text
+
+        def windows_read(path, *args, **kwargs):
+            kwargs.setdefault("encoding", "cp1252")
+            return read_text(path, *args, **kwargs)
+
+        def windows_write(path, data, *args, **kwargs):
+            kwargs.setdefault("encoding", "cp1252")
+            kwargs.setdefault("newline", "\r\n")
+            return write_text(path, data, *args, **kwargs)
+
+        # 复用完整入库与人工编辑保护流程，只改变未显式指定的系统文本默认值。
+        with patch.object(Path, "read_text", windows_read), patch.object(Path, "write_text", windows_write):
+            self.test_saved_and_legacy_transcripts_are_auto_indexed_and_manual_edits_preserved()

@@ -54,22 +54,28 @@ class CompiledKnowledgeTests(unittest.TestCase):
         self.assertIn(self.relative, page["citation"])
 
     def test_search_keeps_later_body_hits_not_only_table_of_contents(self):
-        body = "# 目录\n评分细则见第26页\n" + "背景材料\n" * 3000 + "# 第26页\n评分细则：作业20%，期末55%\n"
-        self.mirror.write_text(body, encoding="utf-8")
-        result = self.service.search("评分")
-        item = result["items"][0]
-        self.assertEqual("body", item["match_kind"])
-        self.assertEqual(2, item["match_count"])
-        self.assertEqual([body.index("评分"), body.rindex("评分")], [x["match_offset"] for x in item["passages"]])
-        self.assertIn("期末55%", self.service.read(item["id"], item["passages"][-1]["match_offset"])["text"])
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                body = ("# 目录\n评分细则见第26页\n" + "背景材料\n" * 3000 + "# 第26页\n评分细则：作业20%，期末55%\n").replace("\n", newline)
+                payload = body.encode("utf-8")
+                self.mirror.write_bytes(payload)
+                result = self.service.search("评分")
+                item = result["items"][0]
+                self.assertEqual("body", item["match_kind"])
+                self.assertEqual(2, item["match_count"])
+                self.assertEqual([body.index("评分"), body.rindex("评分")], [x["match_offset"] for x in item["passages"]])
+                self.assertIn("期末55%", self.service.read(item["id"], item["passages"][-1]["match_offset"])["text"])
+                self.assertEqual(payload, self.mirror.read_bytes())
 
     def test_many_matches_keep_bounded_early_and_late_passages(self):
-        body = ("评分细则\n" + "空" * 1000 + "\n") * 100
-        self.mirror.write_text(body, encoding="utf-8")
-        item = self.service.search("评分")["items"][0]
-        self.assertEqual(100, item["match_count"])
-        self.assertEqual(6, len(item["passages"]))
-        self.assertEqual(body.rindex("评分"), item["passages"][-1]["match_offset"])
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                body = (("评分细则\n" + "空" * 1000 + "\n") * 100).replace("\n", newline)
+                self.mirror.write_bytes(body.encode("utf-8"))
+                item = self.service.search("评分")["items"][0]
+                self.assertEqual(100, item["match_count"])
+                self.assertEqual(6, len(item["passages"]))
+                self.assertEqual(body.rindex("评分"), item["passages"][-1]["match_offset"])
 
     def test_filename_hit_is_explicitly_not_body_evidence(self):
         item = self.service.search(".pptx")["items"][0]

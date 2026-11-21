@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +42,9 @@ class VideoCheckpointTests(unittest.TestCase):
             self.assertEqual(result["data"], service.slides_pdf("sjtu-video:12:789")["data"])
             self.assertEqual(3, len(calls))
             self.assertFalse(list(Path(tmp).rglob(".page-*")))
-            self.assertTrue(all(p.stat().st_mode & 0o077 == 0 for p in Path(tmp).rglob("*.image")))
+            # Windows st_mode 不表达 ACL；功能、校验与临时文件清理断言仍在两端执行。
+            if os.name != "nt":
+                self.assertTrue(all(p.stat().st_mode & 0o077 == 0 for p in Path(tmp).rglob("*.image")))
 
     def test_revision_and_source_isolation_checksum_and_symlink_fail_closed(self):
         records = [{"index": 0, "url": "https://live.sjtu.edu.cn/1.jpg", "order_time": 1}]

@@ -15,7 +15,9 @@
 
 ## 发布与验证边界
 
-本机 macOS 完整 unittest 执行 1133 项，结果通过（1 跳过）；完整 pytest 1207 通过、1 跳过、499 子测试通过。前端 Vitest 64 文件／580 用例通过，Biome 检查 170 文件、TypeScript 与 Vite 生产构建、compileall、Python/npm 许可证和 diff 检查通过。秘密模式扫描通过，但 7 个非 UTF-8 文件未做文本扫描；GitHub gitleaks 单独进行全历史扫描。jsdom 媒体未实现、Vite 主 chunk 超过 500 kB 与 macOS 多线程 fork 警告仍为非阻断信息。
+首次发布候选的 Windows pytest 检出 7 个测试夹具问题：默认换行翻译使正文偏移预期不符、中文字幕读写遗漏 UTF-8，以及把 POSIX 权限位当作 Windows ACL。夹具已显式使用 UTF-8 与约定换行；正文命中测试同时覆盖 LF／CRLF 原字节偏移，增加 cp1252 默认环境下的课堂 MD 入库与人工编辑保护回归。Windows 仍执行缓存续传、校验和异常清理断言，只有 POSIX 权限位检查限定在 POSIX 系统；未改 CI 编码或跳过整组用例。生产代码未修改，Windows ACL 仍需真实平台独立验收。
+
+修正后，本机 macOS 完整 unittest 执行 1134 项，结果通过（1 跳过）；完整 pytest 1208 通过、1 跳过、503 子测试通过。前端 Vitest 64 文件／580 用例通过，Biome 检查 170 文件、TypeScript 与 Vite 生产构建、compileall、Python/npm 许可证和 diff 检查通过。秘密模式扫描通过，但 7 个非 UTF-8 文件未做文本扫描；GitHub gitleaks 单独进行全历史扫描。jsdom 媒体未实现、Vite 主 chunk 超过 500 kB 与 macOS 多线程 fork 警告仍为非阻断信息。
 
 发布前执行完整 Python unittest／pytest、前端 Vitest、Biome、类型检查与生产构建，以及 compileall、许可证、秘密模式和 diff 检查；GitHub 七项 CI 全部通过后才推送正式版本标签。精确提交的 macOS／Windows 发布构建成功后，由发布流程上传安装包及 SHA-256 文件并标记 Latest。
 
