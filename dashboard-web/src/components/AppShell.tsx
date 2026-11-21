@@ -31,6 +31,7 @@ import {
   useState,
 } from "react";
 import { AppBrand } from "@/components/AppBrand";
+import { MarkdownSyncProgress } from "@/components/MarkdownSyncProgress";
 import {
   type SidebarAIRequest,
   SidebarAssistant,
@@ -422,6 +423,7 @@ export function AppShell({
           </div>
           <div className="page-header-actions">
             {headerActions}
+            <MarkdownSyncProgress onNavigate={select} />
             {/* 用 aria-disabled 代替 disabled：Chromium/WebView2 会把已聚焦的禁用按钮的焦点丢到 <body>。 */}
             <Button
               className="aria-disabled:pointer-events-none aria-disabled:opacity-50 focus-visible:!opacity-100 forced-colors:aria-disabled:opacity-100"

@@ -1,0 +1,46 @@
+.markdown-progress-host { position: relative; }
+.markdown-progress-window {
+  position: absolute;
+  z-index: 45;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 120px);
+  overflow: auto;
+  padding: 16px;
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--compact-radius);
+  box-shadow: var(--shadow-composer);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.markdown-progress-window header, .markdown-progress-heading, .markdown-progress-window footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.markdown-progress-window h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.markdown-progress-row { margin-top: 16px; }
+.markdown-progress-row + .markdown-progress-row { padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.markdown-progress-heading h3 { margin: 0; font-size: 14px; font-weight: 500; }
+.markdown-progress-row progress { display: block; width: 100%; height: 6px; margin: 10px 0; appearance: none; accent-color: var(--action-primary); border: 0; border-radius: 3px; background: var(--surface-control); }
+.markdown-progress-row progress::-webkit-progress-bar { background: var(--surface-control); border-radius: 3px; }
+.markdown-progress-row progress::-webkit-progress-value { background: var(--action-primary); border-radius: 3px; }
+.markdown-progress-row progress::-moz-progress-bar { background: var(--action-primary); border-radius: 3px; }
+.markdown-progress-row dl { display: flex; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.markdown-progress-row dl div { display: flex; gap: 6px; }
+.markdown-progress-row dt, .markdown-progress-row p, .markdown-progress-current { color: var(--text-secondary); }
+.markdown-progress-row dd { margin: 0; }
+.markdown-progress-row summary { color: var(--text-secondary); cursor: pointer; }
+.markdown-progress-row ul { padding: 0; margin: 8px 0; list-style: none; }
+.markdown-progress-row li { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.markdown-progress-row li span:first-child, .markdown-progress-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.markdown-progress-row li span:last-child { flex-shrink: 0; color: var(--text-secondary); }
+.markdown-progress-window footer { margin-top: 16px; }
+
+@media (max-width: 600px) {
+  .page-header { flex-wrap: wrap; gap: 12px; }
+  .page-heading { flex: 1 0 100%; }
+  .page-heading h1 { overflow-wrap: normal; }
+  .page-header-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
+}

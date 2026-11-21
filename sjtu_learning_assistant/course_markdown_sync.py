@@ -75,9 +75,6 @@ class CourseMarkdownSync:
             if self._stop.is_set() or not settings.course_markdown_enabled:
                 self._set(status="disabled")
                 return
-            if not settings.ai_enabled or not settings.ai_key_saved:
-                self._set(status="needs_ai")
-                return
             source = Path(validate_archive_root(settings.archive_root))
             if not source.is_dir():
                 raise KnowledgeCompilerError("课件归档目录不可用。")
@@ -177,11 +174,13 @@ class CourseMarkdownSync:
         self._set(status="running", total=len(candidates), completed=0, failed=0, pending=0,
                   calls_today=quota["used"], output_root=str(target), text_ready=0, issues=[])
         prepared = []
+        self._set(phase="local_text", current_file=None)
         # 第一阶段对所有课件先落地本地全文 MD；视觉额度不会使后面的文件完全无 MD。
         for path in candidates:
             if self._stop.is_set() or self._cancel.is_set():
                 break
             relative = None
+            self._set(current_file=path.name)
             try:
                 safe_destination(source, path)
                 if not path.is_file() or path.stat().st_size > MAX_SOURCE_BYTES:
@@ -225,9 +224,16 @@ class CourseMarkdownSync:
                 failed += 1
                 issues.append((relative + "：" if relative else "") + "本地正文提取失败；现有文件保留。")
             self._set(text_ready=text_ready, failed=failed, issues=issues[:20])
+        # 基础正文转换无需 AI；配置缺失不应挡住所有本地 MD。
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            self._set(status="needs_ai", phase="waiting_ai", current_file=None,
+                      pending=len(prepared), issues=issues[:20])
+            return
         # 先为已完成的旧课件建图，长时间视觉编译不能阻塞现有知识导航。
+        self._set(phase="wiki", current_file=None)
         update_wiki()
         for index, (path, relative, fingerprint, item, mirror) in enumerate(prepared):
+            self._set(phase="ai_summary", current_file=path.name)
             if self._stop.is_set() or self._cancel.is_set():
                 pending += len(prepared) - index
                 break
@@ -278,6 +284,8 @@ class CourseMarkdownSync:
                 issues.append((relative + "：" if relative else "") + "处理失败；已有文件保留。")
             finally:
                 self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
+        self._set(phase="wiki", current_file=None)
         update_wiki()
         self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed or issues else "completed",
+                  phase="idle", current_file=None,
                   completed=completed, failed=failed, pending=pending, calls_today=quota["used"], issues=issues[:20])

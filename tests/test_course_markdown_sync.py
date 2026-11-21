@@ -140,6 +140,14 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual(2, len(list((self.target / "Courses").rglob("*.md"))))
         self.assertEqual(2, self.runner.call_count)
 
+    def test_missing_ai_does_not_block_local_basic_markdown(self):
+        self.settings = replace(self.settings, ai_enabled=False, ai_key_saved=False)
+        self.worker.run_once()
+        self.assertTrue(self.mirror.is_file())
+        self.assertEqual(1, self.worker.status()["text_ready"])
+        self.assertEqual("needs_ai", self.worker.status()["status"])
+        self.runner.assert_not_called()
+
     def test_text_compilation_does_not_use_chat_preview_400k_limit(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         build_pdf(self.path, tuple("Long text " * 350 for _ in range(130)))

@@ -517,6 +517,7 @@ class DesktopBridge:
             "knowledge_compiler_status": self._knowledge_compiler_status,
             "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
             "course_markdown_status": lambda payload: self._without_payload(payload, service.course_markdown_status),
+            "markdown_sync_progress": lambda payload: self._without_payload(payload, service.markdown_sync_progress),
             "local_projects_list": self._local_projects_list,
             "local_projects_add": self._local_projects_add,
             "local_projects_refresh": self._local_projects_refresh,

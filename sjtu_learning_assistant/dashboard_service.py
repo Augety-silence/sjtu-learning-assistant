@@ -3700,6 +3700,21 @@ class DashboardService:
                 "daily_limit": 0,
                 "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
 
+    def markdown_sync_progress(self) -> dict[str, Any]:
+        from .markdown_progress import course_progress, transcript_progress
+        settings = self._effective_settings()
+        service = getattr(self, "_course_markdown_instance", None)
+        live = service.status() if service is not None else {}
+        return {
+            "courses": course_progress(Path(settings.archive_root), self._course_markdown_paths()),
+            "transcripts": transcript_progress(self.local_projects_path.parent / "transcripts" / "v1"),
+            "automatic": settings.course_markdown_enabled,
+            "ai_ready": settings.ai_enabled and settings.ai_key_saved,
+            "ai_model": settings.ai_model,
+            "current": {key: live.get(key) for key in ("status", "phase", "current_file")},
+            "updated_at": self.now().isoformat(),
+        }
+
     def _run_knowledge_compiler_ai(
         self, model: str, system_prompt: str, user_content: Any
     ) -> str:

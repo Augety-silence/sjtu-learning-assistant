@@ -39,6 +39,11 @@ export type ProviderUsageSummary = {
 export const getProviderUsage = () =>
   invoke<ProviderUsageSummary>("provider_usage_summary");
 
+export const getMarkdownSyncProgress = () =>
+  invoke<import("@/lib/types").MarkdownSyncProgressState>(
+    "markdown_sync_progress",
+  );
+
 const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
 
 function redactLocalPaths(text: string) {
