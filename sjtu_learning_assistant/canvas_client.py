@@ -276,6 +276,12 @@ class CanvasClient:
     list_courses = courses
     get_courses = courses
 
+    def all_courses(self) -> list[dict[str, Any]]:
+        return self._paginate("/api/v1/courses", params=[
+            ("state[]", "available"), ("state[]", "completed"),
+            ("per_page", str(DEFAULT_PAGE_SIZE)), ("include[]", "term"),
+        ])
+
     def course(self, course_id: int | str) -> dict[str, Any]:
         return self._get_object(f"/api/v1/courses/{course_id}")
 

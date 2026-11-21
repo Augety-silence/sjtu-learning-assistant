@@ -156,12 +156,9 @@ export function RosterView({
       <div className="view-intro">
         <div>
           <h2>课程花名册</h2>
-          <p>
-            {courseName ? `${courseName} · ` : ""}筛选、选择并导出课程成员。
-          </p>
+          {courseName && <p>{courseName}</p>}
         </div>
         <div className="message-toolbar">
-          <span className="text-sm text-secondary">CSV（UTF-8）</span>
           <Button
             variant="outline"
             size="sm"

@@ -17,7 +17,6 @@
     .assignment-filters,
     .ai-preference-options,
     .theme-options,
-    .video-status-filters,
     .knowledge-phase-strip
   ) {
   isolation: isolate;
@@ -49,6 +48,25 @@
 }
 
 /* ---------- Tabs (ui/Tabs.tsx with `indicator`) ---------- */
+.tabs-sliding-group {
+  position: relative;
+  isolation: isolate;
+}
+
+/* The moving background is a sibling BELOW every trigger, not a child
+ * travelling across sibling labels or their transformed stacking contexts. */
+.tabs-sliding-group > .tabs-group-indicator {
+  inset: auto;
+  top: 0;
+  left: 0;
+  z-index: 0;
+}
+
+.tabs-sliding-group > .tabs-sliding-trigger {
+  position: relative;
+  z-index: 1;
+}
+
 :root .aura-tabs-trigger.selection-host.selection-active[data-state="active"],
 :root .aura-tabs-trigger.selection-host.selection-active[data-state="active"]:hover {
   background: transparent;

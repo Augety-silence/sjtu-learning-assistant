@@ -18,6 +18,15 @@ const tabsSource = readFileSync(
 );
 
 describe("CSS semantic tokens", () => {
+  it("历史课程面板只复用已定义的主题变量", () => {
+    const historyCss = readFileSync(
+      new URL("../components/course-history.css", import.meta.url),
+      "utf8",
+    );
+    for (const match of historyCss.matchAll(/var\((--[a-z-]+)\)/g)) {
+      expect(css).toContain(`${match[1]}:`);
+    }
+  });
   it("定义完整语义色源且不再使用半像素边界", () => {
     for (const token of [
       "--surface-page",

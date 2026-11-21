@@ -201,8 +201,7 @@ export function BackupView() {
     <ContentReveal className="section-stack backup-page" afterLoad>
       <div className="view-intro backup-intro">
         <div>
-          <h2>Canvas、邮件与 AI 附件云端归档</h2>
-          <p>将已下载资料归档到 SJTU Pan；默认保留本地副本。</p>
+          <h2>云端归档</h2>
         </div>
         <div className="backup-actions">
           <label className="backup-remove-option">

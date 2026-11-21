@@ -924,6 +924,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertEqual(0, run_desktop_app())
 
         create_window_call = webview.create_window.call_args
+        dashboard.start_transcript_markdown_sync.assert_called_once_with()
         fingerprint = hashlib.sha256(index_payload).hexdigest()[:16]
         self.assertEqual(
             ("SJTU 学习助手", f"file:///index.html?build={fingerprint}"),
@@ -935,6 +936,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertEqual("#EAF1FB", create_window_call.kwargs["background_color"])
         self.assertTrue(create_window_call.kwargs["transparent"])
         self.assertTrue(create_window_call.kwargs["vibrancy"])
+        self.assertTrue(create_window_call.kwargs["text_select"])
         self.assertEqual(_initialize_desktop_window, webview.start.call_args.args[0])
         self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
         start_kwargs = webview.start.call_args.kwargs
@@ -976,8 +978,12 @@ class DesktopBackgroundSyncTests(unittest.TestCase):
         ["app", "--background-sync", "--email", "student-id"],
     )
     def test_forwards_selected_background_sync_options(self):
-        with patch("sync_data_to_db.main", return_value=0) as sync_main:
+        with (
+            patch("sync_data_to_db.main", return_value=0) as sync_main,
+            patch("desktop_app._configure_desktop_logging") as configure_logging,
+        ):
             self.assertEqual(0, main())
+        configure_logging.assert_called_once_with()
         sync_main.assert_called_once_with(["--email", "student-id"])
 
 

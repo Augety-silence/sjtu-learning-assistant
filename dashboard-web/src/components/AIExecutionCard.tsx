@@ -38,6 +38,9 @@ const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
 };
 
 const toolLabels: Record<string, string> = {
+  list_compiled_knowledge: "列出编译知识库",
+  search_compiled_knowledge: "检索编译知识点",
+  read_compiled_knowledge: "读取编译知识正文",
   list_courses: "读取课程列表",
   search_course_files: "检索课程文件",
   list_course_files: "读取课程文件",

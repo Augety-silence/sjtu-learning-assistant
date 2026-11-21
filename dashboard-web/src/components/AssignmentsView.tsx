@@ -676,12 +676,6 @@ export function AssignmentsView({
       className="section-stack assignments-page"
       ready={items !== null || Boolean(error)}
     >
-      <div className="view-intro">
-        <div>
-          <h2>作业工作台</h2>
-          <p>阅读要求、准备答案，并在本机完成提交与 Canvas 回读验证。</p>
-        </div>
-      </div>
       <motion.div
         layoutScroll
         className="assignment-filters"

@@ -62,6 +62,7 @@ from sjtu_learning_assistant.cloud_drive_service import (
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
+from sjtu_learning_assistant.transcript_service import ARTIFACT_FILES
 from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import (
@@ -326,7 +327,7 @@ def _artifact_id(value: object) -> str:
         not separator
         or len(job_id) != 32
         or any(character not in "0123456789abcdef" for character in job_id)
-        or kind not in {"raw_vtt", "cues", "cleaned", "summary_json", "summary"}
+        or kind not in ARTIFACT_FILES
     ):
         raise DashboardError("字幕工件标识不正确。")
     return result
@@ -474,9 +475,10 @@ class DesktopBridge:
             "mail_attachment_open": self._mail_attachment_open,
             "mail_attachment_reveal": self._mail_attachment_reveal,
             "message_mark_read": self._message_mark_read,
-            "material_tree": lambda payload: self._without_payload(
-                payload, service.material_tree
-            ),
+            "material_tree": lambda payload: self._course_scope_call(payload, "material_tree"),
+            "course_catalog": lambda payload: self._course_scope_call(payload, "course_catalog"),
+            "course_history_start": lambda payload: self._course_scope_call(payload, "course_history_start"),
+            "course_history_status": lambda payload: self._without_payload(payload, service.course_history_status),
             "sync_status": lambda payload: self._without_payload(
                 payload, service.sync_status
             ),
@@ -506,6 +508,7 @@ class DesktopBridge:
             "ai_task_status": self._ai_task_status,
             "ai_task_cancel": self._ai_task_cancel,
             "ai_usage_summary": self._ai_usage_summary,
+            "provider_usage_summary": self._provider_usage_summary,
             "ai_chat_delete": self._ai_chat_delete,
             "ai_attachment_list": self._ai_attachment_list,
             "knowledge_compiler_pick_folder": self._knowledge_compiler_pick_folder,
@@ -513,10 +516,15 @@ class DesktopBridge:
             "knowledge_compiler_start": self._knowledge_compiler_start,
             "knowledge_compiler_status": self._knowledge_compiler_status,
             "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
+            "course_markdown_status": lambda payload: self._without_payload(payload, service.course_markdown_status),
             "local_projects_list": self._local_projects_list,
             "local_projects_add": self._local_projects_add,
             "local_projects_refresh": self._local_projects_refresh,
             "local_projects_remove": self._local_projects_remove,
+            "compiled_knowledge_sources": lambda payload: self._without_payload(payload, service.compiled_knowledge_sources),
+            "compiled_knowledge_search": lambda payload: self._compiled_knowledge_call(payload, "search"),
+            "compiled_knowledge_read": lambda payload: self._compiled_knowledge_call(payload, "read"),
+            "compiled_knowledge_open": lambda payload: self._compiled_knowledge_call(payload, "open"),
             "ai_attachment_pick": self._ai_attachment_pick,
             "ai_attachment_ingest": self._ai_attachment_ingest,
             "ai_attachment_restore": self._ai_attachment_restore,
@@ -656,6 +664,8 @@ class DesktopBridge:
             {
                 "archive_root",
                 "auto_download_current_term",
+                "course_markdown_enabled",
+                "course_markdown_daily_calls",
                 "organize_by_category",
                 "mail_account",
                 "ai_enabled",
@@ -825,6 +835,10 @@ class DesktopBridge:
         _only_keys(payload, {"session_id"})
         return self._service.ai_chat_delete(self._chat_session_id(payload))
 
+    def _provider_usage_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, set())
+        return self._service.provider_usage_summary()
+
     def _knowledge_compiler_pick_folder(
         self, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -851,7 +865,7 @@ class DesktopBridge:
             payload.get("target_root"), limit=4096, label="输出目录"
         )
         mode = payload.get("mode")
-        if type(mode) is not str or mode not in {"foundation", "full"}:
+        if type(mode) is not str or mode not in {"foundation", "full", "documents"}:
             raise DashboardError("编译范围不受支持。")
         return self._service.knowledge_compiler_start(
             source_root, target_root, mode
@@ -877,6 +891,23 @@ class DesktopBridge:
     ) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.local_projects_list()
+
+    def _compiled_knowledge_call(self, payload: Mapping[str, Any], operation: str) -> dict[str, Any]:
+        fields = {"search": {"query", "source_id", "offset", "limit", "folder", "term_id", "course_id"},
+                  "read": {"document_id", "offset", "max_chars"},
+                  "open": {"source_id", "document_id"}}[operation]
+        _only_keys(payload, fields)
+        if operation == "read" and "document_id" not in payload:
+            raise DashboardError("document_id 不能为空。")
+        if operation == "open" and "source_id" not in payload:
+            raise DashboardError("source_id 不能为空。")
+        return getattr(self._service, "compiled_knowledge_" + operation)(**payload)
+
+    def _course_scope_call(self, payload, operation):
+        fields = {"course_catalog": {"refresh"}, "material_tree": {"term_id", "course_ids"},
+                  "course_history_start": {"term_id", "course_ids", "download"}}[operation]
+        _only_keys(payload, fields)
+        return getattr(self._service, operation)(**payload)
 
     def _local_projects_add(
         self, payload: Mapping[str, Any]
@@ -2478,6 +2509,45 @@ def _promote_drop_listener_to_capture(window: object, document: object, handler:
         LOGGER.warning("文件拖放监听切换到捕获阶段失败。")
 
 
+_MACOS_BACKGROUND_INSTALLED = False
+
+
+def _install_macos_background_lifecycle() -> bool:
+    """关窗口只隐藏，Dock重开；继承原应用退出/关机契约，不拦截Cmd-Q。"""
+    global _MACOS_BACKGROUND_INSTALLED
+    if sys.platform != "darwin":
+        return False
+    if _MACOS_BACKGROUND_INSTALLED:
+        return True
+    try:
+        from webview.platforms.cocoa import BrowserView
+
+        class SJTUBackgroundWindowDelegate(BrowserView.WindowDelegate):
+            def windowShouldClose_(self, native):
+                instance = BrowserView.get_instance("window", native)
+                if instance is None:
+                    return True
+                native.orderOut_(None)
+                instance.webview.evaluateJavaScript_completionHandler_(
+                    "document.querySelectorAll('video,audio').forEach(m=>m.pause())", None)
+                return False
+
+        class SJTUBackgroundAppDelegate(BrowserView.AppDelegate):
+            def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+                if not visible:
+                    for instance in list(BrowserView.instances.values()):
+                        instance.show()
+                return True
+
+        BrowserView.WindowDelegate = SJTUBackgroundWindowDelegate
+        BrowserView.AppDelegate = SJTUBackgroundAppDelegate
+        _MACOS_BACKGROUND_INSTALLED = True
+        return True
+    except (ImportError, AttributeError, RuntimeError, TypeError) as exc:
+        LOGGER.warning("后台关窗机制不可用；exception_type=%s", type(exc).__name__)
+        return False
+
+
 def _initialize_desktop_window(window: object) -> None:
     _enable_macos_window_material(window)
     if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
@@ -2533,6 +2603,7 @@ def run_desktop_app() -> int:
         return 2
 
     _install_macos_native_file_drop_hook()
+    _install_macos_background_lifecycle()
     try:
         engine = create_database_engine()
     except DatabaseConfigError as exc:
@@ -2634,8 +2705,19 @@ def run_desktop_app() -> int:
             background_color="#EAF1FB",
             transparent=native_vibrancy,
             vibrancy=native_vibrancy,
+            text_select=True,
         )
         scheduler.start()
+        automatic_start = getattr(service, "start_course_markdown_sync", None)
+        if callable(automatic_start):
+            automatic_start()
+        automatic_transcript_start = getattr(service, "start_transcript_markdown_sync", None)
+        if callable(automatic_transcript_start):
+            try:
+                automatic_transcript_start()
+            except Exception as exc:
+                # 可选字幕存储不可用不能挡住整个App；不记录路径、正文或凭据。
+                LOGGER.warning("已保存字幕MD自动补齐启动失败；exception_type=%s", type(exc).__name__)
         start_options = {
             "debug": False,
             "private_mode": False,
@@ -2689,11 +2771,13 @@ def main() -> int:
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:
-            run_stdio_server(ReadOnlyToolRegistry(engine))
+            from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+            run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine)))
         finally:
             engine.dispose()
         return 0
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--background-sync"]:
+        _configure_desktop_logging()
         from sync_data_to_db import main as sync_main
 
         return sync_main(sys.argv[2:])

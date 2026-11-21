@@ -36,6 +36,7 @@ import {
   SidebarAssistant,
 } from "@/components/SidebarAssistant";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { useDistanceAwareIndicatorTransition } from "@/components/ui/SelectionIndicator";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { SyncStatus, ViewName } from "@/lib/types";
@@ -52,13 +53,14 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "grading", label: "作业批改", icon: NotebookPen },
   { id: "videos", label: "课程视频", icon: Video },
   { id: "backup", label: "交大云盘", icon: HardDrive },
-  { id: "local-projects", label: "本地项目", icon: FolderKanban },
-  { id: "knowledge", label: "知识库编译", icon: LibraryBig },
+  { id: "knowledge", label: "课程知识库", icon: LibraryBig },
   { id: "settings", label: "设置", icon: Settings },
+  { id: "local-projects", label: "资料项目", icon: FolderKanban },
 ];
 
-const primaryNavigation = navigation.filter((item) => item.id !== "settings");
-const utilityNavigation = navigation.filter((item) => item.id === "settings");
+const utilityIds = new Set<ViewName>(["settings", "local-projects"]);
+const primaryNavigation = navigation.filter((item) => !utilityIds.has(item.id));
+const utilityNavigation = navigation.filter((item) => utilityIds.has(item.id));
 
 function NavIndicator({ layoutId }: { layoutId: string }) {
   const { ref, transition } = useDistanceAwareIndicatorTransition(layoutId);
@@ -134,6 +136,7 @@ function NavItems({
 function MobileDrawer({
   view,
   items,
+  utilityItems,
   select,
   close,
   menuButtonRef,
@@ -142,6 +145,7 @@ function MobileDrawer({
 }: {
   view: ViewName;
   items: typeof primaryNavigation;
+  utilityItems: typeof utilityNavigation;
   select: (view: ViewName) => void;
   close: () => void;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
@@ -221,7 +225,7 @@ function MobileDrawer({
           <SidebarAssistant onOpen={onOpenAI} />
           <div className="sidebar-lower">
             <NavItems
-              items={utilityNavigation}
+              items={utilityItems}
               label="辅助导航"
               view={view}
               select={select}
@@ -261,6 +265,12 @@ export function AppShell({
   const visiblePrimaryNavigation = availableViews
     ? primaryNavigation.filter((item) => availableViews.includes(item.id))
     : primaryNavigation;
+  const visibleUtilityNavigation = utilityNavigation.filter(
+    (item) =>
+      item.id === "settings" ||
+      !availableViews ||
+      availableViews.includes(item.id),
+  );
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousViewRef = useRef(view);
@@ -347,19 +357,12 @@ export function AppShell({
           <SidebarAssistant onOpen={onOpenAI} />
           <div className="sidebar-lower">
             <NavItems
-              items={utilityNavigation}
+              items={visibleUtilityNavigation}
               label="辅助导航"
               view={view}
               select={select}
               indicatorId="sidebar-nav-indicator"
             />
-            <div className="sidebar-footer" aria-live="polite">
-              <span
-                className={`status-dot ${syncing ? "status-running" : ""}`}
-                aria-hidden="true"
-              />
-              <span>{syncing ? "正在同步" : "本地运行"}</span>
-            </div>
           </div>
         </LayoutGroup>
       </aside>
@@ -368,6 +371,7 @@ export function AppShell({
           <MobileDrawer
             view={view}
             items={visiblePrimaryNavigation}
+            utilityItems={visibleUtilityNavigation}
             select={select}
             close={closeDrawer}
             menuButtonRef={menuButtonRef}
@@ -398,11 +402,11 @@ export function AppShell({
             >
               菜单
             </Button>
-            <div>
+            <div className="heading-with-info">
               <h1 ref={headingRef} tabIndex={-1}>
                 {navigation.find((item) => item.id === view)?.label}
               </h1>
-              <p>
+              <InfoTooltip label="同步详情">
                 上次成功同步：
                 {syncStatus?.last_success_at
                   ? new Date(syncStatus.last_success_at).toLocaleString(
@@ -410,7 +414,10 @@ export function AppShell({
                       { timeZone: "Asia/Shanghai" },
                     )
                   : "暂无记录"}
-              </p>
+                <br />
+                macOS 关闭窗口后继续后台运行，点击 Dock
+                返回。完全退出请使用菜单“退出”或 ⌘Q；休眠和关机期间不运行。
+              </InfoTooltip>
             </div>
           </div>
           <div className="page-header-actions">

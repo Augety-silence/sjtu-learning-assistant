@@ -54,6 +54,228 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessageDetailContent", () => {
+  it("公网邮件图片自动显示，可暂停与重试，暂停时不接受旧请求结果", async () => {
+    let resolveOld: ((value: { data_url: string }) => void) | undefined;
+    vi.mocked(getMessageResource).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="public-logo" alt="51Job">',
+      resources: [
+        { id: "public-logo", type: "image", requires_consent: false },
+      ],
+    });
+    render(
+      <MessageDetailContent
+        detail={detail}
+        kind="email"
+        sourceId="mail-public"
+      />,
+    );
+    expect(getMessageResource).toHaveBeenCalledWith(
+      "email",
+      "mail-public",
+      "public-logo",
+    );
+    expect(screen.queryByText(/已拦截/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "暂停外部图片" }));
+    resolveOld?.({ data_url: "data:image/png;base64,old" });
+    await waitFor(() =>
+      expect(screen.getByAltText("51Job").getAttribute("src")).toBeNull(),
+    );
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,new",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "加载外部图片" }));
+    await waitFor(() =>
+      expect(screen.getByAltText("51Job").getAttribute("src")).toBe(
+        "data:image/png;base64,new",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "暂停外部图片" }));
+    expect(screen.getByAltText("51Job").getAttribute("src")).toBeNull();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("通用 MIME 的已恢复内嵌 PNG 直接显示，不访问外部地址", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-resource-id="generic-inline" alt="内嵌海报">',
+          attachments: [
+            {
+              id: "generic-inline",
+              name: "image.bin",
+              type: "application/octet-stream",
+              size: 34215,
+              is_inline: true,
+              available: true,
+              inline_data_url: "data:image/png;base64,recovered",
+            },
+          ],
+        })}
+        kind="email"
+        sourceId="mail-generic"
+      />,
+    );
+    expect(screen.getByAltText("内嵌海报").getAttribute("src")).toBe(
+      "data:image/png;base64,recovered",
+    );
+    expect(screen.queryByText("图片加载失败")).toBeNull();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
+  it("内嵌缓存缺失仍请求所属邮件资源，失败提示与解码失败分开", async () => {
+    vi.mocked(getMessageResource).mockRejectedValue(
+      new Error("private backend detail"),
+    );
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="inline-cache" alt="缓存图片">',
+      attachments: [
+        {
+          id: "inline-cache",
+          name: "image.bin",
+          type: "application/octet-stream",
+          size: 10,
+          is_inline: true,
+          available: false,
+          inline_data_url: null,
+        },
+      ],
+    });
+    const { rerender } = render(
+      <MessageDetailContent
+        detail={detail}
+        kind="email"
+        sourceId="mail-cache"
+      />,
+    );
+    expect(
+      await screen.findByText("图片读取失败，请重试；仍失败请导出诊断包反馈。"),
+    ).toBeTruthy();
+    expect(getMessageResource).toHaveBeenCalledWith(
+      "email",
+      "mail-cache",
+      "inline-cache",
+    );
+    expect(screen.queryByText("private backend detail")).toBeNull();
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,cached",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "重新加载图片：缓存图片" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByAltText("缓存图片").getAttribute("src")).toBe(
+        "data:image/png;base64,cached",
+      ),
+    );
+    expect(
+      screen.queryByText("图片读取失败，请重试；仍失败请导出诊断包反馈。"),
+    ).toBeNull();
+    fireEvent.error(screen.getByAltText("缓存图片"));
+    expect(
+      screen.getByText("图片数据无法显示，请导出诊断包反馈。"),
+    ).toBeTruthy();
+    rerender(
+      <MessageDetailContent
+        detail={makeDetail({ body_html: "<p>下一封</p>" })}
+        kind="email"
+        sourceId="mail-next"
+      />,
+    );
+    expect(
+      screen.queryByText("图片数据无法显示，请导出诊断包反馈。"),
+    ).toBeNull();
+  });
+
+  it("正文存在但资源元数据缺失时明确提示同步，不自动访问未知来源", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({ body_html: '<img data-resource-id="missing">' })}
+        kind="email"
+        sourceId="mail-missing"
+      />,
+    );
+    expect(screen.getByText("图片资源缺失，请同步邮箱后重试。")).toBeTruthy();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
+  it("邮件布局表格无网格外框，安全居中和跨列保留，数据表仍有语义", () => {
+    const html = sanitizeMessageHtml(
+      '<table border="0" align="center" width="100%"><tr><td align="center" colspan="2"><table><tr><td>通知</td></tr></table></td></tr></table><table role="table"><tr><th>数据</th><td>1</td></tr></table>',
+      true,
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    expect(container.querySelectorAll("[data-layout-table]")).toHaveLength(2);
+    expect(container.querySelector("td")?.getAttribute("colspan")).toBe("2");
+    expect(container.querySelector("table")?.getAttribute("align")).toBe(
+      "center",
+    );
+    expect(
+      container
+        .querySelector('table[role="table"]')
+        ?.hasAttribute("data-layout-table"),
+    ).toBe(false);
+    const unsafe = sanitizeMessageHtml(
+      '<td colspan="999" align="url(x)" style="background:url(https://evil.test)">x</td><table width="999999" role="button"></table>',
+    );
+    expect(unsafe).not.toContain("999");
+    expect(unsafe).not.toContain("url(");
+    expect(unsafe).not.toContain('role="button"');
+  });
+
+  it("外部图片需明确同意，切换邮件后同意状态与图片均不沿用", async () => {
+    vi.mocked(getMessageResource).mockResolvedValue({
+      data_url: "data:image/png;base64,logo",
+    });
+    const detail = makeDetail({
+      body_html: '<img data-resource-id="logo" alt="校徽">',
+      resources: [{ id: "logo", type: "image", requires_consent: true }],
+    });
+    const { rerender } = render(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-a" />,
+    );
+    expect(getMessageResource).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "加载此邮件外部图片" }));
+    await waitFor(() =>
+      expect(screen.getByAltText("校徽").getAttribute("src")).toBe(
+        "data:image/png;base64,logo",
+      ),
+    );
+    expect(getMessageResource).toHaveBeenCalledTimes(1);
+    rerender(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-b" />,
+    );
+    expect(screen.getByAltText("校徽").getAttribute("src")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "加载此邮件外部图片" }),
+    ).toBeTruthy();
+    rerender(
+      <MessageDetailContent detail={detail} kind="email" sourceId="mail-a" />,
+    );
+    expect(screen.getByAltText("校徽").getAttribute("src")).toBeNull();
+    expect(getMessageResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("未知外部图片以拦截说明显示，不静默丢失或请求", () => {
+    render(
+      <MessageDetailContent
+        detail={makeDetail({
+          body_html: '<img data-blocked-image="true" alt="外部图">',
+        })}
+        kind="email"
+        sourceId="mail-a"
+      />,
+    );
+    expect(screen.getByText("[外部图片已拦截：外部图]")).toBeTruthy();
+    expect(getMessageResource).not.toHaveBeenCalled();
+  });
+
   it("优先显示清洗后的 HTML，并过滤脚本、事件、样式、危险链接和图片来源属性", () => {
     const html = `
       <div style="color:red" onclick="alert(1)">

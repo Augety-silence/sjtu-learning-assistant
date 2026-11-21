@@ -5,6 +5,7 @@ import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { getMessages, markMessagesRead } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -309,9 +310,9 @@ export function MessagesView() {
       ready={items !== null || Boolean(error)}
     >
       <div className="view-intro">
-        <div>
+        <div className="heading-with-info">
           <h2>消息收件箱</h2>
-          <p>{messageShortcutHint()}</p>
+          <InfoTooltip label="消息快捷键">{messageShortcutHint()}</InfoTooltip>
         </div>
         <div className="message-toolbar">
           <Tabs
@@ -343,7 +344,7 @@ export function MessagesView() {
         </div>
       </div>
 
-      <p className="result-count" aria-live="polite">
+      <p className="sr-only" aria-live="polite">
         {items
           ? `共 ${items.length} 条消息${unreadCount ? `，${unreadCount} 条未读` : ""}`
           : ""}

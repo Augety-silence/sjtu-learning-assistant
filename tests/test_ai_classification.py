@@ -37,6 +37,41 @@ NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
 
 
 class AIClientTests(unittest.TestCase):
+    def test_knowledge_context_is_complete_and_scoped_without_weakening_chat(self):
+        seen = []
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={'choices': [{'message': {'content': '完整知识稿'}, 'finish_reason': 'stop'}]}, request=request)
+        client = OpenAIClassificationClient(api_key='fake-key', transport=httpx.MockTransport(handler), limiter=lambda: None)
+        text = 'x' * 80_000 + '关键条件：变量非负，目标最小化'
+        messages = [{'role': 'system', 'content': '来源审校'}, {'role': 'user', 'content': text}]
+        with self.assertRaises(AIClassificationError):
+            client.chat_completion(messages, system_prompt=False)
+        self.assertEqual('完整知识稿', client.chat_completion(messages, system_prompt=False, knowledge_compilation=True)['content'])
+        self.assertEqual(text, seen[0]['messages'][1]['content'])
+        with self.assertRaises(AIClassificationError):
+            client.chat_completion_stream(messages, system_prompt=False)
+        for invalid in (
+            [{'role': 'user', 'content': 'x' * 160_001}],
+            [{'role': 'user', 'content': 'x' * 100_000}, {'role': 'user', 'content': 'y' * 100_000}],
+            [{'role': 'assistant', 'content': '不允许混入聊天历史'}],
+        ):
+            with self.assertRaises(AIClassificationError):
+                client.chat_completion(invalid, system_prompt=False, knowledge_compilation=True)
+        with self.assertRaises(AIClassificationError):
+            client.chat_completion(messages, system_prompt=False, knowledge_compilation=True, tools=[{'type': 'function', 'function': {'name': 'write'}}])
+        with self.assertRaises(AIClassificationError):
+            client.chat_completion(messages, system_prompt=False, knowledge_compilation=1)
+        self.assertEqual(1, len(seen))
+        client.close()
+
+    def test_knowledge_context_preserves_image_validation(self):
+        client = OpenAIClassificationClient(api_key='fake-key', transport=httpx.MockTransport(lambda _: self.fail('非法图片不能发送')), limiter=lambda: None)
+        url = 'data:image/png;base64,' + base64.b64encode(b'not-png').decode()
+        with self.assertRaises(AIClassificationError) as raised:
+            client.chat_completion([{'role': 'user', 'content': [{'type': 'text', 'text': '课程'}, {'type': 'image_url', 'image_url': {'url': url}}]}], system_prompt=False, knowledge_compilation=True)
+        self.assertEqual('image_encoding', raised.exception.category)
+        client.close()
     def test_stream_uses_idle_read_timeout_and_flags_emitted_output(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.extensions["timeout"]["read"] == 60.0
@@ -191,6 +226,17 @@ class AIClientTests(unittest.TestCase):
         with self.assertRaises(AIClassificationError) as raised:
             OpenAIClassificationClient._clean_chat_messages([malformed])
         self.assertEqual("image_encoding", raised.exception.category)
+
+    def test_png_multimodal_input_keeps_mime_and_rejects_fake_header(self):
+        png = b'\x89PNG\r\n\x1a\n' + b'synthetic-png'
+        url = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+        content = [{'type': 'text', 'text': '合成图片'}, {'type': 'image_url', 'image_url': {'url': url}}]
+        cleaned, _ = OpenAIClassificationClient._clean_chat_messages([{'role': 'user', 'content': content}])
+        self.assertEqual(url, cleaned[0]['content'][1]['image_url']['url'])
+        content[1]['image_url']['url'] = 'data:image/png;base64,' + base64.b64encode(b'not-png').decode('ascii')
+        with self.assertRaises(AIClassificationError) as raised:
+            OpenAIClassificationClient._clean_chat_messages([{'role': 'user', 'content': content}])
+        self.assertEqual('image_encoding', raised.exception.category)
 
     def test_default_timeout_is_120_seconds_and_environment_value_is_bounded(self):
         with patch.dict(os.environ):

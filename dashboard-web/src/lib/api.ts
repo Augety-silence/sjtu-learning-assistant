@@ -16,6 +16,29 @@ export interface BridgeError {
   message: string;
 }
 
+export type ProviderUsageSummary = {
+  periods: Record<
+    "today" | "week" | "all",
+    {
+      calls: number;
+      metrics: Record<
+        "input" | "output" | "cache" | "total",
+        {
+          tokens: number | null;
+          reported_calls: number;
+          missing_calls: number;
+        }
+      >;
+    }
+  >;
+  first_recorded_at: string | null;
+  timezone: string;
+  scope: string;
+};
+
+export const getProviderUsage = () =>
+  invoke<ProviderUsageSummary>("provider_usage_summary");
+
 const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
 
 function redactLocalPaths(text: string) {
@@ -242,6 +265,8 @@ export function updateSettings(
     Pick<
       import("@/lib/types").SettingsStatus,
       | "auto_download_current_term"
+      | "course_markdown_enabled"
+      | "course_markdown_daily_calls"
       | "organize_by_category"
       | "mail_account"
       | "ai_enabled"
@@ -266,6 +291,64 @@ export function testAiConnection() {
   return invoke<{ ok: boolean; model: string; category: string }>(
     "settings_ai_test",
   );
+}
+
+export function getCourseMarkdownStatus() {
+  return invoke<import("@/lib/types").CourseMarkdownStatus>(
+    "course_markdown_status",
+  );
+}
+
+export function listCompiledKnowledgeSources() {
+  return invoke<{
+    items: import("@/lib/types").CompiledKnowledgeSource[];
+    count: number;
+    issues: string[];
+    truncated: boolean;
+  }>("compiled_knowledge_sources");
+}
+
+export function searchCompiledKnowledge(
+  query = "",
+  sourceId = "",
+  offset = 0,
+  folder = "",
+  scope?: { termId: string; courseId: string },
+) {
+  return invoke<import("@/lib/types").CompiledKnowledgeSearch>(
+    "compiled_knowledge_search",
+    {
+      query,
+      source_id: sourceId,
+      offset,
+      limit: 20,
+      ...(folder ? { folder } : {}),
+      ...(scope?.termId ? { term_id: scope.termId } : {}),
+      ...(scope?.courseId ? { course_id: scope.courseId } : {}),
+    },
+  );
+}
+
+export function readCompiledKnowledge(documentId: string, offset = 0) {
+  return invoke<import("@/lib/types").CompiledKnowledgePage>(
+    "compiled_knowledge_read",
+    { document_id: documentId, offset, max_chars: 8000 },
+  );
+}
+
+export function openCompiledKnowledge(sourceId: string, documentId = "") {
+  return invoke<{ status: string }>("compiled_knowledge_open", {
+    source_id: sourceId,
+    document_id: documentId,
+  });
+}
+
+export function getKnowledgeMCPConfig() {
+  return invoke<{
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  }>("mcp_config");
 }
 
 export function saveCredential(

@@ -353,6 +353,14 @@ def fetch_active_courses(client: httpx.Client) -> list[dict[str, Any]]:
     )
 
 
+def fetch_all_courses(client: httpx.Client) -> list[dict[str, Any]]:
+    """本人可发现的在读与往期目录；不请求内容、不提升权限。"""
+    return fetch_paginated(client, "/api/v1/courses", params=[
+        ("state[]", "available"), ("state[]", "completed"),
+        ("per_page", str(DEFAULT_PAGE_SIZE)), ("include[]", "term"),
+    ])
+
+
 def fetch_course_announcements(
     client: httpx.Client,
     course_id: int | str,

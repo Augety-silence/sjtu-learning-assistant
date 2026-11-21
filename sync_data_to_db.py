@@ -51,6 +51,7 @@ from sjtu_learning_assistant.canvas_sync import (
     DEFAULT_TIMEOUT_SECONDS,
     build_http_client,
     fetch_active_courses,
+    fetch_all_courses,
     fetch_course_announcements_incremental,
     fetch_course_assignments_incremental,
     fetch_course_files_incremental,
@@ -65,6 +66,7 @@ from sjtu_learning_assistant.mail_sync import (
     normalize_email,
     prompt_email,
 )
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage, record_event
 
 DEFAULT_EMAIL_BODY_BACKFILL_LIMIT = 50
 
@@ -115,9 +117,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_INITIAL_LIMIT,
         help=f"首次导入最近邮件数量，默认 {DEFAULT_INITIAL_LIMIT}。",
     )
+    parser.add_argument("--term-id", help="仅同步指定学期，如 term:123。")
+    parser.add_argument("--course-id", action="append", help="仅同步指定课程，可重复指定。")
     args = parser.parse_args(argv)
     if args.canvas_only and args.mail_only:
         parser.error("--canvas-only 和 --mail-only 不能同时使用。")
+    from sjtu_learning_assistant.course_scope import validate_scope
+    try:
+        validate_scope(args.term_id or "", args.course_id)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.mail_only and (args.term_id or args.course_id):
+        parser.error("邮箱同步不能携带课程范围。")
     if args.initial_mail_limit < 1 or args.initial_mail_limit > 5000:
         parser.error("--initial-mail-limit 必须在 1 到 5000 之间。")
     if args.archive_root is not None:
@@ -142,13 +153,30 @@ def sync_canvas(
     organize_by_category: bool = True,
     ai_client: OpenAIClassificationClient | None = None,
     ai_enabled: bool = False,
-) -> None:
-    token, _ = get_token(use_keychain=True)
+    selected_courses: list[dict] | None = None,
+    term_id: str = "",
+    course_ids: list[str] | None = None,
+    progress=None,
+    saved_token: str | None = None,
+) -> dict:
+    token = saved_token
+    if token is None:
+        token, _ = get_token(use_keychain=True)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
     with build_http_client(
         DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
     ) as client:
-        raw_courses = fetch_active_courses(client)
+        historical = selected_courses is not None or bool(term_id) or course_ids is not None
+        if historical:
+            notify = False
+        if selected_courses is not None:
+            raw_courses = selected_courses
+        elif historical:
+            from sjtu_learning_assistant.course_scope import select_scope
+            raw_courses = select_scope(fetch_all_courses(client), term_id, course_ids)
+        else:
+            raw_courses = fetch_active_courses(client)
+        issues = []
         announcements_by_course = {}
         assignments_by_course = {}
         folders_by_course = {}
@@ -162,8 +190,13 @@ def sync_canvas(
         unchanged_assignments = 0
         unchanged_files = 0
 
-        for course in raw_courses:
+        for index, course in enumerate(raw_courses):
             source_id = str(course["id"])
+            if progress:
+                progress(index, len(raw_courses), "同步课程资料")
+            if course.get("access_restricted_by_date") is True:
+                issues.append({"course_id": source_id, "resource": "course", "http": 403})
+                continue
             announcement_resource = f"course:{source_id}:announcements"
             assignment_resource = f"course:{source_id}:assignments"
             file_resource = f"course:{source_id}:files"
@@ -185,6 +218,7 @@ def sync_canvas(
                 if exc.status_code not in (403, 404):
                     raise
                 announcement_result = None
+                issues.append({"course_id": source_id, "resource": "announcements", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的公告暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -199,12 +233,12 @@ def sync_canvas(
                 if exc.status_code not in (403, 404):
                     raise
                 assignment_result = None
+                issues.append({"course_id": source_id, "resource": "assignments", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的作业暂不可读，已跳过：{exc}",
                     file=sys.stderr,
                 )
-            # 教师可对学生隐藏“文件/模块”栏目，Canvas 会对该课程返回 401/403；
-            # 只跳过该课程的对应资源（不推进游标、不触发失活），不中止整轮同步。
+            # 隐藏栏目（403/404）仅跳过资源；认证、限流或网络故障必须中止。
             try:
                 file_result = fetch_course_files_incremental(
                     client,
@@ -213,7 +247,10 @@ def sync_canvas(
                 )
                 folders = fetch_course_folders(client, source_id)
             except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
                 file_result = None
+                issues.append({"course_id": source_id, "resource": "files", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的文件列表暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -229,7 +266,10 @@ def sync_canvas(
                         fetch_course_module_items(client, source_id, module_id)
                     )
             except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
                 modules = None
+                issues.append({"course_id": source_id, "resource": "modules", "http": exc.status_code})
                 print(
                     f"警告：课程 {source_id} 的模块暂不可读，已跳过：{exc}",
                     file=sys.stderr,
@@ -264,6 +304,8 @@ def sync_canvas(
             else:
                 files_by_course[source_id] = file_result.records
 
+    if progress:
+        progress(len(raw_courses), len(raw_courses), "保存课程资料")
     result = persist_canvas_data(
         engine,
         raw_courses=raw_courses,
@@ -276,6 +318,7 @@ def sync_canvas(
         announcement_cursors=announcement_cursors,
         assignment_cursors=assignment_cursors,
         file_cursors=file_cursors,
+        default_scope=not historical,
     )
     print(
         "Canvas 同步成功："
@@ -292,6 +335,8 @@ def sync_canvas(
         f"模块 {result.modules.fetched}，模块项 {result.module_items.fetched}。"
     )
     if download:
+        if progress:
+            progress(len(raw_courses), len(raw_courses), "下载课程资料")
         with build_http_client(
             DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
         ) as archive_client:
@@ -301,9 +346,10 @@ def sync_canvas(
                 archive_root=archive_root,
                 current_term=current_term,
                 organize_by_category=organize_by_category,
-                active_course_source_ids={str(course["id"]) for course in raw_courses},
+                active_course_source_ids={str(course["id"]) for course in raw_courses if not course.get("access_restricted_by_date")},
                 ai_client=ai_client,
                 ai_enabled=ai_enabled,
+                checkpoint=(lambda: progress(len(raw_courses), len(raw_courses), "下载课程资料")) if progress else None,
             ).archive_current_term()
         if archive_result.skipped:
             print("文件归档跳过：%s" % archive_result.message)
@@ -337,6 +383,24 @@ def sync_canvas(
             )
 
 
+    history_result = {"courses": 0, "files": 0, "issues": []}
+    if not historical:
+        from sjtu_learning_assistant.course_material_sync import sync_historical_materials
+        with build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS) as history_client:
+            history_result = sync_historical_materials(
+                engine, history_client, {str(course["id"]) for course in raw_courses},
+                progress=progress,
+            )
+        print(f"往期资料目录：{history_result['courses']} 门课程，更新 {history_result['files']} 个文件，受限资源 {len(history_result['issues'])} 项。")
+
+    if progress:
+        progress(len(raw_courses), len(raw_courses), "资料处理结束")
+    return {"courses": len(raw_courses), "issues": issues,
+            "historical_materials": history_result,
+            "downloaded": archive_result.downloaded if download else 0,
+            "download_failed": archive_result.failed if download else 0}
+
+
 def sync_mail(
     engine,
     email_address: str,
@@ -344,7 +408,8 @@ def sync_mail(
     *,
     body_backfill_limit: int = DEFAULT_EMAIL_BODY_BACKFILL_LIMIT,
 ) -> None:
-    password, _ = get_password(email_address, use_keychain=True)
+    with diagnostic_stage("email", "credentials"):
+        password, _ = get_password(email_address, use_keychain=True, interactive=False)
     state = get_sync_state(engine, "email", "inbox")
     result = fetch_incremental_mail(
         email_address,
@@ -352,7 +417,9 @@ def sync_mail(
         state.cursor if state else None,
         initial_limit=initial_limit,
     )
-    persisted = persist_emails(engine, result.messages, cursor=result.cursor)
+    with diagnostic_stage("email", "persist"):
+        persisted = persist_emails(engine, result.messages, cursor=result.cursor)
+    record_event("email", "persist", "counts", fetched=persisted.fetched, inserted=persisted.inserted, updated=persisted.updated)
     print(
         "邮箱同步成功："
         f"获取 {persisted.fetched}，新增 {persisted.inserted}，"
@@ -364,8 +431,9 @@ def sync_mail(
             engine, email_address, limit=body_backfill_limit
         )
         if targets:
-            backfill = fetch_email_body_backfill(email_address, password, targets)
-            updated = persist_email_body_backfill(engine, backfill.updates)
+            with diagnostic_stage("email", "body_backfill"):
+                backfill = fetch_email_body_backfill(email_address, password, targets)
+                updated = persist_email_body_backfill(engine, backfill.updates)
             print(
                 "旧邮件正文回填："
                 f"候选 {backfill.selected}，尝试 {backfill.attempted}，"
@@ -407,29 +475,41 @@ def _tolerate_unencodable_output() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    with diagnostic_run():
+        result = _main(argv)
+        record_event("sync", "run", "finished", exit_code=result)
+        return result
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     _tolerate_unencodable_output()
     args = parse_args(argv)
     engine = None
     stage: str | None = None
     try:
-        engine = create_database_engine()
-        if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
-            initialize_desktop_database(engine, skip_import=args.skip_import)
-        health = check_database(engine)
+        with diagnostic_stage("sync", "database"):
+            engine = create_database_engine()
+            if getattr(getattr(engine, "dialect", None), "name", None) == "sqlite":
+                initialize_desktop_database(engine, skip_import=args.skip_import)
+            health = check_database(engine)
         stage = "sync"
         print(
             f"已连接数据库：{health.database} "
             f"（server {health.server_version}）"
         )
 
-        settings = SettingsStore().resolve(
-            archive_root=args.archive_root,
-            auto_download_current_term=False if args.no_download else None,
-            organize_by_category=False if args.no_organize_by_category else None,
-        )
+        with diagnostic_stage("sync", "settings"):
+            settings = SettingsStore().resolve(
+                archive_root=args.archive_root,
+                auto_download_current_term=False if args.no_download else None,
+                organize_by_category=False if args.no_organize_by_category else None,
+            )
 
+        failed = False
         if not args.mail_only:
             sync_options = {}
+            if args.term_id or args.course_id:
+                sync_options.update(term_id=args.term_id or "", course_ids=args.course_id)
             ai_client = None
             if (
                 settings.auto_download_current_term
@@ -444,6 +524,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             base_url=settings.ai_base_url,
                             model=settings.ai_model,
                         )
+                        from sjtu_learning_assistant.provider_usage import ProviderUsageLedger
+                        ai_client.usage_recorder = ProviderUsageLedger(engine).record
                 except (AIKeychainError, AIClassificationError):
                     ai_client = None
             if not settings.organize_by_category:
@@ -453,14 +535,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sync_options["ai_enabled"] = True
             stage = "canvas"
             try:
-                sync_canvas(
-                    engine,
-                    notify=not args.no_notify,
-                    download=settings.auto_download_current_term,
-                    archive_root=Path(settings.archive_root),
-                    current_term=args.current_term,
-                    **sync_options,
-                )
+                with diagnostic_stage("canvas", "sync"):
+                    sync_canvas(
+                        engine,
+                        notify=not args.no_notify and not (args.term_id or args.course_id),
+                        download=settings.auto_download_current_term,
+                        archive_root=Path(settings.archive_root),
+                        current_term=args.current_term,
+                        **sync_options,
+                    )
+            except (CanvasCheckError, ArchiveError) as exc:
+                # Canvas/下载网络故障不应阻断独立的邮箱；整轮仍保留失败退出码。
+                print(f"Canvas 同步失败：{exc}", file=sys.stderr)
+                _record_failure(engine, stage, f"Canvas 同步失败：{exc}")
+                failed = True
             finally:
                 if ai_client is not None:
                     ai_client.close()
@@ -469,8 +557,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             email_address = (
                 normalize_email(args.email) if args.email else prompt_email()
             )
-            sync_mail(engine, email_address, args.initial_mail_limit)
-        return 0
+            with diagnostic_stage("email", "sync"):
+                sync_mail(engine, email_address, args.initial_mail_limit)
+        return 1 if failed else 0
     except (
         ArchiveError,
         CanvasCheckError,

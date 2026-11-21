@@ -12,6 +12,16 @@ import {
 import type { LocalProject } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
+vi.mock("@/components/CompiledKnowledgeBrowser", () => ({
+  CompiledKnowledgeBrowser: ({
+    preferredSource,
+  }: {
+    preferredSource?: string;
+  }) => (
+    <section aria-label="编译结果与知识点">结果来源：{preferredSource}</section>
+  ),
+}));
+
 vi.mock("@/lib/api", () => ({
   addLocalProject: vi.fn(),
   listLocalProjects: vi.fn(),
@@ -55,6 +65,16 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("LocalProjectsView", () => {
+  it("展示结果入口，项目卡可筛选对应编译输出", async () => {
+    vi.mocked(listLocalProjects).mockResolvedValue({ items: [project] });
+    render(<LocalProjectsView onCompile={vi.fn()} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看编译结果" }),
+    );
+    expect(screen.getByLabelText("编译结果与知识点").textContent).toContain(
+      "project-" + project.id,
+    );
+  });
   it("从空状态登记素材与 Vault，并展示扫描结果", async () => {
     vi.mocked(pickKnowledgeFolder)
       .mockResolvedValueOnce({

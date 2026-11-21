@@ -159,7 +159,7 @@ class DashboardVideoTests(unittest.TestCase):
 
         pdf = service.video_slides_pdf("sjtu-video:12:99")
         self.assertEqual("created", pdf["status"])
-        self.assertEqual("文本分析-课件.pdf", pdf["filename"])
+        self.assertEqual("文本分析-99-课件.pdf", pdf["filename"])
         self.assertEqual(pdf["filename"], pdf["reveal_token"])
         self.assertNotIn("path", pdf)
         self.assertTrue((Path(self.temp.name) / "unused").is_absolute())

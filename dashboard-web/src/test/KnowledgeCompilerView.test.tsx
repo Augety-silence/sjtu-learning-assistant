@@ -13,7 +13,26 @@ import {
 import type { KnowledgeCompilerTask, SettingsStatus } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
+vi.mock("@/components/CompiledKnowledgeBrowser", () => ({
+  CompiledKnowledgeBrowser: () => (
+    <section aria-label="编译结果与知识点">直接查看已有结果</section>
+  ),
+}));
+
 vi.mock("@/lib/api", () => ({
+  getCourseMarkdownStatus: vi.fn().mockResolvedValue({
+    status: "disabled",
+    enabled: false,
+    output_root: "/archive/Knowledge Markdown",
+    daily_limit: 100,
+    calls_today: 0,
+    total: 0,
+    completed: 0,
+    pending: 0,
+    failed: 0,
+    issues: [],
+  }),
+  updateSettings: vi.fn(),
   cancelKnowledgeCompiler: vi.fn(),
   getKnowledgeCompilerStatus: vi.fn(),
   getSettings: vi.fn(),
@@ -64,14 +83,61 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
+async function renderCompiler() {
+  render(<KnowledgeCompilerView />);
+  const summary = await screen.findByText("编译设置与任务");
+  if (!summary.closest("details")?.open) fireEvent.click(summary);
+}
+
 describe("KnowledgeCompilerView", () => {
-  it("展示 12 轮编译路线和安全目录说明", async () => {
+  it("默认只展示结果浏览器，编译控件收纳且仍可主动展开", async () => {
     render(<KnowledgeCompilerView />);
+    const summary = await screen.findByText("编译设置与任务");
+    expect(summary.closest("details")?.open).toBe(false);
     expect(
-      await screen.findByText("把课程文件编译成可生长的知识网络"),
+      screen.getByRole("button", { name: "开始编译" }).closest("details"),
+    ).toBe(summary.closest("details"));
+    expect(screen.queryByRole("heading", { name: "课程知识库" })).toBeNull();
+    fireEvent.click(summary);
+    await waitFor(() => expect(summary.closest("details")?.open).toBe(true));
+    expect(
+      await screen.findByRole("button", { name: "开始编译" }),
     ).toBeTruthy();
+  });
+  it("已有任务运行时自动展开任务区，仍可安全停止", async () => {
+    vi.mocked(getKnowledgeCompilerStatus).mockResolvedValue({
+      ...idleTask,
+      status: "running",
+      task_id: "running-task",
+    });
+    render(<KnowledgeCompilerView />);
+    const summary = await screen.findByText("编译设置与任务");
+    await waitFor(() => expect(summary.closest("details")?.open).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /停止/ }));
+    await waitFor(() => expect(cancelKnowledgeCompiler).toHaveBeenCalled());
+  });
+  it("在编译页面直接展示已有结果浏览器", async () => {
+    await renderCompiler();
+    expect(await screen.findByLabelText("编译结果与知识点")).toBeTruthy();
+  });
+  it("默认选择逐页多模态，显示转换边界", async () => {
+    await renderCompiler();
+    const radio = await screen.findByRole("radio", {
+      name: /逐页多模态转 Markdown/,
+    });
+    expect((radio as HTMLInputElement).checked).toBe(true);
+    const explanation = screen.getByRole("button", { name: "编译方式说明" });
+    expect(
+      document.getElementById(
+        explanation.getAttribute("aria-describedby") || "",
+      )?.textContent,
+    ).toContain("不设每日或每次总调用额度");
+  });
+  it("默认不展示无关12轮路线，目录要求在可访问提示中，保持开始条件", async () => {
+    await renderCompiler();
+    expect(screen.queryByRole("heading", { name: "课程知识库" })).toBeNull();
     expect(screen.getByText("完整编译 · 12 轮")).toBeTruthy();
-    expect(screen.getByText("反向校验")).toBeTruthy();
+    expect(screen.queryByText("反向校验")).toBeNull();
     expect(screen.getByText(/输出目录必须为空/)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "开始编译" }).hasAttribute("disabled"),
@@ -130,9 +196,9 @@ describe("KnowledgeCompilerView", () => {
       task: running,
     });
 
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
     const pickButtons = await screen.findAllByRole("button", {
-      name: "选择目录",
+      name: /选择.*目录/,
     });
     fireEvent.click(pickButtons[0]);
     await waitFor(() =>
@@ -145,6 +211,7 @@ describe("KnowledgeCompilerView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "扫描素材" }));
     expect(await screen.findByText("12")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /完整编译 · 12 轮/ }));
     fireEvent.click(screen.getByRole("button", { name: "开始编译" }));
 
     await waitFor(() =>
@@ -166,7 +233,7 @@ describe("KnowledgeCompilerView", () => {
       ...settings,
       ai_enabled: false,
     });
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
     expect(await screen.findByText("需要先配置 AI 连接")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "开始编译" }).hasAttribute("disabled"),
@@ -180,7 +247,7 @@ describe("KnowledgeCompilerView", () => {
       progress: { done: 12, total: 12, current_file: null },
     });
 
-    render(<KnowledgeCompilerView />);
+    await renderCompiler();
 
     expect(await screen.findByText("编译已完成")).toBeTruthy();
     expect(screen.getByText("本次任务已结束")).toBeTruthy();

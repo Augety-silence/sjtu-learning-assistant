@@ -383,8 +383,8 @@ END:VCALENDAR
             engine = create_engine(
                 "sqlite+pysqlite:///" + str(Path(directory) / "migration.db")
             )
-            self.assertEqual("0021", SCHEMA_VERSION)
-            self.assertEqual("0021", bootstrap_sqlite(engine))
+            self.assertEqual("0022", SCHEMA_VERSION)
+            self.assertEqual("0022", bootstrap_sqlite(engine))
             tables = set(inspect(engine).get_table_names())
             self.assertTrue(
                 {
@@ -419,7 +419,7 @@ END:VCALENDAR
             config.set_main_option(
                 "sqlalchemy.url", str(engine.url).replace("%", "%%")
             )
-            self.assertEqual("0021", bootstrap_sqlite(engine))
+            self.assertEqual("0022", bootstrap_sqlite(engine))
             with engine.begin() as connection:
                 config.attributes["connection"] = connection
                 command.downgrade(config, "0019")
@@ -445,7 +445,7 @@ END:VCALENDAR
                     "VALUES (?, 'session', 'old-session', 'unchanged', '{}')",
                     (run_id,),
                 )
-            self.assertEqual("0021", bootstrap_sqlite(engine))
+            self.assertEqual("0022", bootstrap_sqlite(engine))
             with engine.begin() as connection:
                 row = connection.exec_driver_sql(
                     "SELECT imported_courses, imported_sessions, updated_sessions, "

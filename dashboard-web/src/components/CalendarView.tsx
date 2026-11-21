@@ -206,7 +206,6 @@ export function CalendarView({
         {!embedded && (
           <div>
             <h2>日历与 DDL</h2>
-            <p>按月查看课程事项，并优先处理未来七日内的截止任务。</p>
           </div>
         )}
         <div className="message-toolbar">

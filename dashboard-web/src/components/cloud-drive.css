@@ -23,6 +23,12 @@
   margin-right: 6px;
 }
 
+/* 带滑动指示器的标签由 selection-label 包裹；显式同行对齐，避免图标把文字挤出固定高度。 */
+.drive-page-head .aura-tabs-list { height: auto; min-height: 40px; max-width: 100%; }
+.drive-page-head .aura-tabs-trigger { height: auto; min-height: 32px; flex: 1 1 auto; min-width: 0; }
+.drive-page-head .selection-label { display: inline-flex; align-items: center; gap: 6px; line-height: 1.4; white-space: nowrap; }
+.drive-page-head .drive-tab-icon { margin: 0; flex-shrink: 0; }
+
 .drive-tab-panel:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 4px;

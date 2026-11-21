@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+import httpx
+
 try:
     import fcntl
 except ImportError:
@@ -78,6 +80,7 @@ from sjtu_learning_assistant.credential_store import (
 )
 from sjtu_learning_assistant.knowledge_compiler import (
     KnowledgeCompilerError,
+    KnowledgeAPIError,
     KnowledgeCompilerService,
 )
 from sjtu_learning_assistant.local_projects import (
@@ -85,6 +88,9 @@ from sjtu_learning_assistant.local_projects import (
     LocalProjectService,
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage, record_event
+from sjtu_learning_assistant.course_markdown_sync import CourseMarkdownSync
+from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge, CompiledKnowledgeError
 from sjtu_learning_assistant.archive_service import (
     DEFAULT_ARCHIVE_ROOT,
     ArchiveService,
@@ -125,6 +131,8 @@ from sjtu_learning_assistant.local_settings import (
     validate_ai_model,
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
+from sjtu_learning_assistant.course_scope import default_conditions, scoped_database_ids, knowledge_metadata, transcript_course_metadata
+from sjtu_learning_assistant.course_history import CourseHistoryService, CourseHistoryError
 from sjtu_learning_assistant.models import (
     ArchiveJob,
     AIAgentTrace,
@@ -146,9 +154,9 @@ from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
 from sjtu_learning_assistant.text_content import (
     extract_html_resource_ids,
     html_to_plain_text,
-    sanitize_html,
     sanitize_html_with_resources,
 )
+from sjtu_learning_assistant.mail_images import fetch_mail_image, raster_image_type, trusted_mail_image_url
 from sync_runner import DEFAULT_LOCK_PATH
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -552,6 +560,8 @@ class DashboardService:
             )
 
         with Session(self.engine) as session:
+            if not course_ids:
+                statement = statement.where(*default_conditions(session, Assignment.course_id))
             rows = session.execute(statement).all()
 
         def event_dto(assignment: Assignment, course: Course) -> dict[str, Any]:
@@ -825,7 +835,8 @@ class DashboardService:
         with self._client_lock:
             if self._video_service_instance is None:
                 self._video_service_instance = SJTUVideoService(
-                    self._get_canvas_client
+                    self._get_canvas_client,
+                    slide_cache_root=APP_SUPPORT_DIR / "video-slides" / "v1",
                 )
             return self._video_service_instance
 
@@ -948,10 +959,18 @@ class DashboardService:
         with self._client_lock:
             if self._transcript_service_instance is None:
                 self._transcript_service_instance = TranscriptService(
+                    self.local_projects_path.parent / "transcripts" / "v1",
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
+                    course_metadata_provider=lambda: transcript_course_metadata(self.engine),
+                    memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
             return self._transcript_service_instance
+
+    def start_transcript_markdown_sync(self) -> None:
+        """启动已保存字幕的补齐，不依赖用户先进入视频页或新建校对任务。"""
+        if (self.local_projects_path.parent / "transcripts" / "v1" / "videos").is_dir():
+            self._transcript_service()
 
     def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
         if isinstance(course_id, bool) or type(course_id) not in [int, str]:
@@ -1115,7 +1134,7 @@ class DashboardService:
     def video_slides_pdf(self, source_id: str) -> dict[str, Any]:
         """Generate a remote slide PDF in the backend-owned export directory."""
         try:
-            canvas_course_id, _video_id = parse_remote_source_id(source_id)
+            canvas_course_id, video_id = parse_remote_source_id(source_id)
             result = self._video_service().slides_pdf(source_id)
         except SJTUVideoError as exc:
             raise DashboardError(str(exc)) from None
@@ -1131,7 +1150,7 @@ class DashboardService:
             course_name = course.name if course is not None else "课程"
         stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._ -]+", "-", course_name)
         stem = stem.strip(" .-")[:120] or "课程"
-        filename = f"{stem}-课件.pdf"
+        filename = f"{stem}-{video_id}-课件.pdf"
         root = Path(self._academic_temp.name).resolve()
         target = root / filename
         descriptor, temporary_name = tempfile.mkstemp(prefix=".slides-pdf-", dir=root)
@@ -1195,7 +1214,10 @@ class DashboardService:
 
     def update_check(self) -> dict[str, Any]:
         """Check metadata and return a plan; this method never installs an update."""
-        result = self.update_service.check()
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
+
+        with diagnostic_run(source="update"), diagnostic_stage("update", "release_metadata"):
+            result = self.update_service.check()
         payload = self._dto(result)
         payload["automatic_install"] = False
         return payload
@@ -1254,7 +1276,8 @@ class DashboardService:
             courses = session.scalar(select(func.count(Course.id))) or 0
             deadlines = session.scalar(
                 select(func.count(Assignment.id)).where(
-                    *self._unfinished_assignment_conditions(now, until)
+                    *self._unfinished_assignment_conditions(now, until),
+                    *default_conditions(session, Assignment.course_id),
                 )
             ) or 0
             unread = session.scalar(
@@ -1286,7 +1309,7 @@ class DashboardService:
             rows = session.execute(
                 select(Assignment, Course)
                 .join(Course, Course.id == Assignment.course_id)
-                .where(*self._unfinished_assignment_conditions(now, until))
+                .where(*self._unfinished_assignment_conditions(now, until), *default_conditions(session, Assignment.course_id))
                 .order_by(Assignment.due_at.asc(), Assignment.id.asc())
                 .limit(limit)
             ).all()
@@ -1334,6 +1357,7 @@ class DashboardService:
                         UnifiedItem.item_type == "announcement",
                         UnifiedItem.is_active.is_(True),
                         Announcement.is_active.is_(True),
+                        *default_conditions(session, Announcement.course_id),
                     )
                     .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
@@ -1359,6 +1383,7 @@ class DashboardService:
                         UnifiedItem.item_type == "assignment",
                         UnifiedItem.is_active.is_(True),
                         Assignment.is_active.is_(True),
+                        *default_conditions(session, Assignment.course_id),
                     )
                     .order_by(UnifiedItem.occurred_at.desc().nulls_last())
                     .limit(limit)
@@ -1557,14 +1582,23 @@ class DashboardService:
         return resolved
 
     def _read_inline_attachment(self, attachment: EmailAttachment) -> str | None:
-        content_type = (attachment.content_type or "").split(";", 1)[0].casefold()
-        if (
-            not attachment.content_id
-            or not attachment.is_inline
-            or content_type not in INLINE_IMAGE_TYPES
-            or attachment.size > INLINE_IMAGE_LIMIT
-        ):
+        if not attachment.content_id or not attachment.is_inline:
             return None
+        with diagnostic_run(source="mail_image"):
+            return self._read_inline_image_data(attachment)
+
+    def _read_inline_image_data(self, attachment: EmailAttachment) -> str | None:
+        def failed(code: str) -> None:
+            record_event("mail_image", "inline_cache", "failed",
+                         resource_kind="inline", failure_code=code)
+
+        content_type = (attachment.content_type or "").split(";", 1)[0].casefold()
+        generic_type = content_type == "application/octet-stream"
+        if content_type not in INLINE_IMAGE_TYPES and not generic_type:
+            return failed("unsupported_type")
+        if attachment.size > INLINE_IMAGE_LIMIT:
+            return failed("size_limit")
+        record_event("mail_image", "inline_cache", "started", resource_kind="inline")
         try:
             path = self._resolve_controlled_mail_file(attachment.local_path)
             descriptor = os.open(
@@ -1574,15 +1608,23 @@ class DashboardService:
             try:
                 info = os.fstat(descriptor)
                 if not stat.S_ISREG(info.st_mode) or info.st_size > INLINE_IMAGE_LIMIT:
-                    return None
+                    return failed("size_or_file_type")
                 payload = os.read(descriptor, INLINE_IMAGE_LIMIT + 1)
             finally:
                 os.close(descriptor)
         except (DashboardError, OSError):
-            return None
+            return failed("cache_unavailable_or_unsafe")
         if len(payload) > INLINE_IMAGE_LIMIT:
-            return None
+            return failed("size_limit")
+        if generic_type:
+            detected_type = raster_image_type(payload)
+            if detected_type is None:
+                return failed("unrecognized_raster")
+            content_type = detected_type
         encoded = base64.b64encode(payload).decode("ascii")
+        record_event("mail_image", "inline_cache", "succeeded",
+                     resource_kind="inline", image_type=content_type.removeprefix("image/"),
+                     mime_recovered=int(generic_type), image_bytes=len(payload))
         return f"data:{content_type};base64,{encoded}"
 
     def _email_attachment_dto(self, attachment: EmailAttachment) -> dict[str, Any]:
@@ -1622,7 +1664,7 @@ class DashboardService:
                 title = item.subject
                 source_label = _sender_name(item.sender_name)
                 body = item.body_text
-                body_html = sanitize_html(item.body_html)
+                body_html, resource_urls = sanitize_html_with_resources(item.body_html)
                 if not body:
                     body = html_to_plain_text(body_html)
                 raw_data = item.raw_data if isinstance(item.raw_data, Mapping) else {}
@@ -1631,7 +1673,11 @@ class DashboardService:
                     self._email_attachment_dto(attachment)
                     for attachment in sorted(item.attachments, key=lambda value: value.id)
                 ]
-                resources: list[dict[str, str]] = []
+                resources: list[dict[str, Any]] = [
+                    {"id": resource_id, "type": "image", "requires_consent": False}
+                    for resource_id, resource_url in resource_urls.items()
+                    if trusted_mail_image_url(resource_url) is not None
+                ]
                 url = unified.url
             elif kind == "announcement":
                 row = session.execute(
@@ -1974,6 +2020,13 @@ class DashboardService:
     def message_resource(
         self, kind: str, source_id: str, resource_id: str
     ) -> dict[str, str]:
+        source = "mail_image" if kind == "email" else "canvas_image"
+        with diagnostic_run(source=source), diagnostic_stage(source, "resource_request"):
+            return self._message_resource(kind, source_id, resource_id)
+
+    def _message_resource(
+        self, kind: str, source_id: str, resource_id: str
+    ) -> dict[str, str]:
         kind = self._validate_message_kind(kind, allow_all=False)
         if (
             type(source_id) is not str
@@ -1990,8 +2043,17 @@ class DashboardService:
                 if email is None:
                     raise NotFoundError("未找到消息资源。")
                 allowed_ids = extract_html_resource_ids(email.body_html)
+                _html, resource_urls = sanitize_html_with_resources(email.body_html)
             if resource_id not in allowed_ids:
                 raise NotFoundError("未找到消息资源。")
+            resource_url = resource_urls.get(resource_id)
+            if resource_url is not None:
+                record_event("mail_image", "resource_request", "resolved", resource_kind="remote")
+                try:
+                    with diagnostic_stage("mail_image", "remote_fetch"):
+                        return {"data_url": fetch_mail_image(resource_url)}
+                except (ValueError, OSError, httpx.HTTPError) as exc:
+                    raise DashboardError("邮件外部图片读取失败；可重试，或在原邮箱查看。") from exc
             attachment = self._email_attachment(source_id, resource_id)
             data_url = self._read_inline_attachment(attachment)
             if data_url is None:
@@ -2053,9 +2115,59 @@ class DashboardService:
             )
         return {"updated": max(int(result.rowcount or 0), 0)}
 
-    def material_tree(self) -> dict[str, Any]:
+    def material_tree(self, term_id="", course_ids=None) -> dict[str, Any]:
         with Session(self.engine) as session:
-            return build_material_tree(session)
+            try:
+                ids = scoped_database_ids(session, term_id, course_ids)
+            except ValueError as exc:
+                raise DashboardError(str(exc)) from None
+            return build_material_tree(session, ids)
+
+    def _history_service(self):
+        with self._client_lock:
+            if self._closed:
+                raise DashboardError("应用正在关闭。")
+            service = getattr(self, "_course_history_instance", None)
+            if service is None:
+                def saved_token():
+                    from check_canvas_token import get_saved_token
+                    token = get_saved_token()
+                    if not token:
+                        raise CourseHistoryError("请先保存 Canvas 凭据。")
+                    return token
+
+                def fetch_rows():
+                    from check_canvas_token import build_http_client, DEFAULT_BASE_URL, DEFAULT_TIMEOUT_SECONDS
+                    from sjtu_learning_assistant.canvas_sync import fetch_all_courses
+                    with build_http_client(DEFAULT_BASE_URL, saved_token(), DEFAULT_TIMEOUT_SECONDS) as client:
+                        return fetch_all_courses(client)
+
+                def synchronize(rows, download, progress):
+                    from sync_data_to_db import sync_canvas
+                    settings = self._effective_settings()
+                    return sync_canvas(self.engine, selected_courses=rows, download=download, notify=False,
+                                       archive_root=Path(settings.archive_root), organize_by_category=settings.organize_by_category,
+                                       progress=progress, saved_token=saved_token())
+
+                service = CourseHistoryService(self.engine, fetch_rows=fetch_rows, synchronize=synchronize,
+                                               sync_lock=self._sync_lock, on_finished=self._notify_course_markdown_sync)
+                self._course_history_instance = service
+            return service
+
+    def course_catalog(self, refresh=False):
+        try:
+            return self._history_service().catalog(refresh)
+        except CourseHistoryError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def course_history_start(self, term_id="", course_ids=None, download=False):
+        try:
+            return self._history_service().start(term_id, course_ids, download)
+        except CourseHistoryError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def course_history_status(self):
+        return self._history_service().status()
 
     def _effective_settings(self) -> LocalSettings:
         return self.settings_store.resolve(archive_root=self._archive_root_override)
@@ -2097,6 +2209,9 @@ class DashboardService:
                         base_url=settings.ai_base_url,
                         model=settings.ai_model,
                     )
+                    if isinstance(self._ai_client, OpenAIClassificationClient):
+                        from .provider_usage import ProviderUsageLedger
+                        self._ai_client.usage_recorder = ProviderUsageLedger(self.engine).record
             except AIKeychainError:
                 # 与 ai_chat_send / ai_chat / _run_knowledge_compiler_ai 三处
                 # 调用点的凭据分类保持一致；required=False 时静默缓存配置即可。
@@ -2151,6 +2266,7 @@ class DashboardService:
                 f"文件下载失败：{detail}" if detail else "文件下载失败，请稍后重试。",
                 retryable=True,
             )
+        self._notify_course_markdown_sync()
         return {
             "source_id": result.source_id,
             "status": result.status,
@@ -3072,6 +3188,9 @@ class DashboardService:
                     base_url=settings.ai_base_url,
                     model=selected_model,
                 )
+                if isinstance(raw_client, OpenAIClassificationClient):
+                    from .provider_usage import ProviderUsageLedger
+                    raw_client.usage_recorder = ProviderUsageLedger(self.engine).record
             else:
                 raw_client = self._get_ai_client(settings, required=True)
             client = (
@@ -3090,6 +3209,7 @@ class DashboardService:
                     attachment_ids=scoped_attachment_ids,
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
+                    compiled_knowledge=self._compiled_knowledge_service(),
                 ),
                 preset,
             ).run(
@@ -3349,6 +3469,10 @@ class DashboardService:
         except AITaskError as exc:
             raise DashboardError(str(exc)) from None
 
+    def provider_usage_summary(self) -> dict[str, Any]:
+        from .provider_usage import ProviderUsageLedger
+        return ProviderUsageLedger(self.engine).summary()
+
     def ai_chat(self, messages: object) -> dict[str, Any]:
         """Compatibility endpoint for pre-history clients."""
         if type(messages) is not list:
@@ -3508,8 +3632,76 @@ class DashboardService:
             self._local_projects_instance = service
         return service
 
+    def _compiled_knowledge_service(self) -> CompiledKnowledge:
+        return CompiledKnowledge(self._effective_settings, self.local_projects_path,
+                                 metadata=lambda: knowledge_metadata(self.engine, self._effective_settings().archive_root), engine=self.engine)
+
+    def compiled_knowledge_sources(self) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().sources()
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_search(self, **arguments) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().search(**arguments)
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_read(self, **arguments) -> dict[str, Any]:
+        try:
+            return self._compiled_knowledge_service().read(**arguments)
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def compiled_knowledge_open(self, source_id: object, document_id: object = "") -> dict[str, str]:
+        try:
+            path = self._compiled_knowledge_service().open_path(source_id, document_id)
+            command = _desktop_open_command(path, reveal=bool(document_id))
+            completed = self.command_runner(command, check=False)
+            if command[0] != "explorer.exe" and getattr(completed, "returncode", 0) != 0:
+                raise DashboardError("无法打开知识结果目录。")
+            return {"status": "opened"}
+        except CompiledKnowledgeError as exc:
+            raise DashboardError(str(exc)) from None
+
+    def _course_markdown_paths(self) -> list[Path]:
+        with Session(self.engine) as session:
+            return [Path(path) for path in session.scalars(select(CourseFile.local_path).where(
+                CourseFile.is_active.is_(True), CourseFile.download_status == "downloaded",
+                CourseFile.local_path.is_not(None),
+            ))]
+
+    def start_course_markdown_sync(self) -> None:
+        if getattr(self, "_course_markdown_instance", None) is None:
+            self._course_markdown_instance = CourseMarkdownSync(
+                self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
+                wiki_rebuilder=self._rebuild_course_wiki,
+            )
+        self._course_markdown_instance.start()
+
+    def _rebuild_course_wiki(self, runner: Callable, cancelled: Callable) -> dict:
+        from sjtu_learning_assistant.knowledge_wiki import CourseWiki
+        return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
+
+    def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        service = getattr(self, "_course_markdown_instance", None)
+        if service is not None:
+            service.notify(settings_changed=settings_changed)
+
+    def course_markdown_status(self) -> dict[str, Any]:
+        settings = self._effective_settings()
+        service = getattr(self, "_course_markdown_instance", None)
+        state = service.status() if service is not None else {
+            "status": "disabled", "total": 0, "completed": 0, "pending": 0,
+            "failed": 0, "calls_today": 0, "issues": [],
+        }
+        return {**state, "enabled": settings.course_markdown_enabled,
+                "daily_limit": 0,
+                "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
+
     def _run_knowledge_compiler_ai(
-        self, model: str, system_prompt: str, user_content: str
+        self, model: str, system_prompt: str, user_content: Any
     ) -> str:
         settings = self._effective_settings()
         if not settings.ai_enabled or not settings.ai_key_saved:
@@ -3523,19 +3715,26 @@ class DashboardService:
                 api_key=key,
                 base_url=settings.ai_base_url,
                 model=model,
+                timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15),
             )
+            if isinstance(client, OpenAIClassificationClient):
+                from .provider_usage import ProviderUsageLedger
+                client.usage_recorder = ProviderUsageLedger(self.engine).record
             result = client.chat_completion(
                 [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0.1,
                 system_prompt=False,
+                knowledge_compilation=True,
             )
             content = result.get("content")
+            if (result.get("response_metadata") or {}).get("finish_reason") == "length":
+                raise KnowledgeCompilerError("知识库响应达到长度上限；页面已保存，自动续编将重试此知识段落。")
             if type(content) is not str or not content.strip():
-                raise DashboardError("AI 未返回可用的知识库内容。")
+                raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
             return content.strip()
         except AIKeychainError:
             # 与 ai_chat_send 临时客户端分支保持一致：凭据类故障不可重试，
@@ -3546,7 +3745,7 @@ class DashboardService:
                 retryable=False,
             ) from None
         except AIClassificationError as exc:
-            raise DashboardError(str(exc)) from None
+            raise KnowledgeAPIError(str(exc), category=exc.category) from None
         finally:
             self._close_client(client)
 
@@ -3623,6 +3822,12 @@ class DashboardService:
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        history = getattr(self, "_course_history_instance", None)
+        if history is not None:
+            history.close()
+        automatic = getattr(self, "_course_markdown_instance", None)
+        if automatic is not None:
+            automatic.close()
         service = getattr(self, "_knowledge_compiler_instance", None)
         if service is not None:
             service.cancel()
@@ -3714,6 +3919,8 @@ class DashboardService:
             self._sync_cloud_archive_root()
         if {"ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"} & set(payload):
             self._discard_ai_client()
+        if {"archive_root", "ai_enabled", "ai_base_url", "ai_key_saved", "course_markdown_enabled", "course_markdown_daily_calls"} & set(payload):
+            self._notify_course_markdown_sync(settings_changed=True)
         return self.settings_status()
 
     def pick_archive_root(self) -> dict[str, Any]:
@@ -3762,6 +3969,7 @@ class DashboardService:
             summary = service.archive_current_term()
         finally:
             self._close_archive_service(service)
+        self._notify_course_markdown_sync()
         return {
             "classified": summary.classified,
             "reused": summary.reused,
@@ -3807,6 +4015,8 @@ class DashboardService:
             "archive_root": str(self.archive_root),
             "credential_storage_name": storage_name,
             "auto_download_current_term": settings.auto_download_current_term,
+            "course_markdown_enabled": settings.course_markdown_enabled,
+            "course_markdown_daily_calls": settings.course_markdown_daily_calls,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,
             "canvas_token_saved": canvas_saved,
@@ -3835,6 +4045,7 @@ class DashboardService:
                     self._last_sync_failed_at = self.now()
                 elif exit_code == 0:
                     self._last_sync_failed_at = None
+                self._notify_course_markdown_sync()
         finally:
             self._sync_lock.release()
 
@@ -3842,15 +4053,16 @@ class DashboardService:
         if not self._sync_lock.acquire(blocking=False):
             return {"status": "already_running", "mode": "in_app"}
         try:
-            process = self.process_launcher(
-                self._fallback_sync_command(),
-                cwd=str(PROJECT_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            with diagnostic_run(), diagnostic_stage("sync", "launch"):
+                process = self.process_launcher(
+                    self._fallback_sync_command(),
+                    cwd=str(PROJECT_ROOT),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    start_new_session=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             threading.Thread(
                 target=self._release_sync_when_done,
                 args=(process,),
@@ -3859,6 +4071,7 @@ class DashboardService:
             ).start()
             return {"status": "accepted", "mode": "sync_runner"}
         except Exception:
+            self._last_sync_failed_at = self.now()
             if self._sync_lock.locked():
                 self._sync_lock.release()
             raise DashboardError("无法启动同步，请稍后重试。")

@@ -22,6 +22,7 @@ from sjtu_learning_assistant.ai_classifier import (
 )
 from sjtu_learning_assistant.archive_service import DEFAULT_ARCHIVE_ROOT
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.path_safety import is_macos_system_alias
 
 SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
 AI_CHAT_SEND_SHORTCUTS = frozenset({"enter", "cmd_enter"})
@@ -56,6 +57,9 @@ PRE_AI_KEYS = PRE_PERSONALIZATION_KEYS - {
     "ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"
 }
 LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
+PRE_COURSE_SYNC_KEYS = ALLOWED_KEYS
+COURSE_SYNC_KEYS = frozenset({"course_markdown_enabled", "course_markdown_daily_calls"})
+ALLOWED_KEYS = ALLOWED_KEYS | COURSE_SYNC_KEYS
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
 # ERROR_ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION while a reader or
 # scanner holds settings.json open without FILE_SHARE_DELETE.
@@ -84,6 +88,8 @@ class LocalSettings:
     ai_auto_open_activity: bool = True
     ai_code_line_numbers: bool = False
     theme_mode: str = "system"
+    course_markdown_enabled: bool = False
+    course_markdown_daily_calls: int = 0  # 兼容旧设置字段；自动同步不再使用每日额度。
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,11 +125,7 @@ def validate_archive_root(value: object) -> str:
             # user's root instead of crashing every load() at startup.
             break
         if stat.S_ISLNK(mode):
-            # tempfile returns /var/... on macOS although /var is a fixed system
-            # alias for /private/var. Keep that one platform alias test-friendly;
-            # user-controlled symlink components remain forbidden.
-            system_aliases = dict(((Path("/var"), Path("/private/var")), (Path("/tmp"), Path("/private/tmp"))))
-            if current in system_aliases and current.resolve() == system_aliases[current]:
+            if is_macos_system_alias(current):
                 continue
             raise SettingsError("归档目录不能包含符号链接。")
         if not stat.S_ISDIR(mode):
@@ -208,6 +210,11 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         raise SettingsError("没有可更新的设置。")
 
     result: dict[str, Any] = {}
+    if "course_markdown_daily_calls" in payload:
+        value = payload["course_markdown_daily_calls"]
+        if type(value) is not int or not 0 <= value <= 1000:
+            raise SettingsError("旧每日额度字段必须为 0—1000 的整数；0 表示不限。")
+        result["course_markdown_daily_calls"] = value
     if "archive_root" in payload:
         result["archive_root"] = validate_archive_root(payload["archive_root"])
     if "mail_account" in payload:
@@ -235,6 +242,7 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
             "附件上下文预算",
         )
     for key in (
+        "course_markdown_enabled",
         "auto_download_current_term",
         "organize_by_category",
         "ai_enabled",
@@ -383,6 +391,9 @@ class SettingsStore:
                     for key in PERSONALIZATION_KEYS
                 },
             }
+        if isinstance(payload, dict) and set(payload) == PRE_COURSE_SYNC_KEYS:
+            defaults = LocalSettings()
+            payload = {**payload, **{key: getattr(defaults, key) for key in COURSE_SYNC_KEYS}}
         try:
             values = _validate_mapping(payload, partial=False)
         except SettingsError:

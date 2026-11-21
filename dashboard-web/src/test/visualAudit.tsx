@@ -71,6 +71,8 @@ const daysFromNow = (days: number, hour = 10) => {
 };
 
 const settings: SettingsStatus = {
+  course_markdown_enabled: false,
+  course_markdown_daily_calls: 100,
   archive_root_ready: true,
   archive_root: "/local-visual-audit/archive",
   credential_storage_name: "仅本地合成数据",

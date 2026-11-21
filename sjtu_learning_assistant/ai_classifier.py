@@ -6,6 +6,7 @@ import base64
 import codecs
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -20,6 +21,8 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_CONTEXT_CHARS,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_CHAT_MESSAGES,
+    MAX_KNOWLEDGE_MESSAGE_CHARS,
+    MAX_KNOWLEDGE_CONTEXT_CHARS,
     MAX_SSE_RESPONSE_BYTES,
     MAX_SSE_STREAM_SECONDS,
     MAX_OUTPUT_TOKENS_PER_CALL,
@@ -275,6 +278,7 @@ class OpenAIClassificationClient:
         transport: httpx.BaseTransport | None = None,
         limiter: Callable[[], None] | None = None,
         timeout: httpx.Timeout | float | None = None,
+        usage_recorder: Callable[[str, dict[str, int]], None] | None = None,
     ) -> None:
         if not api_key:
             raise AIClassificationError("AI API key 为空。")
@@ -291,6 +295,7 @@ class OpenAIClassificationClient:
         if model not in ALLOWED_AI_MODELS:
             raise AIClassificationError("AI 模型不受支持。")
         self.model = model
+        self.usage_recorder = usage_recorder
         self._limiter = limiter or _GLOBAL_LIMITER.wait
         if timeout is None:
             try:
@@ -323,11 +328,33 @@ class OpenAIClassificationClient:
     def close(self) -> None:
         self._client.close()
 
+    def _record_usage(self, usage: dict[str, int]) -> None:
+        if self.usage_recorder is not None:
+            try:
+                self.usage_recorder(self.model, usage)
+            except Exception as exc:
+                # 计量故障不能导致已计费请求被当作失败重试；不记录异常文本。
+                logging.getLogger(__name__).warning("模型用量记录失败；exception_type=%s", type(exc).__name__)
+
+    def _post_completion(self, body: Mapping) -> object:
+        usage: dict[str, int] = {}
+        try:
+            response = self._client.post("chat/completions", json=dict(body))
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, Mapping):
+                usage = normalize_token_usage(payload.get("usage"))
+            return payload
+        finally:
+            self._record_usage(usage)
+
     @classmethod
     def _clean_chat_messages(
-        cls, messages: list[dict[str, Any]]
+        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS
     ) -> tuple[list[dict[str, Any]], int]:
         """Validate and normalize OpenAI chat history for both request modes."""
+        if type(max_message_chars) is not int or not 1 <= max_message_chars <= MAX_KNOWLEDGE_MESSAGE_CHARS:
+            raise AIClassificationError("AI 消息长度预算无效。")
         if not messages or len(messages) > MAX_CHAT_MESSAGES:
             raise AIClassificationError("AI 对话消息数量无效。", category="context_too_long")
         clean_messages: list[dict[str, Any]] = []
@@ -352,7 +379,7 @@ class OpenAIClassificationClient:
             clean_content: Any
             content_length = 0
             if type(content) is str:
-                if len(content) > MAX_CHAT_MESSAGE_CHARS or (role in {"user", "system"} and not content.strip()):
+                if len(content) > max_message_chars or (role in {"user", "system"} and not content.strip()):
                     raise AIClassificationError("单条消息不能为空或超过长度限制。", category="context_too_long")
                 clean_content = content.strip()
                 content_length = len(content)
@@ -366,7 +393,7 @@ class OpenAIClassificationClient:
                         if set(part) != {"type", "text"}:
                             raise AIClassificationError("AI 多模态消息格式无效。", category="multimodal_invalid")
                         text = part.get("text")
-                        if type(text) is not str or not text.strip() or len(text) > MAX_CHAT_MESSAGE_CHARS:
+                        if type(text) is not str or not text.strip() or len(text) > max_message_chars:
                             raise AIClassificationError("AI 多模态文字无效。", category="multimodal_invalid")
                         clean_parts.append({"type": "text", "text": text.strip()})
                         content_length += len(text)
@@ -378,8 +405,8 @@ class OpenAIClassificationClient:
                         raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     url = image_url.get("url")
                     detail = image_url.get("detail", "auto")
-                    prefix = "data:image/jpeg;base64,"
-                    if type(url) is not str or not url.startswith(prefix) or detail not in {"auto", "low", "high"}:
+                    prefix = next((value for value in ("data:image/jpeg;base64,", "data:image/png;base64,") if type(url) is str and url.startswith(value)), None)
+                    if prefix is None or detail not in {"auto", "low", "high"}:
                         raise AIClassificationError("AI 图片消息格式无效。", category="multimodal_invalid")
                     encoded = url[len(prefix):]
                     if not encoded or len(encoded) > 6 * 1024**2:
@@ -390,6 +417,8 @@ class OpenAIClassificationClient:
                         raise AIClassificationError("AI 图片编码无效。", category="image_encoding") from None
                     if not decoded or len(decoded) > 4 * 1024**2:
                         raise AIClassificationError("AI 图片超过大小限制。", category="image_too_large")
+                    if prefix == "data:image/png;base64," and not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+                        raise AIClassificationError("AI PNG 图片编码无效。", category="image_encoding")
                     image_count += 1
                     if image_count > 4:
                         raise AIClassificationError("单次最多识别 4 张图片。", category="image_count_limit")
@@ -454,9 +483,7 @@ class OpenAIClassificationClient:
         }
         try:
             self._limiter()
-            response = self._client.post("chat/completions", json=body)
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._post_completion(body)
             content = payload["choices"][0]["message"]["content"]
             parsed = _loads_model_json(content)
         except AIClassificationError:
@@ -521,13 +548,19 @@ class OpenAIClassificationClient:
         tool_choice: object | None = None,
         system_prompt: bool = True,
         response_format: Mapping[str, str] | None = None,
+        knowledge_compilation: bool = False,
     ) -> dict[str, Any]:
         if response_format is not None and (
             not isinstance(response_format, Mapping) or dict(response_format) != {"type": "json_object"}
         ):
             raise AIClassificationError("AI response_format 仅支持 json_object。")
-        clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > MAX_CHAT_CONTEXT_CHARS or len(context) > 12_000:
+        if type(knowledge_compilation) is not bool or (knowledge_compilation and (system_prompt or context or tools or tool_choice)):
+            raise AIClassificationError("知识编译上下文只用于独立、无工具的编译请求。")
+        if knowledge_compilation and any(type(m) is not dict or m.get('role') not in {'system', 'user'} for m in messages):
+            raise AIClassificationError("知识编译不能混入工具或聊天历史。")
+        clean_messages, total_length = self._clean_chat_messages(messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS)
+        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_CHAT_CONTEXT_CHARS
+        if total_length > context_limit or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:
@@ -579,9 +612,7 @@ class OpenAIClassificationClient:
                 request_body["response_format"] = dict(response_format)
             if self.model != "deepseek-reasoner":
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
-            response = self._client.post("chat/completions", json=request_body)
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._post_completion(request_body)
             choices = payload.get("choices") if type(payload) is dict else None
             if type(choices) is not list or not choices:
                 raise ValueError("invalid choices")
@@ -723,7 +754,7 @@ class OpenAIClassificationClient:
 
         # 是否已经向调用方输出过任何增量：未输出时失败可以安全地整体重试，
         # 已输出则重试会让界面出现重复文字，由调用方决定如何处理。
-        stream_state = {"emitted": False}
+        stream_state = {"emitted": False, "usage": {}}
 
         def emit_delta(kind: str, value: str) -> None:
             # 回调异常（取消、调用方错误）必须原样冒泡，不能被下方的
@@ -766,6 +797,7 @@ class OpenAIClassificationClient:
                     reported = normalize_token_usage(payload.get("usage"))
                     if reported:
                         usage = reported
+                        stream_state["usage"] = reported
                     choices = payload.get("choices")
                     if not isinstance(choices, list) or not choices:
                         continue
@@ -882,7 +914,13 @@ class OpenAIClassificationClient:
             }
 
         try:
-            return self._run_stream(consume, body, tools)
+            def metered_consume(request_body):
+                stream_state["usage"] = {}
+                try:
+                    return consume(request_body)
+                finally:
+                    self._record_usage(stream_state["usage"])
+            return self._run_stream(metered_consume, body, tools)
         except AIClassificationError as error:
             error.emitted_output = stream_state["emitted"]
             raise

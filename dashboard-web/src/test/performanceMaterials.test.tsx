@@ -63,21 +63,9 @@ describe("material tree render workload", () => {
     ).toBeTruthy();
     expect(filesBelow).toHaveBeenCalledTimes(1);
     fireEvent.change(search, { target: { value: "NEEDLE.PDF" } });
-    fireEvent.change(screen.getByRole("combobox", { name: "分类" }), {
-      target: { value: "other" },
-    });
+    fireEvent.change(search, { target: { value: "不存在的资料" } });
     expect(screen.queryByText("Needle.pdf")).toBeNull();
-    fireEvent.change(screen.getByRole("combobox", { name: "分类" }), {
-      target: { value: "courseware" },
-    });
-    expect(screen.getByText("Needle.pdf")).toBeTruthy();
-    fireEvent.change(screen.getByRole("combobox", { name: "状态" }), {
-      target: { value: "downloaded" },
-    });
-    expect(screen.queryByText("Needle.pdf")).toBeNull();
-    fireEvent.change(screen.getByRole("combobox", { name: "状态" }), {
-      target: { value: "pending" },
-    });
+    fireEvent.change(search, { target: { value: "NEEDLE.PDF" } });
     expect(screen.getByText("Needle.pdf")).toBeTruthy();
     expect(filesBelow).toHaveBeenCalledTimes(1);
     fireEvent.change(search, { target: { value: " " } });

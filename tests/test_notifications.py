@@ -361,6 +361,10 @@ class NotificationServiceTests(unittest.TestCase):
             def execute(self, _statement):
                 return FakeQueryResult()
 
+            def scalar(self, _statement):
+                # 此测试模拟尚无默认课程范围标记的旧库。
+                return None
+
         with patch(
             "sjtu_learning_assistant.notifications.Session", FakeSession
         ):
@@ -484,6 +488,7 @@ class NotificationCliTests(unittest.TestCase):
             "通知账本暂时不可用"
         )
         with (
+            patch("sjtu_learning_assistant.course_material_sync.sync_historical_materials", return_value={"courses": 0, "files": 0, "issues": []}),
             patch.object(sync_data_to_db, "get_sync_state", return_value=None),
             patch.object(sync_data_to_db, "get_token", return_value=("token", True)),
             patch.object(

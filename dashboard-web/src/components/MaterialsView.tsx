@@ -199,7 +199,13 @@ function defaultExpandedIds(root: MaterialNode) {
   return expanded;
 }
 
-export function MaterialsView() {
+export function MaterialsView({
+  termId = "",
+  courseId = "",
+}: {
+  termId?: string;
+  courseId?: string;
+} = {}) {
   const [tree, setTree] = useState<MaterialTree | null>(null);
   const [selectedId, setSelectedId] = useState("root");
   const [activeId, setActiveId] = useState("root");
@@ -207,8 +213,6 @@ export function MaterialsView() {
     () => new Set(["root"]),
   );
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("all");
-  const [status, setStatus] = useState("all");
   const [selectedContentId, setSelectedContentId] = useState<string | null>(
     null,
   );
@@ -241,7 +245,12 @@ export function MaterialsView() {
     const requestId = ++loadRequestRef.current;
     setError("");
     try {
-      const nextTree = await invoke<MaterialTree>("material_tree");
+      const nextTree = await (termId || courseId
+        ? invoke<MaterialTree>("material_tree", {
+            term_id: termId,
+            ...(courseId ? { course_ids: [courseId] } : {}),
+          })
+        : invoke<MaterialTree>("material_tree"));
       if (requestId !== loadRequestRef.current) return;
       setTree(nextTree);
       setExpandedIds((current) =>
@@ -257,7 +266,7 @@ export function MaterialsView() {
       if (requestId !== loadRequestRef.current) return;
       setError(reason instanceof Error ? reason.message : "资料加载失败");
     }
-  }, []);
+  }, [termId, courseId]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -280,17 +289,12 @@ export function MaterialsView() {
         : current
           ? directFiles(current, path.slice(1, -1))
           : []
-      ).filter(({ file }) => {
-        const searchMatched =
+      ).filter(
+        ({ file }) =>
           !normalizedQuery ||
-          file.name.toLocaleLowerCase().includes(normalizedQuery);
-        const categoryMatched =
-          category === "all" || file.category === category;
-        const statusMatched =
-          status === "all" || materialAvailability(file) === status;
-        return searchMatched && categoryMatched && statusMatched;
-      }),
-    [allMatches, category, current, isSearching, normalizedQuery, path, status],
+          file.name.toLocaleLowerCase().includes(normalizedQuery),
+      ),
+    [allMatches, current, isSearching, normalizedQuery, path],
   );
   const childFolders = useMemo(
     () => (isSearching || !current ? [] : containerChildren(current)),
@@ -299,9 +303,6 @@ export function MaterialsView() {
   const visibleItems = useMemo(
     () => (tree ? visibleTreeItems(tree.root, expandedIds) : []),
     [expandedIds, tree],
-  );
-  const hasFilters = Boolean(
-    query.trim() || category !== "all" || status !== "all",
   );
   // Restore/download/move can drop the selected row from this list; fall back to
   // the first row so the content list keeps exactly one Tab stop.
@@ -314,7 +315,7 @@ export function MaterialsView() {
 
   useEffect(() => {
     setSelectedContentId(null);
-  }, [category, query, selectedId, status]);
+  }, [query, selectedId]);
 
   useEffect(() => {
     if (!compact || mobilePane !== "directory" || !restoreTreeFocus) return;
@@ -557,11 +558,9 @@ export function MaterialsView() {
     runDefaultAction(node);
   };
 
-  const clearFilters = () => {
+  const clearSearch = () => {
     setQuery("");
-    setCategory("all");
-    setStatus("all");
-    // The "清除筛选" button unmounts with the empty state; keep focus in the toolbar.
+    // The empty-state action unmounts; keep focus in the search bar.
     searchInputRef.current?.focus();
   };
 
@@ -678,12 +677,6 @@ export function MaterialsView() {
       className="section-stack materials-page"
       ready={Boolean(tree) || Boolean(error)}
     >
-      <div className="view-intro">
-        <div>
-          <h2>资料库</h2>
-          <p>按学期、课程、动态分类与 Canvas 目录浏览，可人工拖拽归档。</p>
-        </div>
-      </div>
       <p id="material-drop-help" className="sr-only">
         仅可将文件移动到同一课程的四个分类或其现有 Canvas 子文件夹。
       </p>
@@ -703,39 +696,6 @@ export function MaterialsView() {
             placeholder="搜索文件名"
             aria-label="搜索文件名"
           />
-        </label>
-        <label>
-          <span>分类</span>
-          <select
-            value={category}
-            onChange={(event) => {
-              setCategory(event.target.value);
-              if (compact) setMobilePane("content");
-            }}
-          >
-            <option value="all">全部分类</option>
-            {tree?.categories.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>状态</span>
-          <select
-            value={status}
-            onChange={(event) => {
-              setStatus(event.target.value);
-              if (compact) setMobilePane("content");
-            }}
-          >
-            <option value="all">全部状态</option>
-            <option value="downloaded">已下载</option>
-            <option value="cloud_only">仅云端</option>
-            <option value="pending">未下载</option>
-            <option value="failed">下载失败</option>
-          </select>
         </label>
       </div>
       {error ? (
@@ -818,7 +778,7 @@ export function MaterialsView() {
               </nav>
               <p
                 className="result-count finder-result-count"
-                aria-live={hasFilters ? "polite" : undefined}
+                aria-live={isSearching ? "polite" : undefined}
               >
                 {childFolders.length + visibleFiles.length} 个结果
               </p>
@@ -1143,17 +1103,17 @@ export function MaterialsView() {
                 })}
                 {childFolders.length === 0 && visibleFiles.length === 0 && (
                   <div className="finder-empty">
-                    {hasFilters ? (
+                    {isSearching ? (
                       <EmptyState
                         title="没有匹配资料"
-                        description="请调整筛选条件，或清除筛选查看当前目录。"
+                        description="请调整关键词，或清除搜索查看当前目录。"
                         action={
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={clearFilters}
+                            onClick={clearSearch}
                           >
-                            清除筛选
+                            清除搜索
                           </Button>
                         }
                       />

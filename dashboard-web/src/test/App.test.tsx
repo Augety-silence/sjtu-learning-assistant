@@ -516,9 +516,7 @@ describe("课程视频首帧导航", () => {
     render(<App />);
 
     await screen.findByText("A 专属录像");
-    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "选择 A 专属录像" }));
-    expect(screen.getByLabelText("批量操作")).toBeTruthy();
+    expect(screen.queryByLabelText("批量操作")).toBeNull();
 
     fireEvent.click(screen.getByRole("combobox", { name: "选择课程" }));
     fireEvent.click(screen.getByRole("option", { name: "课程 B" }));
@@ -527,13 +525,21 @@ describe("课程视频首帧导航", () => {
     expect(screen.getByLabelText("正在加载录像列表")).toBeTruthy();
 
     await screen.findByText("B 专属录像");
-    fireEvent.click(screen.getByRole("button", { name: "批量选择" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "选择 B 专属录像" }));
-    fireEvent.click(screen.getByRole("button", { name: "整理所选学习材料" }));
+    fireEvent.click(screen.getByRole("button", { name: "播放 B 专属录像" }));
     await waitFor(() =>
-      expect(startTranscriptBatch).toHaveBeenCalledWith(13, ["video-13"]),
+      expect(prepareTranscriptPlayback).toHaveBeenCalledWith(
+        13,
+        "video-13",
+        0,
+        1,
+      ),
     );
-    expect(startTranscriptBatch).not.toHaveBeenCalledWith(13, ["video-12"]);
+    expect(prepareTranscriptPlayback).not.toHaveBeenCalledWith(
+      13,
+      "video-12",
+      0,
+      1,
+    );
   });
 });
 
@@ -910,7 +916,11 @@ describe("课程切换时字幕任务轮询隔离", () => {
       .mockResolvedValue({ items: [] });
     render(<App />);
     await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(1));
-    await screen.findByText("假失败");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "重试同步" }).getAttribute("title"),
+      ).toBe("假失败"),
+    );
     await act(async () => {
       timers.latest(2500)?.tick();
     });
@@ -995,7 +1005,7 @@ describe("课程切换时字幕任务轮询隔离", () => {
       await Promise.resolve();
     });
     expect(
-      await screen.findByRole("button", { name: "已整理 1" }),
+      await screen.findByRole("button", { name: "B 专属录像 更多操作" }),
     ).toBeTruthy();
 
     const courseAJob: TranscriptJob = {
@@ -1008,8 +1018,12 @@ describe("课程切换时字幕任务轮询隔离", () => {
       courseARequest.resolve({ items: [courseAJob] });
       await Promise.resolve();
     });
-    expect(screen.getByRole("button", { name: "已整理 1" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "已整理 0" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "B 专属录像 更多操作" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "A 迟到任务 更多操作" }),
+    ).toBeNull();
   });
 });
 
@@ -1218,7 +1232,7 @@ describe("交大云盘页面导航", () => {
     expect(
       await screen.findByRole("heading", {
         level: 2,
-        name: "Canvas、邮件与 AI 附件云端归档",
+        name: "云端归档",
       }),
     ).toBeTruthy();
     expect(getBackupStatus).toHaveBeenCalledOnce();
@@ -1444,8 +1458,12 @@ describe("视频材料状态反馈", () => {
     );
     render(<App />);
     expect(await screen.findByText("A 专属录像")).toBeTruthy();
-    expect(await screen.findByText("材料状态读取失败")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "重试同步" }).getAttribute("title"),
+      ).toBe("材料状态读取失败"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重试同步" }));
     await waitFor(() => expect(getTranscriptJobs).toHaveBeenCalledTimes(2));
   });
 });

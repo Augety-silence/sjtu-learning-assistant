@@ -190,7 +190,6 @@ export function OverviewView({
           <div className="section-header">
             <div>
               <h2>最近截止</h2>
-              <p>按截止时间展示最近 5 项</p>
             </div>
             <Button variant="link" onClick={() => navigate("calendar")}>
               查看全部
@@ -235,7 +234,6 @@ export function OverviewView({
           <div className="section-header">
             <div>
               <h2>最新消息</h2>
-              <p>未读内容优先</p>
             </div>
             <Button variant="link" onClick={() => navigate("messages")}>
               查看全部

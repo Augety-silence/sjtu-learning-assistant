@@ -11,18 +11,23 @@ import hmac
 import os
 import platform
 import re
+import ssl
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence
 from urllib.parse import unquote, urljoin, urlsplit
 
 import httpx
+import certifi
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_stage
 
 DEFAULT_RELEASE_API_URL = (
     "https://api.github.com/repos/Augety-silence/"
     "sjtu-learning-assistant/releases/latest"
 )
+DEFAULT_RELEASE_WEB_URL = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest"
 ALLOWED_UPDATE_HOSTS = frozenset(
     {
         "api.github.com",
@@ -32,7 +37,7 @@ ALLOWED_UPDATE_HOSTS = frozenset(
         "github-releases.githubusercontent.com",
     }
 )
-DEFAULT_TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0)
+DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=5.0)
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 64 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -193,6 +198,15 @@ def validate_update_url(url: object, *, purpose: str = "asset") -> str:
             DEFAULT_RELEASE_API_URL
         ).path:
             raise UnsafeUpdateURLError("Release 元数据地址不受信任。")
+    elif purpose == "latest-page":
+        prefix = "/Augety-silence/sjtu-learning-assistant/releases/"
+        tail = decoded_path.removeprefix(prefix)
+        if host != "github.com" or not decoded_path.startswith(prefix) or parsed.query:
+            raise UnsafeUpdateURLError("Latest 页面不属于固定仓库。")
+        if tail != "latest":
+            if not tail.startswith("tag/") or len(tail) > 104:
+                raise UnsafeUpdateURLError("Latest 页面没有有效版本标签。")
+            SemanticVersion.parse(tail[4:])
     elif purpose == "release-page":
         if host != "github.com" or not decoded_path.startswith(
             "/Augety-silence/sjtu-learning-assistant/releases/"
@@ -527,6 +541,23 @@ def require_sha256(
     return actual
 
 
+class _OfficialReleasePage(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.canonical: str | None = None
+        self.has_latest = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "meta" and values.get("property") == "og:url":
+            self.canonical = values.get("content")
+        if tag == "a" and values.get("href") in {
+            DEFAULT_RELEASE_WEB_URL,
+            urlsplit(DEFAULT_RELEASE_WEB_URL).path,
+        }:
+            self.has_latest = True
+
+
 class UpdateService:
     """通过可注入 transport 的 httpx 客户端执行安全更新检查。"""
 
@@ -554,13 +585,17 @@ class UpdateService:
         validate_update_url(url, purpose=purpose)
         current_url = url
         try:
+            # 打包后不依赖构建机证书目录，同时保留当前机器的系统信任。
+            tls_context = ssl.create_default_context()
+            tls_context.load_verify_locations(cafile=certifi.where())
             with httpx.Client(
                 transport=self.transport,
                 timeout=self.timeout,
                 follow_redirects=False,
                 trust_env=False,
+                verify=tls_context,
                 headers={
-                    "Accept": "application/vnd.github+json",
+                    "Accept": "text/html" if purpose == "latest-page" else "application/vnd.github+json",
                     # 元数据很小；请求明文可让大小上限按真实字节计算，也避免解压炸弹。
                     "Accept-Encoding": "identity",
                     "User-Agent": "SJTU-Learning-Assistant-Update-Checker",
@@ -576,10 +611,6 @@ class UpdateService:
                                 urljoin(current_url, location), purpose=purpose
                             )
                             continue
-                        if response.status_code in {403, 429}:
-                            raise UpdateServiceError(
-                                "GitHub 暂时拒绝了更新检查（可能是访问频率受限），请稍后再试。"
-                            )
                         response.raise_for_status()
                         declared_size = response.headers.get("content-length")
                         if declared_size is not None:
@@ -620,15 +651,48 @@ class UpdateService:
                 raise UpdateServiceError("更新服务重定向次数过多。")
         except UpdateServiceError:
             raise
-        except (httpx.HTTPError, OSError) as exc:
-            raise UpdateServiceError("无法安全获取更新信息。") from exc
+        except httpx.TimeoutException as exc:
+            raise UpdateServiceError("GitHub 更新检查超时，请稍后重试，或打开官方发布页。") from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {403, 429}:
+                message = f"GitHub 暂时拒绝更新检查（HTTP {status}，可能限流或访问受限），请稍后重试或打开官方发布页。"
+            elif status == 404:
+                message = "GitHub 暂未提供可用的正式 Release（HTTP 404），请打开官方发布页核对。"
+            else:
+                message = f"GitHub 更新服务返回 HTTP {status}，请稍后重试或打开官方发布页。"
+            raise UpdateServiceError(message) from exc
+        except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
+            chain: BaseException | None = exc
+            certificate_error = False
+            for _ in range(8):
+                if chain is None:
+                    break
+                if isinstance(chain, ssl.SSLError):
+                    certificate_error = True
+                    break
+                chain = chain.__cause__ or chain.__context__
+            message = (
+                "GitHub 安全连接验证失败，请检查系统时间和可信证书；不会跳过 TLS 验证。"
+                if certificate_error else
+                "无法连接 GitHub 更新服务，请检查网络、DNS 或防火墙，或打开官方发布页。"
+            )
+            raise UpdateServiceError(message) from exc
 
     def fetch_release(self) -> ReleaseMetadata:
-        response = self._get(
-            DEFAULT_RELEASE_API_URL,
-            purpose="metadata",
-            maximum=MAX_METADATA_BYTES,
-        )
+        try:
+            with diagnostic_stage("update", "github_api"):
+                response = self._get(
+                    DEFAULT_RELEASE_API_URL,
+                    purpose="metadata",
+                    maximum=MAX_METADATA_BYTES,
+                )
+        except UpdateServiceError as exc:
+            cause = exc.__cause__
+            if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code not in {403, 429}:
+                raise
+            with diagnostic_stage("update", "github_web_fallback"):
+                return self._fetch_web_release()
         try:
             payload = response.json()
         except ValueError as exc:
@@ -638,6 +702,27 @@ class UpdateService:
             # 不会被上面的 ValueError 分支捕获），必须归一化以保持模块错误类型契约。
             raise InvalidUpdateMetadataError("Release JSON 嵌套过深。") from exc
         return parse_release_metadata(payload)
+
+    def _fetch_web_release(self) -> ReleaseMetadata:
+        """仅从官方 Latest 跳转核对版本；不从网页猜测资产或摘要。"""
+        response = self._get(DEFAULT_RELEASE_WEB_URL, purpose="latest-page", maximum=MAX_METADATA_BYTES)
+        page_url = validate_update_url(str(response.url), purpose="latest-page")
+        path = urlsplit(page_url).path
+        prefix = "/Augety-silence/sjtu-learning-assistant/releases/tag/"
+        if not path.startswith(prefix):
+            raise InvalidUpdateMetadataError("GitHub Latest 页面未返回版本标签。")
+        tag = path[len(prefix):]
+        version = SemanticVersion.parse(tag)
+        parser = _OfficialReleasePage()
+        parser.feed(response.text)
+        canonical = urljoin(page_url, parser.canonical or "")
+        if not parser.canonical or canonical != page_url or not parser.has_latest:
+            raise InvalidUpdateMetadataError("GitHub Latest 页面结构无法安全确认，请打开官方发布页。")
+        return ReleaseMetadata(
+            str(version), tag, page_url, None,
+            "GitHub API 暂时受限，已通过官方 Latest 页面核对版本；请在官方发布页查看更新说明与带 SHA-256 的安装包。",
+            bool(version.prerelease), (),
+        )
 
     def resolve_asset_checksum(self, asset: ReleaseAsset) -> ReleaseAsset:
         if asset.sha256 is not None or asset.checksum_url is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -19,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.mail_images import RICH_MAIL_CONTENT_VERSION
 from sjtu_learning_assistant.models import (
     AIFileDerivative,
     AIManagedFile,
@@ -466,9 +468,23 @@ def _upsert_courses(session: Session, rows: list[dict[str, Any]], now: datetime)
     source_ids = [row["source_id"] for row in rows]
     existing_ids = _existing_ids(session, Course, source_ids)
     if rows:
-        # All records returned by fetch_active_courses share this exact marker.
-        # It lets later desktop archive actions recover the latest active set
-        # without adding a schema field or trusting a localised term name.
+        # 受限课程可能返回稀疏对象；保留已有元数据，不用缓存推导远端授权。
+        existing = {row.source_id: row for row in session.scalars(select(Course).where(Course.source_id.in_(source_ids)))}
+        for row in rows:
+            previous = existing.get(row["source_id"])
+            if previous is None:
+                continue
+            raw = row["raw_data"]
+            merged = {**(previous.raw_data or {}), **raw}
+            for key in ("term", "enrollments", "enrollment_term_id"):
+                if not raw.get(key) and key in (previous.raw_data or {}):
+                    merged[key] = previous.raw_data[key]
+            if not raw.get("name"):
+                row["name"] = previous.name
+            row["term_name"] = row["term_name"] or previous.term_name
+            row["course_code"] = row["course_code"] or previous.course_code
+            row["raw_data"] = merged
+        # updated_at 仍兼容旧版；新版默认集合由独立 cursor 保存。
         timestamped_rows = [
             {**row, "created_at": now, "updated_at": now} for row in rows
         ]
@@ -1199,6 +1215,7 @@ def persist_canvas_data(
     announcement_cursors: dict[str, str | None] | None = None,
     assignment_cursors: dict[str, str | None] | None = None,
     file_cursors: dict[str, str | None] | None = None,
+    default_scope: bool = True,
 ) -> CanvasPersistResult:
     """Persist Canvas resources, ETag cursors, and unified items atomically."""
     now = datetime.now(timezone.utc)
@@ -1213,6 +1230,8 @@ def persist_canvas_data(
     course_source_ids = [row["source_id"] for row in course_rows]
 
     with Session(engine) as session, session.begin():
+        if not default_scope:
+            _freeze_default_courses(session)
         courses_result = _upsert_courses(session, course_rows, now)
         course_ids = _course_id_map(session, course_source_ids)
         announcements_result = _upsert_announcements(
@@ -1241,8 +1260,11 @@ def persist_canvas_data(
             ("modules", modules_result),
             ("module_items", module_items_result),
         ):
+            if not default_scope:
+                resource = "history:" + resource
             _upsert_sync_state(
-                session, source="canvas", resource=resource, now=now
+                session, source="canvas", resource=resource, now=now,
+                cursor=json.dumps({"version": 1, "course_ids": course_source_ids}) if resource == "courses" else None,
             )
             _add_sync_run(
                 session,
@@ -1286,6 +1308,29 @@ def persist_canvas_data(
         modules=modules_result,
         module_items=module_items_result,
     )
+
+
+def _freeze_default_courses(session: Session) -> None:
+    """在目录更新触碰 updated_at 前冻结旧版集合；不推进旧同步时间。"""
+    from sjtu_learning_assistant.course_scope import current_course_ids
+    state = session.scalar(select(SyncState).where(SyncState.source == "canvas", SyncState.resource == "courses"))
+    if state is not None and state.cursor:
+        return
+    ids = current_course_ids(session) or set()
+    sources = list(session.scalars(select(Course.source_id).where(Course.id.in_(ids))))
+    cursor = json.dumps({"version": 1, "course_ids": sources})
+    if state is None:
+        session.add(SyncState(source="canvas", resource="courses", cursor=cursor, status="idle"))
+    else:
+        state.cursor = cursor
+
+
+def persist_course_catalog(engine: Engine, rows: list[dict[str, Any]]) -> None:
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session, session.begin():
+        _freeze_default_courses(session)
+        _upsert_courses(session, _course_rows(rows), now)
+        _upsert_sync_state(session, source="canvas", resource="course_catalog", now=now)
 
 
 def persist_emails(
@@ -1398,7 +1443,7 @@ def get_email_body_backfill_targets(
         records = session.scalars(select(Email).order_by(Email.id)).yield_per(limit)
         for record in records:
             raw_data = record.raw_data if isinstance(record.raw_data, dict) else {}
-            if raw_data.get("rich_content_fetched") is True:
+            if not _email_needs_rich_backfill(record, raw_data):
                 continue
             parts = record.source_id.rsplit(":", 3)
             if len(parts) != 4:
@@ -1441,6 +1486,15 @@ def get_email_body_backfill_targets(
     return tuple(targets)
 
 
+def _email_needs_rich_backfill(record: Email, raw_data: dict[str, Any]) -> bool:
+    if raw_data.get("rich_content_fetched") is not True:
+        return True
+    # 旧清洗器丢失布局/图片来源；仅有 HTML 的旧邮件按既有有界 PEEK 流程修复。
+    version = raw_data.get("rich_content_version")
+    current = type(version) is int and version >= RICH_MAIL_CONTENT_VERSION
+    return bool(record.body_html) and not raw_data.get("parse_failed") and not current
+
+
 def persist_email_body_backfill(
     engine: Engine,
     updates: Iterable[EmailBodyUpdateLike],
@@ -1461,13 +1515,13 @@ def persist_email_body_backfill(
             if email is None:
                 continue
             raw_data = email.raw_data if isinstance(email.raw_data, dict) else {}
-            if raw_data.get("rich_content_fetched") is True:
+            if not _email_needs_rich_backfill(email, raw_data):
                 continue
             if not (email.body_text or "").strip():
                 email.body_text = item.body_text
                 email.body_preview = item.body_preview
             email.body_html = getattr(item, "body_html", None)
-            email.raw_data = {**raw_data, "rich_content_fetched": True}
+            email.raw_data = {**raw_data, "rich_content_fetched": True, "rich_content_version": RICH_MAIL_CONTENT_VERSION}
             email.updated_at = now
             updated += 1
             email_ids[item.source_id] = email.id

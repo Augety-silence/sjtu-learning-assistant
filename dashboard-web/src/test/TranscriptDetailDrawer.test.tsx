@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import {
@@ -8,12 +7,7 @@ import {
   readTranscriptArtifact,
   readTranscriptV2Artifact,
 } from "@/lib/api";
-import type {
-  Phase1ArtifactKind,
-  Phase1ArtifactList,
-  Phase1ArtifactRead,
-  TranscriptJob,
-} from "@/lib/types";
+import type { TranscriptArtifact, TranscriptJob } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
@@ -22,12 +16,8 @@ vi.mock("@/lib/api", () => ({
   readTranscriptArtifact: vi.fn(),
   readTranscriptV2Artifact: vi.fn(),
 }));
-
 const getV1 = vi.mocked(getTranscriptArtifacts);
-const getV2 = vi.mocked(getTranscriptV2Artifacts);
 const readV1 = vi.mocked(readTranscriptArtifact);
-const readV2 = vi.mocked(readTranscriptV2Artifact);
-
 const job: TranscriptJob = {
   id: "a".repeat(32),
   batch_id: "b".repeat(32),
@@ -37,805 +27,301 @@ const job: TranscriptJob = {
   stage: "completed",
   progress: 100,
   attempts: 1,
-  message: "字幕已存储并完成 AI 规整。",
+  lesson_notes_status: "completed",
 };
-
-const phase1Kinds: Phase1ArtifactKind[] = [
-  "corrected",
-  "correction_diff",
-  "uncertain",
-  "quality",
-];
-
-function v2List(id = job.id): Phase1ArtifactList {
-  return {
-    available: true,
-    status: "completed",
-    pipeline_status: "completed",
-    quality: null,
-    warnings: ["低置信片段未自动修改"],
-    items: phase1Kinds.map((kind, index) => ({
-      id: `${id}:v2:${String(index + 1).padStart(32, "0")}`,
-      kind,
-      label: kind,
-      content_type: kind === "corrected" ? "text/markdown" : "application/json",
-      available: true,
-      version: "v2",
-      size: 32,
-      sha256: "c".repeat(64),
-    })),
-  };
-}
-
-function v2Read(
-  kind: Phase1ArtifactKind,
-  data?: Record<string, unknown> | unknown[],
-  content = JSON.stringify(data ?? {}),
-): Phase1ArtifactRead {
-  return {
-    id: `${job.id}:v2:${"1".repeat(32)}`,
-    kind,
-    content,
-    version: "v2",
-    content_type: kind === "corrected" ? "text/markdown" : "application/json",
-    size: content.length,
-    sha256: "c".repeat(64),
-    ...(data === undefined ? {} : { data }),
-  };
-}
-
-function renderDrawer(currentJob = job) {
-  return render(
-    <TranscriptDetailDrawer
-      job={currentJob}
-      onClose={vi.fn()}
-      onRetry={vi.fn()}
-      onCancel={vi.fn()}
-      onReveal={vi.fn()}
-    />,
-  );
-}
-
+const item = (
+  kind: TranscriptArtifact["kind"],
+  id = job.id,
+): TranscriptArtifact => ({
+  id: `${id}:${kind}`,
+  kind,
+  label: kind,
+  content_type: "text/markdown",
+});
 function chooseTab(name: string) {
   fireEvent.mouseDown(screen.getByRole("tab", { name }), {
     button: 0,
     ctrlKey: false,
   });
 }
-
-function openAiReview() {
-  chooseTab("AI 校对");
+function actions() {
+  const details = screen.getByText("更多操作").closest("details");
+  if (details) details.open = true;
 }
-
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((a, b) => {
+    resolve = a;
+    reject = b;
+  });
+  return { promise, resolve, reject };
+}
 beforeEach(() => {
+  vi.resetAllMocks();
   getV1.mockResolvedValue({
     items: [
-      {
-        id: `${job.id}:summary`,
-        kind: "summary",
-        label: "本节要点",
-        content_type: "text/markdown",
-      },
+      item("lesson_summary"),
+      item("original"),
+      item("summary_json"),
+      item("cleaned"),
     ],
   });
-  readV1.mockResolvedValue({
-    id: `${job.id}:summary`,
-    kind: "summary",
-    content: "# 本节要点",
-  });
+  readV1.mockImplementation(async (id) => ({
+    id,
+    kind: id.endsWith(":original") ? "original" : "lesson_summary",
+    content: id.endsWith(":original")
+      ? "# 原始字幕\n\n    老师的原话。"
+      : "# 课堂主线\n\n先讲机会成本，再讲决策条件。",
+  }));
 });
+afterEach(cleanup);
 
-afterEach(() => {
-  cleanup();
-  vi.clearAllMocks();
-});
-
-describe("TranscriptDetailDrawer Phase1", () => {
-  it("shows the job message once and keeps low-frequency actions collapsed", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-
-    renderDrawer({ ...job, status: "partial" });
-
-    // A finished partial job states its terminal outcome once instead of the
-    // stale in-progress job message.
-    const terminal = "任务已结束，存在未通过或未完成阶段";
-    await screen.findByText(terminal);
-    expect(screen.getAllByText(terminal)).toHaveLength(1);
-    expect(screen.queryByText(job.message as string)).toBeNull();
-    const more = screen.getByText("更多操作");
-    expect(more.closest("details")?.hasAttribute("open")).toBe(false);
-  });
-
-  it("keeps failed at 100% failed when no artifact is available", async () => {
-    getV1.mockResolvedValue({ items: [] });
-    getV2.mockResolvedValue({
-      available: false,
-      status: "failed",
-      pipeline_status: "failed",
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-
-    renderDrawer({ ...job, status: "failed", progress: 100 });
-
-    expect(await screen.findByText("暂无可用结果")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-failed")).toBeTruthy();
-    expect(screen.getByText("100%")).toBeTruthy();
-    expect(screen.queryByText("已有可用结果")).toBeNull();
-  });
-
-  it("presents failed at 100% as partial only when an artifact is available", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: "failed",
-      pipeline_status: "failed",
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-
-    renderDrawer({ ...job, status: "failed", progress: 100 });
-
-    expect(await screen.findByText("已有可用结果")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-partial")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-failed")).toBeNull();
-    expect(screen.getByText("100%")).toBeTruthy();
-    expect(screen.queryByText("暂无可用结果")).toBeNull();
-  });
-
-  it("adapts structured summaries into a knowledge-example-training flow", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-    readV1.mockResolvedValue({
-      id: `${job.id}:summary`,
-      kind: "summary",
-      content: JSON.stringify({
-        knowledge_points: ["理解机会成本"],
-        classroom_examples: [{ title: "定价决策", content: "比较相关成本" }],
-        auxiliary_training: [{ question: "哪些成本与决策相关？" }],
-      }),
-    });
-
-    renderDrawer();
-
-    expect(await screen.findByRole("heading", { name: "知识点" })).toBeTruthy();
-    expect(await screen.findByText("理解机会成本")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "课堂例子" })).toBeTruthy();
-    expect(screen.getByText("比较相关成本")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "辅助训练" })).toBeTruthy();
-    expect(screen.getByText("哪些成本与决策相关？")).toBeTruthy();
-  });
-
-  it("falls back from legacy summary text for all learning-flow sections", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-
-    renderDrawer();
-
-    expect(await screen.findByRole("heading", { name: "知识点" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "课堂例子" })).toBeTruthy();
-    expect(screen.getByText(/旧版小结未单独标注课堂例子/)).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "辅助训练" })).toBeTruthy();
-    expect(screen.getByText(/暂无配套训练/)).toBeTruthy();
-  });
-
-  it("keeps legacy records usable and explains that deep correction is absent", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-
-    renderDrawer();
-
-    expect(screen.queryByText("课程语境驱动的深度校对结果")).toBeNull();
-    openAiReview();
-    expect(
-      await screen.findByText("本节尚未生成深度校对，可重新执行字幕 AI 整理"),
-    ).toBeTruthy();
-    expect(screen.queryByRole("tab", { name: "AI校对字幕" })).toBeNull();
-    expect(readV2).not.toHaveBeenCalled();
-  });
-
-  it("lazily reads corrected, diff, uncertain and quality artifacts once per kind", async () => {
-    getV2.mockResolvedValue(v2List());
-    readV2.mockImplementation(async (artifactId) => {
-      if (artifactId.endsWith("1".padStart(32, "0")))
-        return v2Read(
-          "corrected",
-          undefined,
-          "# AI 校对字幕\n\n本节介绍成本法。",
-        );
-      if (artifactId.endsWith("2".padStart(32, "0")))
-        return v2Read("correction_diff", [
-          {
-            original: "成本",
-            corrected: "成本法",
-            type: "technical_term",
-            confidence: 0.96,
-            reason: "课程术语与上下文一致",
-            start: 5,
-            end: 7,
-            cue_ids: ["cue-000001"],
-            evidence: ["课件术语表"],
-          },
-        ]);
-      if (artifactId.endsWith("3".padStart(32, "0")))
-        return v2Read("uncertain", [
-          {
-            text: "量本利",
-            confidence: 0.62,
-            start: 9,
-            end: 12,
-            cue_ids: ["cue-000002"],
-            candidates: [
-              {
-                original: "量本利",
-                canonical: "量本利分析",
-                category: "technical_term",
-                confidence: 0.78,
-                source: "课程记忆",
-                cue_ids: ["cue-000002"],
-                evidence: ["章节标题"],
-              },
-            ],
-          },
-        ]);
-      return v2Read("quality", {
-        score: 0.93,
-        passed: true,
-        metrics: {},
-        warnings: ["保留一个待确认术语"],
-        schema_pass: true,
-        critic_pass_rate: 0.95,
-        uncertain_rate: 0.05,
-        numeric_change_count: 1,
-        unsupported_change_count: 0,
-        status: "completed_with_warnings",
-      });
-    });
-
-    renderDrawer();
-    await waitFor(() => expect(getV2).toHaveBeenCalledTimes(1));
-    expect(readV2).not.toHaveBeenCalled();
-
-    openAiReview();
-    chooseTab("AI校对字幕");
-    expect(
-      await screen.findByText("原始字幕未被覆盖", { exact: false }),
-    ).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "AI 校对字幕" })).toBeTruthy();
-
-    chooseTab("修改对比");
-    expect(await screen.findByText("成本法")).toBeTruthy();
-    expect(screen.getByText("课程术语与上下文一致")).toBeTruthy();
-    expect(screen.getByText("课件术语表")).toBeTruthy();
-
-    chooseTab("待确认");
-    expect(await screen.findByText("量本利分析")).toBeTruthy();
-    expect(screen.getByText(/后续版本将支持逐项确认/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /保存|确认/ })).toBeNull();
-
-    chooseTab("质量");
-    expect(await screen.findByText("95%")).toBeTruthy();
-    expect(screen.getByText("保留一个待确认术语")).toBeTruthy();
-    expect(screen.getByText("低置信片段未自动修改")).toBeTruthy();
-
-    chooseTab("本节要点");
-    expect(screen.queryByText("课程语境驱动的深度校对结果")).toBeNull();
-    openAiReview();
-    chooseTab("AI校对字幕");
-    await waitFor(() => expect(readV2).toHaveBeenCalledTimes(4));
-  });
-
-  it("degrades malformed artifact data into a safe empty state", async () => {
-    getV2.mockResolvedValue(v2List());
-    readV2.mockResolvedValue(
-      v2Read("correction_diff", [null, "bad", { unexpected: true }]),
-    );
-
-    renderDrawer();
-    await screen.findByRole("tab", { name: "AI 校对" });
-    openAiReview();
-    chooseTab("修改对比");
-
-    expect(await screen.findByText("未发现可展示的字幕修改。")).toBeTruthy();
-  });
-
-  it("retries a failed artifact read and does not cache the rejection", async () => {
-    getV2.mockResolvedValue(v2List());
-    readV2
-      .mockRejectedValueOnce(new Error("校对工件暂时不可读"))
-      .mockResolvedValueOnce(
-        v2Read("corrected", undefined, "重新读取后的校对字幕"),
-      );
-
-    renderDrawer();
-    await screen.findByRole("tab", { name: "AI 校对" });
-    openAiReview();
-    chooseTab("AI校对字幕");
-    expect(await screen.findByText("校对工件暂时不可读")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "重试加载" }));
-    expect(await screen.findByText("重新读取后的校对字幕")).toBeTruthy();
-    expect(readV2).toHaveBeenCalledTimes(2);
-  });
-
-  it("clears artifact caches when the drawer switches jobs", async () => {
-    getV2.mockImplementation(async (jobId) => v2List(jobId));
-    readV2.mockImplementation(async (artifactId) =>
-      v2Read(
-        "corrected",
-        undefined,
-        artifactId.startsWith(job.id) ? "第一份校对" : "第二份校对",
-      ),
-    );
-    const view = renderDrawer();
-    await screen.findByRole("tab", { name: "AI 校对" });
-    openAiReview();
-    chooseTab("AI校对字幕");
-    expect(await screen.findByText("第一份校对")).toBeTruthy();
-
-    const nextJob = { ...job, id: "d".repeat(32), title: "下一讲" };
-    view.rerender(
-      <TranscriptDetailDrawer
-        job={nextJob}
-        onClose={vi.fn()}
-        onRetry={vi.fn()}
-        onCancel={vi.fn()}
-        onReveal={vi.fn()}
-      />,
-    );
-    await waitFor(() => expect(getV2).toHaveBeenLastCalledWith(nextJob.id));
-    openAiReview();
-    chooseTab("AI校对字幕");
-
-    expect(await screen.findByText("第二份校对")).toBeTruthy();
-    expect(screen.queryByText("第一份校对")).toBeNull();
-    expect(readV2).toHaveBeenCalledTimes(2);
-  });
-
-  it("shows a restrained Phase1 warning without turning completed v1 into failure", async () => {
-    getV2.mockResolvedValue({
-      ...v2List(),
-      status: "partial",
-      pipeline_status: "partial",
-    });
-    renderDrawer({
-      ...job,
-      phase1_status: "partial",
-      pipeline_status: "partial",
-      partial_warning: true,
-      phase1_warning: "模型超时",
-    });
-
-    expect(await screen.findByText("深度校对部分完成")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-partial")).toBeTruthy();
-    expect(document.querySelector(".transcript-status-failed")).toBeNull();
-  });
-
-  it("将质量警告默认折叠在进度和操作之后的质量诊断中", async () => {
-    getV2.mockResolvedValue({
-      ...v2List(),
-      quality: {
-        score: 0,
-        passed: false,
-        metrics: {},
-        warnings: [],
-        schema_pass: false,
-        critic_pass_rate: 0,
-        uncertain_rate: 0.8,
-        numeric_change_count: 1,
-        unsupported_change_count: 1,
-        status: "failed",
-      },
-    });
-    renderDrawer();
-
-    const summary = await screen.findByText("质量诊断：AI 校对未通过");
-    const details = summary.closest("details");
-    expect(details?.hasAttribute("open")).toBe(false);
-    expect(details?.querySelector(".transcript-quality-warning")).toBeTruthy();
-    const progress = document.querySelector(".transcript-progress-block");
-    expect(
-      progress &&
-        progress.compareDocumentPosition(details as Node) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
-  it("优先从 summary_json 的真实 study_guide.questions 读取主动练习", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-    getV1.mockResolvedValue({
-      items: [
-        {
-          id: `${job.id}:summary`,
-          kind: "summary",
-          label: "本节要点",
-          content_type: "text/markdown",
-        },
-        {
-          id: `${job.id}:summary_json`,
-          kind: "summary_json",
-          label: "要点数据",
-          content_type: "application/json",
-        },
-      ],
-    });
-    readV1.mockImplementation(async (artifactId) => ({
-      id: artifactId,
-      kind: artifactId.endsWith("summary_json") ? "summary_json" : "summary",
-      content: artifactId.endsWith("summary_json")
-        ? JSON.stringify({
-            knowledge_points: ["边际贡献"],
-            study_guide: {
-              questions: [
-                {
-                  prompt: "边际贡献如何计算？",
-                  answer: "销售收入减变动成本。",
-                  source: "自编练习或例子",
-                },
-                {
-                  prompt: "写出保本点公式。",
-                  answer: "固定成本除以单位边际贡献。",
-                  source: "自编练习或例子",
-                },
-              ],
-            },
-          })
-        : "# 不应读取这个 Markdown 回退",
-    }));
-    renderDrawer();
-    expect(await screen.findByText("边际贡献")).toBeTruthy();
-    chooseTab("主动练习");
-
-    expect(await screen.findByText("【自编练习】")).toBeTruthy();
-    expect(screen.getByText("边际贡献如何计算？")).toBeTruthy();
-    const answers = screen.getAllByText("查看答案");
-    expect(answers).toHaveLength(2);
-    expect(answers[0].closest("details")?.hasAttribute("open")).toBe(false);
-    expect(screen.queryByText("本节暂无自编练习。")).toBeNull();
-    expect(readV1).toHaveBeenCalledWith(`${job.id}:summary_json`);
-  });
-
-  it("质量页与材料顶部显示高风险警告和具体指标", async () => {
-    getV2.mockResolvedValue({
-      ...v2List(),
-      quality: {
-        score: 0,
-        passed: false,
-        metrics: {},
-        warnings: [],
-        schema_pass: false,
-        critic_pass_rate: 0,
-        uncertain_rate: 0.8,
-        numeric_change_count: 1,
-        unsupported_change_count: 2,
-        status: "failed",
-      },
-    });
-    readV2.mockResolvedValue(
-      v2Read("quality", {
-        schema_pass: false,
-        critic_pass_rate: 0,
-        uncertain_rate: 0.8,
-        numeric_change_count: 1,
-        unsupported_change_count: 2,
-        status: "failed",
-      }),
-    );
-    renderDrawer();
-
-    expect(
-      await screen.findByText(
-        "AI 校对未通过，关键术语、数字和公式请对照视频核实",
-      ),
-    ).toBeTruthy();
-    openAiReview();
-    chooseTab("质量");
-    await waitFor(() =>
-      expect(
-        screen.getAllByText(
-          "AI 校对未通过，关键术语、数字和公式请对照视频核实",
-        ),
-      ).toHaveLength(2),
-    );
-    expect(screen.getAllByText(/Critic 通过率 0%/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/待确认占比 80%/).length).toBeGreaterThan(0);
-  });
-});
-
-describe("live artifact recovery", () => {
-  it("refreshes artifact lists for the same job when processing finishes", async () => {
-    getV1.mockResolvedValueOnce({ items: [] });
-    getV2
-      .mockResolvedValueOnce({
-        available: false,
-        status: null,
-        pipeline_status: null,
-        quality: null,
-        warnings: [],
-        items: [],
-      })
-      .mockResolvedValueOnce(v2List());
-    const processing = { ...job, status: "organizing" as const, progress: 70 };
-    const { rerender } = render(
-      <TranscriptDetailDrawer job={processing} onClose={vi.fn()} />,
-    );
-    await waitFor(() => expect(getV1).toHaveBeenCalledTimes(1));
-    await screen.findByText("该阶段尚未生成此类学习材料，完成后会自动更新。");
-    rerender(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
-    expect(
-      await screen.findByRole("heading", { name: "本节要点" }),
-    ).toBeTruthy();
-    expect(getV1).toHaveBeenCalledTimes(2);
-    expect(getV2).toHaveBeenCalledTimes(2);
-  });
-
-  it("offers an explicit supplement for legacy completion and prevents repeated retries", async () => {
-    getV2.mockResolvedValue({
-      available: false,
-      status: null,
-      pipeline_status: null,
-      quality: null,
-      warnings: [],
-      items: [],
-    });
-    let finish: (() => void) | undefined;
-    const retry = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const close = vi.fn();
-    render(
-      <TranscriptDetailDrawer job={job} onClose={close} onRetry={retry} />,
-    );
-    openAiReview();
-    const supplement = await screen.findByRole("button", {
-      name: "补充生成 AI 校对",
-    });
-    fireEvent.click(supplement);
-    fireEvent.click(supplement);
-    expect(retry).toHaveBeenCalledOnce();
-    expect((supplement as HTMLButtonElement).disabled).toBe(true);
-    await import("@/test/render").then(({ act }) =>
-      act(async () => finish?.()),
-    );
-    await waitFor(() => expect(close).toHaveBeenCalledOnce());
-  });
-
-  it("provides an explicit recovery when the completed job has no requested learning artifact", async () => {
-    getV1.mockResolvedValue({ items: [] });
-    getV2.mockResolvedValue(v2List());
-    const retry = vi.fn(async () => undefined);
-    render(
-      <TranscriptDetailDrawer job={job} onClose={vi.fn()} onRetry={retry} />,
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "补充整理学习材料" }),
-    );
-    expect(retry).toHaveBeenCalledWith(job);
-  });
-
-  it("keeps task action failures visible while the AI review tab is selected", async () => {
-    getV2.mockResolvedValue(v2List());
-    const retry = vi.fn().mockRejectedValue(new Error("任务操作失败"));
-    render(
-      <TranscriptDetailDrawer
-        job={{ ...job, status: "partial" }}
-        onClose={vi.fn()}
-        onRetry={retry}
-      />,
-    );
-    openAiReview();
-    fireEvent.click(await screen.findByText("更多操作"));
-    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "任务操作失败",
-    );
-    expect(retry).toHaveBeenCalledOnce();
-  });
-
-  it("retries a failed V1 read without requiring task mutation permissions", async () => {
-    readV1.mockRejectedValueOnce(new Error("读取失败")).mockResolvedValueOnce({
-      id: `${job.id}:summary`,
-      kind: "summary",
-      content: "重读后讲义",
-    });
+describe("课堂资料详情", () => {
+  it("只呈现两种新材料，不调用旧校对接口、不保留旧入口", async () => {
     render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "重试加载学习材料" }),
-    );
-    expect(await screen.findByText("重读后讲义")).toBeTruthy();
-    expect(readV1).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("finished review and recovery states", () => {
-  const uncertainQuality = {
-    score: 0.7,
-    passed: false,
-    metrics: {},
-    warnings: [],
-    schema_pass: true,
-    critic_pass_rate: 0.9,
-    uncertain_rate: 0.1,
-    numeric_change_count: 0,
-    unsupported_change_count: 0,
-    status: "completed_with_warnings" as const,
-  };
-  const recoveryJob = (
-    extra: Record<string, unknown>,
-  ): TranscriptJob & Record<string, unknown> => ({
-    ...job,
-    status: "completed",
-    stage: "completed",
-    progress: 100,
-    ...extra,
-  });
-  const renderWith = (currentJob: TranscriptJob) => {
-    const retry = vi.fn();
-    render(
-      <TranscriptDetailDrawer
-        job={currentJob}
-        onClose={vi.fn()}
-        onRetry={retry}
-      />,
-    );
-    return retry;
-  };
-
-  it("shows finished content-only review without processing or countdown", async () => {
-    getV2.mockResolvedValue({ ...v2List(), quality: uncertainQuality });
-    const retry = renderWith(
-      recoveryJob({
-        processing_state: "finished_needs_review",
-        phase1_status: "completed_with_warnings",
-        quality: uncertainQuality,
-        retry_after: new Date(Date.now() + 3_600_000).toISOString(),
-      }),
-    );
-    expect(await screen.findByText("校对已结束，部分内容需核对")).toBeTruthy();
-    expect(screen.queryByText("正在处理")).toBeNull();
-    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
-    expect(screen.queryByText(/预计/)).toBeNull();
-    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
-    // Usable material stays readable; nothing retries by itself.
+    await screen.findByText("先讲机会成本，再讲决策条件。");
+    expect(readV1).toHaveBeenCalledWith(`${job.id}:lesson_summary`);
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    for (const text of [
+      "校对与历史材料",
+      "规整字幕",
+      "主动练习",
+      "AI 校对",
+      "质量诊断：AI 校对未通过",
+    ])
+      expect(screen.queryByText(text)).toBeNull();
+    expect(getTranscriptV2Artifacts).not.toHaveBeenCalled();
+    expect(readTranscriptV2Artifact).not.toHaveBeenCalled();
+    chooseTab("原始字幕");
+    await screen.findByText("老师的原话。");
+    expect(readV1).toHaveBeenLastCalledWith(`${job.id}:original`);
     expect(
-      await screen.findByRole("heading", { name: "本节要点" }),
-    ).toBeTruthy();
-    expect(retry).not.toHaveBeenCalled();
+      document.querySelector<HTMLElement>(".transcript-markdown")?.style
+        .userSelect,
+    ).toBe("text");
   });
-
-  it("falls back to legacy quality flags for finished review", async () => {
-    getV2.mockResolvedValue({ ...v2List(), quality: uncertainQuality });
-    const retry = renderWith(
-      recoveryJob({
-        phase1_status: "completed_with_warnings",
-        quality: uncertainQuality,
-        auto_retryable: false,
-        diagnostic: { stage: "needs_review", code: "content_uncertain" },
-      }),
-    );
-    expect(await screen.findByText("校对已结束，部分内容需核对")).toBeTruthy();
-    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
-    expect(retry).not.toHaveBeenCalled();
-  });
-
-  it("names the failed stage and the real retry time while recovering", async () => {
-    getV2.mockResolvedValue(v2List());
-    const retryAfter = new Date(Date.now() + 3_600_000).toISOString();
-    const expected = new Date(retryAfter).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    const retry = renderWith(
-      recoveryJob({
-        status: "completed_with_warnings",
-        processing_state: "recovering",
-        auto_retryable: true,
-        next_retry_at: retryAfter,
-        retryable: true,
-        diagnostic: { stage: "guide_generation", code: "v1_guide_schema" },
-      }),
-    );
-    expect(
-      await screen.findByText(
-        `学习讲义生成未完成，等待自动恢复（预计 ${expected}）`,
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText("失败阶段：学习讲义生成")).toBeTruthy();
-    expect(retry).not.toHaveBeenCalled();
-  });
-
-  it("does not show a countdown for a past retry time", async () => {
-    getV2.mockResolvedValue(v2List());
-    renderWith(
-      recoveryJob({
-        status: "completed_with_warnings",
-        auto_retryable: true,
-        next_retry_at: new Date(Date.now() - 60_000).toISOString(),
-        diagnostic: { stage: "audit", code: "v1_audit_schema" },
-      }),
-    );
-    expect(
-      await screen.findByText("任务已结束，存在未通过或未完成阶段"),
-    ).toBeTruthy();
-    expect(screen.queryByText(/等待自动恢复/)).toBeNull();
-  });
-
-  it.each([
-    ["explicit state", { processing_state: "recovery_exhausted" }],
-    ["legacy flag", { auto_retry_exhausted: true, auto_retryable: false }],
-  ])(
-    "states exhausted recovery and offers manual retry (%s)",
-    async (_, extra) => {
-      getV2.mockResolvedValue(v2List());
-      const retry = renderWith(
-        recoveryJob({
-          status: "completed_with_warnings",
-          retryable: true,
-          retry_after: new Date(Date.now() + 3_600_000).toISOString(),
-          diagnostic: { stage: "map", code: "v1_map_fallback" },
-          ...extra,
-        }),
+  it.each(["practice", "cleaned"] as const)(
+    "旧 %s 请求安全映射到精炼资料",
+    async (initialTab) => {
+      render(
+        <TranscriptDetailDrawer
+          job={job}
+          initialTab={initialTab}
+          onClose={vi.fn()}
+        />,
       );
-      expect(
-        await screen.findByText("自动恢复已用尽，可手动重试"),
-      ).toBeTruthy();
-      expect(screen.getByText("失败阶段：字幕分块整理")).toBeTruthy();
-      expect(screen.queryByText(/等待自动恢复/)).toBeNull();
-      expect(screen.queryByText(/预计/)).toBeNull();
-      fireEvent.click(screen.getByText("更多操作"));
-      expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
-      expect(retry).not.toHaveBeenCalled();
+      await screen.findByText("课堂主线");
+      expect(screen.getAllByRole("tab")).toHaveLength(2);
     },
   );
-
-  it("keeps active progress authoritative over a stale recovery state", async () => {
-    getV2.mockResolvedValue(v2List());
-    renderWith(
-      recoveryJob({
-        status: "organizing",
-        stage: "organizing",
-        progress: 40,
-        processing_state: "recovery_exhausted",
-      }),
+  it("没有精炼总结也不回退到旧的巨长校对稿", async () => {
+    getV1.mockResolvedValue({
+      items: [
+        item("summary_json"),
+        item("summary"),
+        item("lesson"),
+        item("raw_vtt"),
+      ],
+    });
+    render(
+      <TranscriptDetailDrawer
+        job={{ ...job, lesson_notes_status: "pending" }}
+        onClose={vi.fn()}
+      />,
     );
-    expect(await screen.findByText("正在处理")).toBeTruthy();
-    expect(screen.getByText("40%")).toBeTruthy();
-    expect(screen.queryByText("自动恢复已用尽，可手动重试")).toBeNull();
+    await screen.findByText(/精炼课堂总结尚未完成/);
+    expect(readV1).not.toHaveBeenCalled();
+    readV1.mockResolvedValue({
+      id: `${job.id}:raw_vtt`,
+      kind: "raw_vtt",
+      content: "WEBVTT\n完整原话",
+    });
+    chooseTab("原始字幕");
+    await screen.findByText(/WEBVTT/);
+  });
+  it("旧校对失败不冒充新资料失败，也不显示旧进度诊断", async () => {
+    render(
+      <TranscriptDetailDrawer
+        job={{
+          ...job,
+          status: "failed",
+          stage: "map_reduce",
+          progress: 55,
+          error: "旧校对报错",
+          message: "旧失败",
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText("课堂材料已就绪");
+    expect(screen.queryByText("旧校对报错")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+  it("任务100%但没有材料，不显示完成", async () => {
+    getV1.mockResolvedValue({ items: [] });
+    render(
+      <TranscriptDetailDrawer
+        job={{ ...job, status: "failed" }}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText(/精炼课堂总结尚未完成/);
+    expect(screen.getByText("暂无可用材料")).toBeTruthy();
+    expect(screen.queryByText("课堂材料已就绪")).toBeNull();
+  });
+  it("读取失败可重试，不需要重新生成任务", async () => {
+    readV1.mockRejectedValueOnce(new Error("正文临时不可读"));
+    render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await screen.findByText("正文临时不可读");
+    fireEvent.click(screen.getByRole("button", { name: "重试加载学习材料" }));
+    await screen.findByText("课堂主线");
+    expect(readV1).toHaveBeenCalledTimes(2);
+  });
+  it("列表失败可重试", async () => {
+    getV1.mockRejectedValueOnce(new Error("列表暂不可读"));
+    render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await screen.findByText("列表暂不可读");
+    fireEvent.click(screen.getByRole("button", { name: "重试加载学习材料" }));
+    await screen.findByText("课堂主线");
+  });
+  it("切换材料复用缓存", async () => {
+    render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await screen.findByText("课堂主线");
+    chooseTab("原始字幕");
+    await screen.findByText("老师的原话。");
+    chooseTab("当堂老师讲了什么");
+    await screen.findByText("课堂主线");
+    expect(readV1).toHaveBeenCalledTimes(2);
+  });
+  it("同一任务总结完成后重新获取列表和正文", async () => {
+    getV1.mockResolvedValueOnce({ items: [item("original")] });
+    const view = render(
+      <TranscriptDetailDrawer
+        job={{ ...job, lesson_notes_status: "pending" }}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText(/精炼课堂总结尚未完成/);
+    view.rerender(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await screen.findByText("课堂主线");
+    expect(getV1).toHaveBeenCalledTimes(2);
+  });
+  it("切换任务隔离延迟正文与缓存", async () => {
+    const old = deferred<Awaited<ReturnType<typeof readTranscriptArtifact>>>();
+    readV1.mockReturnValueOnce(old.promise);
+    const view = render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await waitFor(() => expect(readV1).toHaveBeenCalledTimes(1));
+    const next = { ...job, id: "c".repeat(32), title: "另一堂课" };
+    getV1.mockResolvedValue({ items: [item("lesson_summary", next.id)] });
+    readV1.mockResolvedValue({
+      id: `${next.id}:lesson_summary`,
+      kind: "lesson_summary",
+      content: "新课堂的独立主线",
+    });
+    view.rerender(<TranscriptDetailDrawer job={next} onClose={vi.fn()} />);
+    await screen.findByText("新课堂的独立主线");
+    old.resolve({
+      id: `${job.id}:lesson_summary`,
+      kind: "lesson_summary",
+      content: "不应该显示的上一堂课",
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("不应该显示的上一堂课")).toBeNull(),
+    );
+  });
+  it("切换任务隔离延迟列表", async () => {
+    const old = deferred<Awaited<ReturnType<typeof getTranscriptArtifacts>>>();
+    getV1.mockReturnValueOnce(old.promise);
+    const view = render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    const next = { ...job, id: "c".repeat(32) };
+    getV1.mockResolvedValue({ items: [item("lesson_summary", next.id)] });
+    view.rerender(<TranscriptDetailDrawer job={next} onClose={vi.fn()} />);
+    await screen.findByText("课堂主线");
+    old.resolve({ items: [item("original")] });
+    expect(readV1).not.toHaveBeenCalledWith(`${job.id}:original`);
+  });
+  it("在文件管理器定位当前材料，失败不关闭正文", async () => {
+    const reveal = vi.fn().mockRejectedValue(new Error("定位失败"));
+    const close = vi.fn();
+    render(
+      <TranscriptDetailDrawer job={job} onClose={close} onReveal={reveal} />,
+    );
+    await screen.findByText("课堂主线");
+    actions();
+    fireEvent.click(screen.getByRole("button", { name: /在.*中显示/ }));
+    await screen.findByText("定位失败");
+    expect(reveal).toHaveBeenCalledWith(item("lesson_summary"));
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByText("课堂主线")).toBeTruthy();
+  });
+  it("任务重试防重复，失败可再次操作", async () => {
+    const pending = deferred<void>();
+    const retry = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(undefined);
+    const close = vi.fn();
+    getV1.mockResolvedValue({ items: [] });
+    render(
+      <TranscriptDetailDrawer
+        job={{ ...job, status: "failed", lesson_notes_status: "pending" }}
+        onClose={close}
+        onRetry={retry}
+      />,
+    );
+    await screen.findByText(/精炼课堂总结尚未完成/);
+    actions();
+    const button = screen.getByRole("button", { name: "重新生成课堂材料" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(retry).toHaveBeenCalledTimes(1);
+    pending.reject(new Error("重试失败"));
+    await screen.findByText("重试失败");
+    expect(close).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  });
+  it("取消失败仍可阅读且保持打开", async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error("取消失败"));
+    const close = vi.fn();
+    render(
+      <TranscriptDetailDrawer
+        job={{
+          ...job,
+          status: "organizing",
+          progress: 55,
+          lesson_notes_status: "pending",
+        }}
+        onClose={close}
+        onCancel={cancel}
+      />,
+    );
+    await screen.findByText("课堂主线");
+    actions();
+    fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
+    await screen.findByText("取消失败");
+    expect(close).not.toHaveBeenCalled();
+  });
+  it("稀疏畸形列表安全为空态", async () => {
+    getV1.mockResolvedValue({
+      items: [
+        null,
+        {},
+        { kind: "original" },
+      ] as unknown as TranscriptArtifact[],
+    });
+    render(<TranscriptDetailDrawer job={job} onClose={vi.fn()} />);
+    await screen.findByText(/精炼课堂总结尚未完成/);
+    expect(readV1).not.toHaveBeenCalled();
+  });
+  it("关闭按钮和Escape保留模态交互", async () => {
+    const close = vi.fn();
+    render(<TranscriptDetailDrawer job={job} onClose={close} />);
+    await screen.findByText("课堂主线");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(close).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "关闭字幕详情" }));
+    expect(close).toHaveBeenCalledTimes(2);
   });
 });

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+import ssl
+import tempfile
+import json
+from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -10,6 +15,7 @@ from sjtu_learning_assistant.update_service import (
     InvalidUpdateMetadataError,
     InvalidVersionError,
     UpdateService,
+    UpdateServiceError,
     UnsafeUpdateURLError,
     compare_versions,
     parse_release_metadata,
@@ -100,6 +106,116 @@ def multi_platform_release_payload(artifact_names):
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_api_rate_limit_uses_official_latest_page_without_guessing_assets(self):
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL
+        page = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9"
+        for status in (403, 429):
+            requests = []
+            def handler(request):
+                requests.append(str(request.url))
+                if str(request.url) == DEFAULT_RELEASE_API_URL:
+                    return httpx.Response(status)
+                if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                    return httpx.Response(302, headers={"Location": page})
+                return httpx.Response(200, text=f'<meta property="og:url" content="{httpx.URL(page).path}"><a href="/Augety-silence/sjtu-learning-assistant/releases/latest">Latest</a>')
+            with self.subTest(status=status):
+                result = UpdateService("1.8.8", transport=httpx.MockTransport(handler)).check()
+                self.assertTrue(result.update_available)
+                self.assertEqual("1.8.9", result.latest_version)
+                self.assertIsNone(result.download_plan)
+                self.assertEqual((), result.release.assets)
+                self.assertEqual([DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL, page], requests)
+
+    def test_web_fallback_rejects_untrusted_redirects_and_unconfirmed_html(self):
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL, MAX_METADATA_BYTES
+        page = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9"
+        cases = (
+            ("http://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v1.8.9", "", {}),
+            ("https://github.com/evil/repo/releases/tag/v1.8.9", "", {}),
+            ("https://evil.test/tag/v1.8.9", "", {}),
+            (page, "<p>login or changed markup</p>", {}),
+            (page, '<meta property="og:url" content="https://evil.test"><a href="/Augety-silence/sjtu-learning-assistant/releases/latest">Latest</a>', {}),
+            (page, "", {"Content-Length": str(MAX_METADATA_BYTES + 1)}),
+        )
+        for redirect, html, headers in cases:
+            visited = []
+            def handler(request):
+                visited.append(str(request.url))
+                if str(request.url) == DEFAULT_RELEASE_API_URL:
+                    return httpx.Response(403)
+                if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                    return httpx.Response(302, headers={"Location": redirect})
+                return httpx.Response(200, text=html, headers=headers)
+            with self.subTest(redirect=redirect, html=html), self.assertRaises(UpdateServiceError):
+                UpdateService("1.8.8", transport=httpx.MockTransport(handler)).fetch_release()
+            self.assertTrue(all(url.startswith("https://github.com/Augety-silence/") or url == DEFAULT_RELEASE_API_URL for url in visited))
+
+    def test_successful_fallback_keeps_api_failure_in_safe_diagnostics(self):
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run
+        from sjtu_learning_assistant.update_service import DEFAULT_RELEASE_API_URL, DEFAULT_RELEASE_WEB_URL
+        page = DEFAULT_RELEASE_WEB_URL.replace("latest", "tag/v1.8.9")
+        def handler(request):
+            if str(request.url) == DEFAULT_RELEASE_API_URL:
+                return httpx.Response(403, text="private network payload")
+            if str(request.url) == DEFAULT_RELEASE_WEB_URL:
+                return httpx.Response(302, headers={"Location": page})
+            return httpx.Response(200, text=f'<meta property="og:url" content="{page}"><a href="{DEFAULT_RELEASE_WEB_URL}">Latest</a>')
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "stage.jsonl"
+            with diagnostic_run(log, source="update"):
+                UpdateService("1.8.9", transport=httpx.MockTransport(handler)).check()
+            content = log.read_text()
+            records = [json.loads(row) for row in content.splitlines()]
+            self.assertTrue(any(row["stage"] == "github_api" and row["event"] == "failed" for row in records))
+            self.assertTrue(any(row["stage"] == "github_web_fallback" and row["event"] == "succeeded" for row in records))
+            self.assertNotIn("private", content)
+
+    def test_network_failures_are_actionable_and_do_not_echo_remote_payload(self):
+        cases = ((httpx.ConnectTimeout, "超时"), (httpx.ReadTimeout, "超时"), (httpx.ConnectError, "网络"), (httpx.InvalidURL, "网络"))
+        for kind, expected in cases:
+            with self.subTest(kind=kind):
+                def handler(request):
+                    raise kind("private network payload")
+                service = UpdateService("1.8.8", transport=httpx.MockTransport(handler))
+                with self.assertRaises(UpdateServiceError) as caught:
+                    service.fetch_release()
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("private", str(caught.exception))
+
+    def test_http_status_has_safe_diagnostic_evidence(self):
+        from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
+        from sjtu_learning_assistant.diagnostic_bundle import DiagnosticBundleService
+        for status in (403, 429, 404, 500):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                log = Path(directory) / "stages.jsonl"
+                service = UpdateService("1.8.8", transport=httpx.MockTransport(lambda request: httpx.Response(status, text="private server payload")))
+                with self.assertRaises(UpdateServiceError) as caught, diagnostic_run(log, source="update"), diagnostic_stage("update", "release_metadata"):
+                    service.fetch_release()
+                self.assertIn(str(status), str(caught.exception))
+                exported = DiagnosticBundleService._stage_metadata(log.read_text())
+                rows = [json.loads(line) for line in exported.splitlines()]
+                failed = next(row for row in rows if row["stage"] == "release_metadata" and row["event"] == "failed")
+                self.assertEqual("update", failed["source"])
+                self.assertIn({"type": "HTTPStatusError", "status_code": status}, failed["exception_chain"])
+                self.assertNotIn("private", exported)
+
+    def test_tls_failure_is_not_bypassed(self):
+        def handler(request):
+            try:
+                raise ssl.SSLCertVerificationError(1, "private certificate payload")
+            except ssl.SSLError as exc:
+                raise httpx.ConnectError("private network payload") from exc
+        with self.assertRaisesRegex(UpdateServiceError, "不会跳过 TLS"):
+            UpdateService("1.8.8", transport=httpx.MockTransport(handler)).fetch_release()
+
+    def test_packaged_ca_is_loaded_on_top_of_system_trust(self):
+        context = ssl.create_default_context()
+        with patch("sjtu_learning_assistant.update_service.ssl.create_default_context", return_value=context), patch.object(context, "load_verify_locations", wraps=context.load_verify_locations) as load:
+            UpdateService("1.8.8", transport=httpx.MockTransport(lambda request: httpx.Response(200, json=release_payload()))).fetch_release()
+        load.assert_called_once()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
+
     def test_deep_release_json_is_a_controlled_metadata_error(self) -> None:
         service = UpdateService(
             "1.8.7",

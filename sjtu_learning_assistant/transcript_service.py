@@ -66,6 +66,7 @@ from sjtu_learning_assistant.transcript_pipeline import (
 )
 from sjtu_learning_assistant.video_service import parse_remote_source_id
 from sjtu_learning_assistant.transcript_playback import build_learning_segments, corrected_source_cues, cues_to_vtt
+from sjtu_learning_assistant.transcript_notes import CONTRACT as NOTES_CONTRACT, PROMPT_VERSION as NOTES_PROMPT_VERSION, compile_summary, lesson_markdown, original_markdown
 
 DEFAULT_TRANSCRIPT_ROOT = APP_SUPPORT_DIR / "transcripts" / "v1"
 DEFAULT_COURSE_MEMORY_ROOT = APP_SUPPORT_DIR / "transcripts" / "v2" / "course_memory"
@@ -148,6 +149,9 @@ ARTIFACT_FILES = {
     "cleaned": "cleaned.md",
     "summary_json": "summary.json",
     "summary": "summary.md",
+    "lesson": "lesson.md",
+    "lesson_summary": "lecture-summary.md",
+    "original": "original.md",
 }
 V2_ARTIFACT_FILES = {
     "semantic_chunks": "semantic_chunks.json",
@@ -174,7 +178,7 @@ V2_ARTIFACT_LABELS = {
 V2_JSON_KINDS = frozenset(set(V2_ARTIFACT_FILES) - {"corrected", "training_examples"})
 _ID = re.compile(r"^[0-9a-f]{32}$")
 _OPAQUE_ID = re.compile(r"^[0-9a-f]{32}$")
-_ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):(raw_vtt|cues|cleaned|summary_json|summary)$")
+_ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):(raw_vtt|cues|cleaned|summary_json|summary|lesson|lesson_summary|original)$")
 _V2_ARTIFACT_ID = re.compile(r"^([0-9a-f]{32}):v2:([0-9a-f]{32})$")
 
 
@@ -335,6 +339,7 @@ class TranscriptService:
         *,
         subtitle_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
         ai_context_provider: Callable[[], AIContext] | None = None,
+        course_metadata_provider: Callable[[], Mapping[str, Mapping[str, Any]]] | None = None,
         pipeline: TranscriptPipeline | None = None,
         orchestrator: Any | None = None,
         memory_root: Path = DEFAULT_COURSE_MEMORY_ROOT,
@@ -354,6 +359,7 @@ class TranscriptService:
         ) or orchestrator is not None
         self.subtitle_fetcher = subtitle_fetcher
         self.ai_context_provider = ai_context_provider or (lambda: AIContext(None, "", "", False))
+        self.course_metadata_provider = course_metadata_provider or (lambda: {})
         self.pipeline = pipeline or TranscriptPipeline()
         self.orchestrator = orchestrator
         if self.orchestrator is not None and hasattr(self.orchestrator, "persist_raw"):
@@ -374,6 +380,7 @@ class TranscriptService:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._last_worker_error_log: float | None = None
+        self._next_notes_scan = 0.0
         self._thread: threading.Thread | None = None
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
@@ -727,9 +734,14 @@ class TranscriptService:
             reverse=True,
         )
 
-    @staticmethod
-    def _public_job(job: Mapping[str, Any]) -> dict[str, Any]:
+    def _public_job(self, job: Mapping[str, Any]) -> dict[str, Any]:
         result = dict(job)
+        try:
+            manifest = self._read_json(self._manifest_path(str(job.get("source_id"))))
+            notes = manifest.get("lesson_notes", {})
+            result["lesson_notes_status"] = notes.get("status", "pending")
+        except (TranscriptError, TypeError, ValueError, AttributeError):
+            pass
         result.pop("owner", None)
         result.pop("video_dir", None)
         result.pop("force_phase1", None)
@@ -765,7 +777,10 @@ class TranscriptService:
             if manifest_path.is_file() and not manifest_path.is_symlink():
                 manifest = self._read_json(manifest_path)
                 self._refresh_manifest_versions(manifest, job, ai_context)
+                if type(manifest.get("lesson_notes")) is dict:
+                    manifest["lesson_notes"].update(attempts=0, retry_after=None)
                 self._write_json(manifest_path, manifest)
+                self._next_notes_scan = 0
         return self.start_batch(
             course_id=str(previous_batch["course_id"]),
             course_name=str(previous_batch["course_name"]),
@@ -1675,6 +1690,7 @@ class TranscriptService:
                 break
             try:
                 self.run_pending()
+                self._backfill_next_lesson()
             except Exception as exc:
                 # A malformed batch or unavailable storage must not kill the only worker.
                 now = time.monotonic()
@@ -2819,6 +2835,8 @@ class TranscriptService:
         if type(records) is not dict:
             return False
         for kind, name in ARTIFACT_FILES.items():
+            if kind in {"lesson", "lesson_summary", "original"}:
+                continue
             record = records.get(kind)
             if (
                 type(record) is not dict
@@ -2991,11 +3009,176 @@ class TranscriptService:
         manifest["artifacts"]["raw_vtt"] = {"path": "raw.vtt", "sha256": raw_hash}
         manifest["artifacts"]["cues"] = {"path": "cues.json", "sha256": _sha256(cues_payload)}
         self._write_json(video_dir / "manifest.json", manifest)
+        self._save_lesson_notes(video_dir, manifest, raw)
         job["video_dir"] = video_dir.name
         job["status"] = "saved"
         job["stage"] = "raw_saved"
         job["progress"] = 45
         job["message"] = "原始字幕已安全存储。"
+
+    def _save_lesson_notes(self, video_dir: Path, manifest: dict, raw: str, summary: str | None = None, report: dict | None = None) -> bool:
+        metadata = self.course_metadata_provider().get(str(manifest.get("course", {}).get("id")), {})
+        for key in ("term_id", "term_name"):
+            if type(metadata.get(key)) is str:
+                manifest["course"][key] = metadata[key]
+        records = manifest.setdefault("artifacts", {})
+        # 无生成哈希记录或已被人工修改的同名文件属于用户，即使更新来源也不覆盖。
+        for kind in ("lesson", "lesson_summary", "original"):
+            path = video_dir / ARTIFACT_FILES[kind]
+            record = records.get(kind)
+            if path.exists() or path.is_symlink():
+                if type(record) is not dict or not self._hashed_file_valid(path, record.get("sha256")):
+                    manifest["lesson_notes"] = {"contract": NOTES_CONTRACT, "status": "user_modified"}
+                    self._write_json(video_dir / "manifest.json", manifest)
+                    return False
+        original = original_markdown(raw)
+        payloads = {"original": original, "lesson": lesson_markdown(manifest, original, summary)}
+        if summary is not None:
+            payloads["lesson_summary"] = summary
+        # 清单最后发布；中断留下的正文仍可读，但不冒充已完整提交的总结。
+        for kind, text in payloads.items():
+            data = text.encode("utf-8")
+            self._atomic_write(video_dir / ARTIFACT_FILES[kind], data)
+            records[kind] = {"path": ARTIFACT_FILES[kind], "sha256": _sha256(data)}
+        manifest["lesson_notes"] = {"contract": NOTES_CONTRACT, "status": "completed" if summary is not None else "pending",
+                                    "prompt_version": NOTES_PROMPT_VERSION,
+                                    "raw_sha256": manifest["raw_sha256"], "report": report or {}}
+        self._write_json(video_dir / "manifest.json", manifest)
+        return True
+
+    @contextmanager
+    def _lesson_lock(self, directory: Path):
+        descriptor = os.open(directory / ".lesson.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        acquired = False
+        try:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    if os.fstat(descriptor).st_size == 0:
+                        os.write(descriptor, b"0")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:
+                    yield False
+                    return
+                acquired = True
+            except OSError:
+                yield False
+                return
+            yield True
+        finally:
+            if acquired:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            os.close(descriptor)
+
+    def _backfill_next_lesson(self) -> None:
+        """闲时补齐一堂已保存课程，不重跑V1/Phase1，也不设置每日调用上限。"""
+        if time.monotonic() < self._next_notes_scan:
+            return
+        self._next_notes_scan = time.monotonic() + 5
+        directories = sorted((self.root / "videos").iterdir())[:5000]
+        # 先让全部已保存原始字幕可见，再逐堂调用模型；第一堂耗时不会挡住其余目录。
+        for directory in directories:
+            if self._stop.is_set():
+                return
+            if not _ID.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
+                continue
+            try:
+                with self._lesson_lock(directory) as acquired:
+                    if not acquired:
+                        continue
+                    manifest = self._read_json(directory / "manifest.json")
+                    if manifest.get("status") in ACTIVE_STATES or manifest.get("artifacts", {}).get("lesson"):
+                        continue
+                    raw_path = directory / "raw.vtt"
+                    if self._hashed_file_valid(raw_path, manifest.get("raw_sha256")):
+                        self._save_lesson_notes(directory, manifest, raw_path.read_text(encoding="utf-8"))
+            except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
+                continue
+        for directory in directories:
+            if self._stop.is_set():
+                return
+            if not _ID.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
+                continue
+            try:
+                with self._lesson_lock(directory) as acquired:
+                    if not acquired:
+                        continue
+                    manifest = self._read_json(directory / "manifest.json")
+                    if manifest.get("status") in ACTIVE_STATES or manifest.get("status") == "cancelled":
+                        continue
+                    notes = manifest.get("lesson_notes", {})
+                    if notes.get("status") == "user_modified":
+                        continue
+                    if (notes.get("contract") == NOTES_CONTRACT and notes.get("status") == "completed"
+                            and notes.get("prompt_version") == NOTES_PROMPT_VERSION
+                            and notes.get("raw_sha256") == manifest.get("raw_sha256")):
+                        continue
+                    retry = _parse_time(notes.get("retry_after"))
+                    if retry and retry > self.now_provider():
+                        continue
+                    path = directory / "raw.vtt"
+                    if not self._hashed_file_valid(path, manifest.get("raw_sha256")):
+                        continue
+                    raw = path.read_text(encoding="utf-8")
+                    if not manifest.get("artifacts", {}).get("lesson"):
+                        if not self._save_lesson_notes(directory, manifest, raw):
+                            continue
+                    context = self.ai_context_provider()
+                    if not context.enabled or context.client is None:
+                        continue
+                    fingerprint = _sha256((NOTES_PROMPT_VERSION + context.model + context.endpoint_fingerprint + manifest["raw_sha256"]).encode())
+                    attempts = int(notes.get("attempts") or 0) if notes.get("fingerprint") == fingerprint else 0
+                    if attempts >= 3:
+                        continue
+                    def check():
+                        if self._stop.is_set():
+                            raise TranscriptPipelineCancelled()
+                        source_id = manifest.get("source", {}).get("source_id")
+                        self._yield_for_foreground({"source_id": source_id})
+                        latest = next(((b, j) for b in self._all_batches() for j in b.get("jobs", [])
+                                       if j.get("source_id") == source_id), None)
+                        if latest and (latest[1].get("cancel_requested") or latest[0].get("cancel_requested")):
+                            raise TranscriptPipelineCancelled()
+                    try:
+                        cache_parent = directory / "lesson-checkpoints"
+                        cache_dir = cache_parent / _sha256((context.model + context.endpoint_fingerprint).encode())
+                        if cache_parent.is_symlink() or cache_dir.is_symlink():
+                            raise TranscriptError("课堂总结检查点目录不安全。")
+                        def cached(key):
+                            try:
+                                return self._read_json(cache_dir / (key + ".json"))
+                            except TranscriptError:
+                                return None
+                        def commit(key, value):
+                            path = cache_dir / (key + ".json")
+                            if not path.exists() and not path.is_symlink():
+                                self._write_json(path, value)
+                        summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit)
+                        check()
+                        # API调用期间来源或人工正文发生变化时，不覆盖新内容。
+                        current = self._read_json(directory / "manifest.json")
+                        if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
+                            return
+                        self._save_lesson_notes(directory, current, raw, summary, report)
+                    except (TranscriptPipelineCancelled, _PlaybackYield):
+                        return
+                    except Exception as exc:
+                        current = self._read_json(directory / "manifest.json")
+                        if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
+                            return
+                        current.setdefault("lesson_notes", {}).update(status="pending", error_code=self._diagnostic_code(exc),
+                            attempts=attempts + 1, fingerprint=fingerprint,
+                            retry_after=(self.now_provider() + timedelta(minutes=5)).isoformat())
+                        self._write_json(directory / "manifest.json", current)
+                    return
+            except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
+                continue
 
     def _organize(self, batch: dict[str, Any], job: dict[str, Any]) -> None:
         self._check_cancel(batch, job)
@@ -3269,7 +3452,7 @@ class TranscriptService:
                 continue
             path = video_dir / str(record.get("path"))
             if path.is_file() and not path.is_symlink():
-                items.append({"id": f"{job_id}:{kind}", "kind": kind, "label": {"raw_vtt": "原始字幕", "cues": "Cue 数据", "cleaned": "规整字幕", "summary_json": "要点数据", "summary": "本节要点"}[kind], "content_type": "application/json" if kind in {"cues", "summary_json"} else "text/markdown" if kind in {"cleaned", "summary"} else "text/vtt", "available": True, "version": "v1"})
+                items.append({"id": f"{job_id}:{kind}", "kind": kind, "label": {"raw_vtt": "原始字幕", "cues": "Cue 数据", "cleaned": "规整字幕", "summary_json": "要点数据", "summary": "本节要点", "lesson": "课堂资料", "lesson_summary": "当堂老师讲了什么", "original": "原始字幕"}[kind], "content_type": "application/json" if kind in {"cues", "summary_json"} else "text/vtt" if kind == "raw_vtt" else "text/markdown", "available": True, "version": "v1"})
         v2_items, v2_manifest = self._v2_artifact_items(job_id, video_dir)
         items.extend(v2_items)
         return {

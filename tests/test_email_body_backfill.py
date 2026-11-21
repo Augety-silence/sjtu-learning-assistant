@@ -167,6 +167,33 @@ class MailBodyBackfillPersistenceTests(unittest.TestCase):
                 ),
             )
 
+    def test_old_sanitized_html_is_refetched_once_without_changing_read_state(self) -> None:
+        from dataclasses import replace
+        old = replace(self.record(1, body_text="kept"), body_html="<table><tr><td>kept</td></tr></table>", raw_data={"rich_content_fetched": True, "rich_content_version": 2})
+        persist_emails(self.engine, [old], cursor="cursor")
+        with Session(self.engine) as session, session.begin():
+            session.execute(update(Email).values(is_unread=False))
+            session.execute(update(UnifiedItem).values(is_read=True))
+        targets = get_email_body_backfill_targets(self.engine, "student@example.com", limit=1)
+        self.assertEqual(1, len(targets))
+        update_body = EmailBodyUpdate(old.source_id, "replacement", "preview", '<p align="center">restored</p>')
+        self.assertEqual(1, persist_email_body_backfill(self.engine, [update_body]))
+        self.assertEqual((), get_email_body_backfill_targets(self.engine, "student@example.com", limit=1))
+        self.assertEqual(0, persist_email_body_backfill(self.engine, [update_body]))
+        with Session(self.engine) as session:
+            email = session.scalar(select(Email))
+            self.assertEqual("kept", email.body_text)
+            self.assertFalse(email.is_unread)
+            self.assertTrue(session.scalar(select(UnifiedItem)).is_read)
+            self.assertEqual(3, email.raw_data["rich_content_version"])
+
+    def test_future_rich_content_is_not_downgraded(self) -> None:
+        from dataclasses import replace
+        future = replace(self.record(1, body_text="kept"), body_html="<p>kept</p>", raw_data={"rich_content_fetched": True, "rich_content_version": 4})
+        persist_emails(self.engine, [future], cursor="cursor")
+        self.assertEqual((), get_email_body_backfill_targets(self.engine, "student@example.com", limit=1))
+        self.assertEqual(0, persist_email_body_backfill(self.engine, [EmailBodyUpdate(future.source_id, "new", "new", "<p>new</p>")]))
+
 
 class SyncMailBackfillIsolationTests(unittest.TestCase):
     def test_backfill_failure_does_not_undo_incremental_sync(self) -> None:

@@ -266,6 +266,8 @@ class DashboardSettingsTests(unittest.TestCase):
                 "cloud_token_saved",
                 "credential_status_error",
                 "auto_download_current_term",
+                "course_markdown_enabled",
+                "course_markdown_daily_calls",
                 "organize_by_category",
                 "ai_enabled",
                 "ai_base_url",

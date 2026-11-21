@@ -3,11 +3,44 @@
 from __future__ import annotations
 
 import io
+import json
 import random
 import zipfile
 from pathlib import Path
 
 from PIL import Image
+
+
+def knowledge_response(model, system, content):
+    """符合讲义契约的合成响应，不能视为真实 API 验证。"""
+    if 'chapters 1–80' in system:
+        pages = [entry['page'] for entry in json.loads(content)]
+        return json.dumps({'title': '课程主题讲义', 'abstract': '从问题出发理解概念、条件与应用。', 'tags': ['关系模型'], 'synonyms': ['relational model'], 'goals': ['理解模型的适用条件'], 'chapters': [{'title': '模型与应用', 'pages': pages}]}, ensure_ascii=False)
+    if '来源审校员' in system:
+        return '{"approved":true,"issues":[]}'
+    if '精炼课程总结' in system:
+        payload = json.loads(content)
+        pages = ([entry['page'] for entry in payload['pages']] if 'pages' in payload else
+                 sorted({n for item in payload['input_summaries'] for n in item['covered_pages']}))
+        return json.dumps({'title': '关系模型课程总结', 'abstract': '理解模型与查询的联系。', 'tags': ['关系模型'], 'synonyms': ['relational model'],
+                          'covered_pages': pages, 'covered_topics': payload['topic_ids'], 'topics': [{'name': '模型与应用', 'pages': pages}],
+                          'markdown': '## 课程主线\n从关系模型的定义出发，理解数据组织与查询的联系。\n## 核心知识\n关系代数以关系为对象，选择运算过滤满足条件的元组。\n## 适用条件与易错点\n先明确变量与约束，再判断可行查询；不省略模型前提。 [课件 p.' + str(pages[0]) + ']'}, ensure_ascii=False)
+    if '"exercises"' in system:
+        return json.dumps({'exercises': [{'question': '请解释关系模型的适用条件，并给出完整示例。', 'answer': '教学补充：先给出实体与关系，再依据适用条件说明模型。', 'pages': [1]} for _ in range(4)]}, ensure_ascii=False)
+    if '一页复习提纲' in system:
+        return json.dumps({'key_points': json.loads(content)['key_points'][:12]}, ensure_ascii=False)
+    if 'covered_pages' in system and isinstance(json.loads(content), dict):
+        pages = [entry['page'] for entry in json.loads(content)['pages']]
+        cites = ' '.join('[课件 p.' + str(page) + ']' for page in pages)
+        return json.dumps({'covered_pages': pages, 'markdown': '### 从建模问题理解关系模型\n关系模型用于描述实体及其关系。在给定约束下，先明确变量和适用条件，再推导可行关系与查询方法。这里按知识依赖连接不同页的概念，而不是逐页复述。教学补充：定义之后应检查其适用范围，再将规则用于具体查询；不要跳过条件。' + cites,
+            'key_points': ['保留模型的适用条件。' + cites], 'gaps': []}, ensure_ascii=False)
+    if 'covered_pages' in system:
+        pages = [entry['page'] for entry in json.loads(content)]
+        return json.dumps({'covered_pages': pages, 'markdown':
+            '## 讲义脉络\n先定义关系模型，再讨论函数依赖与规范化。'
+            '\n## 知识点\n关系代数用于查询关系，选择运算过滤满足条件的元组。 ' + ' '.join('[第 ' + str(page) + ' 页]' for page in pages)
+            + '\n## 公式与图表\n本组未提供。\n## 例题与易错点\n本组未提供。\n## 待确认项\n本组未提供。'}, ensure_ascii=False)
+    return '## 页面主题\n合成课件。\n## 知识点\n关系模型用于描述数据。\n## 公式与图表\n本页未提供。\n## 例题与易错点\n本页未提供。\n## 待确认项\n本页未提供。'
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"

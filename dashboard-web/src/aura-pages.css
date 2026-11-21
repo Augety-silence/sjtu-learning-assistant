@@ -318,7 +318,19 @@
 }
 
 .video-course-toolbar {
+  /* The player leads; material controls stay in normal flow. */
   padding: 16px var(--aura-panel-padding);
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+}
+
+.video-course-toolbar .video-course-heading { min-width: 0; flex-wrap: nowrap; gap: 8px; }
+.video-course-toolbar .video-course-picker { min-width: 0; flex: 1; width: auto; }
+.video-course-toolbar .video-course-count { display: none; }
+.video-course-toolbar > [role="tablist"] { max-width: 100%; }
+
+@media (max-width: 600px) {
+  .video-course-toolbar { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 }
 
 .video-learning-grid {
@@ -326,8 +338,43 @@
   gap: var(--aura-content-gap);
 }
 
+.token-usage-panel .section-header { align-items: center; }
+.token-usage-period { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
+.token-usage-period select { padding: 6px 8px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--surface-page); color: var(--text-primary); }
+.token-usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 16px 0 8px; }
+.token-usage-metrics dt, .token-usage-metrics small { color: var(--text-secondary); font-size: 12px; }
+.token-usage-metrics dd { margin: 4px 0 0; font-size: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--text-primary); }
+.token-usage-error { display: flex; gap: 8px; align-items: center; }
+@media (max-width: 600px) { .token-usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 .video-list-jump {
   display: none;
+}
+
+.video-material-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.video-learning-tabs {
+  flex-shrink: 0;
+}
+.video-learning-tabs [role="tab"][data-state="active"] {
+  color: var(--text-primary);
+}
+.video-raw-subtitle {
+  margin: 0;
+  padding: 16px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.7;
+  user-select: text;
 }
 
 .finder-tree {
@@ -511,7 +558,6 @@
 
 .video-list-panel,
 .video-tool-panel,
-.video-batch-bar,
 .video-player-feedback {
   border-color: var(--aura-border);
   background: var(--aura-reading);
@@ -529,12 +575,7 @@
   border-radius: var(--aura-radius-card);
 }
 
-.video-batch-bar {
-  border-radius: 0;
-}
-
 .video-tool-panel,
-.video-batch-bar,
 .video-player-feedback {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;

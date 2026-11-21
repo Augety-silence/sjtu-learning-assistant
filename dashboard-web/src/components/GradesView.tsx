@@ -191,9 +191,7 @@ export function GradesView({
       <div className="view-intro">
         <div>
           <h2>评分册</h2>
-          <p>
-            {courseName ? `${courseName} · ` : ""}查看成绩统计与学生成绩明细。
-          </p>
+          {courseName && <p>{courseName}</p>}
         </div>
         <Tabs
           value={view}

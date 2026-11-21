@@ -230,6 +230,101 @@ class DashboardRichResourceTests(unittest.TestCase):
         with self.assertRaises(NotFoundError):
             service.message_resource("email", "mail:one", "invented")
 
+    def test_generic_mime_inline_png_is_recovered_by_bytes_and_diagnosed(self) -> None:
+        from dataclasses import replace
+        # 有效 1x1 PNG；通用 MIME 和 .bin 扩展名复现真实邮件，而不是改扩展名绕过。
+        payload = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8fsAAAAASUVORK5CYII=")
+        record = self.email_record("mail:generic", "private-cid", payload=payload, filename="image.bin")
+        record = replace(record, attachments=(replace(record.attachments[0], content_type="application/octet-stream"),))
+        persist_emails(self.engine, [record], cursor="cursor", attachment_root=self.attachment_root)
+        log = self.root / "stages.jsonl"
+        with patch("sjtu_learning_assistant.sync_diagnostics.DEFAULT_STAGE_LOG_PATH", log):
+            service = self.service()
+            detail = service.message_detail("email", "mail:generic")
+            data = detail["attachments"][0]["inline_data_url"]
+            self.assertEqual("data:image/png;base64," + base64.b64encode(payload).decode(), data)
+            self.assertEqual({"data_url": data}, service.message_resource("email", "mail:generic", "private-cid"))
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertTrue(any(e.get("mime_recovered") == 1 and e.get("image_type") == "png" for e in events))
+        self.assertNotIn("private-cid", log.read_text())
+        self.assertNotIn("mail:generic", log.read_text())
+        self.assertNotIn(str(self.attachment_root), log.read_text())
+
+    def test_generic_mime_does_not_allow_html_svg_noninline_or_unsafe_cache(self) -> None:
+        self.persist_mail()
+        service = self.service()
+        log = self.root / "stages.jsonl"
+        with Session(self.engine) as session:
+            attachment = session.scalar(select(EmailAttachment).join(Email).where(Email.source_id == "mail:one"))
+            attachment.content_type = "application/octet-stream"
+            path = Path(attachment.local_path)
+            with patch("sjtu_learning_assistant.sync_diagnostics.DEFAULT_STAGE_LOG_PATH", log):
+                for payload in (b"<html>not an image</html>", b"<svg/>", b"not-an-image.png"):
+                    path.write_bytes(payload)
+                    self.assertIsNone(service._read_inline_attachment(attachment))
+                path.write_bytes(b"\x89PNG\r\n\x1a\n")
+                attachment.is_inline = False
+                self.assertIsNone(service._read_inline_attachment(attachment))
+                attachment.is_inline = True
+                with patch("sjtu_learning_assistant.dashboard_service.INLINE_IMAGE_LIMIT", 4):
+                    self.assertIsNone(service._read_inline_attachment(attachment))
+                attachment.local_path = str(self.root / "outside.png")
+                (self.root / "outside.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+                self.assertIsNone(service._read_inline_attachment(attachment))
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        codes = {e.get("failure_code") for e in events}
+        self.assertTrue({"unrecognized_raster", "size_limit", "cache_unavailable_or_unsafe"} <= codes)
+
+    def test_remote_image_failure_records_http_code_without_private_url(self) -> None:
+        from dataclasses import replace
+        record = replace(self.email_record("mail:remote", "unused"),
+                         body_html='<img src="https://s3.jcloud.sjtu.edu.cn/private/path.png?secret=private-query">',
+                         attachments=())
+        persist_emails(self.engine, [record], cursor="cursor", attachment_root=self.attachment_root)
+        service = self.service()
+        rid = service.message_detail("email", "mail:remote")["resources"][0]["id"]
+        response = httpx.Response(403, request=httpx.Request("GET", "https://s3.jcloud.sjtu.edu.cn/private/path.png?secret=private-query"))
+        error = httpx.HTTPStatusError("private exception", request=response.request, response=response)
+        log = self.root / "stages.jsonl"
+        with patch("sjtu_learning_assistant.sync_diagnostics.DEFAULT_STAGE_LOG_PATH", log), patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image", side_effect=error):
+            with self.assertRaises(DashboardError):
+                service.message_resource("email", "mail:remote", rid)
+        content = log.read_text()
+        events = [json.loads(line) for line in content.splitlines()]
+        self.assertTrue(any(e["stage"] == "remote_fetch" and e["event"] == "failed" and e["exception_chain"][0]["status_code"] == 403 for e in events))
+        for private in ("private-query", "private/path", "private exception", rid, "mail:remote"):
+            self.assertNotIn(private, content)
+
+    def test_email_remote_resources_survive_storage_and_do_not_use_canvas_credentials(self) -> None:
+        from dataclasses import replace
+        from sjtu_learning_assistant.mail_client import _message_content
+        from email.message import EmailMessage
+        message = EmailMessage()
+        message.set_content('<table border="0"><tr><td align="center"><img src="https://s3.jcloud.sjtu.edu.cn/logo.png" alt="校徽"></td></tr></table>', subtype="html")
+        body, html, attachments = _message_content(message)
+        record = replace(self.email_record("mail:logo", "unused"), body_text=body, body_html=html, attachments=attachments)
+        persist_emails(self.engine, [record], cursor="cursor", attachment_root=self.attachment_root)
+        service = self.service()
+        detail = service.message_detail("email", "mail:logo")
+        self.assertEqual(1, len(detail["resources"]))
+        resource = detail["resources"][0]
+        self.assertFalse(resource["requires_consent"])
+        with patch.object(service, "_get_canvas_client", side_effect=AssertionError("must not read Canvas keychain")), patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image", return_value="data:image/png;base64,cHVibGlj") as fetch:
+            result = service.message_resource("email", "mail:logo", resource["id"])
+        self.assertTrue(result["data_url"].startswith("data:image/png;"))
+        fetch.assert_called_once_with("https://s3.jcloud.sjtu.edu.cn/logo.png")
+        with patch("sjtu_learning_assistant.dashboard_service.fetch_mail_image") as fetch:
+            with self.assertRaises(NotFoundError):
+                service.message_resource("email", "mail:logo", "invented")
+            fetch.assert_not_called()
+
+    def test_general_public_mail_source_cannot_enter_canvas_authenticated_fetch(self) -> None:
+        service = self.service()
+        with patch.object(service, "_get_canvas_client", side_effect=AssertionError("must not read Canvas credentials")) as factory:
+            with self.assertRaises(NotFoundError):
+                service._canvas_image_data_url("https://img01.51jobcdn.com/logo.png")
+            factory.assert_not_called()
+
     def persist_canvas(self) -> None:
         persist_canvas_data(
             self.engine,

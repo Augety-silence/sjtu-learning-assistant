@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 from sjtu_learning_assistant import __version__
 
@@ -22,6 +22,8 @@ datas = [
     # ffmpeg binary as package data, otherwise video_screenshot_pdf silently
     # degrades on machines without a system ffmpeg on PATH.
     *collect_data_files("imageio_ffmpeg"),
+    *collect_data_files("pypdfium2"),
+    *copy_metadata("pypdfium2"),
 ]
 
 hiddenimports = [
@@ -32,6 +34,7 @@ hiddenimports = [
     "keyring.backends.fail",
     "keyring.backends.Windows",
     "pypdf",
+    "pypdfium2",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",

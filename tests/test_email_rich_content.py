@@ -29,6 +29,25 @@ from sjtu_learning_assistant.text_content import sanitize_html
 
 
 class HTMLSanitizerTests(unittest.TestCase):
+    def test_invisible_zero_sized_mail_beacon_does_not_become_visible_error(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        self.assertEqual(("<p>正文</p>", {}), sanitize_html_with_resources('<p>正文<img src="https://receiver.51job.com/pixel" width="0" height="0"></p>'))
+        cleaned, urls = sanitize_html_with_resources('<img src="https://img01.51jobcdn.com/logo.png" width="0" height="0" alt="可见替代文本">')
+        self.assertIn("可见替代文本", cleaned)
+        self.assertEqual(1, len(urls))
+
+    def test_public_mail_sources_are_retained_but_not_directly_rendered(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        for host in ("img01.51jobcdn.com", "fecdn.51jobcdn.com", "img07.51jobcdn.com", "receiver.51job.com"):
+            with self.subTest(host=host):
+                cleaned, resources = sanitize_html_with_resources(f'<img src="https://{host}/logo.png" alt="公开图片" onerror="bad()" srcset="bad">')
+                self.assertEqual([f"https://{host}/logo.png"], list(resources.values()))
+                self.assertEqual((cleaned, resources), sanitize_html_with_resources(cleaned))
+                self.assertNotIn("data-blocked-image", cleaned)
+                self.assertNotIn(" src=", cleaned)
+                self.assertNotIn("onerror", cleaned)
+                self.assertNotIn("srcset", cleaned)
+
     def test_strict_whitelist_urls_and_suppressed_content(self) -> None:
         dirty = """
         <div style="color:red" onclick="bad()"><custom>kept</custom>
@@ -48,7 +67,7 @@ class HTMLSanitizerTests(unittest.TestCase):
         )
         self.assertIn('<img data-resource-id="logo@example">', cleaned or "")
         self.assertIn(
-            "<table><tbody><tr><th>H</th><td>V</td></tr></tbody></table>",
+            '<table><tbody><tr><th colspan="2">H</th><td>V</td></tr></tbody></table>',
             cleaned or "",
         )
         self.assertNotIn("alert", cleaned or "")
@@ -57,6 +76,27 @@ class HTMLSanitizerTests(unittest.TestCase):
 
     def test_malformed_html_is_closed_and_escaped(self) -> None:
         self.assertEqual("<p>&lt;x&gt;<b>bold</b></p>", sanitize_html("<p>&lt;x&gt;<b>bold"))
+
+    def test_mail_layout_and_trusted_image_survive_repeated_sanitization(self) -> None:
+        from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+        html = '<table role="presentation" border="0" width="100%" align="center"><tr><td style="text-align:center; background:url(https://evil.test/a)" colspan="2"><img alt="校徽" width="640" src="https://s3.jcloud.sjtu.edu.cn/logo.png"></td></tr></table>'
+        cleaned, resources = sanitize_html_with_resources(html)
+        repeated, repeated_resources = sanitize_html_with_resources(cleaned)
+        self.assertEqual(cleaned, repeated)
+        self.assertEqual(resources, repeated_resources)
+        self.assertEqual(["https://s3.jcloud.sjtu.edu.cn/logo.png"], list(resources.values()))
+        self.assertIn('align="center"', cleaned)
+        self.assertIn('colspan="2"', cleaned)
+        self.assertIn('alt="校徽"', cleaned)
+        self.assertNotIn("style=", cleaned)
+        self.assertNotIn("evil.test", cleaned)
+
+    def test_unsafe_layout_values_and_external_images_are_not_renderable(self) -> None:
+        cleaned = sanitize_html('<table role="button" width="999999" onclick="bad()"><tr><td colspan="999" rowspan="-1" align="url(x)"><img src="https://evil.test/tracker" alt="外部图"></td></tr></table>')
+        self.assertNotIn("evil.test", cleaned)
+        for name in ("width=", "onclick=", "colspan=", "rowspan=", "align=", "role="):
+            self.assertNotIn(name, cleaned)
+        self.assertIn('data-blocked-image="true" alt="外部图"', cleaned)
 
 
 class MIMEParsingTests(unittest.TestCase):

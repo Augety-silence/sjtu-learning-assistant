@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import re
 import time
+import threading
+from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime
 from html.parser import HTMLParser
@@ -122,6 +124,7 @@ class SJTUVideoService:
         max_slide_pixels: int = 40_000_000,
         max_slides_total_pixels: int = 500_000_000,
         image_retries: int = 2,
+        slide_cache_root: Path | None = None,
     ) -> None:
         self.canvas_client_factory = canvas_client_factory
         self.http_client_factory = http_client_factory
@@ -143,6 +146,8 @@ class SJTUVideoService:
         self.max_slide_pixels = max_slide_pixels
         self.max_slides_total_pixels = max_slides_total_pixels
         self.image_retries = image_retries
+        self.slide_cache_root = slide_cache_root
+        self._slides_lock = threading.Lock()
 
     @staticmethod
     def remote_source_id(
@@ -760,6 +765,10 @@ class SJTUVideoService:
                 page.close()
 
     def slides_pdf(self, source_id: str) -> dict[str, Any]:
+        with self._slides_lock:
+            return self._slides_pdf(source_id)
+
+    def _slides_pdf(self, source_id: str) -> dict[str, Any]:
         course_id, video_id = parse_remote_source_id(source_id)
         with self._http_client() as client:
             token = self._launch_jwt(course_id, client)
@@ -770,14 +779,28 @@ class SJTUVideoService:
                 params={"courseId": video_id},
             )
             records, status = self._slide_records(payload)
-            if not records:
+            if not records or status != "ready":
                 if status == "processing":
                     raise SJTUVideoError("课件正在生成，请稍后重试。")
                 raise SJTUVideoError("该录像暂无课件。")
+            cache = None
+            if self.slide_cache_root is not None:
+                from sjtu_learning_assistant.video_slide_cache import VideoSlideCache
+                cache = VideoSlideCache(self.slide_cache_root, source_id, records)
+                saved = cache.read("slides.pdf", self.max_slides_total_bytes * 2)
+                if saved and saved.startswith(b"%PDF-"):
+                    return {"status": "created", "data": saved, "page_count": len(records), "size": len(saved)}
             images: list[bytes] = []
             total = 0
             for record in records:
-                image = self._download_slide_image(client, record["url"])
+                name = f"{record['index']}.image"
+                image = cache.read(name, self.max_slide_image_bytes) if cache else None
+                if image is None:
+                    image = self._download_slide_image(client, record["url"])
+                    # Validate before making the page a reusable checkpoint.
+                    self._render_slides_pdf([image])
+                    if cache:
+                        cache.write(name, image)
                 total += len(image)
                 if total > self.max_slides_total_bytes:
                     raise SJTUVideoError(
@@ -785,6 +808,8 @@ class SJTUVideoService:
                     )
                 images.append(image)
         pdf = self._render_slides_pdf(images)
+        if cache:
+            cache.write("slides.pdf", pdf)
         return {
             "status": "created",
             "data": pdf,

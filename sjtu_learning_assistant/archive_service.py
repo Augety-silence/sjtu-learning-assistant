@@ -39,7 +39,7 @@ from sjtu_learning_assistant.material_classifier import (
     normalize_category,
     safe_folder_chain,
 )
-from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder, SyncState
+from sjtu_learning_assistant.models import Course, CourseFile, CourseFolder
 from sjtu_learning_assistant.canvas_sync import ensure_same_origin
 
 DEFAULT_ARCHIVE_ROOT = Path.home() / "Documents" / "SJTU Study"
@@ -464,6 +464,7 @@ class ArchiveService:
         ai_client: OpenAIClassificationClient | None = None,
         ai_enabled: bool = False,
         now_provider: Callable[[], datetime] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> None:
         self.engine = engine
         self.canvas_client = canvas_client
@@ -482,6 +483,7 @@ class ArchiveService:
         self.ai_client = ai_client
         self.ai_enabled = ai_enabled
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self.checkpoint = checkpoint
 
     @staticmethod
     def _default_download_client() -> httpx.Client:
@@ -572,20 +574,8 @@ class ArchiveService:
                         )
                     ).all()
                 )
-            latest = session.scalar(
-                select(SyncState.last_success_at).where(
-                    SyncState.source == "canvas",
-                    SyncState.resource == "courses",
-                    SyncState.status == "success",
-                )
-            )
-            if latest is None:
-                return set()
-            return set(
-                session.scalars(
-                    select(Course.id).where(Course.updated_at == latest)
-                ).all()
-            )
+            from sjtu_learning_assistant.course_scope import current_course_ids
+            return current_course_ids(session) or set()
 
     def _matching_term_names(self, expected_term: str) -> list[str]:
         with Session(self.engine) as session:
@@ -1539,6 +1529,8 @@ class ArchiveService:
         planned = self._planned_paths(values)
         results: list[DownloadResult] = []
         for context in values:
+            if self.checkpoint is not None:
+                self.checkpoint()
             if context.download_status == "cloud_only":
                 # 用户已通过云端归档释放本地副本；批量归档不得悄悄重新下载，
                 # 仅显式 download_file_by_source_id 才恢复本地文件。

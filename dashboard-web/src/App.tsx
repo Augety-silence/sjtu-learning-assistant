@@ -16,6 +16,7 @@ import {
 import type { CalendarEventItem } from "@/components/CalendarView";
 import { CloudDriveView } from "@/components/CloudDriveView";
 import { ContentReveal } from "@/components/ContentReveal";
+import { CourseMaterialsView } from "@/components/CourseMaterialsView";
 import { DeadlinesView } from "@/components/DeadlinesView";
 import {
   type GradeAssignment,
@@ -26,7 +27,6 @@ import {
 import { type GradingSubmission, GradingView } from "@/components/GradingView";
 import { KnowledgeCompilerView } from "@/components/KnowledgeCompilerView";
 import { LocalProjectsView } from "@/components/LocalProjectsView";
-import { MaterialsView } from "@/components/MaterialsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
 import {
@@ -103,10 +103,10 @@ const views: ViewName[] = [
   "grading",
   "videos",
   "backup",
-  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
+  "local-projects",
 ];
 const baseViews: ViewName[] = [
   "overview",
@@ -116,10 +116,10 @@ const baseViews: ViewName[] = [
   "materials",
   "videos",
   "backup",
-  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
+  "local-projects",
 ];
 // 含未提交草稿的视图：后台同步完成后不自动用 key 重挂。
 const draftViews: ViewName[] = ["assignments", "grades", "grading"];
@@ -137,8 +137,8 @@ const pageAILabels: Record<ViewName, string> = {
   grading: "作业批改",
   videos: "课程视频",
   backup: "交大云盘",
-  "local-projects": "本地项目",
-  knowledge: "知识库编译",
+  "local-projects": "资料项目",
+  knowledge: "课程知识库",
   "ai-chat": "AI 助手",
   settings: "设置",
 };
@@ -1101,29 +1101,13 @@ function VideosAdapter({
   );
   return (
     <>
-      {(toolError || transcriptError) && (
-        // 非阻断性工具错误（录像列表仍可用），等待当前播报结束再提示。
-        <div
-          className="inline-notice"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <span>{transcriptError || toolError}</span>
-          <Button
-            variant="link"
-            size="sm"
-            onClick={() => {
-              setTaskRetry((value) => value + 1);
-              if (toolError) void load(true);
-            }}
-          >
-            重新检查
-          </Button>
-        </div>
-      )}
       <VideosView
         videos={visibleVideos}
+        syncIssue={transcriptError || toolError}
+        onRetrySync={() => {
+          setTaskRetry((value) => value + 1);
+          if (toolError) void load(true);
+        }}
         aiReadiness={aiReadiness}
         onLoadSlides={loadSlides}
         onLoadSlideImage={loadSlideImage}
@@ -1322,7 +1306,6 @@ function VideosAdapter({
             video.source === "video_space"
               ? await createVideoSlidesPdf(video.id)
               : await createVideoScreenshotPdf(video.id);
-          await revealAcademicExport(result.reveal_token);
           return {
             scope: "video" as const,
             open: async () => {
@@ -1834,7 +1817,7 @@ export default function App() {
                 onInitialTargetHandled={clearAssignmentTarget}
               />
             )}
-            {view === "materials" && <MaterialsView key={dataVersion} />}
+            {view === "materials" && <CourseMaterialsView key={dataVersion} />}
             {view === "grades" && (
               <div className="section-stack">
                 {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}

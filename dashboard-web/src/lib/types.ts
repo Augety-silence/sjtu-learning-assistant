@@ -14,6 +14,52 @@ export type ViewName =
   | "ai-chat"
   | "settings";
 
+export interface CompiledKnowledgeSource {
+  id: string;
+  name: string;
+  kind: "automatic" | "project";
+  root: string;
+  count: number;
+}
+
+export interface CompiledKnowledgeDocument {
+  id: string;
+  source_id: string;
+  source_name: string;
+  title: string;
+  relative_path: string;
+  status: "completed" | "pending" | "failed" | "compiled";
+  match_offset?: number;
+  snippet?: string;
+  folder?: string;
+  contract?: string;
+  error?: string | null;
+  course_id?: string;
+  course_name?: string;
+  term_id?: string;
+  term_name?: string;
+}
+
+export interface CompiledKnowledgePage extends CompiledKnowledgeDocument {
+  content_sha256?: string;
+  text: string;
+  offset: number;
+  next_offset: number | null;
+  total_chars: number;
+  section: string;
+  citation: string;
+  truncated: boolean;
+}
+
+export interface CompiledKnowledgeSearch {
+  folders?: { source_id: string; path: string; name: string; count: number }[];
+  items: CompiledKnowledgeDocument[];
+  count: number;
+  next_offset: number | null;
+  issues: string[];
+  truncated: boolean;
+}
+
 export type AIModel =
   | "auto"
   | "deepseek-chat"
@@ -263,6 +309,7 @@ export interface MessageItem {
 }
 
 export interface MessageResource {
+  requires_consent?: boolean;
   id: string;
   type: "image";
 }
@@ -358,6 +405,8 @@ export interface SyncStatus {
 }
 
 export interface SettingsStatus {
+  course_markdown_enabled: boolean;
+  course_markdown_daily_calls: number;
   archive_root_ready: boolean;
   archive_root: string;
   credential_storage_name: string;
@@ -380,7 +429,21 @@ export interface SettingsStatus {
   theme_mode: ThemeMode;
 }
 
-export type KnowledgeCompilerMode = "foundation" | "full";
+export interface CourseMarkdownStatus {
+  text_ready?: number;
+  enabled: boolean;
+  status: string;
+  output_root: string;
+  daily_limit: number;
+  calls_today: number;
+  total: number;
+  completed: number;
+  pending: number;
+  failed: number;
+  issues: string[];
+}
+
+export type KnowledgeCompilerMode = "foundation" | "full" | "documents";
 export type KnowledgeCompilerStatus =
   | "idle"
   | "running"
@@ -393,6 +456,7 @@ export type KnowledgeCompilerStatus =
 export interface KnowledgeCompilerInspection {
   source_name: string;
   markdown_files: number;
+  document_files?: number;
   total_bytes: number;
   image_references: number;
   courses: string[];
@@ -1193,6 +1257,7 @@ export interface Phase1QualityReport {
 }
 
 export interface TranscriptJob {
+  lesson_notes_status?: "pending" | "completed" | "user_modified";
   id: string;
   batch_id: string;
   source_id: string;
@@ -1235,7 +1300,15 @@ export interface TranscriptBatch {
 
 export interface TranscriptArtifact {
   id: string;
-  kind: "raw_vtt" | "cues" | "cleaned" | "summary_json" | "summary";
+  kind:
+    | "raw_vtt"
+    | "cues"
+    | "cleaned"
+    | "summary_json"
+    | "summary"
+    | "lesson"
+    | "lesson_summary"
+    | "original";
   label: string;
   content_type: string;
 }

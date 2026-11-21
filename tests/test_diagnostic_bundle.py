@@ -22,6 +22,25 @@ from sjtu_learning_assistant.diagnostic_bundle import (
 
 
 class DiagnosticBundleTests(unittest.TestCase):
+    def test_image_stage_export_keeps_only_fixed_failure_metadata(self) -> None:
+        rows = [
+            {"source": "mail_image", "stage": "inline_cache", "event": "succeeded",
+             "resource_kind": "inline", "image_type": "png", "mime_recovered": 1, "image_bytes": 34215,
+             "cid": "private-cid", "url": "https://private.test/secret", "body": "private mail"},
+            {"source": "mail_image", "stage": "inline_cache", "event": "failed",
+             "failure_code": "unrecognized_raster", "image_type": "private-value", "resource_kind": "private-value"},
+            {"source": "mail_image", "stage": "inline_cache", "event": "failed", "failure_code": "private-value"},
+        ]
+        output = DiagnosticBundleService._stage_metadata("\n".join(json.dumps(row) for row in rows))
+        exported = [json.loads(line) for line in output.splitlines()]
+        self.assertEqual("png", exported[0]["image_type"])
+        self.assertEqual(1, exported[0]["mime_recovered"])
+        self.assertEqual(34215, exported[0]["image_bytes"])
+        self.assertEqual("unrecognized_raster", exported[1]["failure_code"])
+        self.assertNotIn("failure_code", exported[2])
+        for private in ("private-cid", "private.test", "private mail", "private-value"):
+            self.assertNotIn(private, output)
+
     def setUp(self) -> None:
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
         with self.engine.begin() as connection:
@@ -59,6 +78,8 @@ class DiagnosticBundleTests(unittest.TestCase):
                 "last_run_at": "2026-09-29T00:00:00+08:00",
             },
             log_path=log_path,
+            desktop_log_path=log_path.parent / "desktop.log",
+            stage_log_path=log_path.parent / "sync-stages.jsonl",
         )
 
     def test_sanitizer_redacts_credentials_urls_email_and_user_paths(self) -> None:
@@ -166,6 +187,7 @@ class DiagnosticBundleTests(unittest.TestCase):
                         "logs/sync.jsonl",
                         "manifest.json",
                         "status/summary.json",
+                        "status/sync_details.json",
                     },
                     set(bundle.namelist()),
                 )
