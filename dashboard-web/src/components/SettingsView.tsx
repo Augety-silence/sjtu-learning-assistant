@@ -32,6 +32,7 @@ import settingsFirstConfigIllustration from "@/assets/empty-states/settings-firs
 import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
+import { TokenUsageDashboard } from "@/components/TokenUsageDashboard";
 import { Button } from "@/components/ui/Button";
 import { SecretInput } from "@/components/ui/SecretInput";
 import {
@@ -525,6 +526,13 @@ export function SettingsView({
           })}
         </div>
       </section>
+
+      <TokenUsageDashboard />
+
+      <p className="token-usage-note">
+        macOS 关闭窗口后继续后台同步；点击 Dock
+        图标返回。要完全退出，请使用菜单“退出”或 ⌘Q。系统休眠和关机期间不运行。
+      </p>
 
       <section
         className="configuration-section"

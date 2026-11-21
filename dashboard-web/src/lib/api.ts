@@ -16,6 +16,29 @@ export interface BridgeError {
   message: string;
 }
 
+export type ProviderUsageSummary = {
+  periods: Record<
+    "today" | "week" | "all",
+    {
+      calls: number;
+      metrics: Record<
+        "input" | "output" | "cache" | "total",
+        {
+          tokens: number | null;
+          reported_calls: number;
+          missing_calls: number;
+        }
+      >;
+    }
+  >;
+  first_recorded_at: string | null;
+  timezone: string;
+  scope: string;
+};
+
+export const getProviderUsage = () =>
+  invoke<ProviderUsageSummary>("provider_usage_summary");
+
 const CAPABILITY_UNAVAILABLE_CODES = new Set(["unknown_action", "not_allowed"]);
 
 function redactLocalPaths(text: string) {

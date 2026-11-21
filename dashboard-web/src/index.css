@@ -8179,7 +8179,7 @@ select {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   border: 0;
@@ -9072,10 +9072,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 @media (max-width: 1120px) {
-  .video-course-toolbar {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .video-learning-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -9446,8 +9442,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 }
 /* Streamlined course video organization flow. */
-.video-course-toolbar > [data-radix-collection-item],
-.video-course-toolbar > [role="tablist"] { grid-column: 1 / -1; }
 .video-recording-list > li { grid-template-columns: minmax(0, 1fr) auto; }
 .video-recording-list > li:has(> input) { grid-template-columns: 18px minmax(0, 1fr) auto; }
 .video-status-queued,

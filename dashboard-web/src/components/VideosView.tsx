@@ -2533,7 +2533,7 @@ export function VideosView({
           value={source}
           onValueChange={(value) => changeSource(value as "all" | VideoSource)}
         >
-          <TabsList indicator aria-label="视频来源">
+          <TabsList aria-label="视频来源">
             <TabsTrigger value="all">全部</TabsTrigger>
             <TabsTrigger value="canvas">Canvas</TabsTrigger>
             <TabsTrigger value="video_space">视频空间</TabsTrigger>

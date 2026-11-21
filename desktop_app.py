@@ -508,6 +508,7 @@ class DesktopBridge:
             "ai_task_status": self._ai_task_status,
             "ai_task_cancel": self._ai_task_cancel,
             "ai_usage_summary": self._ai_usage_summary,
+            "provider_usage_summary": self._provider_usage_summary,
             "ai_chat_delete": self._ai_chat_delete,
             "ai_attachment_list": self._ai_attachment_list,
             "knowledge_compiler_pick_folder": self._knowledge_compiler_pick_folder,
@@ -833,6 +834,10 @@ class DesktopBridge:
     def _ai_chat_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"session_id"})
         return self._service.ai_chat_delete(self._chat_session_id(payload))
+
+    def _provider_usage_summary(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, set())
+        return self._service.provider_usage_summary()
 
     def _knowledge_compiler_pick_folder(
         self, payload: Mapping[str, Any]
@@ -2504,6 +2509,45 @@ def _promote_drop_listener_to_capture(window: object, document: object, handler:
         LOGGER.warning("文件拖放监听切换到捕获阶段失败。")
 
 
+_MACOS_BACKGROUND_INSTALLED = False
+
+
+def _install_macos_background_lifecycle() -> bool:
+    """关窗口只隐藏，Dock重开；继承原应用退出/关机契约，不拦截Cmd-Q。"""
+    global _MACOS_BACKGROUND_INSTALLED
+    if sys.platform != "darwin":
+        return False
+    if _MACOS_BACKGROUND_INSTALLED:
+        return True
+    try:
+        from webview.platforms.cocoa import BrowserView
+
+        class SJTUBackgroundWindowDelegate(BrowserView.WindowDelegate):
+            def windowShouldClose_(self, native):
+                instance = BrowserView.get_instance("window", native)
+                if instance is None:
+                    return True
+                native.orderOut_(None)
+                instance.webview.evaluateJavaScript_completionHandler_(
+                    "document.querySelectorAll('video,audio').forEach(m=>m.pause())", None)
+                return False
+
+        class SJTUBackgroundAppDelegate(BrowserView.AppDelegate):
+            def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+                if not visible:
+                    for instance in list(BrowserView.instances.values()):
+                        instance.show()
+                return True
+
+        BrowserView.WindowDelegate = SJTUBackgroundWindowDelegate
+        BrowserView.AppDelegate = SJTUBackgroundAppDelegate
+        _MACOS_BACKGROUND_INSTALLED = True
+        return True
+    except (ImportError, AttributeError, RuntimeError, TypeError) as exc:
+        LOGGER.warning("后台关窗机制不可用；exception_type=%s", type(exc).__name__)
+        return False
+
+
 def _initialize_desktop_window(window: object) -> None:
     _enable_macos_window_material(window)
     if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
@@ -2559,6 +2603,7 @@ def run_desktop_app() -> int:
         return 2
 
     _install_macos_native_file_drop_hook()
+    _install_macos_background_lifecycle()
     try:
         engine = create_database_engine()
     except DatabaseConfigError as exc:

@@ -11,6 +11,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@/test/render";
 
 afterEach(() => {
@@ -767,9 +768,12 @@ describe("VideosView", () => {
     expect(css).toMatch(
       /\.content:has\(> \.view-transition > \.video-workbench\) \{[^}]*padding-top: 16px/,
     );
-    expect(css).toMatch(
-      /@media \(max-width: 1120px\) \{[^}]*\.video-course-toolbar \{[^}]*grid-template-columns: minmax\(0, 1fr\)/,
-    );
+    expect(toolbarRule).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(
+      within(toolbar)
+        .getByRole("tablist")
+        .querySelector("[data-selection-indicator]"),
+    ).toBeNull();
   });
 
   it("does not capture shortcuts from controls, editable content or modified keys", async () => {

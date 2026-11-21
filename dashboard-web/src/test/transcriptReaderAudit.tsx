@@ -2,6 +2,7 @@
 import { useState } from "react";
 import ReactDOM from "react-dom/client";
 import { ToastProvider } from "@/components/Toast";
+import { TokenUsageDashboard } from "@/components/TokenUsageDashboard";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { VideosView } from "@/components/VideosView";
@@ -33,25 +34,50 @@ window.pywebview = {
       action: string,
       payload?: Record<string, unknown>,
     ): Promise<BridgeResponse<T>> => {
+      const metrics = Object.fromEntries(
+        (
+          [
+            ["input", 1000],
+            ["output", 20],
+            ["cache", 800],
+            ["total", 1020],
+          ] as const
+        ).map(([key, tokens]) => [
+          key,
+          { tokens, reported_calls: 1, missing_calls: 0 },
+        ]),
+      );
       const data =
-        action === "transcript_artifacts"
+        action === "provider_usage_summary"
           ? {
-              items: kinds.map((kind) => ({
-                id: `${job.id}:${kind}`,
-                kind,
-                label: kind,
-                content_type: "text/markdown",
-              })),
+              periods: Object.fromEntries(
+                ["today", "week", "all"].map((key) => [
+                  key,
+                  { calls: 1, metrics },
+                ]),
+              ),
+              scope: "synthetic",
+              timezone: "CST",
+              first_recorded_at: null,
             }
-          : action === "transcript_artifact_read"
+          : action === "transcript_artifacts"
             ? {
-                id: payload?.artifact_id,
-                kind: "original",
-                content: String(payload?.artifact_id).endsWith(":original")
-                  ? "# 原始字幕\n\n## 00:00:05\n\n    老师先讲机会成本，再讲决策条件。"
-                  : "# 当堂老师讲了什么\n\n老师先介绍机会成本，再说明相关成本的适用条件。\n\n## 决策主线\n\n请连同条件一起阅读，文字可自由选择复制。",
+                items: kinds.map((kind) => ({
+                  id: `${job.id}:${kind}`,
+                  kind,
+                  label: kind,
+                  content_type: "text/markdown",
+                })),
               }
-            : {};
+            : action === "transcript_artifact_read"
+              ? {
+                  id: payload?.artifact_id,
+                  kind: "original",
+                  content: String(payload?.artifact_id).endsWith(":original")
+                    ? "# 原始字幕\n\n## 00:00:05\n\n    老师先讲机会成本，再讲决策条件。"
+                    : "# 当堂老师讲了什么\n\n老师先介绍机会成本，再说明相关成本的适用条件。\n\n## 决策主线\n\n请连同条件一起阅读，文字可自由选择复制。",
+                }
+              : {};
       return { ok: true, data } as BridgeResponse<T>;
     },
   },
@@ -79,6 +105,7 @@ function Audit() {
         }))}
       />
       <h1>字幕与页签隔离验收</h1>
+      <TokenUsageDashboard />
       <Tabs value={source} onValueChange={setSource}>
         <TabsList indicator aria-label="视频来源">
           <TabsTrigger value="video">视频空间</TabsTrigger>

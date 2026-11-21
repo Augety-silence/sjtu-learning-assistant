@@ -524,6 +524,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
                             base_url=settings.ai_base_url,
                             model=settings.ai_model,
                         )
+                        from sjtu_learning_assistant.provider_usage import ProviderUsageLedger
+                        ai_client.usage_recorder = ProviderUsageLedger(engine).record
                 except (AIKeychainError, AIClassificationError):
                     ai_client = None
             if not settings.organize_by_category:

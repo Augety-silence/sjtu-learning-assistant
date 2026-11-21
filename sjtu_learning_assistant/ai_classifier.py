@@ -6,6 +6,7 @@ import base64
 import codecs
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -277,6 +278,7 @@ class OpenAIClassificationClient:
         transport: httpx.BaseTransport | None = None,
         limiter: Callable[[], None] | None = None,
         timeout: httpx.Timeout | float | None = None,
+        usage_recorder: Callable[[str, dict[str, int]], None] | None = None,
     ) -> None:
         if not api_key:
             raise AIClassificationError("AI API key 为空。")
@@ -293,6 +295,7 @@ class OpenAIClassificationClient:
         if model not in ALLOWED_AI_MODELS:
             raise AIClassificationError("AI 模型不受支持。")
         self.model = model
+        self.usage_recorder = usage_recorder
         self._limiter = limiter or _GLOBAL_LIMITER.wait
         if timeout is None:
             try:
@@ -324,6 +327,26 @@ class OpenAIClassificationClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def _record_usage(self, usage: dict[str, int]) -> None:
+        if self.usage_recorder is not None:
+            try:
+                self.usage_recorder(self.model, usage)
+            except Exception as exc:
+                # 计量故障不能导致已计费请求被当作失败重试；不记录异常文本。
+                logging.getLogger(__name__).warning("模型用量记录失败；exception_type=%s", type(exc).__name__)
+
+    def _post_completion(self, body: Mapping) -> object:
+        usage: dict[str, int] = {}
+        try:
+            response = self._client.post("chat/completions", json=dict(body))
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, Mapping):
+                usage = normalize_token_usage(payload.get("usage"))
+            return payload
+        finally:
+            self._record_usage(usage)
 
     @classmethod
     def _clean_chat_messages(
@@ -460,9 +483,7 @@ class OpenAIClassificationClient:
         }
         try:
             self._limiter()
-            response = self._client.post("chat/completions", json=body)
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._post_completion(body)
             content = payload["choices"][0]["message"]["content"]
             parsed = _loads_model_json(content)
         except AIClassificationError:
@@ -591,9 +612,7 @@ class OpenAIClassificationClient:
                 request_body["response_format"] = dict(response_format)
             if self.model != "deepseek-reasoner":
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
-            response = self._client.post("chat/completions", json=request_body)
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._post_completion(request_body)
             choices = payload.get("choices") if type(payload) is dict else None
             if type(choices) is not list or not choices:
                 raise ValueError("invalid choices")
@@ -735,7 +754,7 @@ class OpenAIClassificationClient:
 
         # 是否已经向调用方输出过任何增量：未输出时失败可以安全地整体重试，
         # 已输出则重试会让界面出现重复文字，由调用方决定如何处理。
-        stream_state = {"emitted": False}
+        stream_state = {"emitted": False, "usage": {}}
 
         def emit_delta(kind: str, value: str) -> None:
             # 回调异常（取消、调用方错误）必须原样冒泡，不能被下方的
@@ -778,6 +797,7 @@ class OpenAIClassificationClient:
                     reported = normalize_token_usage(payload.get("usage"))
                     if reported:
                         usage = reported
+                        stream_state["usage"] = reported
                     choices = payload.get("choices")
                     if not isinstance(choices, list) or not choices:
                         continue
@@ -894,7 +914,13 @@ class OpenAIClassificationClient:
             }
 
         try:
-            return self._run_stream(consume, body, tools)
+            def metered_consume(request_body):
+                stream_state["usage"] = {}
+                try:
+                    return consume(request_body)
+                finally:
+                    self._record_usage(stream_state["usage"])
+            return self._run_stream(metered_consume, body, tools)
         except AIClassificationError as error:
             error.emitted_output = stream_state["emitted"]
             raise

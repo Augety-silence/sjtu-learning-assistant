@@ -25,6 +25,9 @@ import {
 } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  getProviderUsage: vi.fn(async () => ({
+    periods: { today: { calls: 0, metrics: {} } },
+  })),
   checkForUpdates: vi.fn(),
   getSettings: vi.fn(),
   openExternal: vi.fn(),

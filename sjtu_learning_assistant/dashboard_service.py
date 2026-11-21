@@ -2209,6 +2209,9 @@ class DashboardService:
                         base_url=settings.ai_base_url,
                         model=settings.ai_model,
                     )
+                    if isinstance(self._ai_client, OpenAIClassificationClient):
+                        from .provider_usage import ProviderUsageLedger
+                        self._ai_client.usage_recorder = ProviderUsageLedger(self.engine).record
             except AIKeychainError:
                 # 与 ai_chat_send / ai_chat / _run_knowledge_compiler_ai 三处
                 # 调用点的凭据分类保持一致；required=False 时静默缓存配置即可。
@@ -3185,6 +3188,9 @@ class DashboardService:
                     base_url=settings.ai_base_url,
                     model=selected_model,
                 )
+                if isinstance(raw_client, OpenAIClassificationClient):
+                    from .provider_usage import ProviderUsageLedger
+                    raw_client.usage_recorder = ProviderUsageLedger(self.engine).record
             else:
                 raw_client = self._get_ai_client(settings, required=True)
             client = (
@@ -3463,6 +3469,10 @@ class DashboardService:
         except AITaskError as exc:
             raise DashboardError(str(exc)) from None
 
+    def provider_usage_summary(self) -> dict[str, Any]:
+        from .provider_usage import ProviderUsageLedger
+        return ProviderUsageLedger(self.engine).summary()
+
     def ai_chat(self, messages: object) -> dict[str, Any]:
         """Compatibility endpoint for pre-history clients."""
         if type(messages) is not list:
@@ -3707,6 +3717,9 @@ class DashboardService:
                 model=model,
                 timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15),
             )
+            if isinstance(client, OpenAIClassificationClient):
+                from .provider_usage import ProviderUsageLedger
+                client.usage_recorder = ProviderUsageLedger(self.engine).record
             result = client.chat_completion(
                 [
                     {"role": "system", "content": system_prompt},

@@ -788,6 +788,18 @@ class AIUsageRecord(Base):
     )
 
 
+class ProviderUsage(Base):
+    __tablename__ = "provider_usage"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cached_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (Index("ix_provider_usage_created", "created_at"),)
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
 

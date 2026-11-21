@@ -6,6 +6,7 @@ import argparse
 import json
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import webview
@@ -14,6 +15,9 @@ import webview
 class SyntheticBridge:
     def invoke(self, action, payload=None):
         payload = payload or {}
+        if action == "provider_usage_summary":
+            metrics = {key: dict(tokens=tokens, reported_calls=1, missing_calls=0) for key,tokens in (("input",1000),("output",20),("cache",800),("total",1020))}
+            return dict(ok=True, data=dict(periods={key:dict(calls=1,metrics=metrics) for key in ("today","week","all")}, scope="synthetic", timezone="CST", first_recorded_at=None))
         if action == "transcript_artifacts":
             items = [dict(id="a" * 32 + ":" + kind, kind=kind, label=kind,
                 content_type="text/markdown") for kind in ("lesson_summary", "original")]
@@ -48,7 +52,13 @@ def main() -> int:
                   const list=panel.querySelector('.video-recording-list');
                   const first=list.querySelector('li strong').getBoundingClientRect();
                   const tabs=document.querySelector('.video-learning-tabs');
+                  const toolbar=document.querySelector('.video-course-toolbar');
+                  const heading=toolbar.querySelector('.video-course-heading').getBoundingClientRect();
+                  const source=toolbar.querySelector('[role=tablist]').getBoundingClientRect();
                   return {rows:list.children.length, clear:first.top>=header.bottom,
+                    toolbarInline:Math.abs(heading.top-source.top)<10 && heading.right<=source.left+1,
+                    sourceNoCover:!toolbar.querySelector('[data-selection-indicator]'),
+                    toolbarWithin:source.right<=toolbar.getBoundingClientRect().right+1,
                     noNoise:!document.querySelector('.video-status-filters,.video-jobs,.video-batch-bar'),
                     tabs:tabs.querySelectorAll('[role=tab]').length,
                     noCover:!tabs.querySelector('[data-selection-indicator]'),
@@ -59,7 +69,9 @@ def main() -> int:
                 window.resize(width, 760)
                 threading.Event().wait(0.3)
                 layout=check_video_layout()
-                assert layout["rows"]==18 and layout["clear"] and layout["noNoise"] and layout["tabs"]==3 and layout["noCover"] and layout["retry"] and layout["within"], layout
+                assert layout["rows"]==18 and layout["clear"] and layout["noNoise"] and layout["tabs"]==3 and layout["noCover"] and layout["retry"] and layout["within"] and layout["toolbarInline"] and layout["sourceNoCover"] and layout["toolbarWithin"], layout
+                meter=window.evaluate_js("document.querySelector('.token-usage-panel').innerText")
+                assert "1,020" in meter and "800" in meter, meter
             window.resize(1050,760)
             window.evaluate_js("document.querySelector('main > button').click()")
             while not window.evaluate_js("Boolean(document.querySelector('.transcript-markdown'))"):
@@ -86,9 +98,10 @@ def main() -> int:
               return Math.abs(tab.x-bg.x)<2 && Math.abs(tab.y-bg.y)<2 && Math.abs(tab.width-bg.width)<2;
             })()""")
             assert geometry
-            outcome.update(ok=True, native="WKWebView", tabs=2, layers=True, original_readable=True, geometry=True, video_rows=18, video_tabs=3, video_layout_sizes=[1050,760], no_video_cover=True)
+            outcome.update(ok=True, native="WKWebView", tabs=2, layers=True, original_readable=True, geometry=True, video_rows=18, video_tabs=3, video_layout_sizes=[1050,760], no_video_cover=True, toolbar_inline=True, usage_dashboard=True)
         except Exception as exc:
             outcome.update(error_type=type(exc).__name__, error=str(exc),
+                traceback=traceback.format_exc(),
                 synthetic_page=window.evaluate_js("document.body.innerText.slice(0,500)"))
         finally:
             window.destroy()
