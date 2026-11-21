@@ -37,3 +37,16 @@
 - PDF 自动同步针对当前观看的交大视频空间录像，不自动将本地视频遍历截图；上游最多 200 页和既有字节/像素上限保留。
 - API 每分钟限速、取消和有界重试保留，不加人工每日总额度。界面静默不代表后台所有课程摘要都已生成。
 - 本轮不能代替 Windows 真机及所有真实课程验收。
+
+## 提交、精确构建与本地替换
+
+- 功能整合先完成视频界面删减与静默同步，再加入持久课件页缓存、安全回归，最后进行完整测试与原生/真实接口验收。
+- Mac 功能提交 `d9d5655e292cc3e86982bfb7839edf5f8939a167`；sandbox 对应提交 `dc4872e553e45ec55eee61ed136a86f99a8eef93`；历史不同，源码 tree 均 `3c375349e11010acf1753bb57ba9349c20dbe53f`，未覆盖/重置任一历史。
+- 从精确 Mac 提交 git archive 至独立 `/private/tmp/sjtu-video-build.pD4ODC`，运行前端构建、图标生成和 PyInstaller。工作树未用于不明来源打包。
+- 候选 App 和安装后 App 均通过 ad-hoc codesign deep/strict 验证，以及 plist、第一方路径/秘密与禁止模块检查；不是 Apple 公证发布。
+- 已替换 `/Applications/SJTU Learning Assistant.app`，仍为 **1.8.12**。
+- 主可执行文件 SHA-256：`e7f4146b13b5ff6fa6fc0de204f111b34fe0e905a9d4e196699ec6491ddc5c86`。
+- 新回退：`/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_131202-video-quiet-sync/SJTU Learning Assistant.app`，同目录另保留 `previous-installed.app`。更旧回退不删除。
+- 旧 App 正常退出 PID 55387；另有 PID 61055 的既有后台同步，自然结束后才替换，没有使用 SIGKILL/SIGTERM。新 App 启动 PID **62039**。
+- 结束功能提交时正确 Mac 仓库和 sandbox 均干净，仍在原分支；Mac origin/main 仍为 `d71c19bd34c4d53dba1201aa63999d77ae94a63c`。最终交接记录单独本地提交，不改变已部署功能源码。
+- 本轮没有 push、PR 创建/合并、远端分支删除、版本号变更或 Release 发布。两个禁止旧工作树没有进入或修改，用户原始课件、字幕与人工稿未删除。
