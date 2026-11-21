@@ -53,6 +53,52 @@ class CompiledKnowledgeTests(unittest.TestCase):
         self.assertEqual("## 第 2 页", page["section"])
         self.assertIn(self.relative, page["citation"])
 
+    def test_search_keeps_later_body_hits_not_only_table_of_contents(self):
+        body = "# 目录\n评分细则见第26页\n" + "背景材料\n" * 3000 + "# 第26页\n评分细则：作业20%，期末55%\n"
+        self.mirror.write_text(body, encoding="utf-8")
+        result = self.service.search("评分")
+        item = result["items"][0]
+        self.assertEqual("body", item["match_kind"])
+        self.assertEqual(2, item["match_count"])
+        self.assertEqual([body.index("评分"), body.rindex("评分")], [x["match_offset"] for x in item["passages"]])
+        self.assertIn("期末55%", self.service.read(item["id"], item["passages"][-1]["match_offset"])["text"])
+
+    def test_many_matches_keep_bounded_early_and_late_passages(self):
+        body = ("评分细则\n" + "空" * 1000 + "\n") * 100
+        self.mirror.write_text(body, encoding="utf-8")
+        item = self.service.search("评分")["items"][0]
+        self.assertEqual(100, item["match_count"])
+        self.assertEqual(6, len(item["passages"]))
+        self.assertEqual(body.rindex("评分"), item["passages"][-1]["match_offset"])
+
+    def test_filename_hit_is_explicitly_not_body_evidence(self):
+        item = self.service.search(".pptx")["items"][0]
+        self.assertEqual("metadata", item["match_kind"])
+        self.assertEqual([], item["passages"])
+        self.assertEqual(0, item["match_count"])
+
+    def test_body_search_course_and_term_do_not_mix_same_name_courses(self):
+        self.service.metadata = lambda: {self.relative: {"course_id": "course-1", "term_id": "term:30"}}
+        self.assertEqual(1, self.service.search("关系", course_id="course-1", term_id="term:30")["count"])
+        self.assertEqual(0, self.service.search("关系", course_id="course-2")["count"])
+        self.assertEqual(0, self.service.search("关系", course_id="course-1", term_id="term:29")["count"])
+
+    def test_model_space_separated_synonyms_are_literal_or_terms(self):
+        result = self.service.search("课程大纲 关系代数 评分")
+        self.assertEqual(1, result["count"])
+        self.assertEqual(["课程大纲", "关系代数", "评分"], result["query_terms"])
+        self.assertEqual("any_literal_term", result["query_mode"])
+        self.assertEqual(0, self.service.search(".* [abc]")["count"])
+        with self.assertRaises(CompiledKnowledgeError):
+            self.service.search(" ".join(str(i) for i in range(11)))
+
+    def test_late_passages_report_explicit_source_page_not_toc_reference(self):
+        body = "# 目录\n评分在第26页\n" + "背景\n" * 1000 + "# 第 26 页\n\n## 原始提取\n评分：期末55%\n"
+        self.mirror.write_text(body, encoding="utf-8")
+        passages = self.service.search("评分")["items"][0]["passages"]
+        self.assertNotIn("source_page", passages[0])
+        self.assertEqual(26, passages[-1]["source_page"])
+
     @unittest.skipUnless(sys.platform == "darwin", "macOS 固定系统目录别名专项")
     def test_macos_default_temp_directory_is_readable_without_resolving_setting(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -199,7 +245,7 @@ class CompiledKnowledgeTests(unittest.TestCase):
         self.assertEqual(1, self.service.search("函数依赖")["count"])
 
     def test_bad_arguments_and_nonexistent_document_are_rejected(self):
-        for values in ({"offset": True}, {"limit": 0}, {"query": "x" * 161}, {"source_id": "unknown"}):
+        for values in ({"offset": True}, {"limit": 0}, {"query": "x" * 161}, {"query": "| , ;"}, {"source_id": "unknown"}):
             with self.assertRaises(CompiledKnowledgeError):
                 self.service.search(**values)
         for value in ("../outside", "f" * 32, 123):

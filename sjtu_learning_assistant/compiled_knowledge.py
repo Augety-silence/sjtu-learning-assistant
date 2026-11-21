@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+from collections import deque
 from pathlib import Path, PurePosixPath
 from typing import Callable, Any
 
@@ -17,6 +18,35 @@ MAX_INDEX_BYTES = 2 * 1024**2
 MAX_DOCUMENT_BYTES = 24 * 1024**2
 MAX_ENTRIES = 5000
 MAX_SEARCH_BYTES = 64 * 1024**2
+MAX_MATCH_PASSAGES = 6
+
+
+def _match_passages(text: str, terms: tuple[str, ...]) -> tuple[list[dict], int]:
+    """同时保留分散的前部与后部命中，避免旧页稿的目录遮住实际内容。
+
+    偏移始终对应原始 Unicode 正文；重复内容与页码索引均采用有界内存。
+    """
+    first, tail = [], deque(maxlen=MAX_MATCH_PASSAGES // 2)
+    count, last = 0, -1000
+    pages = re.finditer(r"^#\s+第\s*([0-9]{1,5})\s*页\s*$", text, re.MULTILINE)
+    next_page, source_page = next(pages, None), None
+    for match in re.finditer("|".join(re.escape(term) for term in terms), text, re.IGNORECASE):
+        count += 1
+        hit = match.start()
+        if hit - last < 800:
+            continue
+        last = hit
+        passage = {"match_offset": hit, "snippet": text[max(0, hit - 80):hit + 220]}
+        while next_page is not None and next_page.start() <= hit:
+            source_page = int(next_page.group(1))
+            next_page = next(pages, None)
+        if source_page is not None:
+            passage["source_page"] = source_page
+        if len(first) < MAX_MATCH_PASSAGES // 2:
+            first.append(passage)
+        else:
+            tail.append(passage)
+    return first + list(tail), count
 
 
 class CompiledKnowledgeError(RuntimeError):
@@ -220,12 +250,17 @@ class CompiledKnowledge:
             raise CompiledKnowledgeError("知识来源已失效，请刷新结果。")
         matches, read_bytes = [], 0
         needle = query.strip().lower()
+        terms = tuple(dict.fromkeys(term for term in re.split(r"[\s,，、;；|]+", query.strip()) if term))
+        if needle and not terms:
+            raise CompiledKnowledgeError("搜索关键词不能为空或只有分隔符。")
+        if len(terms) > 10:
+            raise CompiledKnowledgeError("单次最多检索10个关键词，请缩小范围。")
         for doc in documents:
             if source_id and doc["source_id"] != source_id:
                 continue
             if (term_id and doc.get("term_id") != term_id) or (course_id and doc.get("course_id") != course_id):
                 continue
-            hit, snippet = 0, ""
+            hit, snippet, passages, match_count = 0, "", [], 0
             if needle:
                 try:
                     text = self._text(by_id[doc["source_id"]], doc)
@@ -234,16 +269,18 @@ class CompiledKnowledge:
                         truncated = True
                         issues.append("搜索读取达到上限，请按知识来源缩小范围。")
                         break
-                    matched = re.search(re.escape(query.strip()), text, re.IGNORECASE)
-                    hit = matched.start() if matched else -1
-                    if hit < 0 and needle not in (doc["relative_path"] + doc["source_name"]).lower():
+                    passages, match_count = _match_passages(text, terms)
+                    hit = passages[0]["match_offset"] if passages else -1
+                    if hit < 0 and not any(term.lower() in (doc["relative_path"] + doc["source_name"]).lower() for term in terms):
                         continue
                     hit = max(0, hit)
                     snippet = text[max(0, hit - 80):hit + 220]
                 except CompiledKnowledgeError as exc:
                     issues.append(str(exc))
                     continue
-            matches.append({**doc, "match_offset": hit, "snippet": snippet})
+            matches.append({**doc, "match_offset": hit, "snippet": snippet,
+                            "match_kind": "body" if passages else ("metadata" if needle else "catalog"),
+                            "match_count": match_count, "passages": passages})
         end = offset + limit
         # 文件夹目录来自全部匹配结果，不能只按当前 20 份分页构造课程树。
         folders: dict[tuple[str, str], dict] = {}
@@ -258,7 +295,10 @@ class CompiledKnowledge:
             matches = [doc for doc in matches if doc["folder"] == folder or doc["folder"].startswith(folder + "/")]
         return {"items": matches[offset:end], "count": len(matches), "next_offset": end if end < len(matches) else None,
                 "folders": sorted(folders.values(), key=lambda entry: (entry["source_id"], entry["path"])),
-                "issues": list(dict.fromkeys(issues)), "truncated": truncated}
+                "issues": list(dict.fromkeys(issues)), "truncated": truncated,
+                "search_scope": "markdown_body_and_metadata" if needle else "catalog",
+                "query_terms": list(terms), "query_mode": "any_literal_term",
+                "coverage_note": "仅检索本地可读 MD；未编译、未下载或超出预算的原课件不在本次正文搜索范围内。"}
 
     def _resolve(self, document_id: object) -> tuple[dict, dict]:
         if type(document_id) is not str or re.fullmatch(r"[0-9a-f]{32}", document_id) is None:
@@ -278,6 +318,8 @@ class CompiledKnowledge:
         # 保留正文的原始换行与字符偏移，仅从展示标题中去除 CRLF 的回车。
         headings = re.findall(r"^#{1,6} [^\r\n]+", text[:offset], flags=re.MULTILINE)
         return {**document, "text": text[offset:end], "offset": offset, "next_offset": end if end < len(text) else None,
+                "read_status": "ready", "compilation_status": document["status"],
+                "read_note": "本次正文已成功读取。编译状态failed/pending不等于读取失败；next_offset仅表示后面还有正文，局部问题不必从头通读。旧稿数值以原课件对应页为准。",
                 "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "total_chars": len(text), "section": headings[-1][:200] if headings else "文档开头",
                 "citation": document["source_name"] + "/" + document["relative_path"], "truncated": end < len(text)}

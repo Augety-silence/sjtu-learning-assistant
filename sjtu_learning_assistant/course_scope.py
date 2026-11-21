@@ -100,5 +100,6 @@ def knowledge_metadata(engine, archive_root) -> dict[str, dict]:
             except (ValueError, OSError):
                 continue
             term, label = term_identity(course.raw_data or {}, course.term_name)
-            result[relative] = {"course_id": course.source_id, "course_name": course.name, "term_id": term, "term_name": label}
+            result[relative] = {"course_id": course.source_id, "course_name": course.name, "term_id": term, "term_name": label,
+                                "course_file_source_id": file.source_id}
     return result

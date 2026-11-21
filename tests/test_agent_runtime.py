@@ -26,6 +26,7 @@ from sjtu_learning_assistant.agent_runtime.tools import _clip, _hide_cut_url_tai
 from sjtu_learning_assistant.ai_classifier import AIClassificationError, AIToolsUnsupportedError, OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
+from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
 from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.local_settings import SettingsStore
@@ -155,6 +156,8 @@ class AgentRuntimeTests(unittest.TestCase):
         encoded = json.dumps(files, ensure_ascii=False)
         self.assertIn("lecture.pdf", encoded)
         self.assertNotIn("/Users/", encoded)
+        self.assertEqual("metadata_only", files["search_scope"])
+        self.assertFalse(files["body_searched"])
         messages = self.registry.execute("search_messages", {"query": "课程", "kind": "email"}, ALL_TOOLS).result
         recent = self.registry.execute("search_messages", {"kind": "all", "limit": 10}, ALL_TOOLS).result
         self.assertGreaterEqual(recent["count"], 3)
@@ -170,6 +173,107 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("invalid_params", invalid_tool_args.exception.category)
         self.assertFalse(invalid_tool_args.exception.retryable)
         self.assertEqual(0, self.registry.execute("list_courses", {"query": "%"}, ALL_TOOLS).result["count"])
+
+    def _body_registry(self):
+        archive = self.root / "archive"
+        original = archive / "term/course/lecture.pptx"
+        original.parent.mkdir(parents=True, exist_ok=True)
+        original.write_bytes(b"source")
+        md = archive / "Knowledge Markdown/Courses/term/course/lecture.pptx.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("# 目录\n评分说明见第26页\n" + "背景材料\n" * 3000 + "# 第26页\n评分：作业20%，期末55%\ntoken=DoNotExposeSecret\n", encoding="utf-8")
+        marker = archive / "Knowledge Markdown/99_System/Course-Sync.json"
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text(json.dumps({"version":1,"source_root":str(archive),"items":{"term/course/lecture.pptx":{"status":"failed","text_ready":True}}}), encoding="utf-8")
+        service = CompiledKnowledge(lambda: SimpleNamespace(archive_root=str(archive)), self.root / "projects.json",
+                                    metadata=lambda: {"term/course/lecture.pptx":{"course_id":"course-1", "term_id":"term:30"}})
+        return ReadOnlyToolRegistry(self.engine, compiled_knowledge=service)
+
+    def test_filename_miss_in_followup_reads_scoped_md_late_body_with_trace(self):
+        registry = self._body_registry()
+        call = {"content":"", "tool_calls":[{"id":"metadata","type":"function","function":{"name":"search_course_files", "arguments":json.dumps({"query":"评分", "course_id":"course-1"})}}]}
+        client = ScriptedClient([call, {"content":"已核验评分正文"}])
+        selected = preset("search_course_files", "search_compiled_knowledge", "read_compiled_knowledge")
+        events = []
+        result = AgentLoop(client, registry, selected).run([
+            {"role":"user","content":"中宏评分细则是咋样的"}, {"role":"assistant","content":"没有评分文件"}, {"role":"user","content":"再查查"}],
+            user_text="再查查", max_tokens=500, temperature=0, event_callback=lambda kind, value: events.append((kind,value)))
+        self.assertEqual("completed", result.status)
+        self.assertEqual(["search_course_files", "search_compiled_knowledge", "read_compiled_knowledge", "read_compiled_knowledge"], [run["tool_name"] for run in result.tool_runs])
+        requests = client.requests[-1][0]
+        body = "\n".join(message.get("content", "") for message in requests if message["role"] == "tool")
+        self.assertIn("期末55%", body)
+        self.assertIn('"status":"failed"', body)
+        self.assertNotIn("DoNotExposeSecret", body)
+        calls = [call["id"] for m in requests for call in m.get("tool_calls", [])]
+        self.assertEqual(calls, [m["tool_call_id"] for m in requests if m["role"] == "tool"])
+        self.assertEqual(len(result.tool_runs), sum(kind == "tool" for kind, _ in events))
+
+    def test_body_fallback_respects_permissions_and_does_not_expand_unscoped_query(self):
+        for scope, allowed in (({"course_id":"course-1"}, ("search_course_files",)), ({}, ("search_course_files", "search_compiled_knowledge", "read_compiled_knowledge"))):
+            with self.subTest(scope=scope):
+                call = {"content":"", "tool_calls":[{"id":"metadata","type":"function","function":{"name":"search_course_files", "arguments":json.dumps({"query":"评分", **scope})}}]}
+                result = AgentLoop(ScriptedClient([call, {"content":"边界明确"}]), self._body_registry(), preset(*allowed)).run([{ "role":"user", "content":"评分"}], user_text="评分", max_tokens=500, temperature=0)
+                self.assertEqual(["search_course_files"], [run["tool_name"] for run in result.tool_runs])
+
+    def test_scoped_body_tool_search_also_reads_real_context(self):
+        call = {"content":"", "tool_calls":[{"id":"body","type":"function","function":{"name":"search_compiled_knowledge", "arguments":json.dumps({"query":"评分", "course_id":"course-1", "term_id":"term:30"})}}]}
+        result = AgentLoop(ScriptedClient([call, {"content":"正文已读"}]), self._body_registry(), preset("search_compiled_knowledge", "read_compiled_knowledge")).run([{ "role":"user", "content":"评分"}], user_text="评分", max_tokens=500, temperature=0)
+        self.assertEqual(["search_compiled_knowledge", "read_compiled_knowledge", "read_compiled_knowledge"], [run["tool_name"] for run in result.tool_runs])
+
+    def test_followup_context_comes_from_user_not_previous_assistant_claim(self):
+        messages = [{"role":"user", "content":"课程评分怎么构成"}, {"role":"assistant","content":"未经核验的错误结论"}, {"role":"user","content":"再查查"}]
+        effective = AgentLoop._followup_question(messages, "再查查")
+        self.assertIn("课程评分怎么构成", effective)
+        self.assertNotIn("错误结论", effective)
+        self.assertEqual("另一门课程", AgentLoop._followup_question(messages, "另一门课程"))
+
+    def test_old_md_body_fallback_corresponds_to_original_page_and_keeps_read_status(self):
+        registry = self._body_registry()
+        registry.compiled_knowledge.metadata = lambda: {"term/course/lecture.pptx":{"course_id":"course-1", "course_file_source_id":"file-1"}}
+        md = self.root / "archive/Knowledge Markdown/Courses/term/course/lecture.pptx.md"
+        md.write_text("# 目录\n评分见原页\n" + "背景\n" * 1000 + "# 第 1 页\n评分：作业20%，期末55%\n",encoding="utf-8")
+        original = self.root / "archive/term/course/lecture.pptx"
+        build_pptx(original, extra={"ppt/slides/slide2.xml": '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>评分：作业20%，期末55%</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>'})
+        with Session(self.engine) as session, session.begin():
+            file = session.scalar(select(CourseFile).where(CourseFile.source_id == "file-1"))
+            file.filename = file.display_name = "lecture.pptx"
+            file.local_path = str(original)
+        registry = ReadOnlyToolRegistry(self.engine, compiled_knowledge=registry.compiled_knowledge, course_file_resolver=lambda source_id: original)
+        call = {"content":"", "tool_calls":[{"id":"body","type":"function","function":{"name":"search_compiled_knowledge", "arguments":json.dumps({"query":"评分 考核 成绩", "course_id":"course-1"})}}]}
+        client = ScriptedClient([call, {"content":"已根据原课件核验"}])
+        result = AgentLoop(client, registry, preset("search_compiled_knowledge", "read_compiled_knowledge", "read_course_file_text")).run([{ "role":"user", "content":"评分"}],user_text="评分",max_tokens=500,temperature=0)
+        original_run = next(run for run in result.tool_runs if run["tool_name"] == "read_course_file_text")
+        self.assertEqual("ready", original_run["result_summary"]["content_status"])
+        self.assertEqual(1, original_run["result_summary"]["start_page"])
+        read_run = next(run for run in result.tool_runs if run["tool_name"] == "read_compiled_knowledge")
+        self.assertEqual("ok", read_run["result_summary"]["status"])
+        self.assertEqual("ready", read_run["result_summary"]["read_status"])
+        self.assertEqual("failed", read_run["result_summary"]["compilation_status"])
+
+    def test_last_turn_reserves_grounded_answer_instead_of_endless_continuation(self):
+        registry = self._body_registry()
+        identity = registry.compiled_knowledge.search()["items"][0]["id"]
+        call = {"content":"", "tool_calls":[{"id":"read","type":"function","function":{"name":"read_compiled_knowledge", "arguments":json.dumps({"document_id":identity})}}]}
+        client = ScriptedClient([call, {"content":"仅根据已读部分回答"}])
+        result = AgentLoop(client, registry, preset("read_compiled_knowledge"), max_steps=2).run([{ "role":"user", "content":"概括已读部分"}],user_text="概括已读部分",max_tokens=500,temperature=0)
+        self.assertEqual("completed",result.status)
+        self.assertEqual([], client.requests[-1][1]["tools"])
+        self.assertIn("没有查证", client.requests[-1][0][-1]["content"])
+
+    def test_body_fallback_deduplicates_queries_and_respects_context_message_and_time_budgets(self):
+        registry = self._body_registry()
+        loop = AgentLoop(ScriptedClient([]), registry, preset("search_course_files", "search_compiled_knowledge", "read_compiled_knowledge"), clock=lambda:10)
+        requests = [("search_course_files", {"query":"评分","course_id":"course-1"}, {})] * 2
+        state = {"calls":0,"queries":set(),"reads":[],"originals":set()}
+        conversation, runs = [], []
+        loop._knowledge_fallback(requests, conversation, runs, state, 10, None)
+        self.assertEqual(1, sum(run["tool_name"] == "search_compiled_knowledge" for run in runs))
+        for conversation, started in (([{"role":"user","content":"x" * 54000}],10), ([{"role":"user","content":"x"}] * 64,10), ([], -1000)):
+            state = {"calls":0,"queries":set(),"reads":[],"originals":set()}
+            runs = []
+            loop._knowledge_fallback(requests, conversation, runs, state, started, None)
+            self.assertEqual([],runs)
 
     def test_quoted_json_credentials_are_redacted_with_adjacent_chinese(self) -> None:
         text = '{"password":"two word secret","api_key":"key-secret"}密码：相邻秘密'
