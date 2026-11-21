@@ -58,8 +58,34 @@
 - `source_unchanged=true`，原字幕 SHA-256 前后一致；`production_db_writes=false`。验收输出位于独立目录 `/private/tmp/sjtu-classroom-live-20261121-114000`，没有复制回用户来源或收入代码交付。
 - 人工回查了 N-gram/TF-IDF 和实验准确率相关原字幕。课堂表述与具体配置保留为老师讲授内容，不把具体实验结论冒充通用定律；单份成功不代表全部历史字幕已逐堂人工核验。
 
-## 尚待完成的现场步骤
+## 提交、整合顺序和结束状态
 
-本机最终验证、本地提交和 App 候选/部署事实将在实际完成后追加。本记录不把尚未执行的步骤描述为完成。
+1. 沙盒功能提交 `b44b417550818fe533425df2d037c0c7a44d7534`：课堂资料、知识库与前端双入口。
+2. 沙盒真实验收/续编修复 `8cab3fb6bf8890f43253f6474b1d1a9425079e26`；本机将本轮增量整合为 `6b33fecc6a5c469f3053c641969596729cb7ecab`，共同 tree `abc673ca5f7ce07d8891214ef27dd85e598917f7`。
+3. 启动遗漏的修复：本机 `aedc7d874ce04ac3b75ab991381e6d60d44ddbd8`；沙盒 `18f4ccf07bee6ccef093764158a2c338ad675867`，共同 tree `93f7a7204feb0a9440e382b86ebd602a108c7fd9`。最终 App 从本机这个精确提交构建。
+4. 本记录作为独立本地交付记录提交追加，不改功能代码。最终 HEAD 是该记录提交，本机/沙盒父提交分别为第3项哈希；最终消息记录本机结束 HEAD。
 
-不推送、创建或合并 PR，不改版本、不发布 Release。未做 Windows 真机和全部历史字幕的逐堂人工验收；模拟回归不是平台验证。
+功能修复结束时两边分支仍为 `aime/1793618241-ai-document-multimodal`，工作树均干净。origin/main 本地引用仍为 `d71c19bd34c4d53dba1201aa63999d77ae94a63c`；远端 fetch 超时，所以不宣称引用代表最新远端，也不宣称当前 PR 检查通过。
+
+改动文件：`transcript_notes.py`、`transcript_service.py`、`compiled_knowledge.py`、`course_scope.py`、`dashboard_service.py`、`knowledge_wiki.py`、`desktop_app.py`；前端 `TranscriptDetailDrawer.tsx`、`types.ts` 及两个相应回归文件；Python `test_transcript_notes.py`、`test_desktop_app.py`；验收脚本、本记录和产品路线。未新增依赖、数据库迁移或版本更改。
+
+## App 精确构建、签名与回退部署
+
+- 本轮开始安装为 1.8.12，来源为上轮提交 `92d32a93397c6e51f4c6ea7c751812caadd3ed1a`；主程序 SHA-256 `8d5fe3ae07e9dafdd10f544e761c0efcdb81dd76fe26c187a04970c00c68af1a`，开始主 PID 33524。
+- 第一候选从本机 `6b33fec` 的 git archive 独立构建于 `/private/tmp/sjtu-classroom-build.5KVSta`，SHA-256 `4b0d702278509f8f841bc5bb2f54fc21d2f7f6190c08fc4761ad3ac4746f697d`。启动发现字幕服务仍惰性初始化，未将此候选当最终完成版。
+- 最终从 `aedc7d874ce04ac3b75ab991381e6d60d44ddbd8` 的 git archive 创建 `/private/tmp/sjtu-classroom-build.jF3po9`，独立前端 TypeScript/Vite 构建、图标生成、PyInstaller 打包全部通过，没有覆盖工作树 build/dist。
+- 使用 ad-hoc 签名，候选和安装后均通过 `codesign --verify --deep --strict`；plist、第一方个人路径/高置信秘密、禁止模块检查通过。此签名不是 Apple 公证。
+- 最终安装 `/Applications/SJTU Learning Assistant.app`，版本仍 **1.8.12**；主可执行 SHA-256 **`62ae000d0b278e3109454d1311cbdb7588289d7b6d8864e6eb2fa69a859ac7aa`**。最终核验主 PID **49193**，为当时快照，不保证未来进程号不变。
+- 安装前正常 Quit 并确认同可执行路径的主/子进程退出，未 SIGKILL。先创建并核对回退副本，再将旧安装另存为 `previous-installed.app` 后安装新包；没有删除任何旧回退。
+- 本轮新增回退：`/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_120113-classroom-notes/SJTU Learning Assistant.app`（本轮开始版）；`/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_120609-classroom-startup/SJTU Learning Assistant.app`（第一候选）。相邻 `previous-installed.app` 也保留。
+- 上轮 `/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_104610-md-body-reader/SJTU Learning Assistant.app` 未删除。用户原始字幕、旧正式稿、人工笔记未覆盖；两个禁止旧脏树本轮未进入、未修改。
+
+## 安装后可见性与剩余边界
+
+- 实际安装版启动后，无需进入视频页，生成 **16 份课堂 `lesson.md`**。样本相邻 `original.md` 为完整可读原文；两者0600权限。
+- 样本源 `raw.vtt` SHA-256 仍为 `2e768ed61fbc1ea3a2f66ce2ad0c037d7b70e4eeee84a0d72b164cd7dc8b5267`。生产样本当时 `lesson_notes.status=pending`，没有把未完成精炼稿显示为完成。
+- 同一知识库读取服务实际目录返回16份课堂资料、0条索引问题；首份正文读取8000字符，包含“当堂老师讲了什么”和“原始字幕”。“文本”关键词命中16份；英文 `TF-IDF` 在尚未生成精炼稿的原始ASR文本中无命中，不把原始字幕术语写法当作通用同义词检索已完成。
+- 主入口：知识库 → 学期 → 课程 → 课堂字幕；视频详情主阅读为“当堂老师讲了什么”“原始字幕”，旧校对/练习放入历史折叠区。存储根为用户应用数据目录 `transcripts/v1/videos/<稳定录播ID>/`，不是在源码目录硬编码真实学习资料。
+- 全部精炼总结仍逐堂后台处理；真实API单份正向验收和原文可见不等于全库总结均已完成。尚未做全部历史字幕的逐堂人工复验、Windows真机、跨Mac阅读记忆或唯一PPT课时对应验证。
+- 完成课堂总结可进入现有Wiki refresh的概念来源，原始正文始终可读；没有新增另一套概念生成线程，也没有声称所有概念Wiki已重新编译完。
+- 本轮没有push、创建/合并PR、删除远端分支、修改版本、标签或发布Release；CI/gitleaks未重新触发。模拟回归不代替真实平台验收。
