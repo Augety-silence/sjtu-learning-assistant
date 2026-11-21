@@ -103,3 +103,14 @@ def knowledge_metadata(engine, archive_root) -> dict[str, dict]:
             result[relative] = {"course_id": course.source_id, "course_name": course.name, "term_id": term, "term_name": label,
                                 "course_file_source_id": file.source_id}
     return result
+
+
+def transcript_course_metadata(engine) -> dict[str, dict]:
+    """视频course_id关联数据库课程身份，不能按标题猜学期。"""
+    with Session(engine) as session:
+        result = {}
+        for course in session.scalars(select(Course)):
+            term, label = term_identity(course.raw_data or {}, course.term_name)
+            result[str(course.source_id)] = {"course_id": str(course.source_id), "course_name": course.name,
+                                             "term_id": term, "term_name": label}
+        return result

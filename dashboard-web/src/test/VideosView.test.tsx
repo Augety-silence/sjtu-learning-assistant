@@ -1045,7 +1045,7 @@ describe("VideosView", () => {
     expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(
       screen
-        .getByRole("tab", { name: "本节要点" })
+        .getByRole("tab", { name: "当堂老师讲了什么" })
         .getAttribute("aria-selected"),
     ).toBe("true");
   });

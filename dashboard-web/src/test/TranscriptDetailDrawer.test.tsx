@@ -97,6 +97,10 @@ function renderDrawer(currentJob = job) {
 }
 
 function chooseTab(name: string) {
+  if (!screen.queryByRole("tab", { name })) {
+    const details = screen.getByText("校对与历史材料").closest("details");
+    if (details) details.open = true;
+  }
   fireEvent.mouseDown(screen.getByRole("tab", { name }), {
     button: 0,
     ctrlKey: false,
@@ -131,6 +135,53 @@ afterEach(() => {
 });
 
 describe("TranscriptDetailDrawer Phase1", () => {
+  it("defaults to concise lesson notes and original subtitles, with diagnostics collapsed", async () => {
+    getV2.mockResolvedValue(v2List());
+    getV1.mockResolvedValue({
+      items: [
+        {
+          id: `${job.id}:lesson_summary`,
+          kind: "lesson_summary",
+          label: "当堂老师讲了什么",
+          content_type: "text/markdown",
+        },
+        {
+          id: `${job.id}:original`,
+          kind: "original",
+          label: "原始字幕",
+          content_type: "text/markdown",
+        },
+        {
+          id: `${job.id}:summary_json`,
+          kind: "summary_json",
+          label: "旧校对稿",
+          content_type: "application/json",
+        },
+      ],
+    });
+    readV1.mockImplementation(async (id) => ({
+      id,
+      kind: id.endsWith("original") ? "original" : "lesson_summary",
+      content: id.endsWith("original")
+        ? "## 原始字幕\n\n    老师的完整原话。"
+        : "## 当堂老师讲了什么\n\n围绕机会成本和决策形成主线。",
+    }));
+    renderDrawer();
+    expect(
+      await screen.findByText("围绕机会成本和决策形成主线。"),
+    ).toBeTruthy();
+    expect(screen.getByText("校对与历史材料").closest("details")?.open).toBe(
+      false,
+    );
+    expect(screen.queryByRole("heading", { name: "辅助训练" })).toBeNull();
+    expect(readV1).toHaveBeenCalledWith(`${job.id}:lesson_summary`);
+    chooseTab("原始字幕");
+    expect(await screen.findByText("老师的完整原话。")).toBeTruthy();
+    expect(readV1).toHaveBeenCalledWith(`${job.id}:original`);
+    expect(
+      document.querySelector(".transcript-markdown")?.getAttribute("style"),
+    ).toContain("user-select: text");
+  });
   it("shows the job message once and keeps low-frequency actions collapsed", async () => {
     getV2.mockResolvedValue({
       available: false,
@@ -344,7 +395,7 @@ describe("TranscriptDetailDrawer Phase1", () => {
     expect(screen.getByText("保留一个待确认术语")).toBeTruthy();
     expect(screen.getByText("低置信片段未自动修改")).toBeTruthy();
 
-    chooseTab("本节要点");
+    chooseTab("当堂老师讲了什么");
     expect(screen.queryByText("课程语境驱动的深度校对结果")).toBeNull();
     openAiReview();
     chooseTab("AI校对字幕");

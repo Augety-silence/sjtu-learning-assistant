@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+from sjtu_learning_assistant.knowledge_wiki import CourseWiki
+from sjtu_learning_assistant.transcript_notes import (
+    CONTRACT, _validate, compile_summary, original_markdown,
+)
+from sjtu_learning_assistant.transcript_service import AIContext, TranscriptService
+
+RAW = "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\n机会成本是放弃的最好选择。\n\n00:00:05.000 --> 00:00:09.000\n老师强调决策时要比较相关成本。\n"
+SOURCE = "sjtu-video:12:99"
+
+
+class NotesClient:
+    def __init__(self):
+        self.calls = []
+
+    def chat_completion(self, messages, **kwargs):
+        data = json.loads(messages[-1]["content"])
+        self.calls.append(data)
+        if "task" in data:
+            value = {"approved": True, "covered_chunks": data["covered_chunks"], "issues": []}
+        else:
+            if "cues" in data:
+                cue = data["cues"][-1]
+                evidence = [{"cue_id": cue["cue_id"], "quote": cue["text"][:80]}]
+            else:
+                evidence = [{"cue_id": n} for n in data["input_summaries"][-1]["sections"][0]["cue_ids"]]
+            value = {"covered_chunks": data["covered_chunks"], "sections": [{"title": "决策主线", "text": "老师先介绍机会成本，再强调比较相关成本。", "cue_ids": [e["cue_id"] for e in evidence]}]}
+        return {"content": json.dumps(value, ensure_ascii=False), "finish_reason": "stop"}
+
+
+class TranscriptNotesTests(unittest.TestCase):
+    def test_original_text_is_not_rewritten_and_markdown_payload_is_literal(self):
+        raw = RAW.replace("机会成本是放弃的最好选择。", "# 原话\n<script>not a command</script>\n[x](https://example.org)")
+        result = original_markdown(raw)
+        self.assertIn("    # 原话", result)
+        self.assertIn("[x](https://example.org)", result)
+        self.assertIn("00:00:05", result)
+
+    def test_concise_summary_and_independent_review(self):
+        client = NotesClient()
+        body, report = compile_summary(RAW, client)
+        self.assertLessEqual(len(body), 2000)
+        self.assertIn("当堂老师讲了什么", body)
+        self.assertIn("[00:00:05]", body)
+        self.assertEqual(CONTRACT, report["contract"])
+        self.assertEqual([0], report["covered_chunks"])
+        self.assertEqual(2, report["calls"])
+        self.assertEqual(2, len(client.calls[-1]["cues"]))
+
+    def test_all_long_subtitle_blocks_are_processed_and_reviewed(self):
+        raw = "WEBVTT\n\n" + "\n\n".join(
+            f"00:{i // 60:02}:{i % 60:02}.000 --> 00:{(i + 1) // 60:02}:{(i + 1) % 60:02}.000\n第{i}段知识点。" + "解释条件。" * 15
+            for i in range(120))
+        client = NotesClient()
+        body, report = compile_summary(raw, client)
+        originals = [d for d in client.calls if "cues" in d and "task" not in d]
+        reviewed = [d for d in client.calls if "task" in d]
+        self.assertGreater(len(originals), 1)
+        self.assertEqual(list(range(len(originals))), report["covered_chunks"])
+        self.assertEqual(120, sum(len(d["cues"]) for d in originals))
+        self.assertEqual(len(originals), len(reviewed))
+        self.assertLessEqual(len(body), 2000)
+
+    def test_invalid_coverage_forged_quote_and_overlength_fail_without_truncation(self):
+        valid = {"covered_chunks": [0], "sections": [{"title": "主题", "text": "课堂总结", "evidence": [{"cue_id": "cue-1", "quote": "原话"}]}]}
+        for changed in (dict(valid, covered_chunks=[]), dict(valid, covered_chunks=[False]),
+                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "字" * 1501, "evidence": valid["sections"][0]["evidence"]}]},
+                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "总结", "evidence": [{"cue_id": "cue-1", "quote": "编造"}]}]}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                _validate(changed, [0], {"cue-1": "字幕原话"}, {"cue-1": 0})
+
+    def test_review_failure_does_not_publish(self):
+        class Reject(NotesClient):
+            def chat_completion(self, messages, **kwargs):
+                result = super().chat_completion(messages, **kwargs)
+                if "task" in self.calls[-1]:
+                    result["content"] = json.dumps({"approved": False, "covered_chunks": [0], "issues": ["缺少必要条件"]})
+                return result
+        with self.assertRaises(ValueError):
+            compile_summary(RAW, Reject())
+
+    def test_source_ids_get_verbatim_local_quotes_and_math_conditions_remain_valid(self):
+        draft = {"covered_chunks": [0], "sections": [{"title": "适用条件", "text": "老师强调 p < 0.05 时的判断条件。", "cue_ids": ["cue-1"]}]}
+        result = _validate(draft, [0], {"cue-1": "当p < 0.05时。"}, {"cue-1": 0})
+        self.assertEqual("当p < 0.05时。", result["sections"][0]["evidence"][0]["quote"])
+        with self.assertRaises(ValueError):
+            _validate({"covered_chunks": [0], "sections": [{"title": "主题", "text": "总结", "cue_ids": ["forged"]}]}, [0], {"cue-1": "原话"}, {"cue-1": 0})
+
+    def test_validated_checkpoints_resume_but_final_source_review_still_runs(self):
+        cache = {}
+        client = NotesClient()
+        first, _ = compile_summary(RAW, client, cached=cache.get, commit=lambda key, value: cache.setdefault(key, value))
+        second, report = compile_summary(RAW, client, cached=cache.get, commit=lambda key, value: cache.setdefault(key, value))
+        self.assertEqual(first, second)
+        self.assertEqual(1, report["calls"])
+        self.assertEqual(3, len(client.calls))
+        self.assertIn("task", client.calls[-1])
+
+    def test_saved_and_legacy_transcripts_are_auto_indexed_and_manual_edits_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = NotesClient()
+            service = TranscriptService(root / "transcripts", autostart_worker=False,
+                subtitle_fetcher=lambda source: {"status": "ready", "vtt": RAW},
+                ai_context_provider=lambda: AIContext(client, "deepseek-chat", "endpoint", True))
+            self.addCleanup(service.close)
+            batch = service.start_batch(course_id="12", course_name="经济学", videos=[{"source_id": SOURCE, "title": "第三讲"}])
+            batch = service._read_json(service._batch_path(batch["id"]))
+            job = batch["jobs"][0]
+            service._fetch_and_store(batch, job)
+            directory = service._video_dir(SOURCE)
+            original = (directory / "raw.vtt").read_bytes()
+            manifest = service._read_json(directory / "manifest.json")
+            manifest["status"] = "completed"
+            service._write_json(directory / "manifest.json", manifest)
+            service._backfill_next_lesson()
+            knowledge = CompiledKnowledge(lambda: SimpleNamespace(archive_root=str(root / "archive")), root / "projects.json",
+                transcript_root=service.root, transcript_metadata=lambda: {"12": {"course_name": "经济学", "term_id": "term:30", "term_name": "2026 Fall"}})
+            results = knowledge.search("相关成本", course_id="12", term_id="term:30")
+            self.assertEqual(1, results["count"])
+            self.assertIn("2026 Fall/经济学/课堂字幕", results["items"][0]["folder"])
+            document = knowledge.read(results["items"][0]["id"])
+            self.assertIn("原始字幕", document["text"])
+            self.assertIn("当堂老师讲了什么", document["text"])
+            self.assertEqual(0, knowledge.search(course_id="13")["count"])
+            groups = CourseWiki(knowledge).snapshot()
+            self.assertEqual(1, len(groups[0]["ready"]))
+            self.assertLessEqual(len(groups[0]["ready"][0]["text"]), 2000)
+            kinds = {item["kind"] for item in service.list_artifacts(job["id"])["items"]}
+            self.assertTrue({"lesson", "lesson_summary", "original"} <= kinds)
+            self.assertEqual(original, (directory / "raw.vtt").read_bytes())
+            modified = (directory / "lesson.md").read_text() + "\n人工笔记\n"
+            (directory / "lesson.md").write_text(modified)
+            current = service._read_json(directory / "manifest.json")
+            self.assertFalse(service._save_lesson_notes(directory, current, RAW, "新的总结"))
+            self.assertEqual(modified, (directory / "lesson.md").read_text())
+            self.assertEqual("user_modified", service._read_json(directory / "manifest.json")["lesson_notes"]["status"])
+
+    def test_failed_upgrade_keeps_readable_raw_md_and_cools_down(self):
+        with tempfile.TemporaryDirectory() as temp:
+            service = TranscriptService(Path(temp) / "transcripts", autostart_worker=False,
+                ai_context_provider=lambda: AIContext(NotesClient(), "deepseek-chat", "endpoint", True))
+            self.addCleanup(service.close)
+            directory = service._video_dir(SOURCE)
+            directory.mkdir()
+            (directory / "raw.vtt").write_text(RAW)
+            manifest = {"source": {"source_id": SOURCE}, "course": {"id": "12", "name": "经济学"}, "video": {"title": "第一堂"},
+                        "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}}
+            service._write_json(directory / "manifest.json", manifest)
+            with patch("sjtu_learning_assistant.transcript_service.compile_summary", side_effect=TimeoutError):
+                service._backfill_next_lesson()
+            self.assertIn("机会成本", (directory / "lesson.md").read_text())
+            self.assertFalse((directory / "lecture-summary.md").exists())
+            current = service._read_json(directory / "manifest.json")
+            self.assertEqual("pending", current["lesson_notes"]["status"])
+            self.assertEqual("timeout", current["lesson_notes"]["error_code"])
+            self.assertTrue(current["lesson_notes"]["retry_after"])
+
+    def test_all_saved_raw_documents_are_visible_before_first_ai_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directories = []
+            class CheckVisible:
+                def chat_completion(self, *args, **kwargs):
+                    assert all((directory / "lesson.md").is_file() for directory in directories)
+                    raise TimeoutError()
+            service = TranscriptService(Path(temp) / "transcripts", autostart_worker=False,
+                ai_context_provider=lambda: AIContext(CheckVisible(), "deepseek-chat", "endpoint", True))
+            self.addCleanup(service.close)
+            for source_id in (SOURCE, "sjtu-video:12:100"):
+                directory = service._video_dir(source_id)
+                directory.mkdir()
+                (directory / "raw.vtt").write_text(RAW)
+                service._write_json(directory / "manifest.json", {"source": {"source_id": source_id},
+                    "course": {"id": "12", "name": "经济学"}, "video": {"title": "课堂"},
+                    "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}})
+                directories.append(directory)
+            service._backfill_next_lesson()
+            self.assertTrue(all((directory / "lesson.md").is_file() for directory in directories))

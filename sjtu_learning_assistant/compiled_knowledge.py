@@ -103,13 +103,19 @@ def _integer(value: object, name: str, minimum: int, maximum: int) -> int:
 
 class CompiledKnowledge:
     def __init__(self, settings: Callable = lambda: SettingsStore().load(),
-                 projects_path: Path = APP_SUPPORT_DIR / "local-projects.json", metadata: Callable | None = None, engine=None):
+                 projects_path: Path = APP_SUPPORT_DIR / "local-projects.json", metadata: Callable | None = None, engine=None,
+                 transcript_root: Path | None = None, transcript_metadata: Callable | None = None):
         self.settings = settings
         self.projects_path = projects_path
         if metadata is None and engine is not None:
             from sjtu_learning_assistant.course_scope import knowledge_metadata
             metadata = lambda: knowledge_metadata(engine, self.settings().archive_root)
         self.metadata = metadata or (lambda: {})
+        self.transcript_root = Path(transcript_root) if transcript_root is not None else projects_path.parent / "transcripts/v1"
+        if transcript_metadata is None and engine is not None:
+            from sjtu_learning_assistant.course_scope import transcript_course_metadata
+            transcript_metadata = lambda: transcript_course_metadata(engine)
+        self.transcript_metadata = transcript_metadata or (lambda: {})
 
     def _catalog(self) -> tuple[list[dict], list[dict], list[str], bool]:
         sources, documents, issues = [], [], []
@@ -205,6 +211,50 @@ class CompiledKnowledge:
                         issues.append("部分本地项目目录不可访问，已跳过。")
         except CompiledKnowledgeError as exc:
             issues.append(str(exc))
+        # 既有检索/读取入口接入完整课堂MD；展示按真实学期/课程分组，存储保留稳定视频ID。
+        try:
+            root = _safe(self.transcript_root, "videos")
+            if root.is_dir():
+                course_metadata = self.transcript_metadata()
+                source = {"id": "automatic-transcripts", "name": "课堂字幕与总结", "kind": "automatic", "root": str(root)}
+                for directory in sorted(root.iterdir())[:MAX_ENTRIES]:
+                    if len(documents) >= MAX_ENTRIES:
+                        truncated = True
+                        break
+                    if not re.fullmatch(r"[0-9a-f]{32}", directory.name) or directory.is_symlink() or not directory.is_dir():
+                        continue
+                    try:
+                        manifest = _json(_safe(root, directory.name + "/manifest.json"))
+                        identity = manifest.get("source", {}).get("source_id")
+                        from sjtu_learning_assistant.video_service import parse_remote_source_id
+                        course_id, _ = parse_remote_source_id(identity)
+                        if hashlib.sha256(identity.encode()).hexdigest()[:32] != directory.name:
+                            continue
+                        path = _safe(root, directory.name + "/lesson.md")
+                        if not path.is_file() or not _safe(root, directory.name + "/raw.vtt").is_file():
+                            continue
+                        notes = manifest.get("lesson_notes", {})
+                        record = manifest.get("artifacts", {}).get("lesson", {})
+                        unchanged = hashlib.sha256(_read_bytes(path, MAX_DOCUMENT_BYTES)).hexdigest() == record.get("sha256")
+                        entry = self._entry(source, directory.name + "/lesson.md", "completed" if notes.get("status") == "completed" and unchanged else "pending")
+                        stored = manifest.get("course", {})
+                        course = {key: stored[key] for key in ("term_id", "term_name") if type(stored.get(key)) is str}
+                        course.update(course_metadata.get(course_id, {}))
+                        term_name = course.get("term_name") or "未识别学期"
+                        course_name = course.get("course_name") or manifest.get("course", {}).get("name") or course_id
+                        from sjtu_learning_assistant.knowledge_compiler import _safe_name
+                        entry.update(course, course_id=course_id, contract=notes.get("contract"),
+                                     video_source_id=identity, title=str(manifest.get("video", {}).get("title") or "课堂资料") + ".md",
+                                     folder=f"{_safe_name(term_name)}/{_safe_name(course_name)}/课堂字幕")
+                        entry["related_course_file_ids"] = sorted({item["course_file_source_id"] for item in metadata.values()
+                            if item.get("course_id") == course_id and item.get("course_file_source_id")})
+                        documents.append(entry)
+                    except (CompiledKnowledgeError, ValueError, TypeError, AttributeError):
+                        issues.append("部分课堂资料索引无效，已跳过。")
+                if any(doc["source_id"] == source["id"] for doc in documents):
+                    sources.append(source)
+        except (CompiledKnowledgeError, OSError):
+            issues.append("课堂资料目录不可访问。")
         for source in sources:
             source["count"] = sum(doc["source_id"] == source["id"] for doc in documents)
         return sources, documents, list(dict.fromkeys(issues)), truncated

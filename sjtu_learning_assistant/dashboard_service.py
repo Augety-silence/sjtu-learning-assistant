@@ -131,7 +131,7 @@ from sjtu_learning_assistant.local_settings import (
     validate_ai_model,
 )
 from sjtu_learning_assistant.material_tree import build_material_tree, material_preview_kind
-from sjtu_learning_assistant.course_scope import default_conditions, scoped_database_ids, knowledge_metadata
+from sjtu_learning_assistant.course_scope import default_conditions, scoped_database_ids, knowledge_metadata, transcript_course_metadata
 from sjtu_learning_assistant.course_history import CourseHistoryService, CourseHistoryError
 from sjtu_learning_assistant.models import (
     ArchiveJob,
@@ -960,6 +960,7 @@ class DashboardService:
                 self._transcript_service_instance = TranscriptService(
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
+                    course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                 )
             return self._transcript_service_instance
 
@@ -3615,7 +3616,7 @@ class DashboardService:
 
     def _compiled_knowledge_service(self) -> CompiledKnowledge:
         return CompiledKnowledge(self._effective_settings, self.local_projects_path,
-                                 metadata=lambda: knowledge_metadata(self.engine, self._effective_settings().archive_root))
+                                 metadata=lambda: knowledge_metadata(self.engine, self._effective_settings().archive_root), engine=self.engine)
 
     def compiled_knowledge_sources(self) -> dict[str, Any]:
         try:

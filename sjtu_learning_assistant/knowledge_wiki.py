@@ -141,21 +141,25 @@ class CourseWiki:
         by_id = {source["id"]: source for source in sources}
         groups = {}
         for doc in documents:
-            if doc["source_id"] != "automatic-courses":
+            if doc["source_id"] not in {"automatic-courses", "automatic-transcripts"}:
                 continue
             parts = PurePosixPath(doc["relative_path"]).parts
             term, course = (parts[0], parts[1]) if len(parts) >= 3 else ("未分类学期", doc["folder"] or "未分类课程")
+            term, course = doc.get("term_name", term), doc.get("course_name", course)
             identity = _hash(json.dumps([doc.get("term_id", term), doc.get("course_id", course)], ensure_ascii=False))[:32]
             group = groups.setdefault(identity, {"id": identity, "term": term, "course": course,
                 "term_id": doc.get("term_id", ""), "course_id": doc.get("course_id", ""), "documents": [], "ready": []})
             entry = {"id": doc["id"], "title": doc["title"], "citation": doc["source_name"] + "/" + doc["relative_path"],
                      "status": doc["status"], "abstract": ""}
             group["documents"].append(entry)
-            if doc["status"] != "completed" or doc.get("contract") != "course-summary-v1":
+            if doc["status"] != "completed" or doc.get("contract") not in {"course-summary-v1", "classroom-notes-v1"}:
                 continue
             payload = self.knowledge._text(by_id[doc["source_id"]], doc)
             match = re.match(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n", payload)
             body = payload[match.end():] if match else payload
+            if doc["source_id"] == "automatic-transcripts":
+                # Wiki只组织精炼总结；相同引用文档ID仍可读取完整原始字幕。
+                body = body.split("## 当堂老师讲了什么\n", 1)[-1].split("\n## 原始字幕\n", 1)[0].strip()
             # 旧长稿不能借清单状态混入新的精炼 Wiki；人工正文保留，只读检查。
             if not 1 <= len(body) <= 2000:
                 continue

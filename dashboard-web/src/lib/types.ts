@@ -1257,6 +1257,7 @@ export interface Phase1QualityReport {
 }
 
 export interface TranscriptJob {
+  lesson_notes_status?: "pending" | "completed" | "user_modified";
   id: string;
   batch_id: string;
   source_id: string;
@@ -1299,7 +1300,15 @@ export interface TranscriptBatch {
 
 export interface TranscriptArtifact {
   id: string;
-  kind: "raw_vtt" | "cues" | "cleaned" | "summary_json" | "summary";
+  kind:
+    | "raw_vtt"
+    | "cues"
+    | "cleaned"
+    | "summary_json"
+    | "summary"
+    | "lesson"
+    | "lesson_summary"
+    | "original";
   label: string;
   content_type: string;
 }

@@ -43,7 +43,7 @@ type Phase1DetailTab =
 type DetailTab = V1DetailTab | "ai_review";
 
 const v1TabLabels: Record<V1DetailTab, string> = {
-  summary: "本节要点",
+  summary: "当堂老师讲了什么",
   practice: "主动练习",
   cleaned: "规整字幕",
   raw_vtt: "原始字幕",
@@ -99,7 +99,7 @@ export function TranscriptDetailDrawer({
   const [v1Attempt, setV1Attempt] = useState(0);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const actionBusyRef = useRef(false);
-  const artifactRevision = `${job.id}:${job.status}:${job.phase1_status ?? job.pipeline_status ?? ""}`;
+  const artifactRevision = `${job.id}:${job.status}:${job.phase1_status ?? job.pipeline_status ?? ""}:${job.lesson_notes_status ?? ""}`;
   const [phase1List, setPhase1List] = useState<Phase1ArtifactList | null>(null);
   const [phase1ListLoading, setPhase1ListLoading] = useState(true);
   const [phase1ListError, setPhase1ListError] = useState("");
@@ -191,6 +191,19 @@ export function TranscriptDetailDrawer({
 
   const currentV1Artifact = useMemo(() => {
     if (tab === "ai_review") return undefined;
+    if (tab === "summary") {
+      const concise = artifacts.find(
+        (artifact) => artifact.kind === "lesson_summary",
+      );
+      if (concise) return concise;
+      if (artifacts.some((artifact) => artifact.kind === "lesson"))
+        return undefined;
+    }
+    if (tab === "raw_vtt")
+      return (
+        artifacts.find((artifact) => artifact.kind === "original") ??
+        artifacts.find((artifact) => artifact.kind === "raw_vtt")
+      );
     if (tab === "summary" || tab === "practice")
       return (
         artifacts.find((artifact) => artifact.kind === "summary_json") ??
@@ -577,14 +590,26 @@ export function TranscriptDetailDrawer({
 
         <Tabs value={tab} onValueChange={(value) => setTab(value as DetailTab)}>
           <TabsList indicator aria-label="字幕结果">
-            {(Object.keys(v1TabLabels) as V1DetailTab[]).map((value) => (
+            {(["summary", "raw_vtt"] as V1DetailTab[]).map((value) => (
               <TabsTrigger key={value} value={value}>
                 {v1TabLabels[value]}
               </TabsTrigger>
             ))}
-            <TabsTrigger value="ai_review">AI 校对</TabsTrigger>
           </TabsList>
         </Tabs>
+        <details className="transcript-drawer-actions">
+          <summary>校对与历史材料</summary>
+          <Tabs
+            value={tab}
+            onValueChange={(value) => setTab(value as DetailTab)}
+          >
+            <TabsList aria-label="字幕历史材料">
+              <TabsTrigger value="cleaned">规整字幕</TabsTrigger>
+              <TabsTrigger value="practice">主动练习</TabsTrigger>
+              <TabsTrigger value="ai_review">AI 校对</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </details>
 
         <ContentReveal
           key={tab === "ai_review" ? phase1Tab : tab}
@@ -719,7 +744,20 @@ export function TranscriptDetailDrawer({
               正在读取字幕结果…
             </p>
           ) : currentV1Artifact ? (
-            tab === "raw_vtt" ? (
+            currentV1Artifact.kind === "lesson_summary" ||
+            currentV1Artifact.kind === "original" ? (
+              <div
+                className="ai-markdown transcript-markdown"
+                style={{ userSelect: "text" }}
+              >
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeSanitize]}
+                >
+                  {v1Content[currentV1Artifact.id] ?? ""}
+                </ReactMarkdown>
+              </div>
+            ) : tab === "raw_vtt" ? (
               <pre className="transcript-raw">
                 {v1Content[currentV1Artifact.id] ?? ""}
               </pre>
@@ -746,16 +784,19 @@ export function TranscriptDetailDrawer({
           ) : (
             <div className="transcript-muted">
               <p>
-                {[
-                  "completed",
-                  "completed_with_warnings",
-                  "partial",
-                  "failed",
-                  "interrupted",
-                  "cancelled",
-                ].includes(job.status)
-                  ? "这节任务已结束，但没有此类学习材料；可查看其他结果或补充整理。"
-                  : "该阶段尚未生成此类学习材料，完成后会自动更新。"}
+                {tab === "summary" &&
+                artifacts.some((artifact) => artifact.kind === "lesson")
+                  ? "精炼课堂总结尚未完成；原始字幕已可完整阅读和检索，无需重新校对。"
+                  : [
+                        "completed",
+                        "completed_with_warnings",
+                        "partial",
+                        "failed",
+                        "interrupted",
+                        "cancelled",
+                      ].includes(job.status)
+                    ? "这节任务已结束，但没有此类学习材料；可查看其他结果或补充整理。"
+                    : "该阶段尚未生成此类学习材料，完成后会自动更新。"}
               </p>
               {!active && onRetry && (
                 <Button
