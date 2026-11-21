@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.knowledge_wiki import CourseWiki
 from sjtu_learning_assistant.transcript_notes import (
     CONTRACT, _validate, compile_summary, original_markdown,
@@ -39,6 +42,36 @@ class NotesClient:
 
 
 class TranscriptNotesTests(unittest.TestCase):
+    def test_app_startup_backfills_saved_subtitles_without_entering_video_page(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            initial = TranscriptService(root / "transcripts" / "v1", autostart_worker=False)
+            directory = initial._video_dir(SOURCE)
+            directory.mkdir()
+            (directory / "raw.vtt").write_text(RAW)
+            initial._write_json(directory / "manifest.json", {"source": {"source_id": SOURCE},
+                "course": {"id": "12", "name": "经济学"}, "video": {"title": "课堂"},
+                "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}})
+            initial.close()
+            dashboard = DashboardService.__new__(DashboardService)
+            dashboard.local_projects_path = root / "local-projects.json"
+            dashboard._client_lock = threading.RLock()
+            dashboard._transcript_service_instance = None
+            dashboard._transcript_ai_context = lambda: AIContext(None, "", "", False)
+            dashboard.video_subtitles = lambda source: self.fail("不应重新抓取或启动旧校对")
+            dashboard.engine = object()
+            with patch("sjtu_learning_assistant.dashboard_service.transcript_course_metadata", return_value={}):
+                dashboard.start_transcript_markdown_sync()
+                service = dashboard._transcript_service_instance
+                self.addCleanup(service.close)
+                self.assertEqual(initial.root, service.root)
+                until = time.monotonic() + 3
+                while not (directory / "lesson.md").exists() and time.monotonic() < until:
+                    service._wake.wait(0.02)
+                self.assertIn("机会成本", (directory / "lesson.md").read_text())
+                dashboard.start_transcript_markdown_sync()
+                self.assertIs(service, dashboard._transcript_service_instance)
+
     def test_original_text_is_not_rewritten_and_markdown_payload_is_literal(self):
         raw = RAW.replace("机会成本是放弃的最好选择。", "# 原话\n<script>not a command</script>\n[x](https://example.org)")
         result = original_markdown(raw)

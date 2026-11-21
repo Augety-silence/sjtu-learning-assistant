@@ -958,11 +958,18 @@ class DashboardService:
         with self._client_lock:
             if self._transcript_service_instance is None:
                 self._transcript_service_instance = TranscriptService(
+                    self.local_projects_path.parent / "transcripts" / "v1",
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
+                    memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
             return self._transcript_service_instance
+
+    def start_transcript_markdown_sync(self) -> None:
+        """启动已保存字幕的补齐，不依赖用户先进入视频页或新建校对任务。"""
+        if (self.local_projects_path.parent / "transcripts" / "v1" / "videos").is_dir():
+            self._transcript_service()
 
     def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
         if isinstance(course_id, bool) or type(course_id) not in [int, str]:

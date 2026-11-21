@@ -20,6 +20,7 @@
 | `compiled_knowledge.py`，_catalog | 原索引仅有课件镜像、本地项目，没有字幕来源 | 新增课堂 MD 来源；同一搜索/分页读取工具可读总结和完整原始字幕，支持课程/学期隔离 |
 | `knowledge_wiki.py`，snapshot | 仅接纳完成的课件精炼稿，课堂讲解不能进入概念导航 | 完成的精炼课堂部分可参与 Wiki；引用文档仍指向含原始字幕的完整 MD，未完成/人工改稿不冒充已审校 |
 | `TranscriptDetailDrawer.tsx` | 要点、练习、规整、原始、AI 校对并列且小结渲染多种训练栏目 | 主入口只保留“当堂老师讲了什么”“原始字幕”；校对与历史材料折叠，不删除 |
+| `desktop_app.py`，run_desktop_app；`dashboard_service.py`，_transcript_service | 第一个打包候选启动后，已保存样本尚无 lesson.md；服务仅视频页读取时惰性启动 | 新增App启动补齐入口，仅有已保存来源时启动；使用与知识库同一用户数据根，隔离测试/自定义配置；存储故障不阻断App启动 |
 | 真实交大 API，前四轮 | 模型改写了 quote、拼接了分稿栏目；过窄引用数量限制也会误拒绝有效来源 | 用真实ID本地查表；合并单独提示；保留全部有效ID，阅读正文仅显示时间范围，不放松来源检查 |
 
 字幕记录新增字段是可选产物，不改变旧 V1/V2 完成契约，避免旧任务被误判为缺产物并重新调用模型。人工修改通过已记录 SHA-256 检测：修改或没有生成记录的同名文件保留，不覆盖。多进程补齐使用逐堂非阻塞文件锁，原有队列和取消不被长时间持锁阻塞。
@@ -39,8 +40,9 @@
 ## 验证
 
 - 回归覆盖：完整原始字幕、纯文本展示、2000 字符限制、全部分块处理和审校、伪造来源拒绝、数学不等式条件、审校失败不发布、旧字幕自动补齐、课程/学期隔离、实际 MD 正文、Wiki 精炼来源、人工修改保留、失败冷却及主界面两入口。
-- 最终沙盒 pytest：1189 passed、3 skipped、488 subtests passed（94.91 秒）；unittest：1117 tests、OK、2 skipped（89.728 秒）。
-- 最终 Mac pytest：1191 passed、1 skipped、488 subtests passed（32.70 秒）；unittest：1117 tests、OK、1 skipped（27.894 秒）。平台差异来自平台专项测试/跳过项，不把数量差异当失败。
+- 启动补齐定向回归：54 passed、40 subtests passed。
+- 最终沙盒 pytest：1190 passed、3 skipped、488 subtests passed（95.70 秒）；unittest：1118 tests、OK、2 skipped（90.318 秒）。
+- 最终 Mac pytest：1192 passed、1 skipped、488 subtests passed（32.31 秒）；unittest：1118 tests、OK、1 skipped（29.739 秒）。平台差异来自平台专项测试/跳过项，不把数量差异当失败。
 - 前端：62 文件、624 用例通过；Biome 162 文件、TypeScript 与 Vite 生产构建通过。
 - compileall、Python/npm 许可证和项目秘密模式扫描通过。扫描有 7 个非 UTF-8 文件未覆盖，不等于 GitHub gitleaks。
 - Mac 前端复验同样为 62 文件、624 用例通过；Biome、TypeScript/Vite、compileall、许可证与项目秘密扫描通过，无新增依赖。

@@ -2665,6 +2665,13 @@ def run_desktop_app() -> int:
         automatic_start = getattr(service, "start_course_markdown_sync", None)
         if callable(automatic_start):
             automatic_start()
+        automatic_transcript_start = getattr(service, "start_transcript_markdown_sync", None)
+        if callable(automatic_transcript_start):
+            try:
+                automatic_transcript_start()
+            except Exception as exc:
+                # 可选字幕存储不可用不能挡住整个App；不记录路径、正文或凭据。
+                LOGGER.warning("已保存字幕MD自动补齐启动失败；exception_type=%s", type(exc).__name__)
         start_options = {
             "debug": False,
             "private_mode": False,

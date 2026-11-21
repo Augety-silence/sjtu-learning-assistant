@@ -924,6 +924,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
             self.assertEqual(0, run_desktop_app())
 
         create_window_call = webview.create_window.call_args
+        dashboard.start_transcript_markdown_sync.assert_called_once_with()
         fingerprint = hashlib.sha256(index_payload).hexdigest()[:16]
         self.assertEqual(
             ("SJTU 学习助手", f"file:///index.html?build={fingerprint}"),
