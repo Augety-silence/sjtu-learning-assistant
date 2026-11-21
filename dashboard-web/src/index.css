@@ -8324,7 +8324,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .learning-flow-items .transcript-markdown { min-width: 0; }
 .learning-flow-items .transcript-markdown > :first-child { margin-top: 0; }
 .learning-flow-items .transcript-markdown > :last-child { margin-bottom: 0; }
-.learning-flow-fallback { margin: 0; color: var(--text-secondary); line-height: 1.7; overflow-wrap: anywhere; }
 .transcript-muted { color: var(--text-secondary); }
 .transcript-inline-error { color: var(--status-danger); }
 .transcript-raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -8609,30 +8608,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   white-space: nowrap;
 }
 
-.video-batch-bar {
-  padding: 10px 14px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 6px 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-subtle);
-}
-
-.video-batch-bar > div {
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.video-batch-bar > p {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
 .video-learning-grid {
   min-width: 0;
   display: grid;
@@ -8763,6 +8738,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-list-header {
+  flex: 0 0 auto;
   min-height: 50px;
   padding: 10px 14px;
   display: flex;
@@ -8778,21 +8754,12 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   gap: 8px;
 }
 
-.video-list-header span,
-.video-select-all {
+.video-list-header span {
   color: var(--text-secondary);
   font-size: 12px;
 }
 
-.video-select-all {
-  min-height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
 
-.video-select-all input,
 .video-recording-list > li > input {
   width: 16px;
   height: 16px;
@@ -9100,84 +9067,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   line-height: 20px;
 }
 
-.video-jobs {
-  min-width: 0;
-  padding: 14px 16px;
-  display: grid;
-  gap: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface-page);
-}
-
-.video-jobs.is-empty {
-  min-height: 64px;
-  max-height: 80px;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 16px;
-}
-
-.video-jobs-heading {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.video-jobs-heading span,
-.video-jobs > p,
-.video-job-list article > div:first-child span {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.video-job-list {
-  display: grid;
-  gap: 6px;
-}
-
-.video-job-list article {
-  min-width: 0;
-  min-height: 44px;
-  padding: 6px 8px;
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(100px, 0.7fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  border-radius: 8px;
-}
-
-.video-job-list article:hover {
-  background: var(--surface-hover);
-}
-
-.video-job-list article > div:first-child {
-  min-width: 0;
-  display: grid;
-}
-
-.video-job-list article > div:first-child strong {
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.video-job-progress {
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--surface-control);
-}
-
-.video-job-progress > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--action-primary);
-}
-
 .video-list-jump {
   display: none;
 }
@@ -9223,15 +9112,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     width: 100%;
   }
 
-  .video-batch-bar,
-  .video-jobs.is-empty {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .video-batch-bar > p {
-    grid-column: auto;
-  }
-
   .video-tool-summary {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -9249,14 +9129,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     grid-column: 2;
   }
 
-  .video-job-list article {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .video-job-progress {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
 }
 
 @media (max-width: 440px) {
@@ -9353,8 +9225,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-player-tool-trigger,
-.video-shortcuts-trigger,
-.video-history-trigger {
+.video-shortcuts-trigger {
   min-height: 30px;
   padding: 0 8px;
   display: inline-flex;
@@ -9373,10 +9244,8 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 .video-player-tool-trigger:hover,
 .video-shortcuts-trigger:hover,
-.video-history-trigger:hover:not(:disabled),
 .video-player-tool-trigger:focus-visible,
-.video-shortcuts-trigger:focus-visible,
-.video-history-trigger:focus-visible {
+.video-shortcuts-trigger:focus-visible {
   border-color: var(--border-subtle);
   outline: none;
   color: var(--text-primary);
@@ -9384,14 +9253,12 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 .video-player-tool-trigger:focus-visible,
-.video-shortcuts-trigger:focus-visible,
-.video-history-trigger:focus-visible {
+.video-shortcuts-trigger:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
-.video-player-tool-trigger svg,
-.video-history-trigger svg {
+.video-player-tool-trigger svg {
   width: 13px;
   height: 13px;
 }
@@ -9476,77 +9343,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   text-align: center;
 }
 
-.video-jobs.is-empty .video-jobs-summary {
-  grid-column: 1 / -1;
-}
-
-.video-jobs-summary {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.video-history-trigger:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.video-history-trigger[aria-expanded="true"] svg {
-  transform: rotate(180deg);
-}
-
-.video-job-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.video-job-history {
-  display: grid;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.video-job-history article {
-  min-width: 0;
-  min-height: 38px;
-  padding: 4px 8px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.video-job-history article + article {
-  border-top: 1px solid var(--border-subtle);
-}
-
-.video-job-history article > div:first-child {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.video-job-history strong {
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.video-job-history article > div:first-child span,
-.video-job-history > p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-
-.video-job-history > p {
-  padding: 6px 8px 2px;
-}
-
 @media (max-width: 720px) {
   .video-player-meta-row {
     align-items: flex-start;
@@ -9561,9 +9357,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     width: min(220px, calc(100vw - 48px));
   }
 
-  .video-jobs-summary {
-    align-items: flex-start;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -9571,9 +9364,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
     animation: none;
   }
 
-  .video-history-trigger svg {
-    transition: none;
-  }
 }
 
 /* Obsidian course compiler */
@@ -9656,65 +9446,10 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 
 }
 /* Streamlined course video organization flow. */
-.video-course-progress {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.video-course-progress > span {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .video-course-toolbar > [data-radix-collection-item],
 .video-course-toolbar > [role="tablist"] { grid-column: 1 / -1; }
-.video-status-filters {
-  min-height: 48px;
-  padding: 8px 14px;
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  align-content: flex-start;
-  flex-wrap: wrap;
-  gap: 6px;
-  overflow: visible;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.video-status-filters > button {
-  min-height: var(--compact-filter-height);
-  padding: 5px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--compact-radius);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.video-status-filters > button:hover { border-color: var(--border-subtle); background: var(--surface-hover); color: var(--text-primary); }
-.video-status-filters > button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--action-primary) 26%, var(--border-subtle)); background: var(--surface-accent-soft); color: var(--action-primary); font-weight: 600; }
-.video-status-filters > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.video-status-filters .video-select-all { margin-left: auto; white-space: nowrap; }
 .video-recording-list > li { grid-template-columns: minmax(0, 1fr) auto; }
 .video-recording-list > li:has(> input) { grid-template-columns: 18px minmax(0, 1fr) auto; }
-.video-learning-empty {
-  min-height: 88px;
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  border: 1px dashed var(--border-default);
-  border-radius: 10px;
-  background: var(--surface-control);
-}
-.video-learning-empty > div { min-width: 0; display: grid; gap: 4px; }
-.video-learning-empty strong { color: var(--text-primary); font-size: 14px; }
-.video-learning-empty span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
 .video-status-queued,
 .video-status-transcribing,
 .video-status-generating,
@@ -9724,9 +9459,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 .video-status-generating svg,
 .video-status-reviewing svg { animation: video-status-spin 1.2s linear infinite; }
 @media (max-width: 720px) {
-  .video-course-progress { align-items: stretch; flex-direction: column; }
-  .video-course-progress > span { white-space: normal; }
-  .video-learning-empty { align-items: stretch; flex-direction: column; }
   .video-recording-list > li,
   .video-recording-list > li:has(> input) { grid-template-columns: minmax(0, 1fr); }
   .video-recording-list > li:has(> input) { grid-template-columns: 18px minmax(0, 1fr); }
@@ -9754,45 +9486,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 .transcript-quality-warning strong { font-size: 13px; line-height: 20px; }
 .transcript-quality-warning span { color: var(--text-secondary); font-size: 12px; line-height: 18px; }
-.transcript-practice-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.transcript-practice-heading h4 { margin: 0; }
-.transcript-practice-heading span { color: var(--status-warning); font-size: 12px; font-weight: 600; }
-.transcript-practice > ol { margin: 14px 0 0; padding: 0; display: grid; gap: 12px; list-style: none; counter-reset: practice; }
-.transcript-practice > ol > li { padding: 14px; border: 1px solid var(--border-subtle); border-radius: 8px; counter-increment: practice; }
-.transcript-practice > ol > li::before { content: counter(practice) "."; color: var(--text-secondary); font-weight: 600; }
-.transcript-practice details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
-.transcript-practice summary { width: max-content; color: var(--action-primary); cursor: pointer; font-weight: 600; }
 .video-pdf-state small { margin-top: 2px; display: block; color: var(--text-tertiary); }
-.video-state-label { min-height: var(--compact-meta-height); padding: 3px 8px; border-radius: var(--compact-radius); font-size: 12px; line-height: 16px; white-space: nowrap; }
-.video-state-label-failed { color: var(--status-danger); }
-
 
 /* Compact recording hierarchy and progressive row actions. */
-.video-course-count strong,
-.video-course-progress > span strong,
-.video-status-filters .aura-filter-count {
+.video-course-count strong {
   color: currentColor;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.video-course-progress > span {
-  line-height: 18px;
-}
-
-.video-course-progress > .inline-flex {
-  border-color: var(--border-info);
-  color: var(--action-primary);
-  background: var(--surface-page);
-}
-
-.video-course-progress > .inline-flex:not(:disabled):hover {
-  background: var(--surface-info);
-}
-
-.video-status-filters > button.is-zero:not([aria-pressed="true"]) .aura-filter-count {
-  color: var(--text-tertiary);
-  opacity: 0.58;
 }
 
 .video-recording-list > li,
@@ -9960,10 +9660,6 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 @media (max-width: 720px) {
-  .video-course-progress {
-    align-items: flex-start;
-  }
-
   .video-recording-list > li,
   .video-recording-list > li:has(> input) {
     min-height: 96px;
@@ -9988,24 +9684,13 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
   grid-column: 3;
 }
 
-.video-row-organizing {
-  grid-column: 2;
-  min-height: 28px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--action-primary);
-  font-size: 11px;
-  white-space: nowrap;
-}
 
-.video-row-organizing svg,
 .video-more-menu button[disabled] svg {
   width: 13px;
   height: 13px;
 }
 
-.video-row-organizing svg,
+
 .video-more-menu button[disabled] .lucide-loader-circle {
   animation: video-status-spin 1.2s linear infinite;
 }
@@ -10028,7 +9713,7 @@ button.transcript-status:focus-visible { outline: 2px solid var(--focus-ring); o
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .video-row-organizing svg,
+
   .video-more-menu button[disabled] .lucide-loader-circle {
     animation: none;
   }

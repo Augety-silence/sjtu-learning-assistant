@@ -41,6 +41,26 @@ def main() -> int:
                 if time.monotonic() > deadline:
                     raise RuntimeError("合成页面加载超时")
                 threading.Event().wait(0.1)
+            def check_video_layout():
+                return window.evaluate_js("""(() => {
+                  const panel=document.querySelector('.video-list-panel');
+                  const header=panel.querySelector('.video-list-header').getBoundingClientRect();
+                  const list=panel.querySelector('.video-recording-list');
+                  const first=list.querySelector('li strong').getBoundingClientRect();
+                  const tabs=document.querySelector('.video-learning-tabs');
+                  return {rows:list.children.length, clear:first.top>=header.bottom,
+                    noNoise:!document.querySelector('.video-status-filters,.video-jobs,.video-batch-bar'),
+                    tabs:tabs.querySelectorAll('[role=tab]').length,
+                    noCover:!tabs.querySelector('[data-selection-indicator]'),
+                    retry:document.querySelector('.video-material-toolbar').innerText.includes('重试同步'),
+                    within:Array.from(tabs.querySelectorAll('[role=tab]')).every(t=>t.getBoundingClientRect().right<=tabs.getBoundingClientRect().right+1)};
+                })()""")
+            for width in (1050, 760):
+                window.resize(width, 760)
+                threading.Event().wait(0.3)
+                layout=check_video_layout()
+                assert layout["rows"]==18 and layout["clear"] and layout["noNoise"] and layout["tabs"]==3 and layout["noCover"] and layout["retry"] and layout["within"], layout
+            window.resize(1050,760)
             window.evaluate_js("document.querySelector('main > button').click()")
             while not window.evaluate_js("Boolean(document.querySelector('.transcript-markdown'))"):
                 if time.monotonic() > deadline:
@@ -66,7 +86,7 @@ def main() -> int:
               return Math.abs(tab.x-bg.x)<2 && Math.abs(tab.y-bg.y)<2 && Math.abs(tab.width-bg.width)<2;
             })()""")
             assert geometry
-            outcome.update(ok=True, native="WKWebView", tabs=2, layers=True, original_readable=True, geometry=True)
+            outcome.update(ok=True, native="WKWebView", tabs=2, layers=True, original_readable=True, geometry=True, video_rows=18, video_tabs=3, video_layout_sizes=[1050,760], no_video_cover=True)
         except Exception as exc:
             outcome.update(error_type=type(exc).__name__, error=str(exc),
                 synthetic_page=window.evaluate_js("document.body.innerText.slice(0,500)"))

@@ -17,7 +17,6 @@
     .assignment-filters,
     .ai-preference-options,
     .theme-options,
-    .video-status-filters,
     .knowledge-phase-strip
   ) {
   isolation: isolate;

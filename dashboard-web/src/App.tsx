@@ -1101,29 +1101,13 @@ function VideosAdapter({
   );
   return (
     <>
-      {(toolError || transcriptError) && (
-        // 非阻断性工具错误（录像列表仍可用），等待当前播报结束再提示。
-        <div
-          className="inline-notice"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <span>{transcriptError || toolError}</span>
-          <Button
-            variant="link"
-            size="sm"
-            onClick={() => {
-              setTaskRetry((value) => value + 1);
-              if (toolError) void load(true);
-            }}
-          >
-            重新检查
-          </Button>
-        </div>
-      )}
       <VideosView
         videos={visibleVideos}
+        syncIssue={transcriptError || toolError}
+        onRetrySync={() => {
+          setTaskRetry((value) => value + 1);
+          if (toolError) void load(true);
+        }}
         aiReadiness={aiReadiness}
         onLoadSlides={loadSlides}
         onLoadSlideImage={loadSlideImage}
@@ -1322,7 +1306,6 @@ function VideosAdapter({
             video.source === "video_space"
               ? await createVideoSlidesPdf(video.id)
               : await createVideoScreenshotPdf(video.id);
-          await revealAcademicExport(result.reveal_token);
           return {
             scope: "video" as const,
             open: async () => {

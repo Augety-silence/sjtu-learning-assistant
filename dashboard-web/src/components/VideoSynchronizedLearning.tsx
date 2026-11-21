@@ -123,6 +123,7 @@ export function VideoSynchronizedLearning({
   onLoad,
   onSeek,
   onRetry,
+  quiet = false,
 }: {
   video: CourseVideoItem;
   courseId?: number | null;
@@ -135,6 +136,7 @@ export function VideoSynchronizedLearning({
   ) => Promise<VideoLearningSegmentsResult>;
   onSeek: (seconds: number) => void;
   onRetry?: () => void | Promise<void>;
+  quiet?: boolean;
 }) {
   const [result, setResult] = useState<VideoLearningSegmentsResult>();
   const [error, setError] = useState("");
@@ -261,88 +263,94 @@ export function VideoSynchronizedLearning({
       className="video-synchronized-learning learning-flow"
       aria-label="随视频同步的学习材料"
     >
-      <p role="status" className="transcript-muted">
-        {error ||
-          (currentRange
-            ? `当前段已准备至 ${clock(currentRange[1] / 1000)}；领先播放 ${Math.floor(currentRange[1] / 1000 - playbackTime)} 秒`
-            : refreshing || visible?.status === "processing"
-              ? "当前段还在准备，已完成内容会保留在下方。"
-              : "当前时间尚无已准备内容。")}
-      </p>
-      {error && (
-        <button
-          type="button"
-          className="rounded-[8px] text-primary hover:text-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-          onClick={refresh}
-        >
-          重新检查
-        </button>
-      )}
-      {visible?.stage &&
-        (state && technicalStates.has(state) ? (
-          <p>失败阶段：{transcriptStageLabel(visible.stage)}</p>
-        ) : (
-          <p>当前阶段：{visible.stage}</p>
-        ))}
-      {(visible?.errorCode || visible?.errorMessage) && (
-        <p role="alert">
-          {[visible.errorCode, visible.errorMessage].filter(Boolean).join("：")}
-        </p>
-      )}
-      {visible?.updatedAt && (
-        <p>最近更新：{new Date(visible.updatedAt).toLocaleString()}</p>
-      )}
-      {(visible?.completedSegments != null ||
-        visible?.failedSegments != null) && (
-        <p>
-          已完成 {visible.completedSegments ?? 0} 段 · 失败{" "}
-          {visible.failedSegments ?? 0} 段
-        </p>
-      )}
-      {visible &&
-        (visible.status === "ready" ||
-          (explicitState &&
-            explicitState !== "processing" &&
-            explicitState !== "not_started")) && (
-          <p>
-            {visible.isProcessing
-              ? "初稿可读，校对仍在进行"
-              : state && (explicitState || state !== "processing")
-                ? stateCopy(state, visible)
-                : (visible.failedSegments ?? 0) > 0
-                  ? "初稿可读，部分校对未通过；任务已结束"
-                  : visible.completedSegments != null ||
-                      visible.failedSegments != null
-                    ? "当前材料处理已结束"
-                    : "初稿可读，最终校对状态尚未确认"}
+      {!quiet && (
+        <>
+          <p role="status" className="transcript-muted">
+            {error ||
+              (currentRange
+                ? `当前段已准备至 ${clock(currentRange[1] / 1000)}；领先播放 ${Math.floor(currentRange[1] / 1000 - playbackTime)} 秒`
+                : refreshing || visible?.status === "processing"
+                  ? "当前段还在准备，已完成内容会保留在下方。"
+                  : "当前时间尚无已准备内容。")}
           </p>
-        )}
-      {visible?.retryable && onRetry && (
-        <button
-          type="button"
-          className="rounded-[8px] text-primary hover:text-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-          onClick={() => void onRetry()}
-        >
-          {state === "finished_needs_review" ||
-          visible.errorCode === "content_uncertain" ||
-          visible.stage === "needs_review"
-            ? "重新校对"
-            : "继续失败阶段"}
-        </button>
-      )}
-      {scheduledRetryTime && (
-        <p role="status">将自动继续失败阶段（预计 {scheduledRetryTime}）</p>
-      )}
-      {visible?.message && (
-        <p className="transcript-muted">{visible.message}</p>
-      )}
-      {segments.length === 0 && visible?.status === "empty" && (
-        <p>这节录像暂没有可同步的学习材料。</p>
-      )}
-      {segments.length > 0 && !active && (
-        <p className="transcript-muted">
-          当前时间尚无讲义段落，已完成的内容会保留在下方。
-        </p>
+          {error && (
+            <button
+              type="button"
+              className="rounded-[8px] text-primary hover:text-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              onClick={refresh}
+            >
+              重新检查
+            </button>
+          )}
+          {visible?.stage &&
+            (state && technicalStates.has(state) ? (
+              <p>失败阶段：{transcriptStageLabel(visible.stage)}</p>
+            ) : (
+              <p>当前阶段：{visible.stage}</p>
+            ))}
+          {(visible?.errorCode || visible?.errorMessage) && (
+            <p role="alert">
+              {[visible.errorCode, visible.errorMessage]
+                .filter(Boolean)
+                .join("：")}
+            </p>
+          )}
+          {visible?.updatedAt && (
+            <p>最近更新：{new Date(visible.updatedAt).toLocaleString()}</p>
+          )}
+          {(visible?.completedSegments != null ||
+            visible?.failedSegments != null) && (
+            <p>
+              已完成 {visible.completedSegments ?? 0} 段 · 失败{" "}
+              {visible.failedSegments ?? 0} 段
+            </p>
+          )}
+          {visible &&
+            (visible.status === "ready" ||
+              (explicitState &&
+                explicitState !== "processing" &&
+                explicitState !== "not_started")) && (
+              <p>
+                {visible.isProcessing
+                  ? "初稿可读，校对仍在进行"
+                  : state && (explicitState || state !== "processing")
+                    ? stateCopy(state, visible)
+                    : (visible.failedSegments ?? 0) > 0
+                      ? "初稿可读，部分校对未通过；任务已结束"
+                      : visible.completedSegments != null ||
+                          visible.failedSegments != null
+                        ? "当前材料处理已结束"
+                        : "初稿可读，最终校对状态尚未确认"}
+              </p>
+            )}
+          {visible?.retryable && onRetry && (
+            <button
+              type="button"
+              className="rounded-[8px] text-primary hover:text-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              onClick={() => void onRetry()}
+            >
+              {state === "finished_needs_review" ||
+              visible.errorCode === "content_uncertain" ||
+              visible.stage === "needs_review"
+                ? "重新校对"
+                : "继续失败阶段"}
+            </button>
+          )}
+          {scheduledRetryTime && (
+            <p role="status">将自动继续失败阶段（预计 {scheduledRetryTime}）</p>
+          )}
+          {visible?.message && (
+            <p className="transcript-muted">{visible.message}</p>
+          )}
+          {segments.length === 0 && visible?.status === "empty" && (
+            <p>这节录像暂没有可同步的学习材料。</p>
+          )}
+          {segments.length > 0 && !active && (
+            <p className="transcript-muted">
+              当前时间尚无讲义段落，已完成的内容会保留在下方。
+            </p>
+          )}
+        </>
       )}
       <div style={{ maxHeight: 360, overflowY: "auto" }}>
         {segments.map((segment) => (
@@ -366,7 +374,7 @@ export function VideoSynchronizedLearning({
               {clock(segment.startMs / 1000)}–{clock(segment.endMs / 1000)} ·{" "}
               {segment.title}
             </button>
-            {segment.provisional && (
+            {!quiet && segment.provisional && (
               <small className="transcript-muted">
                 {segment.kind === "transcript"
                   ? "原字幕摘录"

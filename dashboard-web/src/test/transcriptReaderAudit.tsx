@@ -1,8 +1,10 @@
 /** 合成视觉验收，不读取真实课程、凭据或调用模型。 */
 import { useState } from "react";
 import ReactDOM from "react-dom/client";
+import { ToastProvider } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
+import { VideosView } from "@/components/VideosView";
 import type { BridgeResponse } from "@/lib/api";
 import type { TranscriptJob } from "@/lib/types";
 import "@/index.css";
@@ -60,7 +62,22 @@ function Audit() {
   const [panel, setPanel] = useState("slides");
   const [open, setOpen] = useState(false);
   return (
-    <main style={{ padding: 40 }}>
+    <main style={{ padding: 16 }}>
+      <VideosView
+        courseId={12}
+        courseName="合成课堂：视频优先"
+        videos={Array.from({ length: 18 }, (_, i) => ({
+          id: `sjtu-video:12:${i + 1}`,
+          title: `第${i + 1}节：课堂录像与长标题布局验收`,
+          courseName: "合成课堂",
+          source: "video_space" as const,
+          playable: true,
+          supportsSubtitle: true,
+          supportsSlidesPdf: true,
+          classroom: "合成教室",
+          duration: 5400,
+        }))}
+      />
       <h1>字幕与页签隔离验收</h1>
       <Tabs value={source} onValueChange={setSource}>
         <TabsList indicator aria-label="视频来源">
@@ -85,4 +102,9 @@ function Audit() {
   );
 }
 const root = document.getElementById("root");
-if (root) ReactDOM.createRoot(root).render(<Audit />);
+if (root)
+  ReactDOM.createRoot(root).render(
+    <ToastProvider>
+      <Audit />
+    </ToastProvider>,
+  );

@@ -230,17 +230,14 @@ describe("responsive and motion regression rules", () => {
     expect(css).not.toContain("@media (hover: none)");
   });
 
-  it("styles quality warnings, folded practice answers and temporary PDF state", () => {
+  it("preserves diagnostic styles but removes abandoned practice and status styles", () => {
     expect(css).toMatch(/\.transcript-quality-warning \{[^}]*border:/);
-    expect(css).toMatch(/\.transcript-practice details \{[^}]*border-top:/);
-    expect(css).toMatch(/\.video-pdf-state small \{[^}]*display: block/);
-    expect(css).toMatch(/\.video-state-label-failed \{[^}]*status-danger/);
+    expect(css).not.toContain(".transcript-practice");
+    expect(css).not.toContain(".video-state-label-failed");
   });
 
-  it("keeps wrapped recording filters in flow and highlights the whole active row", () => {
-    expect(css).toMatch(
-      /\.video-status-filters \{[^}]*flex: 0 0 auto[^}]*flex-wrap: wrap/,
-    );
+  it("keeps recording header in flow without obsolete filters and highlights the active row", () => {
+    expect(css).toMatch(/\.video-list-header \{[^}]*flex: 0 0 auto/);
     expect(css).toMatch(/\.video-recording-list \{[^}]*flex: 1 1 auto/);
     const currentRule =
       css.match(/\.video-recording-list > li\.is-current \{([^}]*)\}/)?.[1] ??

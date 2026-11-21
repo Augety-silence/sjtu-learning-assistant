@@ -835,7 +835,8 @@ class DashboardService:
         with self._client_lock:
             if self._video_service_instance is None:
                 self._video_service_instance = SJTUVideoService(
-                    self._get_canvas_client
+                    self._get_canvas_client,
+                    slide_cache_root=APP_SUPPORT_DIR / "video-slides" / "v1",
                 )
             return self._video_service_instance
 
@@ -1133,7 +1134,7 @@ class DashboardService:
     def video_slides_pdf(self, source_id: str) -> dict[str, Any]:
         """Generate a remote slide PDF in the backend-owned export directory."""
         try:
-            canvas_course_id, _video_id = parse_remote_source_id(source_id)
+            canvas_course_id, video_id = parse_remote_source_id(source_id)
             result = self._video_service().slides_pdf(source_id)
         except SJTUVideoError as exc:
             raise DashboardError(str(exc)) from None
@@ -1149,7 +1150,7 @@ class DashboardService:
             course_name = course.name if course is not None else "课程"
         stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._ -]+", "-", course_name)
         stem = stem.strip(" .-")[:120] or "课程"
-        filename = f"{stem}-课件.pdf"
+        filename = f"{stem}-{video_id}-课件.pdf"
         root = Path(self._academic_temp.name).resolve()
         target = root / filename
         descriptor, temporary_name = tempfile.mkstemp(prefix=".slides-pdf-", dir=root)
