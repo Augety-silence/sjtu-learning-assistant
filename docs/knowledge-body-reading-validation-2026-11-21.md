@@ -74,3 +74,21 @@ Mac最终日志：`/Users/bytedance/Projects/sjtu-md-body-validation.944nUp/`，
 精确提交构建与部署信息将于实际完成后追加。本轮不改版本（1.8.12），不推送、创建／合并PR或发布Release。不删除已有回退。
 
 未执行：Windows真机、真实云盘写入、全库重新编译、Mac原生逐项交互和朋友电脑复验。GitHub网络不可用，远端检查未能重新确认。
+
+## 精确提交构建与实际部署
+
+- 本机修复提交：`92d32a93397c6e51f4c6ea7c751812caadd3ed1a`，tree为`9b8eea06063200d2ec9859fb30e3dad66738519d`。提交前全量验证和8个文件的暂存区核验通过；提交后工作树干净。
+- 沙盒修复提交：`e151579f2b1f58ae7113a3283b13a687ecd8160f`。因开发副本历史不同，哈希不同，但提交tree与本机逐字一致。
+- 从本机精确修复提交的git archive创建独立构建源码：`/private/tmp/sjtu-md-body-build.H7SdJ1`。前端在独立源码重新TypeScript/Vite构建；图标与PyInstaller打包完成，没有使用脏工作树或覆盖旧构建。
+- 已验签候选：`/Users/bytedance/Projects/sjtu-pr-audit-20261101-5c3127d/dist/md-body-reader-20261121_104450/SJTU Learning Assistant.app`。
+- ad-hoc签名、deep/strict验签、plist、第一方绝对路径/秘密和禁止模块检查均通过；不是Developer ID公证。
+- 已安装到：`/Applications/SJTU Learning Assistant.app`；部署后再次验签、plist检查通过；版本仍为1.8.12。
+- 新主二进制SHA-256：`8d5fe3ae07e9dafdd10f544e761c0efcdb81dd76fe26c187a04970c00c68af1a`。
+- 替换前旧App主PID为28547，发送正常Quit后确认主进程已退出，未SIGKILL或强制停止。部署前没有完成后台任务数据库的独立盘点；不能声称已逐项确认所有后台任务状态。
+- 新时间戳回退：`/Users/bytedance/Projects/sjtu-app-rollbacks/20261121_104610-md-body-reader/SJTU Learning Assistant.app`；回退SHA-256为`69b8012c5f5b215d5241400306774ea7ba7188b809513441837cc808c7d4e04d`，与替换前一致。没有删除旧App、原有回退或学习数据，仅删除此次复制完成后的空临时安装目录。
+- 部署后已启动，主进程PID33524；启动时另观察到ffmpeg子进程33543。启动和签名核验不等于Mac原生全功能交互验收。
+- 真实验收脚本使用只读数据库、原MD哈希前后一致；部署启动App后正常应用生命周期可能更新本地状态，没有主动执行全库重新编译或更改历史聊天回复。
+
+结束阶段分支仍为`aime/1793618241-ai-document-multimodal`，origin/main本地引用仍为`d71c19bd34c4d53dba1201aa63999d77ae94a63c`；修复后HEAD为上述92d32a9。随后本记录作为独立本地提交追加，结束HEAD为该部署记录提交（父提交92d32a9），外部交付消息记录最终哈希；工作树应保持干净。
+
+本轮无push、PR创建/合并、版本变化或Release。两个旧脏工作树仍未被访问或修改。已有错误历史回复不会自动重写；新App下重新发送原问题或“再查查”以触发修复后的读取流程。
