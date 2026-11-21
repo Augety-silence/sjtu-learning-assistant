@@ -330,9 +330,7 @@ export function GradingView({
       <div className="view-intro">
         <div>
           <h2>作业批改</h2>
-          <p>
-            {assignmentName ?? "选择提交后查看详情、评分、评论与参考文件。"}
-          </p>
+          {assignmentName && <p>{assignmentName}</p>}
         </div>
       </div>
       <dl className="summary-strip" aria-label="批改概览">

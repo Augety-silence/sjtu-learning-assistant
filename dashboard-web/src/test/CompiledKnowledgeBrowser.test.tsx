@@ -87,13 +87,48 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("CompiledKnowledgeBrowser", () => {
+  it("正常打开不显示成功段落，结果数仅提供给读屏，读正文没有分页说明", async () => {
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("关系代数");
+    expect(screen.getByText("找到 87 份结果").className).toBe("sr-only");
+    fireEvent.click(screen.getByRole("button", { name: "在本地显示" }));
+    await waitFor(() => expect(openCompiledKnowledge).toHaveBeenCalled());
+    expect(screen.queryByText(/已在系统文件管理器/)).toBeNull();
+    expect(screen.queryByText(/正文分页预览|已加载.*字符/)).toBeNull();
+  });
+
+  it("目录不完整与定位失败仍明确显示，不因去文案而隐藏", async () => {
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: [document],
+      count: 1,
+      next_offset: null,
+      issues: ["索引部分损坏"],
+      truncated: true,
+    });
+    vi.mocked(openCompiledKnowledge).mockRejectedValue(
+      new Error("无法在本地显示"),
+    );
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("关系代数");
+    expect(screen.getByText("索引部分损坏").getAttribute("role")).toBe("alert");
+    expect(screen.getByText(/结果范围不完整/).getAttribute("role")).toBe(
+      "alert",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "在本地显示" }));
+    expect(
+      (await screen.findByText("无法在本地显示")).getAttribute("role"),
+    ).toBe("alert");
+  });
+
   it("来源说明只在独立提示中，正文没有常驻注释，图标细小且可键盘关闭提示", async () => {
     const { container } = render(<CompiledKnowledgeBrowser />);
     await screen.findByText("关系代数");
     const reader = screen.getByLabelText("Markdown 正文预览");
     expect(within(reader).queryByText(/来源：/)).toBeNull();
     const info = screen.getByRole("button", { name: "文档来源与状态" });
-    const tooltip = screen.getByRole("tooltip", { hidden: true });
+    const tooltip = window.document.getElementById(
+      info.getAttribute("aria-describedby") || "",
+    ) as HTMLElement;
     expect(info.getAttribute("aria-describedby")).toBe(tooltip.id);
     expect(tooltip.textContent).toContain(page.citation);
     fireEvent.focus(info);
@@ -373,7 +408,7 @@ describe("CompiledKnowledgeBrowser", () => {
     });
     render(<CompiledKnowledgeBrowser />);
     expect(await screen.findByText("最后的知识点")).toBeTruthy();
-    expect(screen.getByText(/全文已显示/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "继续阅读" })).toBeNull();
   });
   it("公式能显示，但不能借数学命令加载外部资源", async () => {
     vi.mocked(readCompiledKnowledge).mockResolvedValue({
@@ -461,11 +496,12 @@ describe("CompiledKnowledgeBrowser", () => {
       truncated: false,
     });
     fireEvent.click(screen.getByRole("button", { name: "刷新结果" }));
-    expect(await screen.findByText(/此来源暂无可读取/)).toBeTruthy();
+    expect(await screen.findByText("暂无编译资料")).toBeTruthy();
   });
   it("提供真实安装路径的 MCP 配置而不修改 AI 客户端", async () => {
     render(<CompiledKnowledgeBrowser />);
-    fireEvent.click(screen.getByRole("button", { name: "显示 AI 连接配置" }));
+    fireEvent.click(screen.getByText("外部 AI 接入"));
+    fireEvent.click(screen.getByRole("button", { name: "显示连接配置" }));
     const config = await screen.findByRole("textbox", {
       name: "AI 工具连接配置",
     });
@@ -600,6 +636,6 @@ describe("CompiledKnowledgeBrowser", () => {
     fireEvent.click(screen.getByRole("button", { name: "继续阅读" }));
     await screen.findByText("完整后文");
     expect(screen.getByText("第一段")).toBeTruthy();
-    expect(screen.getByText(/全文已显示/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "继续阅读" })).toBeNull();
   });
 });

@@ -133,9 +133,6 @@ export function SidebarAssistant({
               进入 AI 工作区
             </button>
           )}
-          {!loading && !unavailable && sessions.length === 0 && (
-            <p role="status">开始第一段学习对话</p>
-          )}
           {!loading &&
             !unavailable &&
             sessions.map((session) => (

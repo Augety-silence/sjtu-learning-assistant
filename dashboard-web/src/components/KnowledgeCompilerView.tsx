@@ -14,6 +14,7 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { CourseMarkdownSyncPanel } from "@/components/CourseMarkdownSyncPanel";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import {
   SelectionIndicator,
   useSelectionIndicatorId,
@@ -94,12 +95,8 @@ function PathPicker({
         <Icon />
       </div>
       <div>
-        <strong>
-          {source ? "课程 Markdown / PPTX / PDF 素材" : "Obsidian Vault 输出"}
-        </strong>
-        <span title={value || undefined}>
-          {value || (source ? "选择需要递归扫描的目录" : "请选择独立的空目录")}
-        </span>
+        <strong>{source ? "素材目录" : "输出目录"}</strong>
+        <span title={value || undefined}>{value || "未选择"}</span>
       </div>
       <Button
         type="button"
@@ -107,7 +104,7 @@ function PathPicker({
         disabled={disabled}
         onClick={onPick}
       >
-        选择目录
+        {source ? "选择素材目录" : "选择输出目录"}
       </Button>
     </div>
   );
@@ -309,9 +306,11 @@ export function KnowledgeCompilerView() {
             aria-labelledby="knowledge-config-title"
           >
             <div className="section-header">
-              <div>
-                <h2 id="knowledge-config-title">1. 选择输入与输出</h2>
-                <p>输出目录必须为空或由本功能创建，且不能位于素材目录内部。</p>
+              <div className="heading-with-info">
+                <h2 id="knowledge-config-title">输入与输出</h2>
+                <InfoTooltip label="目录要求">
+                  输出目录必须为空或由本功能创建，且不能位于素材目录内部。
+                </InfoTooltip>
               </div>
             </div>
             <div className="knowledge-paths">
@@ -373,11 +372,13 @@ export function KnowledgeCompilerView() {
             aria-labelledby="knowledge-mode-title"
           >
             <div className="section-header">
-              <div>
-                <h2 id="knowledge-mode-title">2. 选择编译深度</h2>
-                <p>
-                  完整编译会多轮回读全库，适合长期运行；基础建库可先验证目录与内容质量。
-                </p>
+              <div className="heading-with-info">
+                <h2 id="knowledge-mode-title">编译方式</h2>
+                <InfoTooltip label="编译方式说明">
+                  逐文件生成课程
+                  Markdown；基础建库整理讲义与概念；完整编译进一步建立双链、图谱和复习资料。不设每日或每次总调用额度，仍遵守接口限速并断点续编。PPTX
+                  需 LibreOffice，旧 PPT 请先导出 PDF。
+                </InfoTooltip>
               </div>
             </div>
             <div className="knowledge-mode-grid">
@@ -397,10 +398,6 @@ export function KnowledgeCompilerView() {
                 <ScanSearch aria-hidden="true" />
                 <span>
                   <strong>逐页多模态转 Markdown</strong>
-                  <small>
-                    不设每日或每次总调用额度；遵守接口限速，断点续编，保留人工修改。PPTX
-                    需 LibreOffice，旧 PPT 请先导出 PDF。
-                  </small>
                 </span>
               </label>
               <label
@@ -419,7 +416,6 @@ export function KnowledgeCompilerView() {
                 <BookOpenCheck aria-hidden="true" />
                 <span>
                   <strong>基础建库 · 3 轮</strong>
-                  <small>原文归档、Lecture 重构、Concept 提取</small>
                 </span>
               </label>
               <label
@@ -436,35 +432,38 @@ export function KnowledgeCompilerView() {
                 <BrainCircuit aria-hidden="true" />
                 <span>
                   <strong>完整编译 · 12 轮</strong>
-                  <small>双链、图谱、查缺、反向验证、题库与复习系统</small>
                 </span>
               </label>
             </div>
-            <ol className="knowledge-phase-strip" aria-label="完整编译轮次">
-              {phaseLabels.map((label, index) => (
-                <li
-                  key={label}
-                  data-selection-layout-id={phaseIndicatorId}
-                  className={
-                    (task?.phase_index ?? 0) > index + 1
-                      ? "selection-host knowledge-phase-done"
-                      : (task?.phase_index ?? 0) === index + 1
-                        ? "selection-host selection-active knowledge-phase-active"
-                        : "selection-host"
-                  }
-                >
-                  {(task?.phase_index ?? 0) === index + 1 && (
-                    <SelectionIndicator
-                      layoutId={phaseIndicatorId}
-                      radius={8}
-                      className="knowledge-phase-indicator"
-                    />
-                  )}
-                  <span>{index + 1}</span>
-                  <span className="selection-label">{label}</span>
-                </li>
-              ))}
-            </ol>
+            {mode !== "documents" && (running || terminal) && (
+              <ol className="knowledge-phase-strip" aria-label="编译轮次">
+                {phaseLabels
+                  .slice(0, mode === "foundation" ? 3 : 12)
+                  .map((label, index) => (
+                    <li
+                      key={label}
+                      data-selection-layout-id={phaseIndicatorId}
+                      className={
+                        (task?.phase_index ?? 0) > index + 1
+                          ? "selection-host knowledge-phase-done"
+                          : (task?.phase_index ?? 0) === index + 1
+                            ? "selection-host selection-active knowledge-phase-active"
+                            : "selection-host"
+                      }
+                    >
+                      {(task?.phase_index ?? 0) === index + 1 && (
+                        <SelectionIndicator
+                          layoutId={phaseIndicatorId}
+                          radius={8}
+                          className="knowledge-phase-indicator"
+                        />
+                      )}
+                      <span>{index + 1}</span>
+                      <span className="selection-label">{label}</span>
+                    </li>
+                  ))}
+              </ol>
+            )}
           </section>
 
           <section
@@ -481,11 +480,11 @@ export function KnowledgeCompilerView() {
                   <h2 id="knowledge-run-title">
                     {statusLabel(task?.status ?? "idle")}
                   </h2>
-                  <p>
-                    {task?.current_phase
-                      ? `${task.current_phase.label} · ${task.current_phase.model}`
-                      : "选择目录后即可启动。"}
-                  </p>
+                  {task?.current_phase && (
+                    <InfoTooltip label="当前编译阶段">
+                      {task.current_phase.label} · {task.current_phase.model}
+                    </InfoTooltip>
+                  )}
                 </div>
               </div>
               <div className="knowledge-run-actions">
@@ -575,8 +574,8 @@ export function KnowledgeCompilerView() {
                 >
                   <span style={{ width: `${percentage}%` }} />
                 </div>
-                <div className="knowledge-events">
-                  <h3>运行记录</h3>
+                <details className="knowledge-events">
+                  <summary>运行记录</summary>
                   <ol>
                     {task.events
                       .slice(-8)
@@ -596,7 +595,7 @@ export function KnowledgeCompilerView() {
                         </li>
                       ))}
                   </ol>
-                </div>
+                </details>
               </>
             )}
           </section>

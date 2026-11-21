@@ -1232,7 +1232,7 @@ describe("交大云盘页面导航", () => {
     expect(
       await screen.findByRole("heading", {
         level: 2,
-        name: "Canvas、邮件与 AI 附件云端归档",
+        name: "云端归档",
       }),
     ).toBeTruthy();
     expect(getBackupStatus).toHaveBeenCalledOnce();

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { getProviderUsage, type ProviderUsageSummary } from "@/lib/api";
 
 export function TokenUsageDashboard() {
@@ -41,9 +42,15 @@ export function TokenUsageDashboard() {
       aria-labelledby="token-usage-title"
     >
       <div className="section-header">
-        <h3 id="token-usage-title">Token 用量</h3>
+        <div className="heading-with-info">
+          <h3 id="token-usage-title">Token 用量</h3>
+          <InfoTooltip label="用量统计说明">
+            {value ? `${value.calls} 次请求。` : ""}
+            仅本机升级后的接口计数，包含聊天、课件和字幕编译；缓存属于输入，不重复相加。不设每日调用上限。
+          </InfoTooltip>
+        </div>
         <label className="token-usage-period">
-          统计范围
+          <span className="sr-only">统计范围</span>
           <select
             value={period}
             onChange={(e) => setPeriod(e.target.value as typeof period)}
@@ -83,10 +90,6 @@ export function TokenUsageDashboard() {
           );
         })}
       </dl>
-      <p className="token-usage-note">
-        {value ? `${value.calls} 次请求 · ` : ""}
-        仅本机升级后的接口计数，包含聊天、课件和字幕编译；缓存属于输入，不重复相加。不设每日调用上限。
-      </p>
       {error && (
         <div className="token-usage-error" role="status">
           {error}

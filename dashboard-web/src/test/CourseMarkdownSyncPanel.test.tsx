@@ -39,7 +39,9 @@ it("使用已配置目录开启自动同步，不要求选目录", async () => {
       course_markdown_daily_calls: 0,
     }),
   );
-  expect(screen.getByText(/会将已下载 PPTX/)).toBeTruthy();
+  expect(
+    screen.getByText("开启后，课件图文将发送至所配置的 AI 接口。"),
+  ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "选择目录" })).toBeNull();
 });
 it("已启用时没有每日额度控件，仍可暂停并显示问题", async () => {
@@ -60,6 +62,11 @@ it("已启用时没有每日额度控件，仍可暂停并显示问题", async (
       course_markdown_enabled: false,
     }),
   );
-  expect(screen.getByText(/今日调用 100（无每日上限）/)).toBeTruthy();
+  expect(screen.queryByText(/今日调用/)).toBeNull();
+  const info = screen.getByRole("button", { name: "课件同步说明" });
+  expect(
+    document.getElementById(info.getAttribute("aria-describedby") || "")
+      ?.textContent,
+  ).toContain("没有每日调用上限");
   expect(screen.getByText("bad.ppt：需导出 PDF")).toBeTruthy();
 });

@@ -14,6 +14,7 @@ import "katex/dist/katex.min.css";
 import { KnowledgeDocumentInfo } from "@/components/KnowledgeDocumentInfo";
 import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import {
   getKnowledgeMCPConfig,
   listCompiledKnowledgeSources,
@@ -76,7 +77,7 @@ export function CompiledKnowledgeBrowser({
   const [loading, setLoading] = useState(false);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [sourceIssues, setSourceIssues] = useState<string[]>([]);
   const [config, setConfig] = useState("");
   const [folder, setFolder] = useState("");
   const [navigationOpen, setNavigationOpen] = useState(true);
@@ -208,8 +209,7 @@ export function CompiledKnowledgeBrowser({
       const result = await listCompiledKnowledgeSources();
       if (generation !== sourceGeneration.current) return;
       setSources(result.items);
-      if (result.issues.length) setMessage(result.issues.join("；"));
-      else setMessage("");
+      setSourceIssues(result.issues);
       const selected = result.items.some((item) => item.id === preferredSource)
         ? preferredSource
         : "";
@@ -232,11 +232,11 @@ export function CompiledKnowledgeBrowser({
   }, [refresh]);
 
   const open = async (doc?: CompiledKnowledgeDocument) => {
+    setError("");
     try {
       const selected = doc?.source_id || sourceId || sources[0]?.id;
       if (!selected) return;
       await openCompiledKnowledge(selected, doc?.id);
-      setMessage("已在系统文件管理器打开结果位置。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "结果目录打开失败");
     }
@@ -315,27 +315,27 @@ export function CompiledKnowledgeBrowser({
         </Button>
       </form>
       {error && <p role="alert">{error}</p>}
-      {message && <p role="status">{message}</p>}
-      <p role="status" className="compiled-knowledge-progress">
+      <p role="status" className="sr-only">
         {loading
-          ? "正在切换目录，保留当前内容…"
+          ? "正在加载目录…"
           : reading
-            ? "正在读取讲义，保留当前内容…"
+            ? "正在读取正文…"
             : search
-              ? `找到 ${search.count} 份结果${search.truncated ? "（请进入更具体的文件夹搜索）" : ""}`
+              ? `找到 ${search.count} 份结果`
               : "正在读取编译结果…"}
       </p>
-      {search?.issues.map((issue) => (
-        <p key={issue} role="status">
-          {issue}
-        </p>
-      ))}
+      {[...new Set([...sourceIssues, ...(search?.issues ?? [])])].map(
+        (issue) => (
+          <p key={issue} role="alert">
+            {issue}
+          </p>
+        ),
+      )}
+      {search?.truncated && (
+        <p role="alert">结果范围不完整，请缩小搜索范围或进入课程目录。</p>
+      )}
       {search && !search.items.length && !loading && (
-        <p>
-          {query
-            ? "未找到匹配知识点，请换关键词或知识来源。"
-            : "此来源暂无可读取的编译结果；自动课件生成后可刷新查看。"}
-        </p>
+        <p>{query ? "未找到匹配资料" : "暂无编译资料"}</p>
       )}
       <div
         className="compiled-knowledge-layout"
@@ -350,22 +350,23 @@ export function CompiledKnowledgeBrowser({
             className="compiled-knowledge-folders"
             aria-label="课程与课时文件夹"
           >
-            <h3>课程目录</h3>
-            <Button
-              variant="ghost"
-              aria-pressed={!folder}
-              onClick={() => {
-                const selected = sources.some(
-                  (source) => source.id === preferredSource,
-                )
-                  ? preferredSource
-                  : "";
-                setSourceId(selected);
-                void load(selected, activeQuery);
-              }}
-            >
-              全部课程
-            </Button>
+            {!browsingRoot && (
+              <Button
+                variant="ghost"
+                aria-pressed={!folder}
+                onClick={() => {
+                  const selected = sources.some(
+                    (source) => source.id === preferredSource,
+                  )
+                    ? preferredSource
+                    : "";
+                  setSourceId(selected);
+                  void load(selected, activeQuery);
+                }}
+              >
+                全部课程
+              </Button>
+            )}
             <KnowledgeFolders
               folders={folders}
               selected={folder}
@@ -393,13 +394,13 @@ export function CompiledKnowledgeBrowser({
                   variant="ghost"
                   aria-pressed={page?.id === doc.id}
                   className="compiled-knowledge-item"
+                  title={`${documentTitle(doc)} · ${documentStatus(doc)}`}
                   onClick={() => void read(doc)}
                 >
                   <strong>
                     <FileText aria-hidden="true" />
                     {documentTitle(doc)}
                   </strong>
-                  <span>{documentStatus(doc)}</span>
                   {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
                 </Button>
               ))}
@@ -556,17 +557,6 @@ export function CompiledKnowledgeBrowser({
                       继续阅读
                     </Button>
                   )}
-                  <p>
-                    正文分页预览：已加载{" "}
-                    {Math.min(
-                      page.offset + knowledgeTextLength(page.text),
-                      page.total_chars,
-                    )}{" "}
-                    / {page.total_chars} 字符
-                    {page.next_offset == null
-                      ? " · 全文已显示"
-                      : " · 继续阅读会追加后文；这不是编译进度"}
-                  </p>
                 </>
               )}
             </div>
@@ -574,13 +564,13 @@ export function CompiledKnowledgeBrowser({
         )}
       </div>
       <details className="compiled-knowledge-connection">
-        <summary>外部 AI 工具只读接入</summary>
-        <p>
-          支持 stdio MCP 的本机 AI
-          客户端可使用下方配置。连接后先搜索知识点，再分页读取并引用来源；不自动修改客户端配置。
-        </p>
+        <summary>外部 AI 接入</summary>
+        <InfoTooltip label="AI 接入说明">
+          用于支持 stdio MCP 的本机 AI 客户端，只读检索与读取
+          Markdown，不自动修改客户端配置。
+        </InfoTooltip>
         <Button variant="outline" onClick={() => void connection()}>
-          显示 AI 连接配置
+          显示连接配置
         </Button>
         {config && (
           <>
@@ -590,9 +580,6 @@ export function CompiledKnowledgeBrowser({
               readOnly
               rows={10}
             />
-            <p>
-              可用工具：list_compiled_knowledge、search_compiled_knowledge、read_compiled_knowledge。
-            </p>
           </>
         )}
       </details>

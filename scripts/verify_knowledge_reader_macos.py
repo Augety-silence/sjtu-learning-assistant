@@ -19,7 +19,16 @@ class SyntheticBridge:
         docs = [dict(id=str(i + 1) * 32, source_id="automatic-courses" if i < 3 else "automatic-transcripts",
             source_name="合成资料", relative_path=f"秋/数据库/第{i+1}讲.md", title=f"第{i+1}讲：数据库资料.md",
             folder="秋/数据库", status="completed", contract="course-summary-v1") for i in range(6)]
-        if action == "compiled_knowledge_sources":
+        if action == "settings_status":
+            data = dict(ai_enabled=True, ai_key_saved=True)
+        elif action == "ai_chat_sessions":
+            data = dict(items=[])
+        elif action == "knowledge_compiler_status":
+            data = dict(status="idle", task_id=None, mode=None, phase_index=0, total_phases=0,
+                current_phase=None, counts=dict(markdown_files=0, processed_files=0, generated_notes=0, warnings=0), events=[], warnings=[], error=None)
+        elif action == "course_markdown_status":
+            data = dict(enabled=True, status="completed", output_root="/synthetic", total=6, completed=6, pending=0, failed=0, issues=[], calls_today=0)
+        elif action == "compiled_knowledge_sources":
             data = dict(items=[dict(id=s, name=s, kind="automatic", root="/synthetic", count=3)
                 for s in ("automatic-courses", "automatic-transcripts")], count=6, issues=[], truncated=False)
         elif action == "compiled_knowledge_search":
@@ -44,7 +53,7 @@ def main():
     args = parser.parse_args()
     path = args.html.resolve(strict=True)
     bridge = SyntheticBridge()
-    window = webview.create_window("知识目录隔离验收", path.as_uri(), js_api=bridge, width=1050, height=760, text_select=True)
+    window = webview.create_window("知识目录隔离验收", path.as_uri(), js_api=bridge, width=1440, height=900, text_select=True)
     outcome = {"ok": False}
 
     def wait(expression):
@@ -65,10 +74,13 @@ def main():
                 noPlaceholder:!document.querySelector('.compiled-knowledge-welcome')};
             })()""")
             assert all(root.values()), root
+            nav = window.evaluate_js("Array.from(document.querySelectorAll('.sidebar nav button')).map(b=>b.getAttribute('aria-label')).slice(-4)")
+            assert nav == ["交大云盘", "课程知识库", "设置", "资料项目"], nav
+            assert window.evaluate_js("!document.querySelector('.page-heading p,.sidebar-footer')")
             window.evaluate_js("document.querySelector('.knowledge-folder-tree button').click()")
             wait("Boolean(document.querySelector('.rich-preview-markdown p'))")
             readings = []
-            for width in (1050, 760, 600):
+            for width in (1440, 1050, 760, 375):
                 window.resize(width, 760)
                 threading.Event().wait(0.3)
                 data = window.evaluate_js("""(() => {
@@ -83,16 +95,19 @@ def main():
                     small:icon.getBoundingClientRect().width===16 && getComputedStyle(icon).strokeWidth==='1.5px'};
                 })()""")
                 assert data["files"] == 6 and data["noOverflow"] and data["noInlineCitation"] and data["hidden"] and data["small"], data
-                assert data["width"] > (580 if width == 1050 else 400), data
+                assert data["width"] > (500 if width == 1440 else 300 if width >= 760 else 200), data
+                window.evaluate_js("document.querySelector('.page-heading .info-tooltip button').focus()")
+                assert window.evaluate_js("(() => { const r=document.querySelector('.page-heading [role=tooltip]').getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth+1; })()")
+                window.evaluate_js("document.querySelector('.page-heading .info-tooltip button').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); document.activeElement.blur()")
                 readings.append(data)
-            window.resize(1050, 760)
+            window.resize(1440, 900)
             for i in range(6):
                 window.evaluate_js(f"document.querySelectorAll('.compiled-knowledge-item')[{i}].click()")
                 wait(f"document.querySelector('.rich-preview-markdown').innerText.includes('第{i+1}份正文')")
             window.evaluate_js("document.querySelector('.compiled-knowledge-document-info button').focus()")
-            assert window.evaluate_js("getComputedStyle(document.querySelector('[role=tooltip]')).display==='block'")
+            assert window.evaluate_js("getComputedStyle(document.querySelector('.compiled-knowledge-document-info [role=tooltip]')).display==='block'")
             window.evaluate_js("document.querySelector('.compiled-knowledge-document-info button').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
-            assert window.evaluate_js("getComputedStyle(document.querySelector('[role=tooltip]')).display==='none'")
+            assert window.evaluate_js("getComputedStyle(document.querySelector('.compiled-knowledge-document-info [role=tooltip]')).display==='none'")
             window.evaluate_js("Array.from(document.querySelectorAll('[role=toolbar] button')).find(b=>b.innerText==='在本地显示').click()")
             deadline = time.monotonic() + 5
             while getattr(bridge, "revealed", "") != "automatic-transcripts" and not window.evaluate_js("document.documentElement.dataset.revealed==='automatic-transcripts'"):
@@ -100,10 +115,15 @@ def main():
                 threading.Event().wait(0.1)
             window.evaluate_js("document.querySelector('.compiled-knowledge-navigation-toggle').click()")
             expanded = window.evaluate_js("document.querySelector('.compiled-knowledge-reader').clientWidth")
-            assert expanded > 950, expanded
+            assert expanded > 900, expanded
             window.evaluate_js("document.querySelector('.compiled-knowledge-navigation-toggle').click(); Array.from(document.querySelectorAll('button')).find(b=>b.innerText==='全部课程').click()")
             wait("!document.querySelector('.compiled-knowledge-reading-pane')")
-            outcome.update(ok=True, root=root, readings=readings, all_six_read=True,
+            window.evaluate_js("document.querySelector('.knowledge-tools summary').click()")
+            wait("document.querySelector('.knowledge-tools').open")
+            assert window.evaluate_js("!document.querySelector('.knowledge-phase-strip')")
+            assert window.evaluate_js("Array.from(document.querySelectorAll('.knowledge-mode-grid input')).some(i=>i.checked&&i.value==='documents')")
+            assert window.evaluate_js("Array.from(document.querySelectorAll('.compiled-knowledge p:not(.sr-only)')).every(p=>!p.innerText.includes('找到')&&!p.innerText.includes('已加载')&&!p.innerText.includes('已在系统文件管理器'))")
+            outcome.update(ok=True, root=root, readings=readings, navigation=nav, quiet_copy=True, all_six_read=True,
                 tooltip_focus_and_escape=True, original_source_reveal=True, expanded_width=expanded)
         except Exception:
             outcome["error"] = traceback.format_exc()

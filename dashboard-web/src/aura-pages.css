@@ -342,9 +342,8 @@
 .token-usage-period { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
 .token-usage-period select { padding: 6px 8px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--surface-page); color: var(--text-primary); }
 .token-usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 16px 0 8px; }
-.token-usage-metrics dt, .token-usage-metrics small, .token-usage-note { color: var(--text-secondary); font-size: 12px; }
+.token-usage-metrics dt, .token-usage-metrics small { color: var(--text-secondary); font-size: 12px; }
 .token-usage-metrics dd { margin: 4px 0 0; font-size: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--text-primary); }
-.token-usage-note { margin: 8px 0 0; line-height: 1.6; }
 .token-usage-error { display: flex; gap: 8px; align-items: center; }
 @media (max-width: 600px) { .token-usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 

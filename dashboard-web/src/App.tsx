@@ -103,10 +103,10 @@ const views: ViewName[] = [
   "grading",
   "videos",
   "backup",
-  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
+  "local-projects",
 ];
 const baseViews: ViewName[] = [
   "overview",
@@ -116,10 +116,10 @@ const baseViews: ViewName[] = [
   "materials",
   "videos",
   "backup",
-  "local-projects",
   "knowledge",
   "ai-chat",
   "settings",
+  "local-projects",
 ];
 // 含未提交草稿的视图：后台同步完成后不自动用 key 重挂。
 const draftViews: ViewName[] = ["assignments", "grades", "grading"];

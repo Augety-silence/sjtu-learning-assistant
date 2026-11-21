@@ -1,6 +1,4 @@
-import { Info } from "lucide-react";
-import { useId, useState } from "react";
-import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 
 export function KnowledgeDocumentInfo({
   status,
@@ -11,31 +9,15 @@ export function KnowledgeDocumentInfo({
   section: string;
   citation: string;
 }) {
-  const id = useId();
-  const [dismissed, setDismissed] = useState(false);
   return (
-    <span
+    <InfoTooltip
       className="compiled-knowledge-document-info"
-      data-dismissed={dismissed}
-      onMouseEnter={() => setDismissed(false)}
-      onFocus={() => setDismissed(false)}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") setDismissed(true);
-      }}
+      align="end"
+      label="文档来源与状态"
     >
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="文档来源与状态"
-        aria-describedby={id}
-      >
-        <Info aria-hidden="true" size={16} strokeWidth={1.5} />
-      </Button>
-      <span id={id} role="tooltip">
-        {status} · {section}
-        <br />
-        来源：{citation}
-      </span>
-    </span>
+      {status} · {section}
+      <br />
+      来源：{citation}
+    </InfoTooltip>
   );
 }

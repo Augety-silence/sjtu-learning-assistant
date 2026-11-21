@@ -126,13 +126,18 @@ describe("KnowledgeCompilerView", () => {
       name: /逐页多模态转 Markdown/,
     });
     expect((radio as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByText(/不设每日或每次总调用额度/)).toBeTruthy();
+    const explanation = screen.getByRole("button", { name: "编译方式说明" });
+    expect(
+      document.getElementById(
+        explanation.getAttribute("aria-describedby") || "",
+      )?.textContent,
+    ).toContain("不设每日或每次总调用额度");
   });
-  it("展示 12 轮编译路线和安全目录说明", async () => {
+  it("默认不展示无关12轮路线，目录要求在可访问提示中，保持开始条件", async () => {
     await renderCompiler();
     expect(screen.queryByRole("heading", { name: "课程知识库" })).toBeNull();
     expect(screen.getByText("完整编译 · 12 轮")).toBeTruthy();
-    expect(screen.getByText("反向校验")).toBeTruthy();
+    expect(screen.queryByText("反向校验")).toBeNull();
     expect(screen.getByText(/输出目录必须为空/)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "开始编译" }).hasAttribute("disabled"),
@@ -193,7 +198,7 @@ describe("KnowledgeCompilerView", () => {
 
     await renderCompiler();
     const pickButtons = await screen.findAllByRole("button", {
-      name: "选择目录",
+      name: /选择.*目录/,
     });
     fireEvent.click(pickButtons[0]);
     await waitFor(() =>

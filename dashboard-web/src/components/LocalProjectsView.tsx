@@ -332,9 +332,6 @@ export function LocalProjectsView({
       <section className="local-projects-hero">
         <div>
           <h2>资料项目管理</h2>
-          <p>
-            在这里登记、管理外部素材目录和输出位置。已同步课程的知识稿统一在“课程知识库”按课程与课时阅读。
-          </p>
         </div>
         <Button
           type="button"

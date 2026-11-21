@@ -54,7 +54,7 @@ describe("BackupView", () => {
     expect(
       await screen.findByRole("heading", { name: "等待归档" }),
     ).toBeTruthy();
-    expect(screen.getByText("Canvas、邮件与 AI 附件云端归档")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "云端归档" })).toBeTruthy();
     expect(screen.getByText("全部候选").parentElement?.textContent).toContain(
       "17",
     );

@@ -171,6 +171,34 @@ describe("AppShell 侧栏滑动指示器", () => {
 });
 
 describe("AppShell 移动导航", () => {
+  it("课程知识库上移到原项目位置，资料项目放在设置之后，两种导航顺序一致", async () => {
+    emitViewport(1024);
+    render(<Harness />);
+    const sidebar = document.querySelector(".sidebar") as HTMLElement;
+    const labels = Array.from(sidebar.querySelectorAll("nav button"), (b) =>
+      b.getAttribute("aria-label"),
+    );
+    expect(labels.slice(-4)).toEqual([
+      "交大云盘",
+      "课程知识库",
+      "设置",
+      "资料项目",
+    ]);
+    expect(sidebar.querySelector(".sidebar-footer")).toBeNull();
+    expect(document.querySelector(".page-heading p")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "资料项目" }));
+    expect(
+      await screen.findByRole("heading", { name: "资料项目" }),
+    ).toBeTruthy();
+    emitViewport(375);
+    fireEvent.click(screen.getByRole("button", { name: "菜单" }));
+    const drawer = await screen.findByRole("dialog");
+    expect(
+      Array.from(drawer.querySelectorAll("nav button"), (b) =>
+        b.getAttribute("aria-label"),
+      ).slice(-4),
+    ).toEqual(labels.slice(-4));
+  });
   it("保留全高壳体结构，并将设置放在侧栏底部辅助分组", () => {
     render(<Harness />);
     const shell = document.querySelector(".app-shell");
@@ -192,8 +220,8 @@ describe("AppShell 移动导航", () => {
     expect(workspace).toBeTruthy();
     expect(workspace?.getAttribute("data-aura-surface")).toBe("workspace");
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
-    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(12);
-    expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(1);
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(11);
+    expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(2);
     const overviewButton = within(mainNavigation).getByRole("button", {
       name: "概览",
     });
@@ -212,7 +240,7 @@ describe("AppShell 移动导航", () => {
       within(sidebar as HTMLElement).getByRole("region", { name: "AI 对话" }),
     ).toBeTruthy();
     expect(
-      within(mainNavigation).getByRole("button", { name: "资料项目" }),
+      within(utilityNavigation).getByRole("button", { name: "资料项目" }),
     ).toBeTruthy();
     expect(
       within(mainNavigation).queryByRole("button", { name: "截止事项" }),

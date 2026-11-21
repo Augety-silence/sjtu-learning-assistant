@@ -48,7 +48,7 @@ describe("responsive and motion regression rules", () => {
   it("keeps the page header usable at 320px", () => {
     expect(css).toMatch(/\.page-heading > div \{[^}]*min-width: 0/);
     expect(css).toMatch(
-      /@media \(max-width: 380px\)[\s\S]*?\.page-header \{[^}]*gap: 8px[\s\S]*?\.page-heading \{[^}]*gap: 8px[\s\S]*?\.page-heading p \{[^}]*display: none[\s\S]*?\.page-header > button \{[^}]*padding-inline: 10px/,
+      /@media \(max-width: 380px\)[\s\S]*?\.page-header \{[^}]*gap: 8px[\s\S]*?\.page-heading \{[^}]*gap: 8px[\s\S]*?\.page-header > button \{[^}]*padding-inline: 10px/,
     );
   });
 

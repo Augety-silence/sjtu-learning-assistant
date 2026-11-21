@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { getCourseMarkdownStatus, updateSettings } from "@/lib/api";
 import type { CourseMarkdownStatus } from "@/lib/types";
 
@@ -64,35 +65,26 @@ export function CourseMarkdownSyncPanel() {
   return (
     <section className="knowledge-config" aria-labelledby="course-md-title">
       <div className="section-header">
-        <div>
-          <h2 id="course-md-title">课件自动同步为 Markdown</h2>
-          <p>
-            无需选目录或运行命令。开启后，App
-            启动补扫已有课件，下载或同步完成后自动增量转换。
-          </p>
+        <div className="heading-with-info">
+          <h2 id="course-md-title">课件自动同步</h2>
+          <InfoTooltip label="课件同步说明">
+            自动补扫已下载课件并增量生成
+            Markdown，按课程目录保存，保留人工修改。退出后暂停，重新打开后续编；没有每日调用上限，仍遵守接口限速。
+            {state?.output_root && <>输出目录：{state.output_root}</>}
+          </InfoTooltip>
         </div>
       </div>
-      <p>
-        会将已下载 PPTX / PDF 的逐页图文发送到已配置 AI 接口。每份课件对应一个
-        MD，保留课程目录、原文和页图；人工编辑不覆盖。旧 PPT 需安全导出 PDF。App
-        退出时暂停，重开后续编。
-      </p>
+      {!state?.enabled && <p>开启后，课件图文将发送至所配置的 AI 接口。</p>}
       {state && (
         <>
-          <p>
-            输出目录：<code>{state.output_root}</code>
-          </p>
           <p role="status">
-            {labels[state.status] ?? state.status} · 文本 MD 就绪{" "}
-            {state.text_ready ?? 0}/{state.total}份 · 多模态完成{" "}
-            {state.completed} · 待续编 {state.pending} · 异常 {state.failed} ·
-            今日调用 {state.calls_today}（无每日上限）
+            {labels[state.status] ?? state.status} · {state.completed}/
+            {state.total}
+            {state.pending > 0 && ` · 待续编 ${state.pending}`}
+            {state.failed > 0 && ` · 异常 ${state.failed}`}
           </p>
         </>
       )}
-      <p>
-        逐页证据会重组为完整主题讲义，含复习、自测和文末答案。没有每日调用上限，仍遵守接口速率限制；失败有限重试，人工笔记不覆盖。
-      </p>
       <div className="knowledge-scan-row">
         <Button disabled={!state || busy} onClick={() => void save(true)}>
           {state?.enabled ? "继续自动同步" : "开启课件自动同步"}
@@ -108,7 +100,7 @@ export function CourseMarkdownSyncPanel() {
       {error && <p role="alert">{error}</p>}
       {state && state.issues.length > 0 && (
         <details>
-          <summary>待处理课件（最多显示 20 项）</summary>
+          <summary>待处理课件</summary>
           <ul>
             {state.issues.map((issue) => (
               <li key={issue}>{issue}</li>
