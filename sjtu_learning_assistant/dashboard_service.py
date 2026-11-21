@@ -3657,8 +3657,13 @@ class DashboardService:
         if getattr(self, "_course_markdown_instance", None) is None:
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
+                wiki_rebuilder=self._rebuild_course_wiki,
             )
         self._course_markdown_instance.start()
+
+    def _rebuild_course_wiki(self, runner: Callable, cancelled: Callable) -> dict:
+        from sjtu_learning_assistant.knowledge_wiki import CourseWiki
+        return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
 
     def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
         service = getattr(self, "_course_markdown_instance", None)

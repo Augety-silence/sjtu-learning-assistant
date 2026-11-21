@@ -16,6 +16,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
@@ -86,6 +87,81 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("CompiledKnowledgeBrowser", () => {
+  it("长课程树不挤走文件列表，同一文件夹全部六份文件均可切换", async () => {
+    const docs = Array.from({ length: 6 }, (_, index) => ({
+      ...document,
+      id: String(index + 1).repeat(32),
+      title: `第${index + 1}讲.pptx.md`,
+      folder: "秋/数据库/课件",
+    }));
+    vi.mocked(searchCompiledKnowledge).mockResolvedValue({
+      items: docs,
+      count: 6,
+      next_offset: null,
+      issues: [],
+      truncated: false,
+      folders: [
+        { source_id: source.id, path: "秋", name: "秋", count: 94 },
+        { source_id: source.id, path: "秋/数据库", name: "数据库", count: 8 },
+        {
+          source_id: source.id,
+          path: "秋/数据库/课件",
+          name: "课件",
+          count: 6,
+        },
+      ],
+    });
+    vi.mocked(readCompiledKnowledge).mockImplementation(async (id) => ({
+      ...page,
+      id,
+      text: `文件正文${id}`,
+      next_offset: null,
+    }));
+    render(<CompiledKnowledgeBrowser />);
+    fireEvent.click(await screen.findByRole("button", { name: /课件.*6/ }));
+    const list = await screen.findByLabelText("Markdown 结果列表");
+    for (const doc of docs) {
+      fireEvent.click(
+        within(list).getByRole("button", {
+          name: new RegExp(doc.title.split(".")[0]),
+        }),
+      );
+      await screen.findByText(`文件正文${doc.id}`);
+    }
+    expect(within(list).getAllByRole("button")).toHaveLength(6);
+    expect(list.parentElement).toBe(
+      screen.getByLabelText("课程与课时文件夹").parentElement,
+    );
+  });
+
+  it("从头阅读始终位于正文滚动区外，正文允许任意文字选择和原生复制", async () => {
+    vi.mocked(readCompiledKnowledge).mockResolvedValue({
+      ...page,
+      text: "# 课程材料\n\n可选择的第一段。\n\n可选择的第二段。",
+      next_offset: null,
+    });
+    render(<CompiledKnowledgeBrowser />);
+    await screen.findByText("可选择的第二段。");
+    const reader = screen.getByLabelText("Markdown 正文预览");
+    const actions = screen.getByRole("toolbar", { name: "阅读操作" });
+    expect(reader.contains(actions)).toBe(false);
+    expect(
+      within(actions).getByRole("button", { name: "从头阅读" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /复制.*Markdown/ })).toBeNull();
+    const range = window.document.createRange();
+    range.setStart(screen.getByText("可选择的第一段。").firstChild!, 0);
+    range.setEnd(screen.getByText("可选择的第二段。").firstChild!, 7);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    expect(window.getSelection()?.toString()).toContain("第一段");
+    expect(window.getSelection()?.toString()).toContain("第二段");
+    expect(fireEvent.copy(reader)).toBe(true);
+    reader.scrollTop = 800;
+    fireEvent.scroll(reader);
+    fireEvent.click(within(actions).getByRole("button", { name: "从头阅读" }));
+    await waitFor(() => expect(reader.scrollTop).toBe(0));
+  });
   it("每份文件独立恢复阅读位置，新文件从头开始，版本变化也从头开始", async () => {
     const second = { ...document, id: "b".repeat(32), title: "第二讲.pptx.md" };
     vi.mocked(searchCompiledKnowledge).mockResolvedValue({
@@ -258,9 +334,7 @@ describe("CompiledKnowledgeBrowser", () => {
     expect(
       screen.queryByRole("heading", { name: "课程讲义与知识点" }),
     ).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: "定位 Markdown 文件及原图" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "定位文件" }));
     await waitFor(() =>
       expect(openCompiledKnowledge).toHaveBeenCalledWith(
         source.id,

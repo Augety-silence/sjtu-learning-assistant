@@ -24,9 +24,11 @@ class CourseMarkdownSync:
     def __init__(self, settings: Callable[[], LocalSettings], paths: Callable[[], list[Path]],
                  runner: Callable, *, interval: float = 60,
                  compiler_factory: Callable = DocumentCompiler,
+                 wiki_rebuilder: Callable | None = None,
                  today: Callable = lambda: datetime.now().date().isoformat()):
         self.settings, self.paths, self.runner = settings, paths, runner
         self.interval, self.compiler_factory, self.today = interval, compiler_factory, today
+        self.wiki_rebuilder = wiki_rebuilder
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -156,6 +158,16 @@ class CourseMarkdownSync:
             item.pop("pending_hash", None)
             persist()
 
+        def update_wiki():
+            if self.wiki_rebuilder is None or self._stop.is_set() or self._cancel.is_set():
+                return
+            try:
+                result = self.wiki_rebuilder(call, lambda: self._stop.is_set() or self._cancel.is_set())
+                self._set(wiki={key: result[key] for key in ("built", "cached", "failed")})
+                issues.extend(result.get("issues", []))
+            except Exception:
+                issues.append("课程 Wiki 构建暂未完成；原 MD 保留且仍可阅读。")
+
         persist()
         compiler = self.compiler_factory(call, self._cancel, max_calls=0)
         candidates = sorted(set(self.paths()), key=lambda path: str(path).casefold())
@@ -213,6 +225,8 @@ class CourseMarkdownSync:
                 failed += 1
                 issues.append((relative + "：" if relative else "") + "本地正文提取失败；现有文件保留。")
             self._set(text_ready=text_ready, failed=failed, issues=issues[:20])
+        # 先为已完成的旧课件建图，长时间视觉编译不能阻塞现有知识导航。
+        update_wiki()
         for index, (path, relative, fingerprint, item, mirror) in enumerate(prepared):
             if self._stop.is_set() or self._cancel.is_set():
                 pending += len(prepared) - index
@@ -264,5 +278,6 @@ class CourseMarkdownSync:
                 issues.append((relative + "：" if relative else "") + "处理失败；已有文件保留。")
             finally:
                 self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
-        self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed else "completed",
+        update_wiki()
+        self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed or issues else "completed",
                   completed=completed, failed=failed, pending=pending, calls_today=quota["used"], issues=issues[:20])

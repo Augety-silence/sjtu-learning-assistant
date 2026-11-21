@@ -57,6 +57,25 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual(7, self.runner.call_count)
         self.assertEqual(2, self.worker.status()["completed"])
 
+    def test_wiki_rebuild_runs_before_and_after_conversion_and_failure_keeps_md(self):
+        seen = []
+        def rebuild(runner, cancelled):
+            self.assertFalse(cancelled())
+            seen.append(self.mirror.read_text(encoding="utf-8"))
+            if len(seen) == 1:
+                return {"built": 0, "cached": 0, "failed": 0, "issues": []}
+            raise RuntimeError("independent wiki failure")
+        self.worker.wiki_rebuilder = rebuild
+        original = self.path.read_bytes()
+        self.worker.run_once()
+        self.assertEqual(2, len(seen))
+        self.assertIn("multimodal_status: pending", seen[0])
+        self.assertIn("contract: course-summary-v1", seen[1])
+        self.assertEqual("completed_with_warnings", self.worker.status()["status"])
+        self.assertEqual(1, self.worker.status()["completed"])
+        self.assertEqual(original, self.path.read_bytes())
+        self.assertIn("原 MD 保留", " ".join(self.worker.status()["issues"]))
+
     def test_mirror_images_are_relative_and_url_encoded(self):
         self.worker.run_once()
         import re

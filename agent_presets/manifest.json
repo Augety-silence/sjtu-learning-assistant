@@ -21,7 +21,7 @@
         "list_workspace_files",
         "read_workspace_file",
         "propose_file_change",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -40,7 +40,7 @@
         "read_course_file_text",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -58,7 +58,7 @@
         "get_material_tree",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -76,7 +76,7 @@
         "get_material_tree",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -94,7 +94,7 @@
         "read_course_file_text",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -126,7 +126,7 @@
         "get_material_tree",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]
@@ -147,7 +147,7 @@
         "get_message_detail",
         "search_ai_attachments",
         "read_ai_attachment_text",
-        "list_compiled_knowledge",
+        "browse_knowledge_wiki",
         "search_compiled_knowledge",
         "read_compiled_knowledge"
       ]

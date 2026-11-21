@@ -190,6 +190,10 @@ class CompiledKnowledge:
         sources, documents, issues, truncated = self._catalog()
         return {"items": sources, "count": len(documents), "issues": issues, "truncated": truncated}
 
+    def wiki(self, **arguments) -> dict[str, Any]:
+        from sjtu_learning_assistant.knowledge_wiki import CourseWiki
+        return CourseWiki(self).browse(**arguments)
+
     def _text(self, source: dict, document: dict) -> str:
         try:
             return _read_bytes(_safe(Path(source["root"]), document["relative_path"]), MAX_DOCUMENT_BYTES).decode("utf-8-sig")

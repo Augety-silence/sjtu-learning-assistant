@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from office_fixtures import build_pptx
@@ -22,7 +23,7 @@ from sjtu_learning_assistant.agent_runtime import (
 )
 from sjtu_learning_assistant.agent_runtime.loop import SYSTEM_MESSAGE_CHAR_BUDGET
 from sjtu_learning_assistant.agent_runtime.tools import _clip, _hide_cut_url_tail, _redact_body
-from sjtu_learning_assistant.ai_classifier import AIClassificationError, OpenAIClassificationClient
+from sjtu_learning_assistant.ai_classifier import AIClassificationError, AIToolsUnsupportedError, OpenAIClassificationClient
 from sjtu_learning_assistant.ai_attachments import AIManagedFileService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.dashboard_service import DashboardService
@@ -386,6 +387,57 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("get_material_tree", [run["tool_name"] for run in result.tool_runs])
         request_text = json.dumps(client.requests[0][0], ensure_ascii=False)
         self.assertIn("lecture.pdf", request_text)
+
+    def test_material_tree_prefetch_does_not_close_compiled_markdown_read_tools(self) -> None:
+        identity = "a" * 32
+        knowledge = SimpleNamespace(read=lambda **args: {"id": args["document_id"], "text": "正文证据：WHERE 对行过滤。", "status": "completed", "next_offset": None})
+        registry = ReadOnlyToolRegistry(self.engine, compiled_knowledge=knowledge)
+        call = {"content": "", "tool_calls": [{"id": "read-1", "type": "function", "function": {"name": "read_compiled_knowledge", "arguments": json.dumps({"document_id": identity})}}]}
+        client = ScriptedClient([call, {"content": "已依据正文说明。", "tool_calls": []}])
+        selected = preset("get_material_tree", "search_compiled_knowledge", "read_compiled_knowledge")
+        result = AgentLoop(client, registry, selected).run([{"role": "user", "content": "这份课件里的 WHERE 是什么？"}], user_text="这份课件里的 WHERE 是什么？", max_tokens=500, temperature=0)
+        names = {item["function"]["name"] for item in client.requests[0][1]["tools"]}
+        self.assertIn("read_compiled_knowledge", names)
+        self.assertIn("正文证据", json.dumps(client.requests[1][0], ensure_ascii=False))
+        self.assertEqual(["get_material_tree", "read_compiled_knowledge"], [run["tool_name"] for run in result.tool_runs])
+
+    def test_wiki_prefetch_routes_semantic_question_to_source_markdown(self) -> None:
+        identity = "a" * 32
+        knowledge = SimpleNamespace(
+            wiki=lambda **args: {"items": [{"course": "数据库", "topics": [{"title": "选择运算", "aliases": ["过滤记录"]}], "documents": [{"id": identity, "title": "SQL.md"}]}], "count": 1, "truncated": False},
+            read=lambda **args: {"id": args["document_id"], "text": "SQL 的 WHERE 从关系中选择满足条件的记录。", "status": "completed", "next_offset": None},
+        )
+        registry = ReadOnlyToolRegistry(self.engine, compiled_knowledge=knowledge)
+        call = {"content": "", "tool_calls": [{"id": "read-1", "type": "function", "function": {"name": "read_compiled_knowledge", "arguments": json.dumps({"document_id": identity})}}]}
+        client = ScriptedClient([call, {"content": "使用 WHERE。", "tool_calls": []}])
+        selected = preset("browse_knowledge_wiki", "read_compiled_knowledge")
+        result = AgentLoop(client, registry, selected).run([{"role": "user", "content": "怎么只留下符合要求的记录？"}], user_text="怎么只留下符合要求的记录？", max_tokens=500, temperature=0)
+        self.assertIn("过滤记录", json.dumps(client.requests[0][0], ensure_ascii=False))
+        self.assertIn("满足条件", json.dumps(client.requests[1][0], ensure_ascii=False))
+        self.assertEqual(["browse_knowledge_wiki", "read_compiled_knowledge"], [run["tool_name"] for run in result.tool_runs])
+
+    def test_unsupported_knowledge_tools_do_not_silently_answer_from_directory(self) -> None:
+        class UnsupportedClient:
+            def chat_completion(self, *args, **kwargs):
+                raise AIToolsUnsupportedError("unsupported", category="unsupported_tools")
+        registry = ReadOnlyToolRegistry(self.engine, compiled_knowledge=SimpleNamespace())
+        with self.assertRaises(AIClassificationError) as raised:
+            AgentLoop(UnsupportedClient(), registry, preset("read_compiled_knowledge", "search_compiled_knowledge")).run([{"role": "user", "content": "知识"}], user_text="知识", max_tokens=500, temperature=0)
+        self.assertEqual("unsupported_tools", raised.exception.category)
+        self.assertIn("本轮未", str(raised.exception))
+
+    def test_custom_preset_all_tools_keeps_md_reading_within_client_limit(self) -> None:
+        registry = ReadOnlyToolRegistry(self.engine, compiled_knowledge=SimpleNamespace(wiki=lambda **args: {"items": []}), workspace=SimpleNamespace(), course_file_resolver=lambda identity: self.root / identity)
+        selected = preset(*sorted(registry.names))
+        client = ScriptedClient([{"content": "未找到知识页。", "tool_calls": []}])
+        AgentLoop(client, registry, selected).run([{"role": "user", "content": "知识"}], user_text="知识", max_tokens=500, temperature=0)
+        sent = client.requests[0][1]["tools"]
+        names = {item["function"]["name"] for item in sent}
+        self.assertLessEqual(len(sent), 16)
+        self.assertIn("browse_knowledge_wiki", names)
+        self.assertIn("read_compiled_knowledge", names)
+        self.assertNotIn("list_compiled_knowledge", names)
+        self.assertIn("list_compiled_knowledge", {item["function"]["name"] for item in registry.definitions(selected.allowed_tools)})
 
     def test_prefetch_uses_only_system_budget_left_after_caller_context(self) -> None:
         client = ScriptedClient([{"content": "已收到上下文。", "reasoning_content": None}])

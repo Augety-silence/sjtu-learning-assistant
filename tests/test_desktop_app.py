@@ -935,6 +935,7 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertEqual("#EAF1FB", create_window_call.kwargs["background_color"])
         self.assertTrue(create_window_call.kwargs["transparent"])
         self.assertTrue(create_window_call.kwargs["vibrancy"])
+        self.assertTrue(create_window_call.kwargs["text_select"])
         self.assertEqual(_initialize_desktop_window, webview.start.call_args.args[0])
         self.assertEqual((webview.create_window.return_value,), webview.start.call_args.args[1])
         start_kwargs = webview.start.call_args.kwargs

@@ -2659,6 +2659,7 @@ def run_desktop_app() -> int:
             background_color="#EAF1FB",
             transparent=native_vibrancy,
             vibrancy=native_vibrancy,
+            text_select=True,
         )
         scheduler.start()
         automatic_start = getattr(service, "start_course_markdown_sync", None)
