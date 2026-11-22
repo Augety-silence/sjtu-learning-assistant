@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -483,12 +483,17 @@ class DocumentCompiler:
         saved_pdf = directory / "source-render.pdf"
         # 已验哈希的全页证据不再重复转 PDF 或重绘页图。
         rendering = nullcontext(None) if all_cached else nullcontext(saved_pdf) if "source-render.pdf" in state["outputs"] else rendered_pdf(path, self.cancel)
-        with rendering as pdf:
+        with rendering as pdf, ExitStack() as resources:
             if pdf is not None and path.suffix.casefold() != ".pdf" and "source-render.pdf" not in state["outputs"]:
                 commit({"source-render.pdf": pdf.read_bytes()})
             native_pages = text_only_pages(pdf) if pdf is not None and self.text_first else set()
             images = ((n, None) for n in range(1, document.unit_count + 1)) if all_cached else (
                 page_images(pdf, cached_pages={int(n) for n in state["pages"]}) if self.renderer is page_images else self.renderer(pdf))
+            # 必须先释放渲染迭代器，再清理临时 PDF；异常 traceback 会延长
+            # 生成器的生命期，Windows 不能删除仍被 PDFium 打开的文件。
+            close_images = getattr(images, "close", None)
+            if callable(close_images):
+                resources.callback(close_images)
             for number, jpeg in images:
                 if self.cancel.is_set():
                     raise DocumentTextError("课件编译已取消。")

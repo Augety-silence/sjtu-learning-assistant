@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from sjtu_learning_assistant.ai_runtime import SharedAIRuntime, token_reservation
@@ -24,7 +25,7 @@ class RuntimeTests(unittest.TestCase):
             with second.request(BODY, {}):
                 pass
             self.assertGreaterEqual(now[0], 1060)
-            with sqlite3.connect(first.path) as db:
+            with closing(sqlite3.connect(first.path)) as db:
                 rows = db.execute("SELECT input,output,cache,reserved FROM requests").fetchall()
                 self.assertEqual(2, len(rows))
                 self.assertTrue(all(r[:3] == (None, None, None) and r[3] > 0 for r in rows))
@@ -53,7 +54,7 @@ class RuntimeTests(unittest.TestCase):
             with runtime.request(BODY, {}):
                 pass
             self.assertGreaterEqual(now[0], 1060)
-            with sqlite3.connect(runtime.path) as db:
+            with closing(sqlite3.connect(runtime.path)) as db:
                 text = str(db.execute("SELECT * FROM requests").fetchall())
                 self.assertNotIn("合成问题", text)
             with self.assertRaises(RuntimeError):

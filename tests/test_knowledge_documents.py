@@ -25,7 +25,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         note = self.converter(text_first=True).compile(self.source, self.path, self.target)
         self.assertEqual(2, len(self.calls))
         self.assertTrue(any("来源审校员" in c[1] for c in self.calls))
-        self.assertIn("source-reviewed", note.read_text())
+        self.assertIn("source-reviewed", note.read_text(encoding="utf-8"))
         with patch("sjtu_learning_assistant.knowledge_documents.rendered_pdf", side_effect=AssertionError("不应重渲染")):
             self.converter(text_first=True).compile(self.source, self.path, self.target)
         self.assertEqual(2, len(self.calls))
@@ -254,6 +254,22 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(1, compiler.calls)
         self.assertFalse(list(self.target.rglob("page-0001.md")))
 
+    def test_api_failure_closes_pdf_iterator_before_snapshot_cleanup(self):
+        closed = []
+        def renderer(pdf):
+            try:
+                yield from page_images(pdf)
+            finally:
+                closed.append(True)
+        def runner(*args):
+            raise RuntimeError("isolated API failure")
+        compiler = DocumentCompiler(runner, self.cancel, renderer=renderer)
+        with self.assertRaises(DocumentTextError):
+            compiler.compile(self.source, self.path, self.target)
+        self.assertEqual([True], closed)
+        self.assertEqual(1, compiler.calls)
+        self.assertFalse(list(self.target.rglob("page-0001.md")))
+
     def test_transient_api_error_retries_once_and_counts_every_attempt(self):
         attempts = []
         def runner(model, system, content):
@@ -390,7 +406,7 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(4, state["counts"]["document_calls"])
         notes = list(self.target.rglob("document.md"))
         self.assertEqual(2, len(notes))
-        self.assertEqual(1, sum('quality_status: source-only' in note.read_text() for note in notes))
+        self.assertEqual(1, sum('quality_status: source-only' in note.read_text(encoding='utf-8') for note in notes))
 
     def test_index_links_resolve_and_markdown_rows_survive_resync(self):
         (self.source / "笔记.md").write_text("# 个人笔记", encoding="utf-8")

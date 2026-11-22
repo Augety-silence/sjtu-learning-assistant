@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -60,9 +61,9 @@ class ParallelSummaryPolicyTests(unittest.TestCase):
                 for path in (external, embedded, macro):
                     original = path.read_bytes()
                     note = DocumentCompiler(runner, threading.Event()).compile(source, path, target)
-                    self.assertIn('quality_status: source-only', note.read_text())
-                    self.assertIn('skipped_active_content', note.read_text())
-                    self.assertEqual('completed', json.loads((note.parent / 'manifest.json').read_text())['status'])
+                    self.assertIn('quality_status: source-only', note.read_text(encoding='utf-8'))
+                    self.assertIn('skipped_active_content', note.read_text(encoding='utf-8'))
+                    self.assertEqual('completed', json.loads((note.parent / 'manifest.json').read_text(encoding='utf-8'))['status'])
                     self.assertEqual(original, path.read_bytes())
                 office.assert_not_called()
             runner.assert_not_called()
@@ -85,7 +86,7 @@ class ParallelSummaryPolicyTests(unittest.TestCase):
             runner = Mock(side_effect=AssertionError('已完成不再计费'))
             sync = CourseMarkdownSync(lambda: settings, lambda: [path], runner)
             sync.run_once()
-            self.assertEqual(body, mirror.read_text())
+            self.assertEqual(body, mirror.read_text(encoding='utf-8'))
             self.assertEqual(1, sync.status()['completed'])
             self.assertEqual(0, sync.status()['retained'])
             runner.assert_not_called()
@@ -114,7 +115,7 @@ class ParallelSummaryPolicyTests(unittest.TestCase):
                                       workers=3, compiler_factory=Compiler)
             sync.run_once()
             self.assertEqual(3, sync.status()['completed'])
-            state = json.loads((source / 'Knowledge Markdown/99_System/Course-Sync.json').read_text())
+            state = json.loads((source / 'Knowledge Markdown/99_System/Course-Sync.json').read_text(encoding='utf-8'))
             self.assertEqual(3, state['quota']['used'])
             self.assertEqual(3, len(set(calls)))
             sync.close()
@@ -149,7 +150,7 @@ class ParallelSummaryPolicyTests(unittest.TestCase):
             with cancellation_scope(lambda: cancelled[0]):
                 with self.assertRaisesRegex(RuntimeError, '停止'):
                     runtime.reserve(body)
-            with sqlite3.connect(runtime.path) as db:
+            with closing(sqlite3.connect(runtime.path)) as db:
                 self.assertEqual(10, db.execute('SELECT count(*) FROM requests WHERE started IS NOT NULL').fetchone()[0])
             for identity in ids:
                 runtime.finish(identity, {}, 'done', 1000)

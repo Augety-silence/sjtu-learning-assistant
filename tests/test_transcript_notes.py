@@ -317,7 +317,7 @@ class TranscriptNotesTests(unittest.TestCase):
             service = TranscriptService(root, autostart_worker=False, ai_context_provider=context, now_provider=lambda: now)
             directory = service._video_dir(SOURCE)
             directory.mkdir()
-            (directory / 'raw.vtt').write_text(RAW, encoding='utf-8')
+            (directory / 'raw.vtt').write_text(RAW, encoding='utf-8', newline='\n')
             raw_hash = hashlib.sha256(RAW.encode()).hexdigest()
             manifest = {'source': {'source_id': SOURCE}, 'course': {'id': '12', 'name': '经济学'}, 'video': {'title': '课堂'},
                         'raw_sha256': raw_hash, 'status': 'partial', 'artifacts': {}}

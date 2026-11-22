@@ -29,14 +29,14 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         wiki = Mock(return_value={"built": 0, "cached": 0, "failed": 0, "issues": []})
         worker.wiki_rebuilder = wiki
         worker.run_once()
-        state = json.loads((self.target / "99_System/Course-Sync.json").read_text())
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
         self.assertEqual(0, worker.status()["failed"])
         self.assertTrue(worker.status()["has_runnable"])
         self.assertEqual(0, next(i for i in state["items"].values() if i.get("last_dispatched_at"))["attempts"])
         wiki.assert_not_called()
         self.now += timedelta(seconds=1)
         worker.run_once()
-        state = json.loads((self.target / "99_System/Course-Sync.json").read_text())
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
         self.assertEqual(2, sum(bool(i.get("last_dispatched_at")) for i in state["items"].values()))
         for _ in range(12):
             self.now += timedelta(seconds=1)

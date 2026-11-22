@@ -28,7 +28,7 @@ class MarkdownProgressTests(unittest.TestCase):
         target = source / "Knowledge Markdown"
         mirror = target / "Courses/term/lecture.pdf.md"
         mirror.parent.mkdir(parents=True)
-        mirror.write_text("basic text")
+        mirror.write_text("basic text", encoding="utf-8")
         self.write(target / "99_System/Course-Sync.json", dict(version=1, source_root=str(source), items={"term/lecture.pdf": dict(text_ready=True, mirror_hash="a" * 64, status="failed", error="请求超时")}))
         result = course_progress(source, [path, path])
         self.assertEqual((1, 1, 0, 0, 0, 1), tuple(result[k] for k in ("total", "completed", "pending", "failed", "ai_completed", "ai_failed")))
@@ -54,7 +54,7 @@ class MarkdownProgressTests(unittest.TestCase):
         for kind, filename in (("lesson", "lesson.md"), ("original", "original.md")):
             file = directory / filename
             file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_text("敏感字幕正文")
+            file.write_text("敏感字幕正文", encoding="utf-8")
             records[kind] = dict(path=filename, sha256=hashlib.sha256(file.read_bytes()).hexdigest())
         self.write(directory / "manifest.json", dict(video=dict(title="第三堂"), status="completed", artifacts=records, lesson_notes=dict(status="pending", error_code="timeout")))
         result = transcript_progress(self.root)
@@ -65,7 +65,7 @@ class MarkdownProgressTests(unittest.TestCase):
     def test_malformed_and_symlinked_manifests_do_not_claim_completion(self):
         directory = self.root / "videos" / ("b" * 32)
         directory.mkdir(parents=True)
-        (directory / "manifest.json").write_text("not json")
+        (directory / "manifest.json").write_text("not json", encoding="utf-8")
         self.assertEqual(1, transcript_progress(self.root)["failed"])
         (directory / "manifest.json").unlink()
         (directory / "manifest.json").symlink_to(self.root / "not-authorized")
