@@ -938,6 +938,11 @@ class DashboardService:
                 corrected = corrected_reader(source_id)
                 if corrected is not None:
                     return corrected
+            cached_reader = getattr(self._transcript_service_instance, "cached_subtitles", None)
+            if callable(cached_reader):
+                cached = cached_reader(source_id)
+                if cached is not None:
+                    return cached
             return self._video_service().subtitles(source_id)
         except SJTUVideoError as exc:
             raise DashboardError(str(exc)) from None
@@ -964,6 +969,7 @@ class DashboardService:
                     ai_context_provider=self._transcript_ai_context,
                     notes_context_provider=self._lesson_summary_ai_context,
                     notes_slice_calls=2,
+                    notes_workers=4,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
@@ -984,9 +990,32 @@ class DashboardService:
         return AIContext(SummaryClient(), 'deepseek-chat', fingerprint, True, False)
 
     def start_transcript_markdown_sync(self) -> None:
-        """启动已保存字幕的补齐，不依赖用户先进入视频页或新建校对任务。"""
-        if (self.local_projects_path.parent / "transcripts" / "v1" / "videos").is_dir():
-            self._transcript_service()
+        """字幕提前下载，原始 MD 与 AI 总结分别执行。"""
+        self._transcript_service()
+        self._subtitle_sync_service().start()
+
+    def _subtitle_courses(self):
+        with Session(self.engine) as session:
+            return [(str(course.source_id), course.name or "未命名课程")
+                    for course in session.scalars(select(Course).order_by(Course.term_name.desc(), Course.id.desc()))
+                    if str(course.source_id).isdigit()]
+
+    def _subtitle_sync_service(self):
+        from sjtu_learning_assistant.subtitle_sync import SubtitleSync
+        with self._client_lock:
+            if getattr(self, "_closed", False):
+                raise DashboardError("应用正在关闭。")
+            if getattr(self, "_subtitle_sync_instance", None) is None:
+                self._subtitle_sync_instance = SubtitleSync(self._subtitle_courses,
+                    lambda course_id, name: self._video_service().list_course_videos(course_id, course_name=name, limit=10000),
+                    self._transcript_service)
+            return self._subtitle_sync_instance
+
+    def subtitle_sync_all(self):
+        service = self._subtitle_sync_service()
+        service.notify(retry=True)
+        service.start()
+        return {"status": "queued", "scope": "all_courses"}
 
     def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
         if isinstance(course_id, bool) or type(course_id) not in [int, str]:
@@ -3693,7 +3722,7 @@ class DashboardService:
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
                 wiki_rebuilder=self._rebuild_course_wiki,
-                max_documents_per_cycle=1, slice_calls=2,
+                max_documents_per_cycle=10, slice_calls=2, workers=6,
             )
         self._course_markdown_instance.start()
 
@@ -3702,6 +3731,9 @@ class DashboardService:
         return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
 
     def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        subtitles = getattr(self, "_subtitle_sync_instance", None)
+        if subtitles is not None and not settings_changed:
+            subtitles.notify()
         service = getattr(self, "_course_markdown_instance", None)
         if service is not None:
             service.notify(settings_changed=settings_changed)
@@ -3736,6 +3768,13 @@ class DashboardService:
         self, model: str, system_prompt: str, user_content: Any, *, max_tokens: int = 8192
     ) -> str:
         settings = self._effective_settings()
+        from .knowledge_summary import CONCISE_REVIEW_PROMPT, SUMMARY_PROMPT, CONCISE_COMPRESSION_PROMPT
+        if system_prompt.startswith(CONCISE_REVIEW_PROMPT):
+            max_tokens = min(max_tokens, 2048)
+        elif system_prompt.startswith(SUMMARY_PROMPT):
+            max_tokens = min(max_tokens, 7500)
+        elif system_prompt.startswith(CONCISE_COMPRESSION_PROMPT):
+            max_tokens = min(max_tokens, 6500)
         if not settings.ai_enabled or not settings.ai_key_saved:
             raise DashboardError("请先在设置中启用并保存 AI 连接。")
         client: Any | None = None
@@ -3778,7 +3817,9 @@ class DashboardService:
             )
             content = result.get("content")
             if (result.get("response_metadata") or {}).get("finish_reason") == "length":
-                raise KnowledgeCompilerError("知识库响应达到长度上限；页面已保存，自动续编将重试此知识段落。")
+                from .knowledge_compiler import KnowledgeResponseError
+                raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
+                                             content=content if type(content) is str else '')
             if type(content) is not str or not content.strip():
                 raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
             return content.strip()
@@ -3869,6 +3910,9 @@ class DashboardService:
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        subtitles = getattr(self, "_subtitle_sync_instance", None)
+        if subtitles is not None:
+            subtitles.close()
         history = getattr(self, "_course_history_instance", None)
         if history is not None:
             history.close()

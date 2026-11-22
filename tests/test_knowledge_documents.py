@@ -206,8 +206,13 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(4, len(self.calls))
 
     def test_incomplete_lecture_is_not_published_and_resumes_from_saved_pages(self):
+        summary_calls = 0
         def runner(model, system, content):
+            nonlocal summary_calls
             if '精炼课程总结' in system:
+                summary_calls += 1
+                if summary_calls > 1:
+                    raise DocumentTextError('模拟中断：精炼总结遗漏输入页面，已有失败稿保留。')
                 result = json.loads(knowledge_response(model, system, content))
                 result['covered_pages'] = [1]
                 return json.dumps(result)
@@ -373,17 +378,19 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with target_lock(self.target):
             pass
 
-    def test_documents_mode_accepts_pdf_and_isolates_unsupported_ppt(self):
+    def test_documents_mode_accepts_pdf_and_retains_legacy_ppt_without_opening(self):
         (self.source / "legacy.ppt").write_bytes(b"unsupported")
         service = KnowledgeCompilerService(ai_runner=self.runner)
         self.assertEqual(2, service.inspect(str(self.source))["document_files"])
         service.start(str(self.source), str(self.target), "documents")
         service._thread.join(10)
         state = service.status()
-        self.assertEqual("completed_with_warnings", state["status"])
-        self.assertEqual(1, state["counts"]["warnings"])
+        self.assertEqual("completed", state["status"])
+        self.assertEqual(0, state["counts"]["warnings"])
         self.assertEqual(4, state["counts"]["document_calls"])
-        self.assertEqual(1, len(list(self.target.rglob("document.md"))))
+        notes = list(self.target.rglob("document.md"))
+        self.assertEqual(2, len(notes))
+        self.assertEqual(1, sum('quality_status: source-only' in note.read_text() for note in notes))
 
     def test_index_links_resolve_and_markdown_rows_survive_resync(self):
         (self.source / "笔记.md").write_text("# 个人笔记", encoding="utf-8")

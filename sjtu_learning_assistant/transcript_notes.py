@@ -8,7 +8,7 @@ from typing import Callable, Mapping
 
 from sjtu_learning_assistant.transcript_pipeline import chunk_cues, normalize_cues, parse_vtt
 from sjtu_learning_assistant.summary_policy import (
-    MAX_SUMMARY_CHARS, MAX_SECTION_TEXT_CHARS, SUMMARY_POLICY, source_chars, summary_budget,
+    MAX_SUMMARY_CHARS, MAX_SECTION_TEXT_CHARS, SUMMARY_POLICY, source_chars, summary_budget, length_request,
 )
 
 CONTRACT = "classroom-notes-v1"
@@ -106,7 +106,7 @@ def _validate(value: dict, chunks: list[int], allowed: Mapping[str, str], timing
                     or not quote.strip() or len(quote) > 120 or quote not in allowed[identity]):
                 raise ValueError("课堂总结证据不是对应字幕原话。")
     if sum(len(s["text"]) for s in sections) > MAX_SECTION_TEXT_CHARS or len(render_summary(value, timing)) > MAX_SUMMARY_CHARS:
-        raise ValueError("课堂总结超过3000字符，需重新组织，不能截断。")
+        raise ValueError("课堂总结超过5000字符，需重新组织，不能截断。")
     return value
 
 
@@ -144,18 +144,30 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         saved = cached(cache_key(data))
         if type(saved) is dict:
             return saved
-        payload = json.dumps(data, ensure_ascii=False)
         system = REVIEW_PROMPT if "task" in data else MERGE_PROMPT if "input_summaries" in data else PROMPT
+        request_system, request_data = length_request(system, data)
+        payload = json.dumps(request_data, ensure_ascii=False)
         if len(payload) + len(system) > 14000:
             raise ValueError("课堂总结输入超过分块限制。")
-        if max_calls and calls >= max_calls:
-            raise SummaryDeferred()
-        calls += 1
-        response = client.chat_completion(
-            [{"role": "system", "content": system}, {"role": "user", "content": payload}],
-            max_tokens=5000, temperature=0, system_prompt=False,
-            response_format={"type": "json_object"},
-        )
+        raw_key = cache_key(data) + '-response-v1'
+        response = cached(raw_key)
+        if not isinstance(response, Mapping):
+            if max_calls and calls >= max_calls:
+                raise SummaryDeferred()
+            calls += 1
+            from .knowledge_compiler import KnowledgeResponseError
+            try:
+                response = client.chat_completion(
+                    [{"role": "system", "content": request_system}, {"role": "user", "content": payload}],
+                    max_tokens=7500, temperature=0, system_prompt=False,
+                    response_format={"type": "json_object"},
+                )
+            except KnowledgeResponseError as exc:
+                # 桌面适配器可能以异常交付截断响应，仍须先落盘再进入有界修复。
+                response = {'content': exc.content, 'finish_reason': 'length'}
+            if isinstance(response, Mapping):
+                # 付费响应在取消/格式校验前保存；坏响应也必须有断点，不能每轮重新付费。
+                commit(raw_key, {key: response.get(key) for key in ('content', 'finish_reason', 'response_metadata')})
         check()
         if (not isinstance(response, Mapping) or response.get("finish_reason") == "length"
                 or (response.get("response_metadata") or {}).get("finish_reason") == "length"):
@@ -163,8 +175,8 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         return _json_response(response.get("content"))
 
     def generate(data: dict, covered: list[int], allowed: Mapping[str, str]) -> dict:
-        value = request(data)
         try:
+            value = request(data)
             validated = _validate(value, covered, allowed, timing)
         except ValueError as exc:
             # 只允许一次对照完整原始输入的修复，不切片、猜引文或静默转换结构。
@@ -180,10 +192,10 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         return {"covered_chunks": draft["covered_chunks"], "sections": [
             {"title": section["title"], "text": section["text"], "cue_ids": [e["cue_id"] for e in section["evidence"]]}
             for section in draft["sections"]]}
-    total_budget = summary_budget(sum(source_chars(c.text) for c in cues))
+    total_budget = summary_budget(sum(source_chars(c.text) for c in cues), legacy=True)
     for chunk in chunks:
         allowed = {cue.cue_id: cue.text for cue in chunk.cues}
-        budget = summary_budget(sum(source_chars(c.text) for c in chunk.cues))
+        budget = summary_budget(sum(source_chars(c.text) for c in chunk.cues), legacy=True)
         if len(chunks) > 1:
             # 分块只产短事实卡，最终稿仍按整堂课预算，不扩写后再反复缩减。
             target = max(160, min(budget["target_chars"], total_budget["target_chars"] // len(chunks)))
@@ -214,7 +226,7 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
             allowed = {e["cue_id"]: e["quote"] for d in group for s in d["sections"] for e in s["evidence"]}
             chars = sum(source_chars(c.text) for chunk in chunks if chunk.index in covered for c in chunk.cues)
             merged.append(generate({"covered_chunks": covered, "input_summaries": [wire(d) for d in group],
-                                    "source_budget": summary_budget(chars)}, covered, allowed))
+                                    "source_budget": summary_budget(chars, legacy=True)}, covered, allowed))
         drafts = merged
     draft = drafts[0]
     # 最终稿逐块对照原始字幕，而不只检查有损的中间摘要。

@@ -355,6 +355,7 @@ class TranscriptService:
         playback_retry_cooldown_seconds: float = 30.0,
         playback_auto_retry_limit: int = 3,
         notes_slice_calls: int = 0,
+        notes_workers: int = 1,
     ) -> None:
         self.root = Path(root).expanduser()
         self.enable_phase1 = (
@@ -388,7 +389,10 @@ class TranscriptService:
         self._thread: threading.Thread | None = None
         self._notes_thread: threading.Thread | None = None
         self._notes_wake = threading.Event()
+        self._source_wake = threading.Event()
+        self._source_thread: threading.Thread | None = None
         self.notes_slice_calls = max(0, int(notes_slice_calls))
+        self.notes_workers = max(1, min(10, int(notes_workers)))
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
             pid=os.getpid(),
@@ -398,6 +402,8 @@ class TranscriptService:
         self._ensure_root()
         self._recover_interrupted()
         if autostart_worker:
+            self._source_thread = threading.Thread(target=self._source_worker, name="subtitle-prefetch", daemon=True)
+            self._source_thread.start()
             self._notes_thread = threading.Thread(target=self._notes_worker, name="transcript-notes", daemon=True)
             self._notes_thread.start()
             self._thread = threading.Thread(target=self._worker, name="transcript-worker", daemon=True)
@@ -602,10 +608,18 @@ class TranscriptService:
                 changed = False
                 batch_owner = batch.get("owner")
                 for job in batch.get("jobs", list()):
+                    if (batch.get("source_only") and job.get("status") == "completed"
+                            and job.get("stage") == "raw_saved"):
+                        self._promote_prefetched_raw(job)
                     if job.get("status") not in ACTIVE_STATES:
                         continue
                     owner = job.get("owner") or batch_owner
                     if self._owner_alive(owner):
+                        continue
+                    if batch.get("source_only"):
+                        job.update(status="queued", stage="queued")
+                        job.pop("owner", None)
+                        changed = True
                         continue
                     if job.get("status") == "queued" and batch.get("origin") != "playback":
                         # A queued job never started, so nothing was
@@ -642,6 +656,25 @@ class TranscriptService:
                 if changed:
                     batch["updated_at"] = _now()
                     self._write_json(path, batch)
+
+    def _promote_prefetched_raw(self, job: Mapping[str, Any]) -> None:
+        """兼容旧预同步记录：仅更正已落盘原文的状态，不触碰正文或总结检查点。"""
+        try:
+            directory = self._video_dir(str(job.get('source_id')))
+            if not directory.is_dir() or directory.is_symlink():
+                return
+            with self._lesson_lock(directory) as acquired:
+                if not acquired:
+                    return
+                manifest = self._read_json(directory / 'manifest.json')
+                if (manifest.get('status') != 'saved' or manifest.get('stage') != 'raw_saved'
+                        or manifest.get('source', {}).get('source_id') != job.get('source_id')
+                        or not self._hashed_file_valid(directory / 'raw.vtt', manifest.get('raw_sha256'))):
+                    return
+                manifest.update(status='raw_ready', source_only=True, updated_at=_now())
+                self._write_json(directory / 'manifest.json', manifest)
+        except (OSError, TranscriptError, ValueError, TypeError):
+            return
 
     @staticmethod
     def _validate_video(course_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -725,7 +758,36 @@ class TranscriptService:
             with self._lock, self._batch_lock():
                 self._write_json(self._batch_path(batch_id), batch)
         self._wake.set()
+        self._source_wake.set()
         return self._public_batch(batch)
+
+    def prefetch(self, *, course_id: str, course_name: str, videos: Sequence[Mapping[str, Any]], retry: bool = False) -> int:
+        """Queue raw captions without playback side effects or model calls."""
+        with self._lock, self._batch_lock():
+            latest = {}
+            for batch in self._all_batches():
+                for job in batch.get("jobs", []):
+                    if batch.get("origin") == "prefetch":
+                        latest.setdefault(job.get("source_id"), (batch, job))
+            pending = []
+            for video in videos:
+                clean = self._validate_video(str(course_id), video)
+                source_id = clean["source_id"]
+                if self.cached_subtitles(source_id) is not None:
+                    continue
+                previous = latest.get(source_id)
+                if previous:
+                    batch, job = previous
+                    if job.get("status") in ACTIVE_STATES | {"waiting_remote"}:
+                        continue
+                    updated = _parse_time(batch.get("updated_at"))
+                    if not retry and updated and (self.now_provider() - updated).total_seconds() < 86400:
+                        continue
+                pending.append(clean)
+            for index in range(0, len(pending), 100):
+                self.start_batch(course_id=course_id, course_name=course_name, videos=pending[index:index + 100],
+                                 _batch_lock_held=True, _batch_metadata={"origin": "prefetch", "source_only": True})
+            return len(pending)
 
     def _all_batches(self) -> list[dict[str, Any]]:
         batches = []
@@ -1217,6 +1279,17 @@ class TranscriptService:
         if cues is None:
             return None
         return {"status": "ready", "message": "已加载通过质量检查的校正字幕。", "vtt": cues_to_vtt(cues), "cue_count": len(cues), "content_type": "text/vtt; charset=utf-8", "source_version": "corrected"}
+
+    def cached_subtitles(self, source_id: str) -> dict[str, Any] | None:
+        try:
+            stored = self._stored_learning_input(source_id)
+        except (TranscriptError, OSError, ValueError):
+            return None
+        if stored is None:
+            return None
+        raw = stored[2]
+        return {"status": "ready", "vtt": raw, "cue_count": len(parse_vtt(raw)),
+                "content_type": "text/vtt; charset=utf-8", "source_version": "original", "message": "已加载本地字幕。"}
 
     def learning_segments(self, source_id: str) -> dict[str, Any]:
         parse_remote_source_id(source_id)
@@ -1721,8 +1794,17 @@ class TranscriptService:
                 self._backfill_next_lesson()
             except Exception as exc:
                 LOGGER.warning("课堂总结队列异常；exception_type=%s", type(exc).__name__)
-            self._notes_wake.wait(5)
+            self._notes_wake.wait(1)
             self._notes_wake.clear()
+
+    def _source_worker(self) -> None:
+        while not self._stop.is_set():
+            self._source_wake.wait(2)
+            self._source_wake.clear()
+            try:
+                self.run_pending(source_only=True)
+            except Exception as exc:
+                LOGGER.warning("字幕预同步暂时失败；exception_type=%s", type(exc).__name__)
 
     def _claim_batch(self, batch_id: str) -> dict[str, Any] | None:
         with self._lock, self._batch_lock():
@@ -1752,13 +1834,16 @@ class TranscriptService:
             self._write_json(self._batch_path(batch_id), batch)
             return batch
 
-    def run_pending(self) -> None:
-        self._schedule_due_playback_retries()
+    def run_pending(self, *, source_only: bool = False) -> None:
+        if not source_only:
+            self._schedule_due_playback_retries()
         while not self._stop.is_set():
             candidates = list(reversed(self._all_batches()))
             candidates.sort(key=lambda batch: not any(job.get("source_id") == self._foreground_source for job in batch.get("jobs", [])))
             batch = None
             for candidate in candidates:
+                if bool(candidate.get("source_only")) != source_only:
+                    continue
                 if candidate.get("status") in {"queued", "waiting_remote"} and type(candidate.get("id")) is str:
                     try:
                         batch = self._claim_batch(candidate["id"])
@@ -2080,16 +2165,28 @@ class TranscriptService:
                 except _PlaybackYield:
                     job.update(status="saved", stage="paused_for_playback", message="已保存进度，优先准备当前播放录像。")
                 except Exception as exc:
-                    has_subtitle = self._job_has_usable_subtitle(job)
+                    has_subtitle = (self.cached_subtitles(str(job["source_id"])) is not None
+                                    if batch.get("source_only") else self._job_has_usable_subtitle(job))
                     job["status"] = resolve_product_status(has_subtitle, False, True)
                     job["stage"] = "fetch"
                     job["error"] = _safe_error(exc)
+                    if batch.get("source_only"):
+                        job["fetch_error_code"] = self._diagnostic_code(exc)
                     self._schedule_retry(job, exc)
                     job["message"] = (
                         "基础字幕已保存；后续存储失败，可重试。"
                         if has_subtitle else "字幕存储失败，可重试。"
                     )
                 self._save_batch(batch)
+                if batch.get("source_only"):
+                    if job.get("status") == "saved":
+                        job.update(status="completed", stage="raw_saved", progress=100,
+                                   message="原始字幕已同步。", source_only=True)
+                    elif job.get("status") in {"partial", "failed"} and int(job.get("fetch_retries") or 0) < 8 and job.get("fetch_error_code") not in {"storage", "authentication", "source_empty"}:
+                        job["fetch_retries"] = int(job.get("fetch_retries") or 0) + 1
+                        job.update(status="waiting_remote", stage="waiting_remote", next_retry_at=(self.now_provider() + timedelta(seconds=min(300, 30 * 2 ** (job["fetch_retries"] - 1)))).isoformat())
+                    self._save_batch(batch)
+                    continue
                 if job.get("status") == "saved":
                     try:
                         self._organize(batch, job)
@@ -2104,6 +2201,9 @@ class TranscriptService:
                         self._schedule_retry(job, exc)
                         self._record_organize_failure(job, exc)
                     self._save_batch(batch)
+        if batch.get("source_only"):
+            self._save_batch(batch)
+            return
         remaining_saved = [job for job in batch["jobs"] if job.get("status") == "saved"]
         remaining_saved.sort(key=lambda item: item.get("source_id") != self._foreground_source)
         for job in remaining_saved:
@@ -2896,10 +2996,24 @@ class TranscriptService:
     def _fetch_and_store(self, batch: dict[str, Any], job: dict[str, Any]) -> None:
         self._check_cancel(batch, job)
         video_dir = self._video_dir(str(job["source_id"]))
+        if video_dir.is_symlink():
+            raise TranscriptError("字幕视频目录不安全。")
+        video_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self._lesson_lock(video_dir) as acquired:
+            if not acquired:
+                raise TranscriptArtifactError("字幕文件正在更新，请稍后重试。")
+            self._fetch_and_store_locked(batch, job)
+
+    def _fetch_and_store_locked(self, batch: dict[str, Any], job: dict[str, Any]) -> None:
+        self._check_cancel(batch, job)
+        video_dir = self._video_dir(str(job["source_id"]))
         if video_dir.exists() and (video_dir.is_symlink() or not video_dir.is_dir()):
             raise TranscriptError("字幕视频目录不安全。")
         manifest_path = video_dir / "manifest.json"
-        if manifest_path.exists() and not manifest_path.is_symlink():
+        if batch.get("source_only") and self.cached_subtitles(str(job["source_id"])) is not None:
+            job.update(video_dir=video_dir.name, status="saved", stage="reused", reused=True)
+            return
+        if not batch.get("source_only") and manifest_path.exists() and not manifest_path.is_symlink():
             manifest = self._read_json(manifest_path)
             raw_path = video_dir / "raw.vtt"
             if raw_path.is_symlink():
@@ -2988,6 +3102,12 @@ class TranscriptService:
             return
         job.pop("next_retry_at", None)
         raw = result.get("vtt")
+        if batch.get('source_only') and status == 'empty':
+            job.update(status='failed', stage='source_unavailable', fetch_error_code='source_empty',
+                       error=str(result.get('message') or '该录像暂无字幕。'),
+                       message='来源暂无字幕，将低频复查；可手动重新同步。',
+                       auto_retryable=False, next_retry_at=None)
+            return
         if status != "ready" or type(raw) is not str or not raw.strip():
             raise TranscriptError(str(result.get("message") or "该录像暂无字幕。"))
         data = raw.encode("utf-8")
@@ -2999,7 +3119,7 @@ class TranscriptService:
             raise TranscriptError("字幕视频目录不安全。")
         os.chmod(video_dir, 0o700)
         raw_hash = _sha256(data)
-        context = self.ai_context_provider()
+        context = AIContext(None, "", "", False) if batch.get("source_only") else self.ai_context_provider()
         idempotency = _sha256("|".join((str(job["source_id"]), raw_hash, PROMPT_VERSION, context.model, context.endpoint_fingerprint)).encode("utf-8"))
         manifest = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -3010,7 +3130,8 @@ class TranscriptService:
             "ai": {"model": context.model, "endpoint_fingerprint": context.endpoint_fingerprint},
             "pipeline": {"prompt_version": PROMPT_VERSION},
             "idempotency_key": idempotency,
-            "status": "saved",
+            "status": "raw_ready" if batch.get('source_only') else "saved",
+            "source_only": bool(batch.get('source_only')),
             "stage": "raw_saved",
             "progress": 45,
             "retry_count": int(job.get("attempts") or 0) - 1,
@@ -3028,6 +3149,7 @@ class TranscriptService:
         manifest["artifacts"]["cues"] = {"path": "cues.json", "sha256": _sha256(cues_payload)}
         self._write_json(video_dir / "manifest.json", manifest)
         self._save_lesson_notes(video_dir, manifest, raw)
+        self._notes_wake.set()
         job["video_dir"] = video_dir.name
         job["status"] = "saved"
         job["stage"] = "raw_saved"
@@ -3098,7 +3220,7 @@ class TranscriptService:
         """闲时补齐一堂已保存课程，不重跑V1/Phase1，也不设置每日调用上限。"""
         if time.monotonic() < self._next_notes_scan:
             return
-        self._next_notes_scan = time.monotonic() + 5
+        self._next_notes_scan = time.monotonic() + 1
         directories = sorted((self.root / "videos").iterdir())[:5000]
         # 先让全部已保存原始字幕可见，再逐堂调用模型；第一堂耗时不会挡住其余目录。
         def priority(directory):
@@ -3124,7 +3246,18 @@ class TranscriptService:
                         self._save_lesson_notes(directory, manifest, raw_path.read_text(encoding="utf-8"))
             except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
                 continue
-        for directory in sorted(directories, key=priority):
+        ordered = sorted(directories, key=priority)
+        if self.notes_workers == 1:
+            for directory in ordered:
+                if self._backfill_lesson(directory):
+                    return  # 保留同步单任务调用的原行为；生产使用有限并行池。
+        else:
+            with ThreadPoolExecutor(max_workers=self.notes_workers, thread_name_prefix='lesson-summary') as pool:
+                list(pool.map(self._backfill_lesson, ordered))
+
+    def _backfill_lesson(self, directory: Path) -> bool:
+        """单课堂锁和独立检查点；不同课堂可并行，同一课堂不能重复派发。"""
+        for directory in (directory,):
             if self._stop.is_set():
                 return
             if not _ID.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
@@ -3183,33 +3316,36 @@ class TranscriptService:
                             path = cache_dir / (key + ".json")
                             if not path.exists() and not path.is_symlink():
                                 self._write_json(path, value)
-                        summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit,
-                                                         max_calls=self.notes_slice_calls)
+                        from .ai_runtime import cancellation_scope
+                        with cancellation_scope(lambda: self._stop.is_set() or not self.notes_context_provider().enabled):
+                            summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit,
+                                                             max_calls=self.notes_slice_calls)
                         check()
                         # API调用期间来源或人工正文发生变化时，不覆盖新内容。
                         current = self._read_json(directory / "manifest.json")
                         if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
-                            return
+                            return True
                         self._save_lesson_notes(directory, current, raw, summary, report)
                     except (TranscriptPipelineCancelled, _PlaybackYield):
-                        return
+                        return True
                     except Exception as exc:
                         from .transcript_notes import SummaryDeferred
                         current = self._read_json(directory / "manifest.json")
                         if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
-                            return
+                            return True
                         if isinstance(exc, SummaryDeferred):
                             current.setdefault("lesson_notes", {}).update(status="pending", fingerprint=fingerprint,
                                 last_dispatched_at=self.now_provider().isoformat())
                             self._write_json(directory / "manifest.json", current)
-                            return
+                            return True
                         current.setdefault("lesson_notes", {}).update(status="pending", error_code=self._diagnostic_code(exc),
                             attempts=min(1_000_000, attempts + 1), fingerprint=fingerprint,
                             retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(attempts + 1))).isoformat())
                         self._write_json(directory / "manifest.json", current)
-                    return
+                    return True
             except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
                 continue
+        return False
 
     def _organize(self, batch: dict[str, Any], job: dict[str, Any]) -> None:
         self._check_cancel(batch, job)
@@ -3662,6 +3798,9 @@ class TranscriptService:
         self._stop.set()
         self._wake.set()
         self._notes_wake.set()
+        self._source_wake.set()
+        if self._source_thread and self._source_thread.is_alive():
+            self._source_thread.join(timeout=2)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
         if self._notes_thread and self._notes_thread.is_alive():

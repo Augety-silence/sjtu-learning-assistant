@@ -1401,6 +1401,10 @@ export function startTranscriptBatch(courseId: number, sourceIds: string[]) {
   );
 }
 
+export function syncAllSubtitles() {
+  return invoke<{ status: string; scope: "all_courses" }>("subtitle_sync_all");
+}
+
 export function prepareTranscriptPlayback(
   courseId: number,
   sourceId: string,

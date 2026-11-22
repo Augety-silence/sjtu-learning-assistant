@@ -586,6 +586,7 @@ class DesktopBridge:
             "video_slides_pdf": self._video_slides_pdf,
             "video_screenshot_pdf": self._video_screenshot_pdf,
             "transcript_batch_start": self._transcript_batch_start,
+            "subtitle_sync_all": lambda payload: self._without_payload(payload, service.subtitle_sync_all),
             "transcript_playback_prepare": self._transcript_playback_prepare,
             "transcript_playback_update": self._transcript_playback_update,
             "transcript_learning_segments": self._transcript_learning_segments,

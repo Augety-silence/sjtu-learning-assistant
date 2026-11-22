@@ -913,29 +913,34 @@ class SJTUVideoService:
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
         course_id = _strict_id(canvas_course_id, "课程 ID")
-        if type(limit) is not int or not 1 <= limit <= 1000:
+        if type(limit) is not int or not 1 <= limit <= 10000:
             raise SJTUVideoError("录像数量限制不正确。")
         with self._http_client() as client:
             token = self._launch_jwt(course_id, client)
             context = self._api_json(client, token, "/lms/launch-context")
             teaching_class_id = self._teaching_class_id(context)
-            payload = self._api_json(
-                client,
-                token,
-                "/v1/subject_vod_list_new",
-                params={
-                    "page.pageIndex": 1,
-                    "page.pageSize": limit,
-                    "teclIds": teaching_class_id,
-                    "page.orders[0].asc": "false",
-                    "page.orders[0].field": "courBeginTime",
-                    "schoolOpenStatusFlag": "false",
-                },
-            )
-        return [
-            self._map_video(record, course_id, course_name)
-            for record in self._video_records(payload)
-        ]
+            videos, seen = [], set()
+            page_size = min(limit, 1000)
+            for page in range(1, 11):
+                payload = self._api_json(client, token, "/v1/subject_vod_list_new", params={
+                    "page.pageIndex": page, "page.pageSize": page_size,
+                    "teclIds": teaching_class_id, "page.orders[0].asc": "false",
+                    "page.orders[0].field": "courBeginTime", "schoolOpenStatusFlag": "false"})
+                records = self._video_records(payload)
+                mapped = [self._map_video(record, course_id, course_name) for record in records]
+                new = []
+                for video in mapped:
+                    if video["source_id"] not in seen:
+                        seen.add(video["source_id"])
+                        new.append(video)
+                if mapped and not new:
+                    raise SJTUVideoError("录像列表分页重复，请稍后重试。")
+                videos.extend(new)
+                if len(records) < page_size or limit <= 1000:
+                    return videos[:limit]
+                if len(videos) >= limit:
+                    raise SJTUVideoError("课程录像超过同步数量限制，无法确认全部同步。")
+        return videos
 
     def playback(self, source_id: str) -> dict[str, Any]:
         course_id, video_id = parse_remote_source_id(source_id)

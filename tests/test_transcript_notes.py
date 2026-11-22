@@ -104,6 +104,7 @@ class TranscriptNotesTests(unittest.TestCase):
             dashboard.engine = object()
             with patch("sjtu_learning_assistant.dashboard_service.transcript_course_metadata", return_value={}), ExitStack() as worker_scope:
                 dashboard.start_transcript_markdown_sync()
+                worker_scope.callback(dashboard._subtitle_sync_instance.close)
                 service = dashboard._transcript_service_instance
                 # 后台线程必须先于临时目录释放，断言失败时也不能留下 Windows 文件锁。
                 worker_scope.callback(service.close)
@@ -151,7 +152,7 @@ class TranscriptNotesTests(unittest.TestCase):
     def test_invalid_coverage_forged_quote_and_overlength_fail_without_truncation(self):
         valid = {"covered_chunks": [0], "sections": [{"title": "主题", "text": "课堂总结", "evidence": [{"cue_id": "cue-1", "quote": "原话"}]}]}
         for changed in (dict(valid, covered_chunks=[]), dict(valid, covered_chunks=[False]),
-                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "字" * 2701, "evidence": valid["sections"][0]["evidence"]}]},
+                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "字" * 4701, "evidence": valid["sections"][0]["evidence"]}]},
                         {"covered_chunks": [0], "sections": [{"title": "主题", "text": "总结", "evidence": [{"cue_id": "cue-1", "quote": "编造"}]}]}):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 _validate(changed, [0], {"cue-1": "字幕原话"}, {"cue-1": 0})
@@ -341,11 +342,11 @@ class TranscriptNotesTests(unittest.TestCase):
             self.assertEqual('completed', restarted._read_json(directory/'manifest.json')['lesson_notes']['status'])
             self.assertEqual(RAW.encode(), (directory/'raw.vtt').read_bytes())
 
-    def test_summary_accepts_over_two_thousand_and_hard_caps_three_thousand(self):
+    def test_summary_accepts_over_two_thousand_and_hard_caps_five_thousand(self):
         draft = {'covered_chunks': [0], 'sections': [{'title': '课堂主线', 'text': '知识关系' * 550, 'cue_ids': ['cue-1']}]}
         result = _validate(draft, [0], {'cue-1': '原话'}, {'cue-1': 0})
         self.assertGreater(len(result['sections'][0]['text']), 2000)
-        result['sections'][0]['text'] = '字' * 3001
+        result['sections'][0]['text'] = '字' * 5001
         with self.assertRaises(ValueError):
             _validate(result, [0], {'cue-1': '原话'}, {'cue-1': 0})
 

@@ -230,13 +230,13 @@ export function MessageDetailDialog({
           <LoadingState label="正在加载消息详情…" />
         ) : (
           <ContentReveal
+            className="message-dialog-content"
             variant="detail"
             afterLoad
             style={{
               display: "flex",
               flexDirection: "column",
               minHeight: 0,
-              flex: 1,
               gap: 16,
             }}
           >

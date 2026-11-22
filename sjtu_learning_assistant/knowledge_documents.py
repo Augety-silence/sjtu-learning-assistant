@@ -126,6 +126,45 @@ def _validate_renderable_pptx(path: Path) -> None:
         archive.close()
 
 
+def skipped_active_content(path: Path) -> list[str]:
+    """只检查包目录和关系 XML；从不读取宏/对象内容、运行 Office 或访问外链。"""
+    suffix = path.suffix.casefold()
+    if suffix in {'.pptm', '.docm', '.xlsm', '.potm', '.ppsm', '.ppt', '.doc', '.xls'}:
+        return ['macro_or_binary']
+    if suffix not in {'.pptx', '.docx', '.xlsx'}:
+        return []
+    archive, names = _open_ooxml(path, list_active_parts=True)
+    reasons = set()
+    try:
+        budget = _Budget(400_000)
+        for name in names:
+            lowered = name.casefold()
+            if 'vbaproject' in lowered or '/macros/' in lowered:
+                reasons.add('macro')
+            if any(part in lowered for part in ('/embeddings/', '/activex/', '/customui/')):
+                reasons.add('embedded_object')
+            if lowered.endswith('.rels'):
+                for relationship in _xml(archive, name, budget):
+                    if relationship.get('TargetMode', '').casefold() == 'external':
+                        reasons.add('external_link')
+    finally:
+        archive.close()
+    return sorted(reasons)
+
+
+def retained_source_markdown(source: Path, path: Path, source_hash: str, reasons: list[str]) -> str:
+    relative = path.relative_to(source).as_posix()
+    try:
+        extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
+        text = '\n\n'.join(f'## 第 {number} 页\n\n{unit}' for number, unit in enumerate(extracted.units, 1))
+    except DocumentTextError:
+        text = ''  # 宏/二进制等不支持静态提取时仅保留文件登记，不交给 Office。
+    return ('---\ntype: course-document\n' + f'source: {json.dumps(relative, ensure_ascii=False)}\n'
+            + f'source_sha256: {source_hash}\nconverted_by: local-text\nquality_status: source-only\n'
+            + 'multimodal_status: skipped_active_content\nskipped_parts: ' + json.dumps(reasons) + '\n---\n\n'
+            + f'# {path.stem}\n\n原文件已保留；外链、宏和嵌入对象未打开、执行或下载。\n\n' + text + '\n')
+
+
 @contextmanager
 def rendered_pdf(path: Path, cancel: threading.Event) -> Iterator[Path]:
     if path.suffix.casefold() == ".pdf":
@@ -425,6 +464,15 @@ class DocumentCompiler:
 
         # 编译器逐页有 12000 字符输入闸门；总量按 500 页独立限额，
         # 不沿用聊天预览的 400k 上限截断完整教材。
+        skipped = skipped_active_content(path)
+        if skipped:
+            body = retained_source_markdown(source, original, source_hash, skipped)
+            if self.cancel.is_set() or digest(original.read_bytes()) != source_hash:
+                raise DocumentTextError('来源变更或同步取消，未发布。')
+            commit({'document.md': body, 'retained-source.json': json.dumps({'status': 'source_only', 'skipped_parts': skipped})})
+            state.update(status='completed', quality_status='source-only', skipped_parts=skipped)
+            persist()  # 完成的是原样收纳，不登记 source-reviewed／AI 总结契约。
+            return directory / 'document.md'
         document = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
         if document.truncated:
             raise DocumentTextError("正文提取达到上限，未将不完整课件标为完成。")
@@ -522,7 +570,7 @@ class DocumentCompiler:
         if digest(original.read_bytes()) != source_hash:
             raise DocumentTextError("编译期间素材已变化；已完成旧版本页面保留，请重试。")
         if len(study) > MAX_SUMMARY_CHARS:
-            raise DocumentTextError("精炼总结超过3000字符；旧正式稿保留。")
+            raise DocumentTextError("精炼总结超过5000字符；旧正式稿保留。")
         body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: source-reviewed\nsummary_chars: {len(study)}\n"
                 + f"abstract: {json.dumps(plan['abstract'], ensure_ascii=False)}\nauto_tags: {json.dumps(plan['tags'], ensure_ascii=False)}\nsynonyms: {json.dumps(plan['synonyms'], ensure_ascii=False)}\n" + "---\n\n"
                 + study)

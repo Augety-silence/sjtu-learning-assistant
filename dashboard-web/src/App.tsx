@@ -29,6 +29,7 @@ import { KnowledgeCompilerView } from "@/components/KnowledgeCompilerView";
 import { LocalProjectsView } from "@/components/LocalProjectsView";
 import { MessagesView } from "@/components/MessagesView";
 import { OverviewView } from "@/components/OverviewView";
+import { RetainedView } from "@/components/RetainedView";
 import {
   type RosterExportRequest,
   type RosterMember,
@@ -69,6 +70,7 @@ import {
   revealAcademicExport,
   revealTranscriptArtifact,
   startTranscriptBatch,
+  syncAllSubtitles,
   updateGrading,
   updateTranscriptPlayback,
 } from "@/lib/api";
@@ -827,6 +829,7 @@ function adaptVideo(item: CourseMediaItemDto): CourseVideoItem {
 }
 
 function VideosAdapter({
+  active = true,
   courseId,
   courseName,
   courseOptions,
@@ -838,6 +841,7 @@ function VideosAdapter({
   refreshVersion,
   readRequest,
 }: {
+  active?: boolean;
   courseId: number | null;
   courseName: string;
   courseOptions: Array<{ id: number; name: string }>;
@@ -916,6 +920,8 @@ function VideosAdapter({
   const mediaWait = useRef<AbortController | null>(null);
   const activeCourseId = useRef(courseId);
   activeCourseId.current = courseId;
+  const visibleRef = useRef(active);
+  visibleRef.current = active;
   const load = useCallback(
     async (silent = false) => {
       const request = ++mediaRequestSequence.current;
@@ -1028,7 +1034,7 @@ function VideosAdapter({
     let lastSuccessfulRead: number | null = null;
     const controller = new AbortController();
     const refresh = async (force = false) => {
-      if (!active || pending || document.hidden) return;
+      if (!active || !visibleRef.current || pending || document.hidden) return;
       // 空闲时仍每 10 秒探测后端自动重试；初读失败不得关闭后续轮询。
       if (
         !force &&
@@ -1102,7 +1108,11 @@ function VideosAdapter({
   return (
     <>
       <VideosView
+        active={active}
         videos={visibleVideos}
+        onSyncAllSubtitles={async () => {
+          await syncAllSubtitles();
+        }}
         syncIssue={transcriptError || toolError}
         onRetrySync={() => {
           setTaskRetry((value) => value + 1);
@@ -1321,6 +1331,7 @@ function VideosAdapter({
 export default function App() {
   const readRequest = useBoundedReadRequests();
   const [view, setViewState] = useState<ViewName>(initialView);
+  const videoTarget = useRef<HTMLDivElement>(null);
   // SPA 无整页导航，视图切换时同步 document.title，满足 WCAG 2.2 SC 2.4.2 页面标题要求。
   useEffect(() => {
     document.title = `${pageAILabels[view]} · SJTU 学习助手`;
@@ -1744,181 +1755,184 @@ export default function App() {
 
   const syncing = syncRequested || syncStatus?.status === "syncing";
   return (
-    <WorkspaceTransition mode={view === "ai-chat" ? "assistant" : "workbench"}>
-      {view === "ai-chat" ? (
-        <AIChatView onBack={() => setView("overview")} />
-      ) : (
-        <AppShell
-          view={view}
-          availableViews={availableViews}
-          setView={setView}
-          drawerOpen={drawerOpen}
-          setDrawerOpen={setDrawerOpen}
-          syncStatus={syncStatus}
-          syncing={syncing}
-          onSync={() => void triggerSync()}
-          onOpenAI={openSidebarAI}
-          headerActions={headerActions}
-        >
-          <div key={view} className="view-transition">
-            {view === "overview" && (
-              <OverviewView key={dataVersion} navigate={setView} />
-            )}
-            {view === "calendar" && (
-              <ScheduleAdapter
-                key={dataVersion}
-                mode={scheduleMode}
-                syncStatus={syncStatus}
-                onNavigateAssignments={(target) => {
-                  setAssignmentTarget(target ?? null);
-                  setView("assignments");
-                }}
-                onAskAI={(prompt) => {
-                  try {
-                    for (const key of [
-                      "ai-chat-pending-prompt",
-                      "ai-chat-pending-context",
-                      "ai-chat-pending-session",
-                      "ai-chat-new-session",
-                      "ai-chat-auto-submit",
-                    ]) {
-                      window.localStorage.removeItem(key);
+    <>
+      <WorkspaceTransition
+        mode={view === "ai-chat" ? "assistant" : "workbench"}
+      >
+        {view === "ai-chat" ? (
+          <AIChatView onBack={() => setView("overview")} />
+        ) : (
+          <AppShell
+            view={view}
+            availableViews={availableViews}
+            setView={setView}
+            drawerOpen={drawerOpen}
+            setDrawerOpen={setDrawerOpen}
+            syncStatus={syncStatus}
+            syncing={syncing}
+            onSync={() => void triggerSync()}
+            onOpenAI={openSidebarAI}
+            headerActions={headerActions}
+          >
+            <div key={view} className="view-transition">
+              {view === "overview" && (
+                <OverviewView key={dataVersion} navigate={setView} />
+              )}
+              {view === "calendar" && (
+                <ScheduleAdapter
+                  key={dataVersion}
+                  mode={scheduleMode}
+                  syncStatus={syncStatus}
+                  onNavigateAssignments={(target) => {
+                    setAssignmentTarget(target ?? null);
+                    setView("assignments");
+                  }}
+                  onAskAI={(prompt) => {
+                    try {
+                      for (const key of [
+                        "ai-chat-pending-prompt",
+                        "ai-chat-pending-context",
+                        "ai-chat-pending-session",
+                        "ai-chat-new-session",
+                        "ai-chat-auto-submit",
+                      ]) {
+                        window.localStorage.removeItem(key);
+                      }
+                      window.localStorage.setItem(
+                        "ai-chat-pending-prompt",
+                        prompt,
+                      );
+                      window.localStorage.setItem(
+                        "ai-chat-pending-context",
+                        JSON.stringify({
+                          page_id: "calendar",
+                          source: "calendar-selection",
+                          title: "日程",
+                          selection: { schedule_mode: scheduleMode },
+                        }),
+                      );
+                      window.localStorage.setItem(
+                        "ai-chat-auto-submit",
+                        "true",
+                      );
+                    } catch {
+                      showToast({
+                        kind: "error",
+                        message: "浏览器存储不可用，无法将日程交给 AI 助手。",
+                      });
+                      return;
                     }
-                    window.localStorage.setItem(
-                      "ai-chat-pending-prompt",
-                      prompt,
-                    );
-                    window.localStorage.setItem(
-                      "ai-chat-pending-context",
-                      JSON.stringify({
-                        page_id: "calendar",
-                        source: "calendar-selection",
-                        title: "日程",
-                        selection: { schedule_mode: scheduleMode },
-                      }),
-                    );
-                    window.localStorage.setItem("ai-chat-auto-submit", "true");
-                  } catch {
-                    showToast({
-                      kind: "error",
-                      message: "浏览器存储不可用，无法将日程交给 AI 助手。",
-                    });
-                    return;
-                  }
-                  setView("ai-chat");
-                }}
-              />
-            )}
-            {view === "messages" && <MessagesView key={dataVersion} />}
-            {view === "assignments" && (
-              <AssignmentsView
-                key={dataVersion}
-                initialTarget={assignmentTarget}
-                onInitialTargetHandled={clearAssignmentTarget}
-              />
-            )}
-            {view === "materials" && <CourseMaterialsView key={dataVersion} />}
-            {view === "grades" && (
-              <div className="section-stack">
-                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                <GradesAdapter
-                  key={`${dataVersion}:${staffCourseId}`}
-                  courseId={staffCourseId}
-                  courseResolved={capabilitiesInitialized}
+                    setView("ai-chat");
+                  }}
                 />
-              </div>
-            )}
-            {view === "roster" && (
-              <div className="section-stack">
-                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                <RosterAdapter
-                  key={`${dataVersion}:${staffCourseId}`}
-                  courseId={staffCourseId}
-                  courseResolved={capabilitiesInitialized}
+              )}
+              {view === "messages" && <MessagesView key={dataVersion} />}
+              {view === "assignments" && (
+                <AssignmentsView
+                  key={dataVersion}
+                  initialTarget={assignmentTarget}
+                  onInitialTargetHandled={clearAssignmentTarget}
                 />
-              </div>
-            )}
-            {view === "grading" && (
-              <div className="section-stack">
-                {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                <GradingAdapter
-                  key={`${dataVersion}:${staffCourseId}`}
-                  courseId={staffCourseId}
-                  courseResolved={capabilitiesInitialized}
+              )}
+              {view === "materials" && (
+                <CourseMaterialsView key={dataVersion} />
+              )}
+              {view === "grades" && (
+                <div className="section-stack">
+                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                  <GradesAdapter
+                    key={`${dataVersion}:${staffCourseId}`}
+                    courseId={staffCourseId}
+                    courseResolved={capabilitiesInitialized}
+                  />
+                </div>
+              )}
+              {view === "roster" && (
+                <div className="section-stack">
+                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                  <RosterAdapter
+                    key={`${dataVersion}:${staffCourseId}`}
+                    courseId={staffCourseId}
+                    courseResolved={capabilitiesInitialized}
+                  />
+                </div>
+              )}
+              {view === "grading" && (
+                <div className="section-stack">
+                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
+                  <GradingAdapter
+                    key={`${dataVersion}:${staffCourseId}`}
+                    courseId={staffCourseId}
+                    courseResolved={capabilitiesInitialized}
+                  />
+                </div>
+              )}
+              {view === "videos" && <div ref={videoTarget} />}
+              {view === "backup" && <CloudDriveView />}
+              {view === "local-projects" && (
+                <LocalProjectsView
+                  onCompile={(project) => {
+                    try {
+                      window.localStorage.setItem(
+                        "knowledge-compiler-source",
+                        project.source_root,
+                      );
+                      window.localStorage.setItem(
+                        "knowledge-compiler-target",
+                        project.target_root,
+                      );
+                    } catch {
+                      showToast({
+                        kind: "error",
+                        message:
+                          "浏览器存储不可用，无法把项目路径传给知识库编译器。",
+                      });
+                      return;
+                    }
+                    setView("knowledge");
+                  }}
                 />
-              </div>
-            )}
-            {view === "videos" && (
-              <VideosAdapter
-                courseId={learnerCourseId}
-                courseName={
-                  learnerCourses.find(
-                    (course) => courseNumber(course) === learnerCourseId,
-                  )?.course_name || "未命名课程"
-                }
-                courseOptions={learnerCourses.flatMap((course) => {
-                  const id = courseNumber(course);
-                  return id
-                    ? [
-                        {
-                          id,
-                          name:
-                            course.course_name || `课程 ${course.course_id}`,
-                        },
-                      ]
-                    : [];
-                })}
-                onCourseChange={setSelectedLearnerCourseId}
-                readRequest={readRequest}
-                courseResolved={capabilitiesInitialized}
-                courseResolutionFailed={capabilitiesFailed}
-                courseResolutionMessage={capabilitiesError}
-                onResolveCourseRetry={() =>
-                  setDataVersion((value) => value + 1)
-                }
-                refreshVersion={dataVersion}
-              />
-            )}
-            {view === "backup" && <CloudDriveView />}
-            {view === "local-projects" && (
-              <LocalProjectsView
-                onCompile={(project) => {
-                  try {
-                    window.localStorage.setItem(
-                      "knowledge-compiler-source",
-                      project.source_root,
-                    );
-                    window.localStorage.setItem(
-                      "knowledge-compiler-target",
-                      project.target_root,
-                    );
-                  } catch {
-                    showToast({
-                      kind: "error",
-                      message:
-                        "浏览器存储不可用，无法把项目路径传给知识库编译器。",
-                    });
-                    return;
-                  }
-                  setView("knowledge");
-                }}
-              />
-            )}
-            {view === "knowledge" && <KnowledgeCompilerView />}
-            {view === "settings" && (
-              <SettingsView
-                onArchiveChanged={() => {
-                  // 整理可能在用户已切到作业/评分页后才完成，同样不能重挂清空草稿。
-                  if (draftViews.includes(currentView.current))
-                    setSyncRefreshDeferred(true);
-                  else setDataVersion((value) => value + 1);
-                }}
-                onThemeModeChange={setThemeMode}
-              />
-            )}
-          </div>
-        </AppShell>
-      )}
-    </WorkspaceTransition>
+              )}
+              {view === "knowledge" && <KnowledgeCompilerView />}
+              {view === "settings" && (
+                <SettingsView
+                  onArchiveChanged={() => {
+                    // 整理可能在用户已切到作业/评分页后才完成，同样不能重挂清空草稿。
+                    if (draftViews.includes(currentView.current))
+                      setSyncRefreshDeferred(true);
+                    else setDataVersion((value) => value + 1);
+                  }}
+                  onThemeModeChange={setThemeMode}
+                />
+              )}
+            </div>
+          </AppShell>
+        )}
+      </WorkspaceTransition>
+      <RetainedView active={view === "videos"} target={videoTarget}>
+        <VideosAdapter
+          active={view === "videos"}
+          courseId={learnerCourseId}
+          courseName={
+            learnerCourses.find(
+              (course) => courseNumber(course) === learnerCourseId,
+            )?.course_name || "未命名课程"
+          }
+          courseOptions={learnerCourses.flatMap((course) => {
+            const id = courseNumber(course);
+            return id
+              ? [{ id, name: course.course_name || `课程 ${course.course_id}` }]
+              : [];
+          })}
+          onCourseChange={setSelectedLearnerCourseId}
+          readRequest={readRequest}
+          courseResolved={capabilitiesInitialized}
+          courseResolutionFailed={capabilitiesFailed}
+          courseResolutionMessage={capabilitiesError}
+          onResolveCourseRetry={() => setDataVersion((value) => value + 1)}
+          refreshVersion={dataVersion}
+        />
+      </RetainedView>
+    </>
   );
 }

@@ -10,6 +10,18 @@ from contextlib import contextmanager, closing
 from pathlib import Path
 from uuid import uuid4
 
+_cancellation = threading.local()
+
+
+@contextmanager
+def cancellation_scope(cancelled):
+    previous = getattr(_cancellation, 'check', None)
+    _cancellation.check = cancelled
+    try:
+        yield
+    finally:
+        _cancellation.check = previous
+
 
 def token_reservation(body: dict) -> int:
     """文本按 UTF-8 字节保守预约；图片独立预留，完成后使用上游计数。"""
@@ -27,7 +39,7 @@ def token_reservation(body: dict) -> int:
 
 class SharedAIRuntime:
     def __init__(self, path: Path, group: str, *, clock=time.time, sleeper=time.sleep,
-                 rpm=10, tpm=300000, max_inflight=2):
+                 rpm=10, tpm=300000, max_inflight=10):
         self.path, self.group = path, group
         self.clock, self.sleeper = clock, sleeper
         self.rpm, self.tpm, self.max_inflight = rpm, tpm, max_inflight
@@ -62,12 +74,15 @@ class SharedAIRuntime:
                        (identity, self.group, queued, reserved, body.get("model"), phase, task, queued + 1800))
         while True:
             now = self.clock()
-            if cancelled() or now - queued > 1800:
+            scoped = getattr(_cancellation, 'check', None)
+            if cancelled() or (scoped is not None and scoped()) or now - queued > 1800:
                 self.finish(identity, {}, "cancelled", queued)
                 raise RuntimeError("模型排队已停止。")
             with self._db() as db:
-                oldest = db.execute("SELECT id FROM requests WHERE scope=? AND started IS NULL AND ended IS NULL AND lease>? ORDER BY queued,id LIMIT 1", (self.group, now)).fetchone()
                 count, tokens = db.execute("SELECT count(*),coalesce(sum(reserved),0) FROM requests WHERE scope=? AND started>?", (self.group, now - 60)).fetchone()
+                # 先派发剩余 token 容量能容纳的最早任务，避免一个大输入堵住全部小请求。
+                # 大任务在下一分钟容量释放后仍按原排队时间优先，不解除任何配额。
+                oldest = db.execute("SELECT id FROM requests WHERE scope=? AND started IS NULL AND ended IS NULL AND lease>? AND reserved<=? ORDER BY queued,id LIMIT 1", (self.group, now, self.tpm - tokens)).fetchone()
                 active = db.execute("SELECT count(*) FROM requests WHERE scope=? AND started IS NOT NULL AND ended IS NULL AND lease>?", (self.group, now)).fetchone()[0]
                 cooldown = db.execute("SELECT until FROM cooldowns WHERE scope=?", (self.group,)).fetchone()
                 if (oldest and oldest[0] == identity and count < self.rpm and tokens + reserved <= self.tpm

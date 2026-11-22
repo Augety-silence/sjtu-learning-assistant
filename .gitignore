@@ -44,6 +44,8 @@ packaging/app.ico
 
 # Runtime state and logs
 /dashboard-web/progress-preview-dist/
+/dashboard-web/subtitle-preview-dist/
+/dashboard-web/ui-hardening-preview-dist/
 /run/
 /logs/
 *.lock

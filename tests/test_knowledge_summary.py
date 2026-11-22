@@ -13,7 +13,7 @@ class KnowledgeSummaryTests(unittest.TestCase):
 
     def test_length_is_hard_gate_not_clipping(self):
         draft = self.draft()
-        draft['markdown'] += '无关重复内容' * 500
+        draft['markdown'] += '无关重复内容' * 1000
         with self.assertRaisesRegex(ValueError, '不能截断'):
             validate_summary(draft, [1, 2])
 
@@ -73,16 +73,16 @@ class KnowledgeSummaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '审校未通过'):
             SummaryCompiler(request, {}.get, lambda _: None).compile([dict(page=1, text='定义')])
 
-    def test_three_thousand_limit_and_source_proportional_budget(self):
+    def test_five_thousand_limit_and_source_proportional_budget(self):
         draft = self.draft()
         draft['markdown'] += '知识联系' * 550
         self.assertGreater(len(draft['markdown']), 2000)
         validate_summary(draft, [1, 2])
-        draft['markdown'] += '字' * 1000
-        with self.assertRaisesRegex(ValueError, '3000'):
+        draft['markdown'] += '字' * 3000
+        with self.assertRaisesRegex(ValueError, '5000'):
             validate_summary(draft, [1, 2])
         self.assertEqual(600, summary_budget(2000)['target_chars'])
-        self.assertEqual(2600, summary_budget(50000)['target_chars'])
+        self.assertEqual(4300, summary_budget(50000)['target_chars'])
         self.assertLess(summary_budget(100)['target_chars'], 600)
         self.assertEqual(4, source_chars('【第 2 页 / 共 10 页】\n知识 关系'))
         self.assertEqual([300, 900, 2700, 7200, 21600, 21600], [retry_delay_seconds(i) for i in range(1, 7)])
