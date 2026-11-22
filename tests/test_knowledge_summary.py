@@ -3,6 +3,7 @@ import json
 import unittest
 from office_fixtures import knowledge_response
 from sjtu_learning_assistant.knowledge_summary import SummaryCompiler, SUMMARY_PROMPT, validate_summary
+from sjtu_learning_assistant.summary_policy import MAX_SUMMARY_CHARS, source_chars, summary_budget, retry_delay_seconds
 
 
 class KnowledgeSummaryTests(unittest.TestCase):
@@ -34,7 +35,7 @@ class KnowledgeSummaryTests(unittest.TestCase):
         entries = [dict(page=n, source_text='原文' * 10_000, text='视觉') for n in range(1, 7)]
         compiler = SummaryCompiler(request, stored.get, stored.update)
         body, plan, report = compiler.compile(entries)
-        self.assertLessEqual(len(body), 2000)
+        self.assertLessEqual(len(body), MAX_SUMMARY_CHARS)
         self.assertEqual(list(range(1, 7)), report['covered_pages'])
         self.assertTrue(all(row['approved'] for row in report['checks']))
         self.assertTrue(any('input_summaries' in json.loads(data) for _, prompt, data in seen if prompt.startswith(SUMMARY_PROMPT)))
@@ -53,7 +54,7 @@ class KnowledgeSummaryTests(unittest.TestCase):
         compiler = SummaryCompiler(request, stored.get, stored.update)
         entries = [dict(page=1, text='定义')]
         body = compiler.compile(entries)[0]
-        self.assertLessEqual(len(body), 2000)
+        self.assertLessEqual(len(body), MAX_SUMMARY_CHARS)
         self.assertIn('不能截断', calls[1])
         key = next(n for n in stored if n.endswith('.json') and '-review' not in n and '-invalid' not in n and '-retry' not in n)
         draft = json.loads(stored[key])
@@ -68,3 +69,45 @@ class KnowledgeSummaryTests(unittest.TestCase):
             return knowledge_response(model, prompt, data)
         with self.assertRaisesRegex(ValueError, '审校未通过'):
             SummaryCompiler(request, {}.get, lambda _: None).compile([dict(page=1, text='定义')])
+
+    def test_three_thousand_limit_and_source_proportional_budget(self):
+        draft = self.draft()
+        draft['markdown'] += '知识联系' * 550
+        self.assertGreater(len(draft['markdown']), 2000)
+        validate_summary(draft, [1, 2])
+        draft['markdown'] += '字' * 1000
+        with self.assertRaisesRegex(ValueError, '3000'):
+            validate_summary(draft, [1, 2])
+        self.assertEqual(600, summary_budget(2000)['target_chars'])
+        self.assertEqual(2600, summary_budget(50000)['target_chars'])
+        self.assertLess(summary_budget(100)['target_chars'], 600)
+        self.assertEqual(4, source_chars('【第 2 页 / 共 10 页】\n知识 关系'))
+        self.assertEqual([300, 900, 2700, 7200, 21600, 21600], [retry_delay_seconds(i) for i in range(1, 7)])
+
+    def test_missing_theme_gets_targeted_evidence_and_still_source_reviewed(self):
+        stored, calls = {}, []
+        def request(model, prompt, payload):
+            data = json.loads(payload)
+            calls.append(data)
+            result = json.loads(knowledge_response(model, prompt, payload))
+            if prompt.startswith(SUMMARY_PROMPT) and 'missing_page_evidence' not in data:
+                result['topics'][0]['pages'] = [1]
+            return json.dumps(result, ensure_ascii=False)
+        body, _, report = SummaryCompiler(request, stored.get, stored.update).compile(
+            [dict(page=1, source_text='定义'), dict(page=2, source_text='逻辑结构')])
+        repairs = [data for data in calls if 'missing_page_evidence' in data]
+        self.assertEqual([2], [e['page'] for e in repairs[0]['missing_page_evidence']])
+        self.assertEqual('逻辑结构', repairs[0]['missing_page_evidence'][0]['source_text'])
+        self.assertTrue(all(c['approved'] for c in report['checks']))
+        self.assertLessEqual(len(body), MAX_SUMMARY_CHARS)
+
+    def test_visual_evidence_changes_invalidate_summary_cache(self):
+        stored, seen = {}, []
+        def request(model, prompt, data):
+            seen.append(data)
+            return knowledge_response(model, prompt, data)
+        compiler = SummaryCompiler(request, stored.get, stored.update)
+        compiler.compile([dict(page=1, source_text='同一原文', text='旧视觉')])
+        before = len(seen)
+        compiler.compile([dict(page=1, source_text='同一原文', text='已复核视觉', visual_rechecked=True)])
+        self.assertGreater(len(seen), before)

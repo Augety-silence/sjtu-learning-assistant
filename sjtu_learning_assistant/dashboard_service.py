@@ -962,10 +962,25 @@ class DashboardService:
                     self.local_projects_path.parent / "transcripts" / "v1",
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
+                    notes_context_provider=self._lesson_summary_ai_context,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
             return self._transcript_service_instance
+
+    def _lesson_summary_ai_context(self) -> AIContext:
+        """总结使用独立非推理模型与编译超时，不改变用户聊天模型。"""
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            return AIContext(None, 'deepseek-chat', '', False)
+        service = self
+        class SummaryClient:
+            def chat_completion(self, messages, **kwargs):
+                content = service._run_knowledge_compiler_ai('deepseek-chat', messages[0]['content'], messages[1]['content'],
+                    max_tokens=kwargs.get('max_tokens', 5000))
+                return {'content': content, 'finish_reason': 'stop'}
+        fingerprint = hashlib.sha256(settings.ai_base_url.encode('utf-8')).hexdigest()
+        return AIContext(SummaryClient(), 'deepseek-chat', fingerprint, True, False)
 
     def start_transcript_markdown_sync(self) -> None:
         """启动已保存字幕的补齐，不依赖用户先进入视频页或新建校对任务。"""
@@ -3716,7 +3731,7 @@ class DashboardService:
         }
 
     def _run_knowledge_compiler_ai(
-        self, model: str, system_prompt: str, user_content: Any
+        self, model: str, system_prompt: str, user_content: Any, *, max_tokens: int = 8192
     ) -> str:
         settings = self._effective_settings()
         if not settings.ai_enabled or not settings.ai_key_saved:
@@ -3740,7 +3755,7 @@ class DashboardService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=8192,
+                max_tokens=max_tokens,
                 temperature=0.1,
                 system_prompt=False,
                 knowledge_compilation=True,

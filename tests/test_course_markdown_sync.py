@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -32,12 +33,13 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.paths = [self.path]
         self.runner = Mock(side_effect=knowledge_response)
         self.day = "2026-11-14"
+        self.now = datetime(2026, 11, 14, tzinfo=timezone.utc)
         self.worker = self.new_worker()
         self.target = self.source / "Knowledge Markdown"
         self.mirror = self.target / "Courses" / self.path.relative_to(self.source).with_name(self.path.name + ".md")
 
     def new_worker(self):
-        return CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner, today=lambda: self.day)
+        return CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner, today=lambda: self.day, now_provider=lambda: self.now)
 
     def tearDown(self):
         self.worker.close()
@@ -191,14 +193,29 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = RuntimeError("secret request")
         for _ in range(4):
             self.worker.run_once()
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(1, self.runner.call_count)
         self.assertNotIn("secret request", str(self.worker.status()))
-        self.assertEqual(3, self.worker.status()["calls_today"])
+        self.assertEqual(1, self.worker.status()["calls_today"])
         self.runner.side_effect = knowledge_response
         good = build_pdf(self.path.parent / "good.pdf", ("Good",))
         self.paths.append(good)
         self.worker.run_once()
         self.assertEqual(1, self.worker.status()["completed"])
+
+    def test_failed_course_retry_survives_restart_without_three_attempt_lock(self):
+        self.runner.side_effect = RuntimeError('unavailable')
+        for delay in (0, 301, 901, 2701):
+            self.now += timedelta(seconds=delay)
+            self.worker.run_once()
+        self.assertEqual(4, self.runner.call_count)
+        restarted = self.new_worker()
+        self.addCleanup(restarted.close)
+        restarted.run_once()
+        self.assertEqual(4, self.runner.call_count)
+        self.now += timedelta(hours=2, seconds=1)
+        self.runner.side_effect = knowledge_response
+        restarted.run_once()
+        self.assertEqual(1, restarted.status()['completed'])
 
     def test_disabled_is_readonly_and_does_not_load_ai(self):
         self.settings = replace(self.settings, course_markdown_enabled=False)

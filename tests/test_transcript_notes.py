@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
 from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.knowledge_wiki import CourseWiki
 from sjtu_learning_assistant.transcript_notes import (
-    CONTRACT, _validate, compile_summary, original_markdown,
+    CONTRACT, PROMPT_VERSION, _validate, compile_summary, original_markdown,
 )
 from sjtu_learning_assistant.transcript_service import AIContext, TranscriptService
 
@@ -150,7 +151,7 @@ class TranscriptNotesTests(unittest.TestCase):
     def test_invalid_coverage_forged_quote_and_overlength_fail_without_truncation(self):
         valid = {"covered_chunks": [0], "sections": [{"title": "主题", "text": "课堂总结", "evidence": [{"cue_id": "cue-1", "quote": "原话"}]}]}
         for changed in (dict(valid, covered_chunks=[]), dict(valid, covered_chunks=[False]),
-                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "字" * 1501, "evidence": valid["sections"][0]["evidence"]}]},
+                        {"covered_chunks": [0], "sections": [{"title": "主题", "text": "字" * 2701, "evidence": valid["sections"][0]["evidence"]}]},
                         {"covered_chunks": [0], "sections": [{"title": "主题", "text": "总结", "evidence": [{"cue_id": "cue-1", "quote": "编造"}]}]}):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 _validate(changed, [0], {"cue-1": "字幕原话"}, {"cue-1": 0})
@@ -241,6 +242,58 @@ class TranscriptNotesTests(unittest.TestCase):
             self.assertEqual("pending", current["lesson_notes"]["status"])
             self.assertEqual("timeout", current["lesson_notes"]["error_code"])
             self.assertTrue(current["lesson_notes"]["retry_after"])
+
+    def test_three_failed_attempts_resume_after_cooldown_and_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            now = datetime(2026, 11, 22, 1, tzinfo=timezone.utc)
+            client = NotesClient()
+            context = lambda: AIContext(client, 'deepseek-chat', 'endpoint', True)
+            root = Path(temp) / 'transcripts'
+            service = TranscriptService(root, autostart_worker=False, ai_context_provider=context, now_provider=lambda: now)
+            directory = service._video_dir(SOURCE)
+            directory.mkdir()
+            (directory / 'raw.vtt').write_text(RAW, encoding='utf-8')
+            raw_hash = hashlib.sha256(RAW.encode()).hexdigest()
+            manifest = {'source': {'source_id': SOURCE}, 'course': {'id': '12', 'name': '经济学'}, 'video': {'title': '课堂'},
+                        'raw_sha256': raw_hash, 'status': 'partial', 'artifacts': {}}
+            service._save_lesson_notes(directory, manifest, RAW)
+            manifest['lesson_notes'].update(attempts=3, fingerprint=hashlib.sha256((PROMPT_VERSION+'deepseek-chat'+'endpoint'+raw_hash).encode()).hexdigest(),
+                retry_after=(now-timedelta(minutes=1)).isoformat(), error_code='timeout')
+            service._write_json(directory/'manifest.json', manifest)
+            with patch('sjtu_learning_assistant.transcript_service.compile_summary', side_effect=TimeoutError) as compile_mock:
+                service._backfill_next_lesson()
+                self.assertEqual(1, compile_mock.call_count)
+            failed = service._read_json(directory/'manifest.json')['lesson_notes']
+            self.assertEqual(4, failed['attempts'])
+            self.assertEqual(now+timedelta(hours=2), datetime.fromisoformat(failed['retry_after']))
+            service.close()
+            restarted = TranscriptService(root, autostart_worker=False, ai_context_provider=context, now_provider=lambda: now)
+            self.addCleanup(restarted.close)
+            restarted._backfill_next_lesson()
+            self.assertEqual([], client.calls)
+            now += timedelta(hours=2, seconds=1)
+            restarted._next_notes_scan = 0
+            restarted._backfill_next_lesson()
+            self.assertEqual('completed', restarted._read_json(directory/'manifest.json')['lesson_notes']['status'])
+            self.assertEqual(RAW.encode(), (directory/'raw.vtt').read_bytes())
+
+    def test_summary_accepts_over_two_thousand_and_hard_caps_three_thousand(self):
+        draft = {'covered_chunks': [0], 'sections': [{'title': '课堂主线', 'text': '知识关系' * 550, 'cue_ids': ['cue-1']}]}
+        result = _validate(draft, [0], {'cue-1': '原话'}, {'cue-1': 0})
+        self.assertGreater(len(result['sections'][0]['text']), 2000)
+        result['sections'][0]['text'] = '字' * 3001
+        with self.assertRaises(ValueError):
+            _validate(result, [0], {'cue-1': '原话'}, {'cue-1': 0})
+
+    def test_dedicated_summary_context_does_not_change_chat_model(self):
+        dashboard = DashboardService.__new__(DashboardService)
+        dashboard._effective_settings = lambda: SimpleNamespace(ai_enabled=True, ai_key_saved=True, ai_base_url='https://models.sjtu.edu.cn/api/v1', ai_model='deepseek-reasoner')
+        dashboard._run_knowledge_compiler_ai = lambda model, system, payload, **kwargs: json.dumps({'model': model, 'max_tokens': kwargs['max_tokens']})
+        context = dashboard._lesson_summary_ai_context()
+        self.assertEqual('deepseek-chat', context.model)
+        result = context.client.chat_completion([{'content': 'system'}, {'content': 'data'}], max_tokens=5000)
+        self.assertEqual({'model': 'deepseek-chat', 'max_tokens': 5000}, json.loads(result['content']))
+        self.assertEqual('deepseek-reasoner', dashboard._effective_settings().ai_model)
 
     def test_all_saved_raw_documents_are_visible_before_first_ai_request(self):
         with tempfile.TemporaryDirectory() as temp:

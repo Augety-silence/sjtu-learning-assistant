@@ -472,7 +472,7 @@ class DocumentCompiler:
         if digest(original.read_bytes()) != source_hash:
             raise DocumentTextError("编译期间素材已变化；已完成旧版本页面保留，请重试。")
         if len(study) > MAX_SUMMARY_CHARS:
-            raise DocumentTextError("精炼总结超过2000字符；旧正式稿保留。")
+            raise DocumentTextError("精炼总结超过3000字符；旧正式稿保留。")
         body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: source-reviewed\nsummary_chars: {len(study)}\n"
                 + f"abstract: {json.dumps(plan['abstract'], ensure_ascii=False)}\nauto_tags: {json.dumps(plan['tags'], ensure_ascii=False)}\nsynonyms: {json.dumps(plan['synonyms'], ensure_ascii=False)}\n" + "---\n\n"
                 + study)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -16,6 +16,7 @@ from sjtu_learning_assistant.knowledge_documents import (
     DocumentCompiler, compilation_fingerprint, digest, safe_destination, target_lock,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
+from sjtu_learning_assistant.summary_policy import retry_delay_seconds
 
 OUTPUT_FOLDER = "Knowledge Markdown"
 
@@ -25,10 +26,12 @@ class CourseMarkdownSync:
                  runner: Callable, *, interval: float = 60,
                  compiler_factory: Callable = DocumentCompiler,
                  wiki_rebuilder: Callable | None = None,
-                 today: Callable = lambda: datetime.now().date().isoformat()):
+                 today: Callable = lambda: datetime.now().date().isoformat(),
+                 now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
         self.interval, self.compiler_factory, self.today = interval, compiler_factory, today
         self.wiki_rebuilder = wiki_rebuilder
+        self.now_provider = now_provider
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -207,6 +210,7 @@ class CourseMarkdownSync:
                             + f"# {path.stem}\n\n> 已提取本地正文；图像、图表与公式的多模态复核待自动续编，不视为视觉编译完成。\n\n"
                             + "\n\n".join(f"## 第 {number} 页\n\n{unit}" for number, unit in enumerate(extracted.units, 1)) + "\n")
                     item.update(fingerprint=fingerprint, attempts=0, status="pending", contract=CONTRACT)
+                    item.pop('retry_after', None)
                     # 升级编译契约时保留旧稿，只有完整新稿验收后才原子替换镜像。
                     if not item.get("text_ready"):
                         publish(item, mirror, body)
@@ -243,17 +247,24 @@ class CourseMarkdownSync:
                         raise DocumentTextError("对应 MD 已被人工修改或删除，已保留；自动更新暂停。")
                     completed += 1
                     continue
-                # 保存失败重试次数，单一坏文件不会无限循环消耗 API。
-                attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint and item.get("attempt_day") == self.today() else 0
-                if attempts >= 3:
-                    failed += 1
-                    issues.append(relative + "：今日已重试 3 次；次日重试。")
-                    continue
+                # 失败逐步退避，不设每日调用总额，也不因3次失败锁死任务。
+                attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint else 0
+                if item.get("fingerprint") == fingerprint and item.get("retry_after"):
+                    try:
+                        retry_at = datetime.fromisoformat(item['retry_after'])
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        if retry_at > self.now_provider():
+                            failed += 1
+                            issues.append(relative + "：冷却后自动续编。")
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 # 已编辑镜像即使源更新也不能调用模型/覆盖。
                 allowed_hashes = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed_hashes):
                     raise DocumentTextError("对应 MD 为未登记文件或已被人工修改，未覆盖。")
-                item.update(fingerprint=fingerprint, attempts=attempts + 1, attempt_day=self.today(), status="pending")
+                item.update(fingerprint=fingerprint, attempts=min(1_000_000, attempts + 1), attempt_day=self.today(), status="pending")
                 state["items"][relative] = item
                 persist()
                 note = compiler.compile(source, path, target)
@@ -269,6 +280,8 @@ class CourseMarkdownSync:
                 publish(item, mirror, body)
                 from sjtu_learning_assistant.knowledge_summary import SUMMARY_CONTRACT
                 item.update(status="completed", contract=SUMMARY_CONTRACT, document=note.relative_to(target).as_posix())
+                item['attempts'] = 0
+                item.pop('retry_after', None)
                 item.pop("error", None)
                 persist()
                 completed += 1
@@ -277,11 +290,16 @@ class CourseMarkdownSync:
                 message = str(exc)
                 if relative is not None:
                     state["items"].setdefault(relative, {}).update(status="failed", error=message)
+                    item['retry_after'] = (self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat()
                 issues.append((relative + "：" if relative else "") + message)
                 persist()
             except Exception:
                 failed += 1
-                issues.append((relative + "：" if relative else "") + "处理失败；已有文件保留。")
+                message = "处理失败；已有文件保留。"
+                state["items"].setdefault(relative, {}).update(status="failed", error=message,
+                    retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat())
+                persist()
+                issues.append((relative + "：" if relative else "") + message)
             finally:
                 self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
         self._set(phase="wiki", current_file=None)

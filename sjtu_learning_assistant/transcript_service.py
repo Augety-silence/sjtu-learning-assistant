@@ -48,6 +48,7 @@ from sjtu_learning_assistant.course_memory import (
     TrainingSampleQualityGate,
 )
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.summary_policy import retry_delay_seconds
 from sjtu_learning_assistant.transcript_pipeline import (
     PIPELINE_VERSION,
     PROMPT_VERSION,
@@ -339,6 +340,7 @@ class TranscriptService:
         *,
         subtitle_fetcher: Callable[[str], Mapping[str, Any]] | None = None,
         ai_context_provider: Callable[[], AIContext] | None = None,
+        notes_context_provider: Callable[[], AIContext] | None = None,
         course_metadata_provider: Callable[[], Mapping[str, Mapping[str, Any]]] | None = None,
         pipeline: TranscriptPipeline | None = None,
         orchestrator: Any | None = None,
@@ -359,6 +361,7 @@ class TranscriptService:
         ) or orchestrator is not None
         self.subtitle_fetcher = subtitle_fetcher
         self.ai_context_provider = ai_context_provider or (lambda: AIContext(None, "", "", False))
+        self.notes_context_provider = notes_context_provider or self.ai_context_provider
         self.course_metadata_provider = course_metadata_provider or (lambda: {})
         self.pipeline = pipeline or TranscriptPipeline()
         self.orchestrator = orchestrator
@@ -3119,9 +3122,6 @@ class TranscriptService:
                             and notes.get("prompt_version") == NOTES_PROMPT_VERSION
                             and notes.get("raw_sha256") == manifest.get("raw_sha256")):
                         continue
-                    retry = _parse_time(notes.get("retry_after"))
-                    if retry and retry > self.now_provider():
-                        continue
                     path = directory / "raw.vtt"
                     if not self._hashed_file_valid(path, manifest.get("raw_sha256")):
                         continue
@@ -3129,13 +3129,14 @@ class TranscriptService:
                     if not manifest.get("artifacts", {}).get("lesson"):
                         if not self._save_lesson_notes(directory, manifest, raw):
                             continue
-                    context = self.ai_context_provider()
+                    context = self.notes_context_provider()
                     if not context.enabled or context.client is None:
                         continue
                     fingerprint = _sha256((NOTES_PROMPT_VERSION + context.model + context.endpoint_fingerprint + manifest["raw_sha256"]).encode())
-                    attempts = int(notes.get("attempts") or 0) if notes.get("fingerprint") == fingerprint else 0
-                    if attempts >= 3:
+                    retry = _parse_time(notes.get('retry_after'))
+                    if notes.get('fingerprint') == fingerprint and retry and retry > self.now_provider():
                         continue
+                    attempts = int(notes.get("attempts") or 0) if notes.get("fingerprint") == fingerprint else 0
                     def check():
                         if self._stop.is_set():
                             raise TranscriptPipelineCancelled()
@@ -3173,8 +3174,8 @@ class TranscriptService:
                         if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
                             return
                         current.setdefault("lesson_notes", {}).update(status="pending", error_code=self._diagnostic_code(exc),
-                            attempts=attempts + 1, fingerprint=fingerprint,
-                            retry_after=(self.now_provider() + timedelta(minutes=5)).isoformat())
+                            attempts=min(1_000_000, attempts + 1), fingerprint=fingerprint,
+                            retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(attempts + 1))).isoformat())
                         self._write_json(directory / "manifest.json", current)
                     return
             except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
