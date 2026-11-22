@@ -173,15 +173,79 @@ class TranscriptNotesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validate({"covered_chunks": [0], "sections": [{"title": "主题", "text": "总结", "cue_ids": ["forged"]}]}, [0], {"cue-1": "原话"}, {"cue-1": 0})
 
-    def test_validated_checkpoints_resume_but_final_source_review_still_runs(self):
+    def test_validated_checkpoints_resume_without_repeating_approved_source_review(self):
         cache = {}
         client = NotesClient()
         first, _ = compile_summary(RAW, client, cached=cache.get, commit=lambda key, value: cache.setdefault(key, value))
         second, report = compile_summary(RAW, client, cached=cache.get, commit=lambda key, value: cache.setdefault(key, value))
         self.assertEqual(first, second)
-        self.assertEqual(1, report["calls"])
-        self.assertEqual(3, len(client.calls))
+        self.assertEqual(0, report["calls"])
+        self.assertEqual(2, len(client.calls))
         self.assertIn("task", client.calls[-1])
+
+    def test_last_review_timeout_resumes_only_failed_block_and_changed_source_reaudits(self):
+        raw = "WEBVTT\n\n" + "\n\n".join(
+            f"00:{i // 60:02}:{i % 60:02}.000 --> 00:{(i + 1) // 60:02}:{(i + 1) % 60:02}.000\n第{i}段。" + "必要条件。" * 15
+            for i in range(120))
+        cache = {}
+        class LastTimeout(NotesClient):
+            fail = True
+            def chat_completion(self, messages, **kwargs):
+                result = super().chat_completion(messages, **kwargs)
+                self.assert_json = kwargs.get("response_format")
+                if "task" in self.calls[-1] and self.calls[-1]["covered_chunks"] == [2] and self.fail:
+                    self.fail = False
+                    raise TimeoutError()
+                return result
+        client = LastTimeout()
+        options = dict(cached=cache.get, commit=lambda k, v: cache.setdefault(k, v))
+        with self.assertRaises(TimeoutError):
+            compile_summary(raw, client, **options)
+        previous = len(client.calls)
+        _, report = compile_summary(raw, client, **options)
+        self.assertEqual(1, report["calls"])
+        self.assertEqual([2], client.calls[previous]["covered_chunks"])
+        self.assertEqual({"type": "json_object"}, client.assert_json)
+        _, changed = compile_summary(raw.replace("必要条件。", "新的必要条件。"), client, **options)
+        self.assertGreater(changed["calls"], 1)
+
+    def test_cooperative_slices_preserve_validated_work_without_failure(self):
+        from sjtu_learning_assistant.transcript_notes import SummaryDeferred
+        cache, client = {}, NotesClient()
+        options = dict(cached=cache.get, commit=lambda k, v: cache.setdefault(k, v), max_calls=1)
+        with self.assertRaises(SummaryDeferred):
+            compile_summary(RAW, client, **options)
+        body, report = compile_summary(RAW, client, **options)
+        self.assertIn("当堂老师讲了什么", body)
+        self.assertEqual(1, report["calls"])
+        self.assertEqual(2, len(client.calls))
+
+    def test_summary_queue_proceeds_while_legacy_worker_is_blocked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            initial = TranscriptService(Path(temp) / "transcripts", autostart_worker=False)
+            directory = initial._video_dir(SOURCE)
+            directory.mkdir()
+            initial._atomic_write(directory / "raw.vtt", RAW.encode())
+            initial._write_json(directory / "manifest.json", {"source": {"source_id": SOURCE},
+                "course": {"id": "12", "name": "课程"}, "video": {"title": "课堂"},
+                "raw_sha256": hashlib.sha256(RAW.encode()).hexdigest(), "status": "partial", "artifacts": {}})
+            initial.close()
+            blocked, release = threading.Event(), threading.Event()
+            def legacy(service):
+                blocked.set()
+                release.wait(3)
+            with patch.object(TranscriptService, "run_pending", legacy):
+                service = TranscriptService(initial.root, ai_context_provider=lambda: AIContext(NotesClient(), "deepseek-chat", "endpoint", True))
+                try:
+                    self.assertTrue(blocked.wait(2))
+                    until = time.monotonic() + 2
+                    while not (directory / "lecture-summary.md").is_file() and time.monotonic() < until:
+                        time.sleep(0.01)
+                    self.assertTrue((directory / "lecture-summary.md").is_file())
+                finally:
+                    release.set()
+                    service.close()
+                self.assertFalse(service._notes_thread.is_alive())
 
     def test_saved_and_legacy_transcripts_are_auto_indexed_and_manual_edits_preserved(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -21,6 +21,29 @@ from desktop_app import DesktopBridge
 
 
 class CourseMarkdownSyncTests(unittest.TestCase):
+    def test_automatic_slices_rotate_and_do_not_increment_failure_attempts(self):
+        self.paths.append(build_pdf(self.path.parent / "next.pdf", ("Next",)))
+        worker = CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner,
+            max_documents_per_cycle=1, slice_calls=1, now_provider=lambda: self.now)
+        self.addCleanup(worker.close)
+        wiki = Mock(return_value={"built": 0, "cached": 0, "failed": 0, "issues": []})
+        worker.wiki_rebuilder = wiki
+        worker.run_once()
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text())
+        self.assertEqual(0, worker.status()["failed"])
+        self.assertTrue(worker.status()["has_runnable"])
+        self.assertEqual(0, next(i for i in state["items"].values() if i.get("last_dispatched_at"))["attempts"])
+        wiki.assert_not_called()
+        self.now += timedelta(seconds=1)
+        worker.run_once()
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text())
+        self.assertEqual(2, sum(bool(i.get("last_dispatched_at")) for i in state["items"].values()))
+        for _ in range(12):
+            self.now += timedelta(seconds=1)
+            worker.run_once()
+        self.assertEqual(2, worker.status()["completed"])
+        self.assertEqual(0, worker.status()["failed"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

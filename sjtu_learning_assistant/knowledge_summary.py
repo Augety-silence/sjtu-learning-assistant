@@ -43,6 +43,10 @@ SUMMARY_VERSION = SUMMARY_PROMPT + SUMMARY_REVIEW_GUIDANCE + REVIEW_GUIDANCE + S
 
 
 def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None = None) -> dict:
+    declared = result.get('covered_pages')
+    if (type(declared) is list and all(type(n) is int for n in declared)
+            and set(declared) == set(pages)):
+        result['covered_pages'] = sorted(set(declared))
     if _pages(result.get('covered_pages'), pages) != pages:
         raise ValueError('精炼总结遗漏输入页面；未发布。')
     title = _strings([result.get('title')], 1, 1, 80)[0]
@@ -68,8 +72,8 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
             raise ValueError('精炼总结主题无效。')
         _strings([topic.get('name')], 1, 1, 80)
         covered.update(_pages(topic.get('pages'), pages))
-    if covered != set(pages):
-        raise ValueError('精炼总结主题范围遗漏页面。')
+    # topics 是实质主题的来源映射，不是逐页点名表。全文处理范围已单独验证；
+    # 是否遗漏知识仍由完整原文审校核验，不能用补造主题／引用凑机械覆盖。
     represented = result.get('covered_topics')
     if type(represented) is not list or any(type(n) is not str for n in represented):
         raise ValueError('精炼总结输入主题标识无效。')

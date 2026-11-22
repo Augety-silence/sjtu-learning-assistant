@@ -136,6 +136,11 @@ def _pages(value: Any, allowed: list[int]) -> list[int]:
 
 
 def canonical_citations(text: str) -> str:
+    # 只转换明确的课件出处写法，不从正文数字猜页码。
+    text = re.sub(r"\[课件\s*第\s*(\d+)\s*(?:[–—\-至]\s*(\d+)\s*)?页\]",
+                  lambda m: "[课件 p." + m.group(1) + ("–" + m.group(2) if m.group(2) else "") + "]", text)
+    text = re.sub(r"\[课件\s+[Pp](?:\.|．)?\s*(\d+)\s*(?:[–—\-至]\s*(\d+)\s*)?\]",
+                  lambda m: "[课件 p." + m.group(1) + ("–" + m.group(2) if m.group(2) else "") + "]", text)
     def replace(match):
         pieces = re.split(r"[,，、;；]", match.group(1))
         normalized = []

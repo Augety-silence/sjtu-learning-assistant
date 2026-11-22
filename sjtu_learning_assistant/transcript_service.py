@@ -354,6 +354,7 @@ class TranscriptService:
         now_provider: Callable[[], datetime] | None = None,
         playback_retry_cooldown_seconds: float = 30.0,
         playback_auto_retry_limit: int = 3,
+        notes_slice_calls: int = 0,
     ) -> None:
         self.root = Path(root).expanduser()
         self.enable_phase1 = (
@@ -385,6 +386,9 @@ class TranscriptService:
         self._last_worker_error_log: float | None = None
         self._next_notes_scan = 0.0
         self._thread: threading.Thread | None = None
+        self._notes_thread: threading.Thread | None = None
+        self._notes_wake = threading.Event()
+        self.notes_slice_calls = max(0, int(notes_slice_calls))
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
             pid=os.getpid(),
@@ -394,6 +398,8 @@ class TranscriptService:
         self._ensure_root()
         self._recover_interrupted()
         if autostart_worker:
+            self._notes_thread = threading.Thread(target=self._notes_worker, name="transcript-notes", daemon=True)
+            self._notes_thread.start()
             self._thread = threading.Thread(target=self._worker, name="transcript-worker", daemon=True)
             self._thread.start()
 
@@ -1693,7 +1699,6 @@ class TranscriptService:
                 break
             try:
                 self.run_pending()
-                self._backfill_next_lesson()
             except Exception as exc:
                 # A malformed batch or unavailable storage must not kill the only worker.
                 now = time.monotonic()
@@ -1708,6 +1713,16 @@ class TranscriptService:
                         type(exc).__name__,
                     )
                 continue
+
+    def _notes_worker(self) -> None:
+        # 与旧校对独立；同课堂仍由文件锁协调，关闭时共同停止。
+        while not self._stop.is_set():
+            try:
+                self._backfill_next_lesson()
+            except Exception as exc:
+                LOGGER.warning("课堂总结队列异常；exception_type=%s", type(exc).__name__)
+            self._notes_wake.wait(5)
+            self._notes_wake.clear()
 
     def _claim_batch(self, batch_id: str) -> dict[str, Any] | None:
         with self._lock, self._batch_lock():
@@ -3086,7 +3101,13 @@ class TranscriptService:
         self._next_notes_scan = time.monotonic() + 5
         directories = sorted((self.root / "videos").iterdir())[:5000]
         # 先让全部已保存原始字幕可见，再逐堂调用模型；第一堂耗时不会挡住其余目录。
-        for directory in directories:
+        def priority(directory):
+            try:
+                notes = self._read_json(directory / "manifest.json").get("lesson_notes", {})
+                return str(notes.get("last_dispatched_at") or "")
+            except (TranscriptError, OSError, AttributeError):
+                return ""
+        for directory in sorted(directories, key=priority):
             if self._stop.is_set():
                 return
             if not _ID.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
@@ -3103,7 +3124,7 @@ class TranscriptService:
                         self._save_lesson_notes(directory, manifest, raw_path.read_text(encoding="utf-8"))
             except (OSError, TranscriptError, ValueError, TypeError, AttributeError):
                 continue
-        for directory in directories:
+        for directory in sorted(directories, key=priority):
             if self._stop.is_set():
                 return
             if not _ID.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
@@ -3147,6 +3168,8 @@ class TranscriptService:
                         if latest and (latest[1].get("cancel_requested") or latest[0].get("cancel_requested")):
                             raise TranscriptPipelineCancelled()
                     try:
+                        manifest.setdefault("lesson_notes", {}).update(last_dispatched_at=self.now_provider().isoformat())
+                        self._write_json(directory / "manifest.json", manifest)
                         cache_parent = directory / "lesson-checkpoints"
                         cache_dir = cache_parent / _sha256((context.model + context.endpoint_fingerprint).encode())
                         if cache_parent.is_symlink() or cache_dir.is_symlink():
@@ -3160,7 +3183,8 @@ class TranscriptService:
                             path = cache_dir / (key + ".json")
                             if not path.exists() and not path.is_symlink():
                                 self._write_json(path, value)
-                        summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit)
+                        summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit,
+                                                         max_calls=self.notes_slice_calls)
                         check()
                         # API调用期间来源或人工正文发生变化时，不覆盖新内容。
                         current = self._read_json(directory / "manifest.json")
@@ -3170,8 +3194,14 @@ class TranscriptService:
                     except (TranscriptPipelineCancelled, _PlaybackYield):
                         return
                     except Exception as exc:
+                        from .transcript_notes import SummaryDeferred
                         current = self._read_json(directory / "manifest.json")
                         if current.get("raw_sha256") != manifest.get("raw_sha256") or current.get("status") in ACTIVE_STATES:
+                            return
+                        if isinstance(exc, SummaryDeferred):
+                            current.setdefault("lesson_notes", {}).update(status="pending", fingerprint=fingerprint,
+                                last_dispatched_at=self.now_provider().isoformat())
+                            self._write_json(directory / "manifest.json", current)
                             return
                         current.setdefault("lesson_notes", {}).update(status="pending", error_code=self._diagnostic_code(exc),
                             attempts=min(1_000_000, attempts + 1), fingerprint=fingerprint,
@@ -3631,5 +3661,8 @@ class TranscriptService:
     def close(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._notes_wake.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
+        if self._notes_thread and self._notes_thread.is_alive():
+            self._notes_thread.join(timeout=2)

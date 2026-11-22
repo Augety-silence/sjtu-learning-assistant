@@ -120,8 +120,13 @@ def render_summary(value: dict, timing: Mapping[str, int]) -> str:
     return "\n".join(lines)
 
 
+class SummaryDeferred(RuntimeError):
+    """合作式让出队列；已验收检查点保留，不计作失败。"""
+
+
 def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
-                    cached: Callable = lambda key: None, commit: Callable = lambda key, value: None) -> tuple[str, dict]:
+                    cached: Callable = lambda key: None, commit: Callable = lambda key, value: None,
+                    max_calls: int = 0) -> tuple[str, dict]:
     cues = normalize_cues(parse_vtt(raw_vtt))
     chunks = chunk_cues(cues, target_chars=4500, max_chars=5000, overlap_cues=0, max_cues=80)
     if not chunks:
@@ -143,13 +148,17 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         system = REVIEW_PROMPT if "task" in data else MERGE_PROMPT if "input_summaries" in data else PROMPT
         if len(payload) + len(system) > 14000:
             raise ValueError("课堂总结输入超过分块限制。")
+        if max_calls and calls >= max_calls:
+            raise SummaryDeferred()
         calls += 1
         response = client.chat_completion(
             [{"role": "system", "content": system}, {"role": "user", "content": payload}],
             max_tokens=5000, temperature=0, system_prompt=False,
+            response_format={"type": "json_object"},
         )
         check()
-        if not isinstance(response, Mapping) or response.get("finish_reason") == "length":
+        if (not isinstance(response, Mapping) or response.get("finish_reason") == "length"
+                or (response.get("response_metadata") or {}).get("finish_reason") == "length"):
             raise ValueError("课堂总结响应被截断。")
         return _json_response(response.get("content"))
 
@@ -171,17 +180,33 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         return {"covered_chunks": draft["covered_chunks"], "sections": [
             {"title": section["title"], "text": section["text"], "cue_ids": [e["cue_id"] for e in section["evidence"]]}
             for section in draft["sections"]]}
+    total_budget = summary_budget(sum(source_chars(c.text) for c in cues))
     for chunk in chunks:
         allowed = {cue.cue_id: cue.text for cue in chunk.cues}
+        budget = summary_budget(sum(source_chars(c.text) for c in chunk.cues))
+        if len(chunks) > 1:
+            # 分块只产短事实卡，最终稿仍按整堂课预算，不扩写后再反复缩减。
+            target = max(160, min(budget["target_chars"], total_budget["target_chars"] // len(chunks)))
+            budget.update(target_chars=target, target_min_chars=max(80, target * 3 // 4),
+                          target_max_chars=min(800, target * 11 // 10))
         data = {"covered_chunks": [chunk.index], "cues": [{"cue_id": cue.cue_id, "text": cue.text} for cue in chunk.cues],
-                "source_budget": summary_budget(sum(source_chars(c.text) for c in chunk.cues))}
+                "source_budget": budget}
         draft = generate(data, [chunk.index], allowed)
         drafts.append(draft)
     while len(drafts) > 1:
         merged = []
-        # 每次合并两份有界分稿，处理全部分组，不截取前几份。
-        for start in range(0, len(drafts), 2):
-            group = drafts[start:start + 2]
+        # 在既有输入上限内尽量一次综合，长稿才分层；不截取任何分块。
+        groups, group = [], []
+        for item in drafts:
+            if group and len(json.dumps([wire(d) for d in group + [item]], ensure_ascii=False)) > 9500:
+                groups.append(group)
+                group = []
+            group.append(item)
+        if group:
+            groups.append(group)
+        if len(groups) == len(drafts):
+            groups = [drafts[start:start + 2] for start in range(0, len(drafts), 2)]
+        for group in groups:
             if len(group) == 1:
                 merged.append(group[0])
                 continue
@@ -194,14 +219,16 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
     draft = drafts[0]
     # 最终稿逐块对照原始字幕，而不只检查有损的中间摘要。
     for chunk in chunks:
-        review = request({"task": "本次是审校任务，覆盖先前的生成格式要求：不要返回sections，不重新编写。对照本块原始字幕检查完整课堂总结中的事实、前提和本块实质主题遗漏。"
+        review_data = {"task": "本次是审校任务，覆盖先前的生成格式要求：不要返回sections，不重新编写。对照本块原始字幕检查完整课堂总结中的事实、前提和本块实质主题遗漏。"
                           "只返回{\"approved\":true或false,\"covered_chunks\":[当前块编号],\"issues\":[具体问题]}，无关本块的其他内容不判断。",
                           "covered_chunks": [chunk.index], "draft": wire(draft),
-                          "cues": [{"cue_id": cue.cue_id, "text": cue.text} for cue in chunk.cues]})
+                          "cues": [{"cue_id": cue.cue_id, "text": cue.text} for cue in chunk.cues]}
+        review = request(review_data)
         covered = review.get("covered_chunks")
         if (review.get("approved") is not True or type(covered) is not list or any(type(n) is not int for n in covered)
                 or covered != [chunk.index] or review.get("issues") != []):
             raise ValueError("课堂总结来源审校未通过；原始字幕和旧正式资料保留。")
+        commit(cache_key(review_data), review)
     body = render_summary(draft, timing)
     return body, {"contract": CONTRACT, "prompt_version": PROMPT_VERSION, "covered_chunks": list(range(len(chunks))),
                   "summary_chars": len(body), "max_summary_chars": MAX_SUMMARY_CHARS,

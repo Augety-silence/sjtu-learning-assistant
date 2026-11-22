@@ -18,6 +18,34 @@ from sjtu_learning_assistant.knowledge_sync import main
 
 
 class KnowledgeDocumentTests(unittest.TestCase):
+    def test_text_only_pages_skip_vision_but_summary_is_independently_reviewed(self):
+        build_pdf(self.path, ("Native text with definitions and necessary conditions.",))
+        from sjtu_learning_assistant.knowledge_documents import text_only_pages
+        self.assertEqual({1}, text_only_pages(self.path))
+        note = self.converter(text_first=True).compile(self.source, self.path, self.target)
+        self.assertEqual(2, len(self.calls))
+        self.assertTrue(any("来源审校员" in c[1] for c in self.calls))
+        self.assertIn("source-reviewed", note.read_text())
+        with patch("sjtu_learning_assistant.knowledge_documents.rendered_pdf", side_effect=AssertionError("不应重渲染")):
+            self.converter(text_first=True).compile(self.source, self.path, self.target)
+        self.assertEqual(2, len(self.calls))
+
+    def test_nontext_operators_are_never_treated_as_native_only(self):
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import DecodedStreamObject, NameObject
+        from sjtu_learning_assistant.knowledge_documents import text_only_pages
+        build_pdf(self.path, ("Native text with definitions and necessary conditions.",))
+        reader = PdfReader(self.path)
+        writer = PdfWriter()
+        page = reader.pages[0]
+        stream = DecodedStreamObject()
+        stream.set_data(page.get_contents().get_data() + b"\n1 1 m 2 2 l S\n")
+        page[NameObject("/Contents")] = stream
+        writer.add_page(page)
+        with self.path.open("wb") as handle:
+            writer.write(handle)
+        self.assertEqual(set(), text_only_pages(self.path))
+
     def test_only_registered_current_contract_visual_recheck_can_replace_page_evidence(self):
         prefix = 'study/' + digest((LECTURE_PROMPT + PROMPT_VERSION).encode())[:12] + '/'
         suffix = '-visual-' + digest(SOURCE_RECHECK_PROMPT.encode())[:12] + '-page-0018.md'

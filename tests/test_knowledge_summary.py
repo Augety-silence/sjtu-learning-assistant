@@ -24,7 +24,10 @@ class KnowledgeSummaryTests(unittest.TestCase):
         draft['covered_topics'] = ['first', 'last']
         self.assertIs(draft, validate_summary(draft, [1, 2], ['first', 'last']))
         draft['topics'][0]['pages'] = [1]
-        with self.assertRaisesRegex(ValueError, '遗漏页面'):
+        # 主题引用不需要逐页点名；处理范围和最终来源审校仍完整。
+        self.assertIs(draft, validate_summary(draft, [1, 2], ['first', 'last']))
+        draft['covered_pages'] = [1]
+        with self.assertRaises(ValueError):
             validate_summary(draft, [1, 2], ['first', 'last'])
 
     def test_all_pages_batched_then_reviewed_and_zero_call_resume(self):
@@ -90,14 +93,16 @@ class KnowledgeSummaryTests(unittest.TestCase):
             data = json.loads(payload)
             calls.append(data)
             result = json.loads(knowledge_response(model, prompt, payload))
-            if prompt.startswith(SUMMARY_PROMPT) and 'missing_page_evidence' not in data:
+            if '来源审校员' in prompt and 'pages' in data and data['draft']['topics'][0]['pages'] == [1]:
+                return json.dumps({'approved': False, 'issues': ['第2页：逻辑结构主题遗漏，请补齐。']})
+            if prompt.startswith(SUMMARY_PROMPT) and 'corrections' not in data:
                 result['topics'][0]['pages'] = [1]
             return json.dumps(result, ensure_ascii=False)
         body, _, report = SummaryCompiler(request, stored.get, stored.update).compile(
             [dict(page=1, source_text='定义'), dict(page=2, source_text='逻辑结构')])
-        repairs = [data for data in calls if 'missing_page_evidence' in data]
-        self.assertEqual([2], [e['page'] for e in repairs[0]['missing_page_evidence']])
-        self.assertEqual('逻辑结构', repairs[0]['missing_page_evidence'][0]['source_text'])
+        repairs = [data for data in calls if 'corrections' in data]
+        self.assertEqual([1, 2], [e['page'] for e in repairs[0]['pages']])
+        self.assertEqual('逻辑结构', repairs[0]['pages'][1]['source_text'])
         self.assertTrue(all(c['approved'] for c in report['checks']))
         self.assertLessEqual(len(body), MAX_SUMMARY_CHARS)
 

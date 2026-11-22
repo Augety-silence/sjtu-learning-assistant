@@ -297,6 +297,13 @@ class OpenAIClassificationClient:
         self.model = model
         self.usage_recorder = usage_recorder
         self._limiter = limiter or _GLOBAL_LIMITER.wait
+        self._runtime = None
+        if transport is None and limiter is None:
+            from .ai_runtime import SharedAIRuntime
+            from .database import APP_SUPPORT_DIR
+            import hashlib
+            scope = hashlib.sha256((base_url.rstrip("/") + "\n" + api_key).encode()).hexdigest()
+            self._runtime = SharedAIRuntime(APP_SUPPORT_DIR / "ai-runtime.sqlite3", scope)
         if timeout is None:
             try:
                 timeout_seconds = float(os.environ.get("SJTU_AI_REQUEST_TIMEOUT_SECONDS", "120"))
@@ -339,12 +346,15 @@ class OpenAIClassificationClient:
     def _post_completion(self, body: Mapping) -> object:
         usage: dict[str, int] = {}
         try:
-            response = self._client.post("chat/completions", json=dict(body))
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, Mapping):
-                usage = normalize_token_usage(payload.get("usage"))
-            return payload
+            from contextlib import nullcontext
+            runtime = self._runtime.request(dict(body), usage, cancelled=lambda: self._client.is_closed) if self._runtime else nullcontext()
+            with runtime:
+                response = self._client.post("chat/completions", json=dict(body))
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, Mapping):
+                    usage.update(normalize_token_usage(payload.get("usage")))
+                return payload
         finally:
             self._record_usage(usage)
 
@@ -916,8 +926,15 @@ class OpenAIClassificationClient:
         try:
             def metered_consume(request_body):
                 stream_state["usage"] = {}
+                from contextlib import nullcontext
+                measured = {}
+                runtime = self._runtime.request(dict(request_body), measured, cancelled=lambda: self._client.is_closed) if self._runtime else nullcontext()
                 try:
-                    return consume(request_body)
+                    with runtime:
+                        try:
+                            return consume(request_body)
+                        finally:
+                            measured.update(stream_state["usage"])
                 finally:
                     self._record_usage(stream_state["usage"])
             return self._run_stream(metered_consume, body, tools)

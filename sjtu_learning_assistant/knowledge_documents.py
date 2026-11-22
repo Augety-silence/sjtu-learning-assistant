@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -32,6 +32,10 @@ MAX_PAGES = 500
 MAX_COMPILED_TEXT_CHARS = MAX_PAGES * 12_000
 MAX_SOURCE_BYTES = 100 * 1024**2
 MAX_MANIFEST_BYTES = 2 * 1024**2
+
+
+class CompilationDeferred(DocumentTextError):
+    """公平调度切片结束，不是 API 失败或每日额度。"""
 SOURCE_RECHECK_PROMPT = PAGE_PROMPT + """\n这是来源矛盾的原图复核，不要相信旧视觉转写或草稿推断。逐项以本次整页图为准。
 表格必须完整保留表头、前导目标变量系数列、行名、右端项，各行列数与表头一致，不错位移动系数。
 区分原始文字未提取的图片公式与课件实际缺失，不把 OCR 错误说成教师课件错误。
@@ -164,7 +168,7 @@ def rendered_pdf(path: Path, cancel: threading.Event) -> Iterator[Path]:
                     process.wait(timeout=5)
 
 
-def page_images(pdf: Path) -> Iterator[tuple[int, bytes]]:
+def page_images(pdf: Path, *, cached_pages=frozenset()) -> Iterator[tuple[int, bytes | None]]:
     try:
         import pypdfium2 as pdfium
     except ImportError:
@@ -173,6 +177,9 @@ def page_images(pdf: Path) -> Iterator[tuple[int, bytes]]:
         if not 1 <= len(document) <= MAX_PAGES:
             raise DocumentTextError("课件页数必须在 1—500 页内。")
         for index in range(len(document)):
+            if index + 1 in cached_pages:
+                yield index + 1, None
+                continue
             page = document[index]
             try:
                 width, height = page.get_size()
@@ -214,6 +221,29 @@ def vision_page_url(jpeg: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+def text_only_pages(pdf: Path) -> set[int]:
+    """保守证明是纯文本才免视觉：图像、路径图形、Type3 字体或未知操作都不跳。"""
+    try:
+        from pypdf import PdfReader
+        from pypdf.generic import ContentStream
+        reader = PdfReader(str(pdf), strict=True)
+        allowed = {b"q", b"Q", b"BT", b"ET", b"Tf", b"Tm", b"Td", b"TD", b"Tj", b"TJ", b"T*", b"Tc", b"Tw", b"Tz", b"TL", b"Tr", b"Ts", b"cm", b"w", b"rg", b"RG", b"g", b"G", b"k", b"K", b"cs", b"CS", b"sc", b"scn", b"SC", b"SCN", b"BMC", b"BDC", b"EMC"}
+        result = set()
+        for number, page in enumerate(reader.pages, 1):
+            resources = page.get("/Resources", {}).get_object()
+            fonts = resources.get("/Font", {}).get_object() if resources.get("/Font") else {}
+            if resources.get("/XObject") or any(font.get_object().get("/Subtype") == "/Type3" for font in fonts.values()):
+                continue
+            stream = page.get_contents()
+            if stream is not None and len((page.extract_text() or "").strip()) >= 20:
+                operations = ContentStream(stream, reader).operations
+                if all(operator in allowed for _, operator in operations):
+                    result.add(number)
+        return result
+    except Exception:
+        return set()  # 无法证明时保留原有整页视觉路线。
+
+
 def compilation_fingerprint(source_hash: str) -> str:
     """讲义提示升级触发同步，但不丢弃同一视觉契约下已经确认的页稿。"""
     return digest((source_hash + CONTRACT + VISION_MODEL + LECTURE_PROMPT + PROMPT_VERSION + REVIEW_GUIDANCE + REWRITE_GUIDANCE + STRUCTURE_REPAIR_GUIDANCE + CONTEXT_REPAIR_GUIDANCE + SEMANTIC_REPAIR_GUIDANCE + EXERCISE_REPAIR_GUIDANCE + EXERCISE_SELECTION_POLICY + AUTHOR_SEMANTIC_POLICY + REVISION_COVERAGE_POLICY + REVISION_COVERAGE_GUIDANCE + EXERCISE_REVIEW_GUIDANCE + WRITER_FALLBACK_POLICY + REVIEW_MODEL + SOURCE_RECHECK_PROMPT + SUMMARY_CONTRACT + SUMMARY_VERSION).encode())
@@ -228,11 +258,14 @@ def preferred_visual_output(outputs: dict, page: int) -> str | None:
 
 
 class DocumentCompiler:
-    def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0, renderer: Callable = page_images):
+    def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
+                 slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
         self.max_calls, self.calls, self.cached_pages = max_calls, 0, 0
+        self.slice_calls = max(0, int(slice_calls))
+        self.text_first = text_first
         self.model_fallbacks: list[dict[str, str]] = []
         self._persist_model_fallbacks: Callable | None = None
 
@@ -244,6 +277,8 @@ class DocumentCompiler:
                 raise DocumentTextError("课件编译已取消。")
             if self.max_calls and self.calls >= self.max_calls:
                 raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
+            if self.slice_calls and self.calls >= self.slice_calls:
+                raise CompilationDeferred("已保存检查点，轮转处理下一份课件。")
             if request_model != model:
                 self.model_fallbacks.append({'requested_model': model, 'used_model': request_model,
                                              'category': fallback_category})
@@ -396,8 +431,17 @@ class DocumentCompiler:
         # 导出明确包含隐藏页，最终仍逐页验证数量，不跳过隐藏知识或错配页码。
         persist()
         notes = []
-        with rendered_pdf(path, self.cancel) as pdf:
-            for number, jpeg in self.renderer(pdf):
+        all_cached = set(state["pages"]) == {str(n) for n in range(1, document.unit_count + 1)}
+        saved_pdf = directory / "source-render.pdf"
+        # 已验哈希的全页证据不再重复转 PDF 或重绘页图。
+        rendering = nullcontext(None) if all_cached else nullcontext(saved_pdf) if "source-render.pdf" in state["outputs"] else rendered_pdf(path, self.cancel)
+        with rendering as pdf:
+            if pdf is not None and path.suffix.casefold() != ".pdf" and "source-render.pdf" not in state["outputs"]:
+                commit({"source-render.pdf": pdf.read_bytes()})
+            native_pages = text_only_pages(pdf) if pdf is not None and self.text_first else set()
+            images = ((n, None) for n in range(1, document.unit_count + 1)) if all_cached else (
+                page_images(pdf, cached_pages={int(n) for n in state["pages"]}) if self.renderer is page_images else self.renderer(pdf))
+            for number, jpeg in images:
                 if self.cancel.is_set():
                     raise DocumentTextError("课件编译已取消。")
                 if number > len(document.units):
@@ -414,9 +458,14 @@ class DocumentCompiler:
                     native = document.units[number - 1]
                     if len(native) > 12_000:
                         raise DocumentTextError("单页正文过长，请拆分课件。")
-                    response = self._request(VISION_MODEL, PAGE_PROMPT,
-                        [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
-                         {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
+                    if number in native_pages:
+                        # 不让模型改写纯文本证据，最终全篇总结仍逐批来源审校。
+                        response = ("## 页面主题\n原生文本页\n## 知识点\n" + native
+                                    + "\n## 公式与图表\n已完整提取原生文本；无图形绘制。\n## 例题与易错点\n以原文为准。\n## 待确认项\n无新增推断。")
+                    else:
+                        response = self._request(VISION_MODEL, PAGE_PROMPT,
+                            [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
+                             {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
                     if self.cancel.is_set():
                         raise DocumentTextError("课件编译已取消。")
                     try:
@@ -425,7 +474,8 @@ class DocumentCompiler:
                         raise DocumentTextError(str(exc)) from None
                     if self.cancel.is_set():
                         raise DocumentTextError("课件编译已取消。")
-                    note = ("---\n" + f"type: slide\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_sha256: {source_hash}\npage: {number}\nmodel: {VISION_MODEL}\ncontract: {CONTRACT}\n" + "---\n\n"
+                    evidence_model = "native-text" if number in native_pages else VISION_MODEL
+                    note = ("---\n" + f"type: slide\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_sha256: {source_hash}\npage: {number}\nmodel: {evidence_model}\ncontract: {CONTRACT}\n" + "---\n\n"
                             + f"# 第 {number} 页\n\n![原始页面](../assets/page-{number:04d}.jpg)\n\n## 原始提取\n\n"
                             + native + "\n\n## 逐页知识解读\n\n" + response.strip() + "\n")
                     commit({f"assets/page-{number:04d}.jpg": jpeg, page_name: note}, number)

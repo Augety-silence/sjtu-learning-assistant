@@ -13,7 +13,7 @@ from sjtu_learning_assistant.document_text import DocumentTextError, extract_doc
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, _atomic_write
 from sjtu_learning_assistant.knowledge_documents import (
     CONTRACT, MAX_COMPILED_TEXT_CHARS, MAX_MANIFEST_BYTES, MAX_SOURCE_BYTES, VISION_MODEL,
-    DocumentCompiler, compilation_fingerprint, digest, safe_destination, target_lock,
+    DocumentCompiler, CompilationDeferred, compilation_fingerprint, digest, safe_destination, target_lock,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
 from sjtu_learning_assistant.summary_policy import retry_delay_seconds
@@ -26,12 +26,15 @@ class CourseMarkdownSync:
                  runner: Callable, *, interval: float = 60,
                  compiler_factory: Callable = DocumentCompiler,
                  wiki_rebuilder: Callable | None = None,
+                 max_documents_per_cycle: int = 0, slice_calls: int = 0,
                  today: Callable = lambda: datetime.now().date().isoformat(),
                  now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
         self.interval, self.compiler_factory, self.today = interval, compiler_factory, today
         self.wiki_rebuilder = wiki_rebuilder
         self.now_provider = now_provider
+        self.max_documents_per_cycle = max(0, int(max_documents_per_cycle))
+        self.slice_calls = max(0, int(slice_calls))
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -69,7 +72,7 @@ class CourseMarkdownSync:
         while not self._stop.is_set():
             self._wake.clear()
             self.run_once()
-            self._wake.wait(self.interval)
+            self._wake.wait(1 if self.status().get("has_runnable") else self.interval)
 
     def run_once(self) -> None:
         """只由单一 worker 调用；测试可同步调用，不需要启动 UI。"""
@@ -233,9 +236,13 @@ class CourseMarkdownSync:
             self._set(status="needs_ai", phase="waiting_ai", current_file=None,
                       pending=len(prepared), issues=issues[:20])
             return
-        # 先为已完成的旧课件建图，长时间视觉编译不能阻塞现有知识导航。
-        self._set(phase="wiki", current_file=None)
-        update_wiki()
+        # 自动模式轮转小批，释放全库锁；手工模式兼容完整一轮。
+        if not self.max_documents_per_cycle:
+            self._set(phase="wiki", current_file=None)
+            update_wiki()
+        prepared.sort(key=lambda entry: str(entry[3].get("last_dispatched_at") or ""))
+        dispatched = 0
+        has_runnable = False
         for index, (path, relative, fingerprint, item, mirror) in enumerate(prepared):
             self._set(phase="ai_summary", current_file=path.name)
             if self._stop.is_set() or self._cancel.is_set():
@@ -264,7 +271,15 @@ class CourseMarkdownSync:
                 allowed_hashes = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed_hashes):
                     raise DocumentTextError("对应 MD 为未登记文件或已被人工修改，未覆盖。")
+                if self.max_documents_per_cycle and dispatched >= self.max_documents_per_cycle:
+                    pending += 1
+                    has_runnable = True
+                    continue
+                dispatched += 1
+                if self.slice_calls:
+                    compiler = self.compiler_factory(call, self._cancel, max_calls=0, slice_calls=self.slice_calls, text_first=True)
                 item.update(fingerprint=fingerprint, attempts=min(1_000_000, attempts + 1), attempt_day=self.today(), status="pending")
+                item["last_dispatched_at"] = self.now_provider().isoformat()
                 state["items"][relative] = item
                 persist()
                 note = compiler.compile(source, path, target)
@@ -285,6 +300,13 @@ class CourseMarkdownSync:
                 item.pop("error", None)
                 persist()
                 completed += 1
+            except CompilationDeferred:
+                item.update(status="pending", attempts=attempts)
+                item.pop("retry_after", None)
+                item.pop("error", None)
+                persist()
+                pending += 1
+                has_runnable = True
             except (DocumentTextError, KnowledgeCompilerError) as exc:
                 failed += 1
                 message = str(exc)
@@ -302,8 +324,11 @@ class CourseMarkdownSync:
                 issues.append((relative + "：" if relative else "") + message)
             finally:
                 self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
-        self._set(phase="wiki", current_file=None)
-        update_wiki()
-        self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed or issues else "completed",
+        # 没有可执行的总结时才补 Wiki，不挡首批正文。
+        if not self.max_documents_per_cycle or not has_runnable:
+            self._set(phase="wiki", current_file=None)
+            update_wiki()
+        self._set(status="paused" if self._cancel.is_set() else "running" if has_runnable else "completed_with_warnings" if failed or issues else "completed",
                   phase="idle", current_file=None,
-                  completed=completed, failed=failed, pending=pending, calls_today=quota["used"], issues=issues[:20])
+                  completed=completed, failed=failed, pending=pending, has_runnable=has_runnable,
+                  calls_today=quota["used"], issues=issues[:20])

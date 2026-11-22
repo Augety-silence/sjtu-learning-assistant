@@ -963,6 +963,7 @@ class DashboardService:
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
                     notes_context_provider=self._lesson_summary_ai_context,
+                    notes_slice_calls=2,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
@@ -3692,6 +3693,7 @@ class DashboardService:
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
                 wiki_rebuilder=self._rebuild_course_wiki,
+                max_documents_per_cycle=1, slice_calls=2,
             )
         self._course_markdown_instance.start()
 
@@ -3737,16 +3739,29 @@ class DashboardService:
         if not settings.ai_enabled or not settings.ai_key_saved:
             raise DashboardError("请先在设置中启用并保存 AI 连接。")
         client: Any | None = None
+        pooled = False
         try:
             key = self.ai_key_loader()
             if not key:
                 raise DashboardError("未找到已保存的 AI API key。")
-            client = self.ai_client_factory(
-                api_key=key,
-                base_url=settings.ai_base_url,
-                model=model,
-                timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15),
-            )
+            if self.ai_client_factory is OpenAIClassificationClient:
+                import hashlib
+                identity = (model, settings.ai_base_url, hashlib.sha256(key.encode()).hexdigest())
+                with self._client_lock:
+                    if getattr(self, "_closed", False):
+                        raise DashboardError("应用正在退出，模型请求已停止。")
+                    pool = getattr(self, "_knowledge_ai_clients", None)
+                    if pool is None:
+                        pool = self._knowledge_ai_clients = {}
+                    client = pool.get(identity)
+                    if client is None:
+                        client = self.ai_client_factory(api_key=key, base_url=settings.ai_base_url, model=model,
+                            timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15))
+                        pool[identity] = client
+                    pooled = True
+            else:
+                client = self.ai_client_factory(api_key=key, base_url=settings.ai_base_url, model=model,
+                    timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15))
             if isinstance(client, OpenAIClassificationClient):
                 from .provider_usage import ProviderUsageLedger
                 client.usage_recorder = ProviderUsageLedger(self.engine).record
@@ -3759,6 +3774,7 @@ class DashboardService:
                 temperature=0.1,
                 system_prompt=False,
                 knowledge_compilation=True,
+                response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
             )
             content = result.get("content")
             if (result.get("response_metadata") or {}).get("finish_reason") == "length":
@@ -3777,7 +3793,8 @@ class DashboardService:
         except AIClassificationError as exc:
             raise KnowledgeAPIError(str(exc), category=exc.category) from None
         finally:
-            self._close_client(client)
+            if not pooled:
+                self._close_client(client)
 
     def knowledge_compiler_pick_folder(self) -> dict[str, Any]:
         if self.folder_picker is None:
@@ -3872,6 +3889,10 @@ class DashboardService:
             self._canvas_client = None
             self._ai_client = None
             self._ai_client_config = None
+            compilation_clients = list(getattr(self, "_knowledge_ai_clients", {}).values())
+            self._knowledge_ai_clients = {}
+        for client in compilation_clients:
+            self._close_client(client)
         self._close_client(transcript_service)
         self._close_client(canvas_client)
         self._close_client(ai_client)
