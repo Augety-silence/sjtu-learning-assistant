@@ -78,7 +78,8 @@ class ParallelSummaryPolicyTests(unittest.TestCase):
             mirror = target / 'Courses/completed.pptx.md'
             mirror.parent.mkdir()
             body = '# 已验收总结\n正文保留。'
-            mirror.write_text(body, encoding='utf-8')
+            # 检查点校验的是文件字节；Windows 默认 CRLF 不能冒充 LF 哈希。
+            mirror.write_text(body, encoding='utf-8', newline='\n')
             marker.write_text(json.dumps({'version': 1, 'source_root': str(source), 'quota': {'day': '2026-11-22', 'used': 0},
                 'items': {'completed.pptx': {'fingerprint': compilation_fingerprint(digest(path.read_bytes())),
                           'status': 'completed', 'text_ready': True, 'mirror_hash': digest(body.encode())}}}), encoding='utf-8')
