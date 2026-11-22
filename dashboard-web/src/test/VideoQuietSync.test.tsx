@@ -49,6 +49,34 @@ function Hook({
 }
 
 describe("quiet classroom sync", () => {
+  it("离开视图暂停并保存进度，返回不重复请求播放链接或重建播放器", async () => {
+    const pause = vi
+      .spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(() => {});
+    const load = vi.fn(play);
+    const update = vi.fn(async () => {});
+    const props = { videos: [lesson], onPlay: load, onUpdatePlayback: update };
+    const view = render(<VideosView {...props} active />);
+    fireEvent.click(screen.getByRole("button", { name: "播放 第一节" }));
+    await waitFor(() =>
+      expect(document.querySelector("video source")).toBeTruthy(),
+    );
+    const media = document.querySelector("video")!;
+    media.currentTime = 80;
+    view.rerender(<VideosView {...props} active={false} />);
+    expect(pause).toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(lesson, {
+      positionSeconds: 80,
+      playbackRate: 1,
+    });
+    const calls = update.mock.calls.length;
+    view.rerender(<VideosView {...props} active={false} />);
+    expect(update.mock.calls.length).toBe(calls);
+    view.rerender(<VideosView {...props} active />);
+    expect(document.querySelector("video")).toBe(media);
+    expect(media.currentTime).toBe(80);
+    expect(load).toHaveBeenCalledOnce();
+  });
   it("releases a hung PDF UI wait while retaining a single in-flight backend task", async () => {
     vi.useFakeTimers();
     const create = vi.fn(() => new Promise<{ url: string }>(() => {}));
@@ -310,7 +338,7 @@ describe("quiet classroom sync", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "字幕" }), {
       button: 0,
     });
-    expect(await screen.findByText("课堂原话")).toBeTruthy();
+    expect((await screen.findAllByText("课堂原话")).length).toBeGreaterThan(0);
     expect(document.querySelector(".video-raw-subtitle")).toBeTruthy();
   });
 });

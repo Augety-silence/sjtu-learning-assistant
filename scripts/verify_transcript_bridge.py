@@ -43,7 +43,7 @@ def main() -> int:
             if len(seen) > 1000:
                 raise RuntimeError("任务数量超过只读验收范围")
             directory = service._video_dir(source)
-            if not directory.exists():
+            if not directory.exists() or not (directory / "manifest.json").is_file():
                 not_saved += 1
                 continue
             notes = service._read_json(directory / "manifest.json").get("lesson_notes")

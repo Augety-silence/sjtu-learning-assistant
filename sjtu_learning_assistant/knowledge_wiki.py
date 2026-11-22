@@ -14,6 +14,7 @@ from sjtu_learning_assistant.compiled_knowledge import (
     CompiledKnowledge, CompiledKnowledgeError, _integer, _json, _read_bytes, _safe,
 )
 from sjtu_learning_assistant.knowledge_compiler import _atomic_write, _safe_name
+from sjtu_learning_assistant.summary_policy import MAX_SUMMARY_CHARS
 
 CONTRACT = "course-wiki-v1"
 MAX_INPUT_CHARS = 120_000
@@ -161,7 +162,7 @@ class CourseWiki:
                 # Wiki只组织精炼总结；相同引用文档ID仍可读取完整原始字幕。
                 body = body.split("## 当堂老师讲了什么\n", 1)[-1].split("\n## 原始字幕\n", 1)[0].strip()
             # 旧长稿不能借清单状态混入新的精炼 Wiki；人工正文保留，只读检查。
-            if not 1 <= len(body) <= 2000:
+            if not 1 <= len(body) <= MAX_SUMMARY_CHARS:
                 continue
             if match:
                 abstract = re.search(r"^abstract: (.+)$", match[1], re.M)

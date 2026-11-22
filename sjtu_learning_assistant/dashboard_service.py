@@ -938,6 +938,11 @@ class DashboardService:
                 corrected = corrected_reader(source_id)
                 if corrected is not None:
                     return corrected
+            cached_reader = getattr(self._transcript_service_instance, "cached_subtitles", None)
+            if callable(cached_reader):
+                cached = cached_reader(source_id)
+                if cached is not None:
+                    return cached
             return self._video_service().subtitles(source_id)
         except SJTUVideoError as exc:
             raise DashboardError(str(exc)) from None
@@ -962,15 +967,55 @@ class DashboardService:
                     self.local_projects_path.parent / "transcripts" / "v1",
                     subtitle_fetcher=self.video_subtitles,
                     ai_context_provider=self._transcript_ai_context,
+                    notes_context_provider=self._lesson_summary_ai_context,
+                    notes_slice_calls=2,
+                    notes_workers=4,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
             return self._transcript_service_instance
 
+    def _lesson_summary_ai_context(self) -> AIContext:
+        """总结使用独立非推理模型与编译超时，不改变用户聊天模型。"""
+        settings = self._effective_settings()
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            return AIContext(None, 'deepseek-chat', '', False)
+        service = self
+        class SummaryClient:
+            def chat_completion(self, messages, **kwargs):
+                content = service._run_knowledge_compiler_ai('deepseek-chat', messages[0]['content'], messages[1]['content'],
+                    max_tokens=kwargs.get('max_tokens', 5000))
+                return {'content': content, 'finish_reason': 'stop'}
+        fingerprint = hashlib.sha256(settings.ai_base_url.encode('utf-8')).hexdigest()
+        return AIContext(SummaryClient(), 'deepseek-chat', fingerprint, True, False)
+
     def start_transcript_markdown_sync(self) -> None:
-        """启动已保存字幕的补齐，不依赖用户先进入视频页或新建校对任务。"""
-        if (self.local_projects_path.parent / "transcripts" / "v1" / "videos").is_dir():
-            self._transcript_service()
+        """字幕提前下载，原始 MD 与 AI 总结分别执行。"""
+        self._transcript_service()
+        self._subtitle_sync_service().start()
+
+    def _subtitle_courses(self):
+        with Session(self.engine) as session:
+            return [(str(course.source_id), course.name or "未命名课程")
+                    for course in session.scalars(select(Course).order_by(Course.term_name.desc(), Course.id.desc()))
+                    if str(course.source_id).isdigit()]
+
+    def _subtitle_sync_service(self):
+        from sjtu_learning_assistant.subtitle_sync import SubtitleSync
+        with self._client_lock:
+            if getattr(self, "_closed", False):
+                raise DashboardError("应用正在关闭。")
+            if getattr(self, "_subtitle_sync_instance", None) is None:
+                self._subtitle_sync_instance = SubtitleSync(self._subtitle_courses,
+                    lambda course_id, name: self._video_service().list_course_videos(course_id, course_name=name, limit=10000),
+                    self._transcript_service)
+            return self._subtitle_sync_instance
+
+    def subtitle_sync_all(self):
+        service = self._subtitle_sync_service()
+        service.notify(retry=True)
+        service.start()
+        return {"status": "queued", "scope": "all_courses"}
 
     def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
         if isinstance(course_id, bool) or type(course_id) not in [int, str]:
@@ -3677,6 +3722,7 @@ class DashboardService:
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
                 wiki_rebuilder=self._rebuild_course_wiki,
+                max_documents_per_cycle=10, slice_calls=2, workers=6,
             )
         self._course_markdown_instance.start()
 
@@ -3685,6 +3731,9 @@ class DashboardService:
         return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
 
     def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        subtitles = getattr(self, "_subtitle_sync_instance", None)
+        if subtitles is not None and not settings_changed:
+            subtitles.notify()
         service = getattr(self, "_course_markdown_instance", None)
         if service is not None:
             service.notify(settings_changed=settings_changed)
@@ -3700,23 +3749,58 @@ class DashboardService:
                 "daily_limit": 0,
                 "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
 
+    def markdown_sync_progress(self) -> dict[str, Any]:
+        from .markdown_progress import course_progress, transcript_progress
+        settings = self._effective_settings()
+        service = getattr(self, "_course_markdown_instance", None)
+        live = service.status() if service is not None else {}
+        return {
+            "courses": course_progress(Path(settings.archive_root), self._course_markdown_paths()),
+            "transcripts": transcript_progress(self.local_projects_path.parent / "transcripts" / "v1"),
+            "automatic": settings.course_markdown_enabled,
+            "ai_ready": settings.ai_enabled and settings.ai_key_saved,
+            "ai_model": settings.ai_model,
+            "current": {key: live.get(key) for key in ("status", "phase", "current_file")},
+            "updated_at": self.now().isoformat(),
+        }
+
     def _run_knowledge_compiler_ai(
-        self, model: str, system_prompt: str, user_content: Any
+        self, model: str, system_prompt: str, user_content: Any, *, max_tokens: int = 8192
     ) -> str:
         settings = self._effective_settings()
+        from .knowledge_summary import CONCISE_REVIEW_PROMPT, SUMMARY_PROMPT, CONCISE_COMPRESSION_PROMPT
+        if system_prompt.startswith(CONCISE_REVIEW_PROMPT):
+            max_tokens = min(max_tokens, 2048)
+        elif system_prompt.startswith(SUMMARY_PROMPT):
+            max_tokens = min(max_tokens, 7500)
+        elif system_prompt.startswith(CONCISE_COMPRESSION_PROMPT):
+            max_tokens = min(max_tokens, 6500)
         if not settings.ai_enabled or not settings.ai_key_saved:
             raise DashboardError("请先在设置中启用并保存 AI 连接。")
         client: Any | None = None
+        pooled = False
         try:
             key = self.ai_key_loader()
             if not key:
                 raise DashboardError("未找到已保存的 AI API key。")
-            client = self.ai_client_factory(
-                api_key=key,
-                base_url=settings.ai_base_url,
-                model=model,
-                timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15),
-            )
+            if self.ai_client_factory is OpenAIClassificationClient:
+                import hashlib
+                identity = (model, settings.ai_base_url, hashlib.sha256(key.encode()).hexdigest())
+                with self._client_lock:
+                    if getattr(self, "_closed", False):
+                        raise DashboardError("应用正在退出，模型请求已停止。")
+                    pool = getattr(self, "_knowledge_ai_clients", None)
+                    if pool is None:
+                        pool = self._knowledge_ai_clients = {}
+                    client = pool.get(identity)
+                    if client is None:
+                        client = self.ai_client_factory(api_key=key, base_url=settings.ai_base_url, model=model,
+                            timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15))
+                        pool[identity] = client
+                    pooled = True
+            else:
+                client = self.ai_client_factory(api_key=key, base_url=settings.ai_base_url, model=model,
+                    timeout=httpx.Timeout(connect=15, read=240, write=60, pool=15))
             if isinstance(client, OpenAIClassificationClient):
                 from .provider_usage import ProviderUsageLedger
                 client.usage_recorder = ProviderUsageLedger(self.engine).record
@@ -3725,14 +3809,17 @@ class DashboardService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=8192,
+                max_tokens=max_tokens,
                 temperature=0.1,
                 system_prompt=False,
                 knowledge_compilation=True,
+                response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
             )
             content = result.get("content")
             if (result.get("response_metadata") or {}).get("finish_reason") == "length":
-                raise KnowledgeCompilerError("知识库响应达到长度上限；页面已保存，自动续编将重试此知识段落。")
+                from .knowledge_compiler import KnowledgeResponseError
+                raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
+                                             content=content if type(content) is str else '')
             if type(content) is not str or not content.strip():
                 raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
             return content.strip()
@@ -3747,7 +3834,8 @@ class DashboardService:
         except AIClassificationError as exc:
             raise KnowledgeAPIError(str(exc), category=exc.category) from None
         finally:
-            self._close_client(client)
+            if not pooled:
+                self._close_client(client)
 
     def knowledge_compiler_pick_folder(self) -> dict[str, Any]:
         if self.folder_picker is None:
@@ -3822,6 +3910,9 @@ class DashboardService:
 
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        subtitles = getattr(self, "_subtitle_sync_instance", None)
+        if subtitles is not None:
+            subtitles.close()
         history = getattr(self, "_course_history_instance", None)
         if history is not None:
             history.close()
@@ -3842,6 +3933,10 @@ class DashboardService:
             self._canvas_client = None
             self._ai_client = None
             self._ai_client_config = None
+            compilation_clients = list(getattr(self, "_knowledge_ai_clients", {}).values())
+            self._knowledge_ai_clients = {}
+        for client in compilation_clients:
+            self._close_client(client)
         self._close_client(transcript_service)
         self._close_client(canvas_client)
         self._close_client(ai_client)

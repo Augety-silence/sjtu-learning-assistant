@@ -28,6 +28,14 @@ class KnowledgeAPIError(KnowledgeCompilerError):
         self.category = category
 
 
+class KnowledgeResponseError(KnowledgeCompilerError):
+    """已付费但不可发布的响应；内容仅供检查点保存，不放进错误文案。"""
+
+    def __init__(self, message: str, *, content: str):
+        super().__init__(message)
+        self.content = content
+
+
 class _CompilerCancelled(Exception):
     """Raised internally so a cancelled phase never writes empty AI notes."""
 

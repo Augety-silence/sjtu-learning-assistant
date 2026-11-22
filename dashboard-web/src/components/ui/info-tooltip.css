@@ -1,9 +1,29 @@
 .info-tooltip { position: relative; display: inline-flex; flex: none; vertical-align: middle; }
 .info-tooltip > button > svg { width: 16px; height: 16px; stroke-width: 1.5; }
-.info-tooltip > [role="tooltip"] { display: none; position: absolute; inset-block-start: 100%; inset-inline-start: 0; z-index: 4; width: min(320px, 70vw); padding: 12px; border: 1px solid var(--border-workspace); border-radius: 8px; background: var(--surface-page); color: var(--text-primary); font-size: 13px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; white-space: normal; box-shadow: 0 4px 12px rgb(0 0 0 / 12%); }
-.info-tooltip > [role="tooltip"] { transform: translateX(var(--info-tooltip-shift, 0px)); max-height: calc(100dvh - 24px); overflow: auto; }
-.info-tooltip[data-align="end"] > [role="tooltip"] { inset-inline-start: auto; inset-inline-end: 0; }
-.info-tooltip[data-side="top"] > [role="tooltip"] { inset-block-start: auto; inset-block-end: 100%; }
-.info-tooltip:not([data-dismissed="true"]):hover > [role="tooltip"], .info-tooltip:not([data-dismissed="true"]):focus-within > [role="tooltip"] { display: block; }
+.info-tooltip-bubble {
+  position: fixed;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 10px;
+  background: rgb(55 60 67 / 94%);
+  color: #fff;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+}
+.info-tooltip-bubble[hidden] { display: none; }
+@media (prefers-reduced-transparency: reduce) {
+  .info-tooltip-bubble { background: #373c43; -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
 .heading-with-info { display: flex; align-items: center; min-width: 0; gap: 8px; }
 .heading-with-info :is(h1, h2, h3, h4) { margin-block: 0; }

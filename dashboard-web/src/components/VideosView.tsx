@@ -29,6 +29,7 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { useVideoPdfSync } from "@/components/useVideoPdfSync";
+import { syncCaptionTrack, VideoCaptions } from "@/components/VideoCaptions";
 import {
   type VideoLearningSegmentsResult,
   type VideoPlaybackPosition,
@@ -112,6 +113,7 @@ export interface VideoSlidePage {
 }
 
 export interface VideosViewProps {
+  active?: boolean;
   videos: CourseVideoItem[];
   tasks?: VideoTaskItem[];
   loading?: boolean;
@@ -133,6 +135,7 @@ export interface VideosViewProps {
   onRetry?: () => void | Promise<void>;
   syncIssue?: string | null;
   onRetrySync?: () => void;
+  onSyncAllSubtitles?: () => Promise<void>;
   onPlay?: (
     video: CourseVideoItem,
   ) =>
@@ -826,6 +829,7 @@ function CoursePicker({
 }
 
 export function VideosView({
+  active = true,
   videos,
   tasks = [],
   loading = false,
@@ -839,6 +843,7 @@ export function VideosView({
   onRetry,
   syncIssue,
   onRetrySync,
+  onSyncAllSubtitles,
   onPlay,
   onLoadSubtitles,
   onLoadSlides,
@@ -857,6 +862,7 @@ export function VideosView({
   aiReadiness,
 }: VideosViewProps) {
   const [source, setSource] = useState<"all" | VideoSource>("all");
+  const [subtitleSyncBusy, setSubtitleSyncBusy] = useState(false);
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
@@ -917,6 +923,7 @@ export function VideosView({
   const playRequest = useRef(0);
   const autoPlaySourceId = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const wasActive = useRef(active);
   const playerShellRef = useRef<HTMLDivElement>(null);
   const slideMetadataRequestRef = useRef(0);
   const slideImageRequestRef = useRef(0);
@@ -1092,8 +1099,7 @@ export function VideosView({
     () =>
       subtitleCues.find(
         (cue) =>
-          cue.startMs <= playbackTime * 1000 &&
-          cue.endMs >= playbackTime * 1000,
+          cue.startMs <= playbackTime * 1000 && cue.endMs > playbackTime * 1000,
       )?.text ?? "",
     [playbackTime, subtitleCues],
   );
@@ -1727,6 +1733,36 @@ export function VideosView({
     stopTemporaryPlayback();
   }, [playbackUrl, selected?.id, stopTemporaryPlayback]);
   useEffect(() => {
+    if (active) {
+      wasActive.current = true;
+      return;
+    }
+    if (!wasActive.current) return;
+    wasActive.current = false;
+    stopTemporaryPlayback();
+    const media = videoRef.current;
+    media?.pause();
+    if (media && selectedVideoRef.current) {
+      notifyPlayback(
+        selectedVideoRef.current,
+        {
+          positionSeconds: media.currentTime,
+          playbackRate: media.playbackRate,
+        },
+        true,
+      );
+    }
+    autoPlaySourceId.current = null;
+    setSplitPaneOpen(false);
+    setPortalFullscreen(false);
+    setPlayerFullscreen(false);
+    setOpenMenuId(null);
+    setSpeedMenuOpen(false);
+    setShortcutsOpen(false);
+    setDetailJob(null);
+  }, [active, notifyPlayback, stopTemporaryPlayback]);
+  useEffect(() => {
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       if (key === "escape" && temporaryPlaybackRef.current) {
@@ -1810,6 +1846,7 @@ export function VideosView({
       window.removeEventListener("blur", onBlur);
     };
   }, [
+    active,
     playbackUrl,
     seekVideo,
     selected,
@@ -2305,6 +2342,10 @@ export function VideosView({
           preload="metadata"
           aria-label={selected ? `播放 ${selected.title}` : "课程视频"}
           onPlay={(event) => {
+            if (!active) {
+              event.currentTarget.pause();
+              return;
+            }
             if (selected)
               notifyPlayback(
                 selected,
@@ -2361,6 +2402,10 @@ export function VideosView({
           }}
           onLoadedMetadata={(event) => {
             playerLoadedRef.current = true;
+            if (!active) {
+              event.currentTarget.pause();
+              return;
+            }
             const playbackRestore = playbackRestoreRef.current;
             if (playbackRestore) {
               event.currentTarget.currentTime = playbackRestore.currentTime;
@@ -2404,11 +2449,17 @@ export function VideosView({
           />
           {subtitleUrl && (
             <track
+              key={subtitleUrl}
               kind="subtitles"
               src={subtitleUrl}
               srcLang="zh"
               label="中文字幕"
               default
+              onLoad={(event) => {
+                const video = event.currentTarget
+                  .parentElement as HTMLVideoElement;
+                syncCaptionTrack(video);
+              }}
             />
           )}
         </video>
@@ -2467,6 +2518,13 @@ export function VideosView({
           <strong>尚未选择播放内容</strong>
           <span>从右侧录像列表选择一节开始学习</span>
         </div>
+      )}
+      {playbackUrl && (
+        <VideoCaptions
+          key={`${playbackUrl}:${subtitleUrl}`}
+          videoRef={videoRef}
+          cues={subtitleCues}
+        />
       )}
       {playerFeedback && (
         <div
@@ -2751,6 +2809,36 @@ export function VideosView({
                 <TabsTrigger value="transcript">字幕</TabsTrigger>
                 <TabsTrigger value="pdf">课件</TabsTrigger>
               </TabsList>
+              {onSyncAllSubtitles && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={subtitleSyncBusy}
+                  title="提前同步全部课程字幕，复用已有下载"
+                  onClick={() => {
+                    setSubtitleSyncBusy(true);
+                    void onSyncAllSubtitles()
+                      .then(() => {
+                        showToast({
+                          message: "已加入后台字幕同步",
+                          kind: "success",
+                        });
+                      })
+                      .catch((reason) => {
+                        showToast({
+                          message:
+                            reason instanceof Error
+                              ? reason.message
+                              : "字幕同步启动失败。",
+                          kind: "error",
+                        });
+                      })
+                      .finally(() => setSubtitleSyncBusy(false));
+                  }}
+                >
+                  同步全部字幕
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"

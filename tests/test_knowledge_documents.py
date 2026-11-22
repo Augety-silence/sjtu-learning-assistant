@@ -18,6 +18,34 @@ from sjtu_learning_assistant.knowledge_sync import main
 
 
 class KnowledgeDocumentTests(unittest.TestCase):
+    def test_text_only_pages_skip_vision_but_summary_is_independently_reviewed(self):
+        build_pdf(self.path, ("Native text with definitions and necessary conditions.",))
+        from sjtu_learning_assistant.knowledge_documents import text_only_pages
+        self.assertEqual({1}, text_only_pages(self.path))
+        note = self.converter(text_first=True).compile(self.source, self.path, self.target)
+        self.assertEqual(2, len(self.calls))
+        self.assertTrue(any("来源审校员" in c[1] for c in self.calls))
+        self.assertIn("source-reviewed", note.read_text(encoding="utf-8"))
+        with patch("sjtu_learning_assistant.knowledge_documents.rendered_pdf", side_effect=AssertionError("不应重渲染")):
+            self.converter(text_first=True).compile(self.source, self.path, self.target)
+        self.assertEqual(2, len(self.calls))
+
+    def test_nontext_operators_are_never_treated_as_native_only(self):
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import DecodedStreamObject, NameObject
+        from sjtu_learning_assistant.knowledge_documents import text_only_pages
+        build_pdf(self.path, ("Native text with definitions and necessary conditions.",))
+        reader = PdfReader(self.path)
+        writer = PdfWriter()
+        page = reader.pages[0]
+        stream = DecodedStreamObject()
+        stream.set_data(page.get_contents().get_data() + b"\n1 1 m 2 2 l S\n")
+        page[NameObject("/Contents")] = stream
+        writer.add_page(page)
+        with self.path.open("wb") as handle:
+            writer.write(handle)
+        self.assertEqual(set(), text_only_pages(self.path))
+
     def test_only_registered_current_contract_visual_recheck_can_replace_page_evidence(self):
         prefix = 'study/' + digest((LECTURE_PROMPT + PROMPT_VERSION).encode())[:12] + '/'
         suffix = '-visual-' + digest(SOURCE_RECHECK_PROMPT.encode())[:12] + '-page-0018.md'
@@ -178,8 +206,13 @@ class KnowledgeDocumentTests(unittest.TestCase):
         self.assertEqual(4, len(self.calls))
 
     def test_incomplete_lecture_is_not_published_and_resumes_from_saved_pages(self):
+        summary_calls = 0
         def runner(model, system, content):
+            nonlocal summary_calls
             if '精炼课程总结' in system:
+                summary_calls += 1
+                if summary_calls > 1:
+                    raise DocumentTextError('模拟中断：精炼总结遗漏输入页面，已有失败稿保留。')
                 result = json.loads(knowledge_response(model, system, content))
                 result['covered_pages'] = [1]
                 return json.dumps(result)
@@ -218,6 +251,22 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with self.assertRaises(DocumentTextError) as context:
             compiler.compile(self.source, self.path, self.target)
         self.assertNotIn("confidential", str(context.exception))
+        self.assertEqual(1, compiler.calls)
+        self.assertFalse(list(self.target.rglob("page-0001.md")))
+
+    def test_api_failure_closes_pdf_iterator_before_snapshot_cleanup(self):
+        closed = []
+        def renderer(pdf):
+            try:
+                yield from page_images(pdf)
+            finally:
+                closed.append(True)
+        def runner(*args):
+            raise RuntimeError("isolated API failure")
+        compiler = DocumentCompiler(runner, self.cancel, renderer=renderer)
+        with self.assertRaises(DocumentTextError):
+            compiler.compile(self.source, self.path, self.target)
+        self.assertEqual([True], closed)
         self.assertEqual(1, compiler.calls)
         self.assertFalse(list(self.target.rglob("page-0001.md")))
 
@@ -345,17 +394,19 @@ class KnowledgeDocumentTests(unittest.TestCase):
         with target_lock(self.target):
             pass
 
-    def test_documents_mode_accepts_pdf_and_isolates_unsupported_ppt(self):
+    def test_documents_mode_accepts_pdf_and_retains_legacy_ppt_without_opening(self):
         (self.source / "legacy.ppt").write_bytes(b"unsupported")
         service = KnowledgeCompilerService(ai_runner=self.runner)
         self.assertEqual(2, service.inspect(str(self.source))["document_files"])
         service.start(str(self.source), str(self.target), "documents")
         service._thread.join(10)
         state = service.status()
-        self.assertEqual("completed_with_warnings", state["status"])
-        self.assertEqual(1, state["counts"]["warnings"])
+        self.assertEqual("completed", state["status"])
+        self.assertEqual(0, state["counts"]["warnings"])
         self.assertEqual(4, state["counts"]["document_calls"])
-        self.assertEqual(1, len(list(self.target.rglob("document.md"))))
+        notes = list(self.target.rglob("document.md"))
+        self.assertEqual(2, len(notes))
+        self.assertEqual(1, sum('quality_status: source-only' in note.read_text(encoding='utf-8') for note in notes))
 
     def test_index_links_resolve_and_markdown_rows_survive_resync(self):
         (self.source / "笔记.md").write_text("# 个人笔记", encoding="utf-8")

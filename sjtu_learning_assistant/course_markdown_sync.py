@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -13,9 +14,11 @@ from sjtu_learning_assistant.document_text import DocumentTextError, extract_doc
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeCompilerError, _atomic_write
 from sjtu_learning_assistant.knowledge_documents import (
     CONTRACT, MAX_COMPILED_TEXT_CHARS, MAX_MANIFEST_BYTES, MAX_SOURCE_BYTES, VISION_MODEL,
-    DocumentCompiler, compilation_fingerprint, digest, safe_destination, target_lock,
+    DocumentCompiler, CompilationDeferred, compilation_fingerprint, digest, safe_destination, target_lock,
+    skipped_active_content, retained_source_markdown,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
+from sjtu_learning_assistant.summary_policy import retry_delay_seconds
 
 OUTPUT_FOLDER = "Knowledge Markdown"
 
@@ -25,10 +28,16 @@ class CourseMarkdownSync:
                  runner: Callable, *, interval: float = 60,
                  compiler_factory: Callable = DocumentCompiler,
                  wiki_rebuilder: Callable | None = None,
-                 today: Callable = lambda: datetime.now().date().isoformat()):
+                 max_documents_per_cycle: int = 0, slice_calls: int = 0, workers: int = 1,
+                 today: Callable = lambda: datetime.now().date().isoformat(),
+                 now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
         self.interval, self.compiler_factory, self.today = interval, compiler_factory, today
         self.wiki_rebuilder = wiki_rebuilder
+        self.now_provider = now_provider
+        self.max_documents_per_cycle = max(0, int(max_documents_per_cycle))
+        self.slice_calls = max(0, int(slice_calls))
+        self.workers = max(1, min(10, int(workers)))
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -66,7 +75,7 @@ class CourseMarkdownSync:
         while not self._stop.is_set():
             self._wake.clear()
             self.run_once()
-            self._wake.wait(self.interval)
+            self._wake.wait(1 if self.status().get("has_runnable") else self.interval)
 
     def run_once(self) -> None:
         """只由单一 worker 调用；测试可同步调用，不需要启动 UI。"""
@@ -74,9 +83,6 @@ class CourseMarkdownSync:
             settings = self.settings()
             if self._stop.is_set() or not settings.course_markdown_enabled:
                 self._set(status="disabled")
-                return
-            if not settings.ai_enabled or not settings.ai_key_saved:
-                self._set(status="needs_ai")
                 return
             source = Path(validate_archive_root(settings.archive_root))
             if not source.is_dir():
@@ -117,25 +123,28 @@ class CourseMarkdownSync:
             except (ValueError, KeyError, TypeError, RecursionError):
                 raise KnowledgeCompilerError("课件同步清单损坏，未覆盖输出。") from None
         quota = state["quota"]
+        state_lock = threading.RLock()
         if quota["day"] != self.today():
             quota.update(day=self.today(), used=0)
 
         def persist():
-            payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
-            if len(payload.encode()) > MAX_MANIFEST_BYTES:
-                raise KnowledgeCompilerError("课件同步清单超过上限。")
-            _atomic_write(safe_destination(target, marker), payload)
+            with state_lock:
+                payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+                if len(payload.encode()) > MAX_MANIFEST_BYTES:
+                    raise KnowledgeCompilerError("课件同步清单超过上限。")
+                _atomic_write(safe_destination(target, marker), payload)
 
         def call(model, system, content):
             current = self.settings()
             if self._stop.is_set() or self._cancel.is_set() or not current.course_markdown_enabled or not current.ai_enabled or not current.ai_key_saved or current.archive_root != settings.archive_root or current.ai_base_url != settings.ai_base_url:
                 raise DocumentTextError("课件同步已暂停或配置已变更。")
-            if quota["day"] != self.today():
-                quota.update(day=self.today(), used=0)
-            # 仅统计，不限制每日总量；接口全局速率限制、取消与有限重试仍生效。
-            quota["used"] += 1
-            persist()
-            self._set(calls_today=quota["used"])
+            with state_lock:
+                if quota["day"] != self.today():
+                    quota.update(day=self.today(), used=0)
+                # 仅统计；真正发请求仍受跨任务、跨进程的 10RPM/300kTPM 调度。
+                quota["used"] += 1
+                persist()
+                self._set(calls_today=quota["used"])
             return self.runner(model, system, content)
 
         def publish(item, mirror, body):
@@ -169,19 +178,21 @@ class CourseMarkdownSync:
                 issues.append("课程 Wiki 构建暂未完成；原 MD 保留且仍可阅读。")
 
         persist()
-        compiler = self.compiler_factory(call, self._cancel, max_calls=0)
         candidates = sorted(set(self.paths()), key=lambda path: str(path).casefold())
-        candidates = [path for path in candidates if path.suffix.casefold() in {".pptx", ".pdf", ".ppt"}]
+        candidates = [path for path in candidates if path.suffix.casefold() in {".pptx", ".pdf", ".ppt", '.pptm', '.docm', '.xlsm', '.ppsm', '.potm'}]
         completed, failed, pending, text_ready = 0, 0, 0, 0
+        retained = 0
         issues = []
         self._set(status="running", total=len(candidates), completed=0, failed=0, pending=0,
                   calls_today=quota["used"], output_root=str(target), text_ready=0, issues=[])
         prepared = []
+        self._set(phase="local_text", current_file=None)
         # 第一阶段对所有课件先落地本地全文 MD；视觉额度不会使后面的文件完全无 MD。
         for path in candidates:
             if self._stop.is_set() or self._cancel.is_set():
                 break
             relative = None
+            self._set(current_file=path.name)
             try:
                 safe_destination(source, path)
                 if not path.is_file() or path.stat().st_size > MAX_SOURCE_BYTES:
@@ -198,6 +209,26 @@ class CourseMarkdownSync:
                     raise DocumentTextError("对应 MD 为未登记文件或已被人工修改，未覆盖。")
                 if item.get("mirror_hash") and not mirror.exists():
                     raise DocumentTextError("对应 MD 已被删除，自动更新暂停。")
+                # 新的跳过规则只影响待处理文件；已验收的同来源稿无需打开来源或降级。
+                if item.get('fingerprint') == fingerprint and item.get('status') == 'completed' and item.get('text_ready'):
+                    text_ready += 1
+                    prepared.append((path, relative, fingerprint, item, mirror))
+                    continue
+                skipped = skipped_active_content(path)
+                if skipped:
+                    if item.get('fingerprint') != fingerprint or item.get('status') != 'retained':
+                        body = retained_source_markdown(source, path, source_hash, skipped)
+                        if digest(path.read_bytes()) != source_hash:
+                            raise DocumentTextError('提取期间课件已变化，请等待下次同步。')
+                        publish(item, mirror, body)
+                        item.update(fingerprint=fingerprint, status='retained', text_ready=True,
+                                    skipped_parts=skipped, quality_status='source-only', attempts=0)
+                        item.pop('retry_after', None)
+                        item.pop('error', None)
+                        persist()
+                    text_ready += 1
+                    retained += 1
+                    continue
                 if item.get("fingerprint") != fingerprint or not item.get("text_ready"):
                     extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
                     if extracted.truncated:
@@ -208,6 +239,7 @@ class CourseMarkdownSync:
                             + f"# {path.stem}\n\n> 已提取本地正文；图像、图表与公式的多模态复核待自动续编，不视为视觉编译完成。\n\n"
                             + "\n\n".join(f"## 第 {number} 页\n\n{unit}" for number, unit in enumerate(extracted.units, 1)) + "\n")
                     item.update(fingerprint=fingerprint, attempts=0, status="pending", contract=CONTRACT)
+                    item.pop('retry_after', None)
                     # 升级编译契约时保留旧稿，只有完整新稿验收后才原子替换镜像。
                     if not item.get("text_ready"):
                         publish(item, mirror, body)
@@ -225,9 +257,21 @@ class CourseMarkdownSync:
                 failed += 1
                 issues.append((relative + "：" if relative else "") + "本地正文提取失败；现有文件保留。")
             self._set(text_ready=text_ready, failed=failed, issues=issues[:20])
-        # 先为已完成的旧课件建图，长时间视觉编译不能阻塞现有知识导航。
-        update_wiki()
+        # 基础正文转换无需 AI；配置缺失不应挡住所有本地 MD。
+        if not settings.ai_enabled or not settings.ai_key_saved:
+            self._set(status="needs_ai", phase="waiting_ai", current_file=None,
+                      pending=len(prepared), issues=issues[:20])
+            return
+        # 自动模式轮转小批，释放全库锁；手工模式兼容完整一轮。
+        if not self.max_documents_per_cycle:
+            self._set(phase="wiki", current_file=None)
+            update_wiki()
+        prepared.sort(key=lambda entry: str(entry[3].get("last_dispatched_at") or ""))
+        dispatched = 0
+        selected = []
+        has_runnable = False
         for index, (path, relative, fingerprint, item, mirror) in enumerate(prepared):
+            self._set(phase="ai_summary", current_file=path.name)
             if self._stop.is_set() or self._cancel.is_set():
                 pending += len(prepared) - index
                 break
@@ -237,47 +281,110 @@ class CourseMarkdownSync:
                         raise DocumentTextError("对应 MD 已被人工修改或删除，已保留；自动更新暂停。")
                     completed += 1
                     continue
-                # 保存失败重试次数，单一坏文件不会无限循环消耗 API。
-                attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint and item.get("attempt_day") == self.today() else 0
-                if attempts >= 3:
-                    failed += 1
-                    issues.append(relative + "：今日已重试 3 次；次日重试。")
-                    continue
+                # 失败逐步退避，不设每日调用总额，也不因3次失败锁死任务。
+                attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint else 0
+                if item.get("fingerprint") == fingerprint and item.get("retry_after"):
+                    try:
+                        retry_at = datetime.fromisoformat(item['retry_after'])
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        if retry_at > self.now_provider():
+                            failed += 1
+                            issues.append(relative + "：冷却后自动续编。")
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 # 已编辑镜像即使源更新也不能调用模型/覆盖。
                 allowed_hashes = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed_hashes):
                     raise DocumentTextError("对应 MD 为未登记文件或已被人工修改，未覆盖。")
-                item.update(fingerprint=fingerprint, attempts=attempts + 1, attempt_day=self.today(), status="pending")
+                if self.max_documents_per_cycle and dispatched >= self.max_documents_per_cycle:
+                    pending += 1
+                    has_runnable = True
+                    continue
+                dispatched += 1
+                item.update(fingerprint=fingerprint, attempts=min(1_000_000, attempts + 1), attempt_day=self.today(), status="pending")
+                item["last_dispatched_at"] = self.now_provider().isoformat()
                 state["items"][relative] = item
                 persist()
-                note = compiler.compile(source, path, target)
-                # 同一文件映射保留扩展名，避免 lecture.pdf / lecture.pptx 重名。
-                body = note.read_text(encoding="utf-8")
-                asset_prefix = Path(os.path.relpath(note.parent / "assets", mirror.parent)).as_posix()
-                page_prefix = Path(os.path.relpath(note.parent / "pages", mirror.parent)).as_posix()
-                study_prefix = Path(os.path.relpath(note.parent / 'study', mirror.parent)).as_posix()
-                body = body.replace('(study/', '(' + quote(study_prefix, safe='/') + '/')
-                for number in range(1, 501):
-                    body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
-                    body = body.replace(f"(pages/page-{number:04d}.md)", "(" + quote(page_prefix + f"/page-{number:04d}.md", safe="/") + ")")
-                publish(item, mirror, body)
-                from sjtu_learning_assistant.knowledge_summary import SUMMARY_CONTRACT
-                item.update(status="completed", contract=SUMMARY_CONTRACT, document=note.relative_to(target).as_posix())
-                item.pop("error", None)
-                persist()
-                completed += 1
+                selected.append((path, relative, item, mirror, attempts))
             except (DocumentTextError, KnowledgeCompilerError) as exc:
                 failed += 1
-                message = str(exc)
-                if relative is not None:
-                    state["items"].setdefault(relative, {}).update(status="failed", error=message)
-                issues.append((relative + "：" if relative else "") + message)
+                issues.append(relative + '：' + str(exc))
+                item.update(status='failed', error=str(exc))
                 persist()
-            except Exception:
-                failed += 1
-                issues.append((relative + "：" if relative else "") + "处理失败；已有文件保留。")
-            finally:
-                self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
-        update_wiki()
-        self._set(status="paused" if self._cancel.is_set() else "completed_with_warnings" if failed or issues else "completed",
-                  completed=completed, failed=failed, pending=pending, calls_today=quota["used"], issues=issues[:20])
+
+        def compile_one(entry):
+            path = entry[0]
+            if self._stop.is_set() or self._cancel.is_set():
+                raise CompilationDeferred('同步已取消，检查点保留。')
+            kwargs = {'max_calls': 0}
+            if self.slice_calls:
+                kwargs.update(slice_calls=self.slice_calls, text_first=True)
+            local = self.compiler_factory(call, self._cancel, **kwargs)
+            from .ai_runtime import cancellation_scope
+            with cancellation_scope(lambda: self._stop.is_set() or self._cancel.is_set() or not self.settings().ai_enabled):
+                return local.compile(source, path, target)
+
+        # 只有不同文件的编译进入线程池；清单、镜像发布和计数由协调线程串行提交。
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix='course-compile') as pool:
+            futures = {pool.submit(compile_one, entry): entry for entry in selected}
+            for future in as_completed(futures):
+                path, relative, item, mirror, attempts = futures[future]
+                with state_lock:
+                    try:
+                        note = future.result()
+                        if self._stop.is_set() or self._cancel.is_set():
+                            raise CompilationDeferred('同步已取消，检查点保留。')
+                        self._publish_compiled_note(note, mirror, target, item, publish)
+                        item['attempts'] = 0
+                        item.pop('retry_after', None)
+                        item.pop('error', None)
+                        persist()
+                        completed += 1
+                    except CompilationDeferred:
+                        item.update(status='pending', attempts=attempts)
+                        item.pop('retry_after', None)
+                        item.pop('error', None)
+                        persist()
+                        pending += 1
+                        has_runnable = True
+                    except (DocumentTextError, KnowledgeCompilerError) as exc:
+                        if self._stop.is_set() or self._cancel.is_set():
+                            item.update(status='pending', attempts=attempts)
+                            persist()
+                            pending += 1
+                            continue
+                        failed += 1
+                        item.update(status='failed', error=str(exc), retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat())
+                        issues.append(relative + '：' + str(exc))
+                        persist()
+                    except Exception:
+                        failed += 1
+                        item.update(status='failed', error='处理失败；已有文件保留。', retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat())
+                        issues.append(relative + '：处理失败；已有文件保留。')
+                        persist()
+                    self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
+        # 没有可执行的总结时才补 Wiki，不挡首批正文。
+        if not self.max_documents_per_cycle or not has_runnable:
+            self._set(phase="wiki", current_file=None)
+            update_wiki()
+        self._set(status="paused" if self._cancel.is_set() else "running" if has_runnable else "completed_with_warnings" if failed or issues else "completed",
+                  phase="idle", current_file=None,
+                  completed=completed, retained=retained, failed=failed, pending=pending, has_runnable=has_runnable,
+                  calls_today=quota["used"], issues=issues[:20])
+
+    @staticmethod
+    def _publish_compiled_note(note, mirror, target, item, publish):
+        # 同一文件映射保留扩展名，避免 lecture.pdf / lecture.pptx 重名。
+        body = note.read_text(encoding="utf-8")
+        asset_prefix = Path(os.path.relpath(note.parent / "assets", mirror.parent)).as_posix()
+        page_prefix = Path(os.path.relpath(note.parent / "pages", mirror.parent)).as_posix()
+        study_prefix = Path(os.path.relpath(note.parent / 'study', mirror.parent)).as_posix()
+        body = body.replace('(study/', '(' + quote(study_prefix, safe='/') + '/')
+        for number in range(1, 501):
+            body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
+            body = body.replace(f"(pages/page-{number:04d}.md)", "(" + quote(page_prefix + f"/page-{number:04d}.md", safe="/") + ")")
+        publish(item, mirror, body)
+        from sjtu_learning_assistant.knowledge_summary import SUMMARY_CONTRACT
+        item.update(status="completed", contract=SUMMARY_CONTRACT, document=note.relative_to(target).as_posix())

@@ -186,7 +186,7 @@ def _alt_texts(root: ElementTree.Element) -> list[str]:
     return result
 
 
-def _open_ooxml(path: Path) -> tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]:
+def _open_ooxml(path: Path, *, list_active_parts: bool = False) -> tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]:
     try:
         size = path.stat().st_size
     except OSError:
@@ -198,7 +198,7 @@ def _open_ooxml(path: Path) -> tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]
         archive = zipfile.ZipFile(path)
         infos, _active = _validate_archive(archive, DOCUMENT_LIMITS)
         names = {info.filename: info for info in infos}
-        if any(_MACRO_PART.search(name) for name in names):
+        if not list_active_parts and any(_MACRO_PART.search(name) for name in names):
             raise DocumentUnsupportedError("文档包含宏，已拒绝提取正文。")
         return archive, names
     except DocumentTextError:

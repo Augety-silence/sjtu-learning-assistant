@@ -13,6 +13,8 @@ from PIL import Image
 
 def knowledge_response(model, system, content):
     """符合讲义契约的合成响应，不能视为真实 API 验证。"""
+    if '只返回markdown字段' in system:
+        return json.dumps({'markdown': '## 课程主线\n理解关系模型如何组织数据并支持查询。\n## 核心知识\n关系代数的选择运算过滤满足条件的元组。\n## 适用条件与易错点\n明确变量及约束后判断查询的适用范围，不省略模型前提。 [课件 p.1]'}, ensure_ascii=False)
     if 'chapters 1–80' in system:
         pages = [entry['page'] for entry in json.loads(content)]
         return json.dumps({'title': '课程主题讲义', 'abstract': '从问题出发理解概念、条件与应用。', 'tags': ['关系模型'], 'synonyms': ['relational model'], 'goals': ['理解模型的适用条件'], 'chapters': [{'title': '模型与应用', 'pages': pages}]}, ensure_ascii=False)

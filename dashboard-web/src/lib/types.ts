@@ -443,6 +443,31 @@ export interface CourseMarkdownStatus {
   issues: string[];
 }
 
+export interface MarkdownProgressGroup {
+  total: number;
+  completed: number;
+  pending: number;
+  failed: number;
+  ai_completed: number;
+  ai_failed: number;
+  issues: { name: string; code: string }[];
+  truncated: boolean;
+}
+
+export interface MarkdownSyncProgressState {
+  courses: MarkdownProgressGroup;
+  transcripts: MarkdownProgressGroup;
+  automatic: boolean;
+  ai_ready: boolean;
+  ai_model: string;
+  current: {
+    status: string | null;
+    phase: string | null;
+    current_file: string | null;
+  };
+  updated_at: string;
+}
+
 export type KnowledgeCompilerMode = "foundation" | "full" | "documents";
 export type KnowledgeCompilerStatus =
   | "idle"

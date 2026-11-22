@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -20,6 +21,29 @@ from desktop_app import DesktopBridge
 
 
 class CourseMarkdownSyncTests(unittest.TestCase):
+    def test_automatic_slices_rotate_and_do_not_increment_failure_attempts(self):
+        self.paths.append(build_pdf(self.path.parent / "next.pdf", ("Next",)))
+        worker = CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner,
+            max_documents_per_cycle=1, slice_calls=1, now_provider=lambda: self.now)
+        self.addCleanup(worker.close)
+        wiki = Mock(return_value={"built": 0, "cached": 0, "failed": 0, "issues": []})
+        worker.wiki_rebuilder = wiki
+        worker.run_once()
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
+        self.assertEqual(0, worker.status()["failed"])
+        self.assertTrue(worker.status()["has_runnable"])
+        self.assertEqual(0, next(i for i in state["items"].values() if i.get("last_dispatched_at"))["attempts"])
+        wiki.assert_not_called()
+        self.now += timedelta(seconds=1)
+        worker.run_once()
+        state = json.loads((self.target / "99_System/Course-Sync.json").read_text(encoding="utf-8"))
+        self.assertEqual(2, sum(bool(i.get("last_dispatched_at")) for i in state["items"].values()))
+        for _ in range(12):
+            self.now += timedelta(seconds=1)
+            worker.run_once()
+        self.assertEqual(2, worker.status()["completed"])
+        self.assertEqual(0, worker.status()["failed"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
@@ -32,12 +56,13 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.paths = [self.path]
         self.runner = Mock(side_effect=knowledge_response)
         self.day = "2026-11-14"
+        self.now = datetime(2026, 11, 14, tzinfo=timezone.utc)
         self.worker = self.new_worker()
         self.target = self.source / "Knowledge Markdown"
         self.mirror = self.target / "Courses" / self.path.relative_to(self.source).with_name(self.path.name + ".md")
 
     def new_worker(self):
-        return CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner, today=lambda: self.day)
+        return CourseMarkdownSync(lambda: self.settings, lambda: self.paths, self.runner, today=lambda: self.day, now_provider=lambda: self.now)
 
     def tearDown(self):
         self.worker.close()
@@ -140,6 +165,14 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.assertEqual(2, len(list((self.target / "Courses").rglob("*.md"))))
         self.assertEqual(2, self.runner.call_count)
 
+    def test_missing_ai_does_not_block_local_basic_markdown(self):
+        self.settings = replace(self.settings, ai_enabled=False, ai_key_saved=False)
+        self.worker.run_once()
+        self.assertTrue(self.mirror.is_file())
+        self.assertEqual(1, self.worker.status()["text_ready"])
+        self.assertEqual("needs_ai", self.worker.status()["status"])
+        self.runner.assert_not_called()
+
     def test_text_compilation_does_not_use_chat_preview_400k_limit(self):
         self.settings = replace(self.settings, course_markdown_daily_calls=1)
         build_pdf(self.path, tuple("Long text " * 350 for _ in range(130)))
@@ -183,14 +216,29 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         self.runner.side_effect = RuntimeError("secret request")
         for _ in range(4):
             self.worker.run_once()
-        self.assertEqual(3, self.runner.call_count)
+        self.assertEqual(1, self.runner.call_count)
         self.assertNotIn("secret request", str(self.worker.status()))
-        self.assertEqual(3, self.worker.status()["calls_today"])
+        self.assertEqual(1, self.worker.status()["calls_today"])
         self.runner.side_effect = knowledge_response
         good = build_pdf(self.path.parent / "good.pdf", ("Good",))
         self.paths.append(good)
         self.worker.run_once()
         self.assertEqual(1, self.worker.status()["completed"])
+
+    def test_failed_course_retry_survives_restart_without_three_attempt_lock(self):
+        self.runner.side_effect = RuntimeError('unavailable')
+        for delay in (0, 301, 901, 2701):
+            self.now += timedelta(seconds=delay)
+            self.worker.run_once()
+        self.assertEqual(4, self.runner.call_count)
+        restarted = self.new_worker()
+        self.addCleanup(restarted.close)
+        restarted.run_once()
+        self.assertEqual(4, self.runner.call_count)
+        self.now += timedelta(hours=2, seconds=1)
+        self.runner.side_effect = knowledge_response
+        restarted.run_once()
+        self.assertEqual(1, restarted.status()['completed'])
 
     def test_disabled_is_readonly_and_does_not_load_ai(self):
         self.settings = replace(self.settings, course_markdown_enabled=False)
