@@ -8,6 +8,7 @@
       "description": "综合查询课程、资料、截止事项与消息并给出行动建议。",
       "skill": "skills/general.md",
       "allowed_tools": [
+        "get_knowledge_status",
         "list_courses",
         "search_course_files",
         "list_course_files",

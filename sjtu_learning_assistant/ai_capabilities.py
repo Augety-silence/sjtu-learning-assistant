@@ -95,7 +95,7 @@ TASK_SPECS = (
                # 网关未回报用量时按请求的 max_tokens 计费，输出预算需覆盖多步工具调用加最终回答。
                # 调用次数 = 6 步 + 尚未输出内容时失败的自动重试余量。
                # 每段回复最多 8K 输出、最多 4 段（含自动续写），加 6 步工具调用。
-               160000, 48000, 16, ("retrieve_evidence", "explain", "suggest_next_step"),
+               480000, 48000, 16, ("retrieve_evidence", "explain", "suggest_next_step"),
                ("tool_selection_steps_remain_one_shot", "no_transcript_or_course_memory_tool")),
     AITaskSpec("settings", "connection_diagnostics", "AI连接配置解释", "partial", ("test_ai_connection",), "one_shot",
                ("nonsecret_ai_settings", "explicit_connection_test_result"), ("no_raw_key_in_context",),

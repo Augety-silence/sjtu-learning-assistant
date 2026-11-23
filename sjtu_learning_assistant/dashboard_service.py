@@ -3439,7 +3439,7 @@ class DashboardService:
         attachment_ids: object | None,
         page_context: Mapping[str, Any],
     ) -> None:
-        buffers: dict[str, list[str]] = {"content_delta": [], "reasoning_delta": []}
+        buffers: dict[str, list[str]] = {"content_delta": [], "reasoning_delta": [], "progress_delta": []}
 
         def flush(kind: str) -> None:
             parts = buffers[kind]
@@ -3455,10 +3455,11 @@ class DashboardService:
                 delta = payload.get("delta")
                 if type(delta) is str and delta:
                     buffers[kind].append(delta)
-                    if sum(len(part) for part in buffers[kind]) >= 12:
+                    if sum(len(part) for part in buffers[kind]) >= (64 if kind == "progress_delta" else 12):
                         flush(kind)
                 return
             flush("reasoning_delta")
+            flush("progress_delta")
             flush("content_delta")
             self.ai_tasks.append_event(task_id, kind, payload)
 
@@ -3476,6 +3477,7 @@ class DashboardService:
                 event_callback=event,
             )
             flush("reasoning_delta")
+            flush("progress_delta")
             flush("content_delta")
             self.ai_tasks.complete(task_id, {"chat_result": result})
         except AITaskCancelled:

@@ -529,7 +529,12 @@ function emitAIStreamEvents(
   sessionId: string,
 ) {
   for (const event of snapshot.events) {
-    if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
+    if (
+      event.kind === "content_delta" ||
+      event.kind === "reasoning_delta" ||
+      event.kind === "progress_delta" ||
+      event.kind === "answer_start"
+    ) {
       emitAIStream({
         type: event.kind,
         task_id: taskId,

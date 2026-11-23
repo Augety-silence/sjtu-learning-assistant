@@ -174,6 +174,29 @@ class KnowledgeWikiTests(unittest.TestCase):
             for relative in re.findall(r"\]\(([^)]+\.md)\)", body):
                 self.assertTrue((note.parent / unquote(relative)).resolve().is_file())
 
+    def test_partial_catalog_still_navigates_readable_md_but_never_publishes_or_claims_complete(self):
+        from unittest.mock import patch
+        catalog = self.knowledge._catalog()
+        damaged = (catalog[0], catalog[1], ["部分课堂资料索引无效，已跳过。"], False)
+        with patch.object(self.knowledge, "_catalog", return_value=damaged):
+            result = self.wiki.browse()
+            self.assertFalse(result["catalog_complete"])
+            self.assertTrue(result["items"])
+            self.assertTrue(all(group["coverage"] == "partial" for group in result["items"]))
+            self.assertTrue(all(group["page_id"] is None for group in result["items"]))
+            identity = result["items"][0]["documents"][0]["id"]
+            self.assertTrue(self.knowledge.read(identity)["text"])
+            with self.assertRaises(CompiledKnowledgeError):
+                self.wiki.refresh()
+        self.assertEqual([], self.calls)
+
+    def test_compilation_status_counts_pending_and_failed_without_model_calls(self):
+        self.state["items"]["秋/数据库/待重试.pdf"] = {"text_ready": False, "status": "failed"}
+        self.marker.write_text(json.dumps(self.state), encoding="utf-8")
+        result = self.knowledge.compilation_status()
+        self.assertEqual({"total": 5, "text_ready": 4, "summarized": 3, "failed": 1, "pending": 1, "other": 0}, result["course_files"])
+        self.assertEqual([], self.calls)
+
 
 if __name__ == "__main__":
     unittest.main()

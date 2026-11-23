@@ -19,6 +19,8 @@ import httpx
 
 from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_CONTEXT_CHARS,
+    MAX_AGENT_CONTEXT_CHARS,
+    MAX_AGENT_TOOL_MESSAGE_CHARS,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_CHAT_MESSAGES,
     MAX_KNOWLEDGE_MESSAGE_CHARS,
@@ -360,11 +362,14 @@ class OpenAIClassificationClient:
 
     @classmethod
     def _clean_chat_messages(
-        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS
+        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS,
+        max_tool_chars: int = MAX_CHAT_MESSAGE_CHARS,
     ) -> tuple[list[dict[str, Any]], int]:
         """Validate and normalize OpenAI chat history for both request modes."""
         if type(max_message_chars) is not int or not 1 <= max_message_chars <= MAX_KNOWLEDGE_MESSAGE_CHARS:
             raise AIClassificationError("AI 消息长度预算无效。")
+        if type(max_tool_chars) is not int or not 1 <= max_tool_chars <= MAX_AGENT_TOOL_MESSAGE_CHARS:
+            raise AIClassificationError("AI 工具消息长度预算无效。")
         if not messages or len(messages) > MAX_CHAT_MESSAGES:
             raise AIClassificationError("AI 对话消息数量无效。", category="context_too_long")
         clean_messages: list[dict[str, Any]] = []
@@ -389,7 +394,8 @@ class OpenAIClassificationClient:
             clean_content: Any
             content_length = 0
             if type(content) is str:
-                if len(content) > max_message_chars or (role in {"user", "system"} and not content.strip()):
+                limit = max_tool_chars if role == "tool" else max_message_chars
+                if len(content) > limit or (role in {"user", "system"} and not content.strip()):
                     raise AIClassificationError("单条消息不能为空或超过长度限制。", category="context_too_long")
                 clean_content = content.strip()
                 content_length = len(content)
@@ -571,8 +577,12 @@ class OpenAIClassificationClient:
             raise AIClassificationError("知识编译上下文只用于独立、无工具的编译请求。")
         if knowledge_compilation and any(type(m) is not dict or m.get('role') not in {'system', 'user'} for m in messages):
             raise AIClassificationError("知识编译不能混入工具或聊天历史。")
-        clean_messages, total_length = self._clean_chat_messages(messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS)
-        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_CHAT_CONTEXT_CHARS
+        agent_context = bool(tools) or any(type(m) is dict and m.get("role") == "tool" for m in messages)
+        clean_messages, total_length = self._clean_chat_messages(
+            messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS,
+            max_tool_chars=MAX_AGENT_TOOL_MESSAGE_CHARS if agent_context else MAX_CHAT_MESSAGE_CHARS,
+        )
+        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_AGENT_CONTEXT_CHARS if agent_context else MAX_CHAT_CONTEXT_CHARS
         if total_length > context_limit or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
@@ -723,8 +733,9 @@ class OpenAIClassificationClient:
         tool_choice: object | None = None,
     ) -> dict[str, Any]:
         """Consume an OpenAI-compatible SSE response, including tool continuations."""
-        clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > MAX_CHAT_CONTEXT_CHARS:
+        agent_context = bool(tools) or any(type(m) is dict and m.get("role") == "tool" for m in messages)
+        clean_messages, total_length = self._clean_chat_messages(messages, max_tool_chars=MAX_AGENT_TOOL_MESSAGE_CHARS if agent_context else MAX_CHAT_MESSAGE_CHARS)
+        if total_length > (MAX_AGENT_CONTEXT_CHARS if agent_context else MAX_CHAT_CONTEXT_CHARS):
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:

@@ -375,6 +375,39 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         );
         return;
       }
+      if (detail.type === "progress_delta" || detail.type === "answer_start") {
+        const delta = detail.delta;
+        if (detail.type === "progress_delta" && typeof delta !== "string")
+          return;
+        setActive((current) => {
+          if (current?.id !== sessionId) return current;
+          const existing = current.traces.findIndex(
+            (trace) => trace.id === streamId,
+          );
+          const trace: import("@/lib/types").AIAgentTrace =
+            existing >= 0
+              ? current.traces[existing]
+              : {
+                  id: streamId,
+                  preset_id: current.preset_id,
+                  status: "running",
+                  steps: 0,
+                  tool_runs: [],
+                };
+          const next = {
+            ...trace,
+            pending_text:
+              detail.type === "answer_start"
+                ? ""
+                : ((trace.pending_text ?? "") + delta).slice(0, 2000),
+          };
+          const traces = [...current.traces];
+          if (existing >= 0) traces[existing] = next;
+          else traces.push(next);
+          return { ...current, traces };
+        });
+        return;
+      }
       if (
         detail.type === "tool" &&
         detail.run &&
@@ -407,7 +440,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                   tool_runs: [],
                 };
           const traces = [...current.traces];
-          const next = { ...trace, tool_runs: [...trace.tool_runs, run] };
+          const next = {
+            ...trace,
+            pending_text: "",
+            tool_runs: [...trace.tool_runs, run],
+          };
           if (existing >= 0) traces[existing] = next;
           else traces.push(next);
           return { ...current, messages, traces };

@@ -136,8 +136,11 @@ class CourseWiki:
         return result
 
     def snapshot(self) -> list[dict]:
-        sources, documents, issues, truncated = self.knowledge._catalog()
-        if truncated or issues:
+        return self._snapshot(self.knowledge._catalog())
+
+    def _snapshot(self, catalog: tuple, *, allow_partial: bool = False) -> list[dict]:
+        sources, documents, issues, truncated = catalog
+        if (truncated or issues) and not allow_partial:
             raise CompiledKnowledgeError("知识来源索引不完整或不可访问；Wiki 未把不完整目录当作全部来源。")
         by_id = {source["id"]: source for source in sources}
         groups = {}
@@ -155,7 +158,13 @@ class CourseWiki:
             group["documents"].append(entry)
             if doc["status"] != "completed" or doc.get("contract") not in {"course-summary-v1", "classroom-notes-v1"}:
                 continue
-            payload = self.knowledge._text(by_id[doc["source_id"]], doc)
+            try:
+                payload = self.knowledge._text(by_id[doc["source_id"]], doc)
+            except (CompiledKnowledgeError, UnicodeError):
+                if not allow_partial:
+                    raise
+                issues.append("部分课程正文不可访问，已跳过；可读资料仍可使用。")
+                continue
             match = re.match(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n", payload)
             body = payload[match.end():] if match else payload
             if doc["source_id"] == "automatic-transcripts":
@@ -313,15 +322,24 @@ class CourseWiki:
             raise CompiledKnowledgeError("Wiki 课程范围无效。") from None
         offset = _integer(offset, "offset", 0, 60_000)
         limit = _integer(limit, "limit", 1, 20)
-        max_chars = _integer(max_chars, "max_chars", 500, 4000)
-        state, groups, items, issues = self._state(), self.snapshot(), [], []
+        max_chars = _integer(max_chars, "max_chars", 500, 12000)
+        catalog = self.knowledge._catalog()
+        issues = list(catalog[2])
+        groups = self._snapshot((catalog[0], catalog[1], issues, catalog[3]), allow_partial=True)
+        catalog_complete = not issues and not catalog[3]
+        try:
+            state = self._state()
+        except CompiledKnowledgeError:
+            state = {"courses": {}}
+            issues.append("Wiki 清单不可用，请使用可读的原始 MD。")
+        items = []
         for group in groups:
             if (term_id and group["term_id"] != term_id) or (course_id and group["course_id"] != course_id):
                 continue
             record = state["courses"].get(group["id"], {})
             pages = []
             status = "pending"
-            if type(record) is dict and record.get("fingerprint") == group["fingerprint"] and record.get("status") == "completed":
+            if catalog_complete and type(record) is dict and record.get("fingerprint") == group["fingerprint"] and record.get("status") == "completed":
                 try:
                     pages = self._verified_pages(record)
                     allowed = {item["id"] for item in group["ready"]}
@@ -351,7 +369,7 @@ class CourseWiki:
                               "topics": [{"id": page["id"], "title": page["title"], "aliases": page["aliases"]} for page in pages[1:7]],
                               "documents": group["documents"][:6], "document_count": len(group["documents"]),
                               "compiled_count": len(group["ready"]), "more_documents": len(group["documents"]) > 6,
-                              "coverage": "complete" if len(group["ready"]) == len(group["documents"]) else "partial",
+                              "coverage": "complete" if catalog_complete and len(group["ready"]) == len(group["documents"]) else "partial",
                               "more_topics": len(pages) > 7})
         if page_id:
             raise CompiledKnowledgeError("Wiki 页面未完成、已过时或不可用，请读取原始 MD。")
@@ -361,5 +379,5 @@ class CourseWiki:
             result.pop()
             end -= 1
         return {"items": result, "count": len(items), "next_offset": end if end < len(items) else None,
-                "issues": issues, "truncated": end < len(items),
+                "issues": sorted(set(issues)), "catalog_complete": catalog_complete, "truncated": end < len(items) or catalog[3],
                 "usage": "目录仅用于导航。用 page_id 阅读 Wiki；用文档 id 调 read_compiled_knowledge 读取原始 MD。未完成材料不能当作完整知识稿。"}

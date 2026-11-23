@@ -364,9 +364,37 @@ class CompiledKnowledge:
             raise CompiledKnowledgeError("知识文档已失效，请刷新结果。")
         return next(item for item in sources if item["id"] == document["source_id"]), document
 
-    def read(self, document_id: object, offset: object = 0, max_chars: object = 8000) -> dict:
+    def compilation_status(self) -> dict:
+        """只读实际清单计数，未进入可读目录的失败/待处理课件也计入。"""
+        sources, documents, issues, truncated = self._catalog()
+        result = {"catalog_documents": len(documents), "catalog_complete": not issues and not truncated,
+                  "sources": len(sources), "issues": sorted(set(issues)), "truncated": truncated,
+                  "course_files": None,
+                  "classroom_documents": sum(doc["source_id"] == "automatic-transcripts" for doc in documents)}
+        try:
+            archive = Path(self.settings().archive_root)
+            state = _json(_safe(archive / "Knowledge Markdown", "99_System/Course-Sync.json"))
+            if state.get("version") != 1 or state.get("source_root") != str(archive) or type(state.get("items")) is not dict:
+                raise CompiledKnowledgeError("自动课件索引格式无效。")
+            counts = {"total": len(state["items"]), "text_ready": 0, "summarized": 0, "failed": 0, "pending": 0, "other": 0}
+            for item in state["items"].values():
+                if type(item) is not dict:
+                    counts["other"] += 1
+                    continue
+                counts["text_ready"] += item.get("text_ready") is True
+                complete = item.get("status") == "completed" and item.get("contract") == "course-summary-v1"
+                counts["summarized"] += complete
+                if not complete:
+                    counts["failed" if item.get("status") == "failed" else "pending"] += 1
+            result["course_files"] = counts
+        except CompiledKnowledgeError:
+            result["catalog_complete"] = False
+            result["issues"] = sorted(set([*result["issues"], "课件进度清单不可用，未将未知进度记作零。"]))
+        return result
+
+    def read(self, document_id: object, offset: object = 0, max_chars: object = 12000) -> dict:
         offset = _integer(offset, "offset", 0, MAX_DOCUMENT_BYTES)
-        max_chars = _integer(max_chars, "max_chars", 500, 8000)
+        max_chars = _integer(max_chars, "max_chars", 500, 16000)
         source, document = self._resolve(document_id)
         text = self._text(source, document)
         end = min(len(text), offset + max_chars)

@@ -347,7 +347,8 @@ class CompiledKnowledgeTests(unittest.TestCase):
             self.assertLess(len(result["items"]), 20)
             self.assertEqual(10 + len(result["items"]), result["next_offset"])
             self.assertEqual(100, result["count"])
-            self.assertLessEqual(len(json.dumps(result, ensure_ascii=False)), 12000)
+            from sjtu_learning_assistant.agent_runtime.tools import TOOL_RESULT_CHAR_LIMIT
+            self.assertLessEqual(len(json.dumps(result, ensure_ascii=False)), TOOL_RESULT_CHAR_LIMIT)
         finally:
             engine.dispose()
 

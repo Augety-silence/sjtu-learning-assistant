@@ -1392,6 +1392,17 @@
   min-width: 0;
 }
 
+.ai-execution-note {
+  margin: 8px 0;
+  padding: 0 4px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .ai-turn-trace .ai-tool-run {
   border: 1px solid color-mix(in srgb, var(--aura-border) 88%, transparent);
   border-radius: 9px;

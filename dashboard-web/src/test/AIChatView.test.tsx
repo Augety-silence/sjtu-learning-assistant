@@ -685,6 +685,80 @@ describe("AIChatView", () => {
     );
   });
 
+  it("keeps execution notes between tools and only the final result in the answer", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "查询课程" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    const emit = (detail: Record<string, unknown>) =>
+      window.dispatchEvent(
+        new CustomEvent("sjtu-ai-chat-stream", {
+          detail: { session_id: "session-1", task_id: "task-notes", ...detail },
+        }),
+      );
+    emit({ type: "progress_delta", delta: "正在查课程。" });
+    await waitFor(() =>
+      expect(container.querySelector(".ai-execution-note")?.textContent).toBe(
+        "正在查课程。",
+      ),
+    );
+    expect(
+      container.querySelector(".ai-markdown")?.textContent ?? "",
+    ).not.toContain("正在查课程。");
+    emit({
+      type: "tool",
+      run: {
+        tool_name: "list_courses",
+        phase: "model",
+        status: "ok",
+        progress_text: "正在查课程。",
+        arguments_summary: {},
+        result_summary: { count: 1 },
+      },
+    });
+    emit({ type: "progress_delta", delta: "继续核对文件。" });
+    await waitFor(() =>
+      expect(container.querySelectorAll(".ai-execution-note").length).toBe(2),
+    );
+    emit({
+      type: "tool",
+      run: {
+        tool_name: "list_course_files",
+        phase: "model",
+        status: "ok",
+        progress_text: "继续核对文件。",
+        arguments_summary: {},
+        result_summary: { count: 1 },
+      },
+    });
+    emit({ type: "progress_delta", delta: "临时候选答案" });
+    emit({ type: "answer_start" });
+    emit({ type: "content_delta", delta: "已找到一份课件。" });
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown")
+          ?.textContent,
+      ).toBe("已找到一份课件。"),
+    );
+    expect(container.textContent).not.toContain("临时候选答案");
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-chat-messages > .ai-inline-execution"),
+      ).toBeNull(),
+    );
+    const notes = container.querySelectorAll(
+      ".ai-message-assistant .ai-turn-trace .ai-execution-note",
+    );
+    expect(Array.from(notes).map((note) => note.textContent)).toEqual([
+      "正在查课程。",
+      "继续核对文件。",
+    ]);
+  });
+
   it("removes a failed task's temporary running trace before the retry", async () => {
     let rejectFirst: ((reason: Error) => void) | undefined;
     vi.mocked(sendAiChatMessage)

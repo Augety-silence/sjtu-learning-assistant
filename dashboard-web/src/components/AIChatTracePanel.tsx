@@ -10,6 +10,7 @@ import { useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import {
+  ExecutionNote,
   TraceRun,
   toolLabel,
   traceFailed,
@@ -85,7 +86,10 @@ function ActivityTraceStep({
                 run={run}
               />
             ))}
+            <ExecutionNote text={trace.pending_text} />
           </div>
+        ) : trace.pending_text ? (
+          <ExecutionNote text={trace.pending_text} />
         ) : (
           <p className="ai-trace-no-tools">本轮未调用工具。</p>
         )}
@@ -141,7 +145,13 @@ export function AIChatTracePanel({
     } else {
       setShowLatest(true);
     }
-  }, [open, traces.length, lastTrace?.tool_runs.length, busy]);
+  }, [
+    open,
+    traces.length,
+    lastTrace?.tool_runs.length,
+    lastTrace?.pending_text?.length,
+    busy,
+  ]);
 
   return (
     <aside

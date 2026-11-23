@@ -39,6 +39,8 @@ const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
 
 const toolLabels: Record<string, string> = {
   list_compiled_knowledge: "列出编译知识库",
+  browse_knowledge_wiki: "浏览课程知识地图",
+  get_knowledge_status: "读取知识库进度",
   search_compiled_knowledge: "检索编译知识点",
   read_compiled_knowledge: "读取编译知识正文",
   list_courses: "读取课程列表",
@@ -214,6 +216,10 @@ export function traceRejectedCount(toolRuns: AIToolRun[]) {
   return toolRuns.filter((run) => run.status === "rejected").length;
 }
 
+export function ExecutionNote({ text }: { text?: string }) {
+  return text?.trim() ? <p className="ai-execution-note">{text}</p> : null;
+}
+
 export function TraceRun({ run }: { run: AIToolRun }) {
   const ok = run.status === "ok";
   const [open, setOpen] = useState(false);
@@ -221,51 +227,54 @@ export function TraceRun({ run }: { run: AIToolRun }) {
   const hint = toolArgumentHint(run);
   const duration = formatToolDuration(run.duration_ms);
   return (
-    <details
-      className={ok ? "ai-tool-run" : "ai-tool-run is-rejected"}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        <span
-          className={ok ? "ai-tool-icon is-ok" : "ai-tool-icon is-rejected"}
-        >
-          {ok ? <Icon aria-hidden /> : <CircleSlash2 aria-hidden="true" />}
-        </span>
-        <span className="ai-tool-run-copy">
-          <strong>
-            {toolLabel(run.tool_name)}
-            {hint && <em className="ai-tool-hint">{hint}</em>}
-          </strong>
-          <span>
-            {toolResultLabel(run)}
-            {duration && (
-              <span className="ai-tool-duration"> · {duration}</span>
-            )}
+    <>
+      <ExecutionNote text={run.progress_text} />
+      <details
+        className={ok ? "ai-tool-run" : "ai-tool-run is-rejected"}
+        open={open}
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+      >
+        <summary>
+          <span
+            className={ok ? "ai-tool-icon is-ok" : "ai-tool-icon is-rejected"}
+          >
+            {ok ? <Icon aria-hidden /> : <CircleSlash2 aria-hidden="true" />}
           </span>
-        </span>
-        <span
-          className={
-            run.phase === "prefetch"
-              ? "ai-tool-phase is-prefetch"
-              : "ai-tool-phase is-model"
-          }
-        >
-          {run.phase === "prefetch" ? "预检索" : "模型调用"}
-        </span>
-        <ChevronRight className="ai-tool-caret" aria-hidden="true" />
-      </summary>
-      <div className="ai-tool-detail">
-        <div>
-          <span>安全参数</span>
-          <pre>{compactJson(run.arguments_summary)}</pre>
+          <span className="ai-tool-run-copy">
+            <strong>
+              {toolLabel(run.tool_name)}
+              {hint && <em className="ai-tool-hint">{hint}</em>}
+            </strong>
+            <span>
+              {toolResultLabel(run)}
+              {duration && (
+                <span className="ai-tool-duration"> · {duration}</span>
+              )}
+            </span>
+          </span>
+          <span
+            className={
+              run.phase === "prefetch"
+                ? "ai-tool-phase is-prefetch"
+                : "ai-tool-phase is-model"
+            }
+          >
+            {run.phase === "prefetch" ? "预检索" : "模型调用"}
+          </span>
+          <ChevronRight className="ai-tool-caret" aria-hidden="true" />
+        </summary>
+        <div className="ai-tool-detail">
+          <div>
+            <span>安全参数</span>
+            <pre>{compactJson(run.arguments_summary)}</pre>
+          </div>
+          <div>
+            <span>结果摘要</span>
+            <pre>{compactJson(run.result_summary)}</pre>
+          </div>
         </div>
-        <div>
-          <span>结果摘要</span>
-          <pre>{compactJson(run.result_summary)}</pre>
-        </div>
-      </div>
-    </details>
+      </details>
+    </>
   );
 }
 
@@ -420,14 +429,15 @@ export function InlineAgentExecution({
   const elapsed = useElapsed(started, running);
   const runs = trace?.tool_runs ?? toolRuns ?? [];
   const runCount = runs.length;
+  const pendingLength = trace?.pending_text?.length ?? 0;
   const open = userOpen ?? running;
 
   useEffect(() => {
     // 运行中有新步骤时把列表滚到最新一步（列表有最大高度，避免顶走正文）。
-    if (!running || !open || runCount === 0) return;
+    if (!running || !open || (runCount === 0 && pendingLength === 0)) return;
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [running, open, runCount]);
+  }, [running, open, runCount, pendingLength]);
 
   if (!running && !trace && runs.length === 0) return null;
 
@@ -485,13 +495,18 @@ export function InlineAgentExecution({
       </button>
       {open && (
         <div className="ai-turn-trace-detail" id={detailId}>
-          {runs.length > 0 ? (
+          {runs.length > 0 || trace?.pending_text ? (
             <ol className="ai-tool-runs ai-turn-steps" ref={listRef}>
               {runs.map((run, index) => (
                 <li key={`${run.tool_name}-${run.phase}-${index}`}>
                   <TraceRun run={run} />
                 </li>
               ))}
+              {trace?.pending_text && (
+                <li>
+                  <ExecutionNote text={trace.pending_text} />
+                </li>
+              )}
               {running && (
                 <li className="ai-turn-step-live" aria-live="off">
                   <LoaderCircle className="animate-spin" aria-hidden="true" />

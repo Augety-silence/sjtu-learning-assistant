@@ -93,6 +93,8 @@ export interface AIToolRun {
   result_summary: unknown;
   /** 单次工具执行耗时（毫秒）；旧记录没有该字段。 */
   duration_ms?: number | null;
+  /** 模型公开的执行说明；不包含 reasoning_content。 */
+  progress_text?: string;
 }
 
 /** 后端推送的本轮进度（模型请求、自动重试）。 */
@@ -116,6 +118,8 @@ export interface AIAgentTrace {
   status: string;
   steps: number;
   tool_runs: AIToolRun[];
+  /** 当前模型段落尚未确认是最终答复，暂存于执行时间线。 */
+  pending_text?: string;
   created_at?: string | null;
   /** 本轮从发送到完成的耗时（毫秒）；未知时为空。 */
   duration_ms?: number | null;

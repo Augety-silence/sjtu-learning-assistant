@@ -35,7 +35,7 @@ from sjtu_learning_assistant.models import (
     UnifiedItem,
 )
 
-TOOL_RESULT_CHAR_LIMIT = 12_000
+TOOL_RESULT_CHAR_LIMIT = 24_000
 COURSE_FILE_TEXT_MAX_CHARS = 10_000
 MAX_DOCUMENT_UNIT = 100_000
 MAX_ATTACHMENT_ID = 2**63 - 1
@@ -233,6 +233,7 @@ class ReadOnlyToolRegistry:
             self._handlers["read_course_file_text"] = self._read_course_file_text
         if compiled_knowledge is not None:
             self._handlers.update({"list_compiled_knowledge": self._knowledge_sources,
+                                   "get_knowledge_status": self._knowledge_status,
                                    "search_compiled_knowledge": self._knowledge_search,
                                    "read_compiled_knowledge": self._knowledge_read,
                                    "browse_knowledge_wiki": self._knowledge_wiki})
@@ -247,6 +248,7 @@ class ReadOnlyToolRegistry:
 
     def definitions(self, allowed_tools: tuple[str, ...]) -> list[dict[str, Any]]:
         schemas: dict[str, tuple[str, dict[str, Any]]] = {
+            "get_knowledge_status": ("读取实际课件转换、精炼总结和可读课堂MD的进度计数，不调用模型、不重新编译。进度/索引问题先使用此工具；缺失清单为未知而非0，目录异常不等于全库失败。", {"type": "object", "properties": {}, "additionalProperties": False}),
             "browse_knowledge_wiki": ("浏览按学期和课程隔离的 LLM Wiki 概念导航，不需要关键词精确命中。留空 page_id 列课程、概念及 MD 文档ID；用 page_id 分页读取知识地图或概念页，再用 read_compiled_knowledge 按 source_ids 核对原 MD。pending 仅目录就绪，不表示 Wiki 编译完成。", {"type": "object", "properties": {"page_id": {"type": "string", "maxLength": 32}, "offset": {"type": "integer", "minimum": 0, "maximum": 60000}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "max_chars": {"type": "integer", "minimum": 500, "maximum": 4000}, "term_id": {"type": "string", "maxLength": 140}, "course_id": {"type": "string", "maxLength": 128}}, "additionalProperties": False}),
             "list_compiled_knowledge": ("分页列出本机已编译 Markdown 知识来源；不重新编译。", {"type": "object", "properties": {"offset": {"type": "integer", "minimum": 0, "maximum": 100}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
             "search_compiled_knowledge": ("检索本地 Markdown 正文（含可读旧稿）。query 用空格/逗号分隔最多10个关键词，任一命中；不是整句语义检索。passages含早期/后部命中及原课件source_page，course_file_source_id可供 read_course_file_text 核对原页。空query列目录，不代表读过正文。", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "source_id": {"type": "string", "maxLength": 128}, "offset": {"type": "integer", "minimum": 0, "maximum": 5000}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
@@ -266,6 +268,8 @@ class ReadOnlyToolRegistry:
             "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1, "maximum": MAX_ATTACHMENT_ID}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
         # 学期范围共用 desktop/MCP 契约，禁止用同名课程或文件夹名猜身份。
+        schemas["browse_knowledge_wiki"][1]["properties"]["max_chars"]["maximum"] = 12000
+        schemas["read_compiled_knowledge"][1]["properties"]["max_chars"]["maximum"] = 16000
         schemas["list_courses"][1]["properties"].update({"term_id": {"type": "string", "maxLength": 140}, "offset": {"type": "integer", "minimum": 0, "maximum": 10000}})
         schemas["search_compiled_knowledge"][1]["properties"].update({"term_id": {"type": "string", "maxLength": 140}, "course_id": {"type": "string", "maxLength": 128}})
         # 只声明本次实际注册的工具：未配置工作区时文件工具不出现在模型可选项中。
@@ -340,7 +344,7 @@ class ReadOnlyToolRegistry:
         try:
             result = getattr(self.compiled_knowledge, operation)(**arguments)
         except CompiledKnowledgeError as exc:
-            raise AgentToolError(str(exc), category="execution") from None
+            raise AgentToolError(str(exc), category="knowledge_unavailable", retryable=False) from None
         # 与现有文件工具相同的凭据脱敏；保留文本换行，不暴露绝对路径。
         def redact(value):
             if type(value) is str:
@@ -368,6 +372,10 @@ class ReadOnlyToolRegistry:
         args = _only(raw, {"page_id", "offset", "limit", "max_chars", "term_id", "course_id"})
         return self._knowledge_call("wiki", args), {"has_page_id": bool(args.get("page_id")), "offset": args.get("offset", 0)}
 
+    def _knowledge_status(self, raw: object):
+        _only(raw, set())
+        return self._knowledge_call("compilation_status", {}), {}
+
     @staticmethod
     def _knowledge_page_budget(result: dict, offset: int) -> dict:
         # 截断后续页从实际返回数量继续；不能用原始 limit 跳过未返回的知识文档。
@@ -389,9 +397,9 @@ class ReadOnlyToolRegistry:
         if "document_id" not in args:
             raise AgentToolError("document_id 不能为空。")
         values = dict(args)
-        requested = values.get("max_chars", 4000)
-        if type(requested) is not int or not 500 <= requested <= 4000:
-            raise AgentToolError("max_chars 必须为 500 到 4000。")
+        requested = values.get("max_chars", 12000)
+        if type(requested) is not int or not 500 <= requested <= 16000:
+            raise AgentToolError("max_chars 必须为 500 到 16000。")
         values["max_chars"] = requested
         return self._knowledge_call("read", values), {"document_id": args["document_id"], "offset": args.get("offset", 0)}
 
