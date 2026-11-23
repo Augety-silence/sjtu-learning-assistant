@@ -454,7 +454,7 @@ export function SettingsView({
     canvas: status.canvas_token_saved,
     mail: status.mail_password_saved,
     cloud: status.cloud_token_saved,
-    ai: status.ai_key_saved,
+    ai: status.ai_key_saved || Boolean(status.asr_key_saved),
   };
   const isFirstConfig = !Object.values(savedByKind).some(Boolean);
 
@@ -517,7 +517,6 @@ export function SettingsView({
       </section>
 
       <TokenUsageDashboard />
-      <ASRSettingsPanel status={status} onChange={applyStatus} />
 
       <section
         className="configuration-section"
@@ -723,7 +722,12 @@ export function SettingsView({
         {editing && (
           <ConfigDialog
             kind={editing}
-            saved={savedByKind[editing]}
+            saved={
+              editing === "ai" ? status.ai_key_saved : savedByKind[editing]
+            }
+            settings={status}
+            onSettings={applyStatus}
+            onASRBusy={setBusy}
             busy={Boolean(busy)}
             busyAction={
               busy === `save-${editing}`
@@ -782,6 +786,9 @@ function ConfigDialog({
   onSave,
   onDelete,
   onTestAI,
+  settings,
+  onSettings,
+  onASRBusy,
 }: {
   kind: ConfigKind;
   saved: boolean;
@@ -801,12 +808,20 @@ function ConfigDialog({
   onSave: (event: FormEvent) => void;
   onDelete: () => void;
   onTestAI: () => void;
+  settings: SettingsStatus;
+  onSettings: (status: SettingsStatus) => void;
+  onASRBusy: (action: string) => void;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const isPresent = useIsPresent();
   const reduceMotion = useReducedMotion();
   const meta = configMeta[kind];
+  const [aiTab, setAiTab] = useState<"chat" | "asr">("chat");
+  const handleASRBusy = useCallback(
+    (active: boolean) => onASRBusy(active ? "asr-task" : ""),
+    [onASRBusy],
+  );
   const canSave =
     (kind === "mail" ? Boolean(mailAccount.trim()) : true) &&
     (kind === "ai" || kind === "mail" ? true : Boolean(secret.trim()));
@@ -898,112 +913,179 @@ function ConfigDialog({
             <X aria-hidden="true" />
           </Button>
         </header>
-        <form onSubmit={onSave}>
-          <div className="credential-note">
-            <ShieldCheck aria-hidden="true" />
-            <span>敏感信息只保存在 {storageName}。已保存的内容不会回显。</span>
+        {kind === "ai" && (
+          <div
+            className="ai-config-tabs"
+            role="tablist"
+            aria-label="AI 配置类型"
+          >
+            {(["chat", "asr"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                id={`ai-config-tab-${tab}`}
+                aria-controls={`ai-config-panel-${tab}`}
+                aria-selected={aiTab === tab}
+                tabIndex={aiTab === tab ? 0 : -1}
+                disabled={busy}
+                onClick={() => setAiTab(tab)}
+                onKeyDown={(event) => {
+                  if (
+                    ["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                      event.key,
+                    )
+                  ) {
+                    event.preventDefault();
+                    const next =
+                      event.key === "Home"
+                        ? "chat"
+                        : event.key === "End"
+                          ? "asr"
+                          : tab === "chat"
+                            ? "asr"
+                            : "chat";
+                    setAiTab(next);
+                    document.getElementById(`ai-config-tab-${next}`)?.focus();
+                  }
+                }}
+              >
+                {tab === "chat" ? "聊天模型" : "语音识别"}
+              </button>
+            ))}
           </div>
-          {kind === "mail" && (
-            <label>
-              <span>邮箱账号</span>
-              <input
-                aria-label="邮箱账号"
-                type="text"
-                value={mailAccount}
-                onChange={(event) => onMailAccount(event.target.value)}
-                placeholder="name@sjtu.edu.cn"
-                inputMode="email"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                autoComplete="username"
-                required
-              />
-            </label>
-          )}
-          {kind === "ai" && (
-            <>
+        )}
+        <div
+          id="ai-config-panel-chat"
+          role={kind === "ai" ? "tabpanel" : undefined}
+          aria-labelledby={kind === "ai" ? "ai-config-tab-chat" : undefined}
+          hidden={kind === "ai" && aiTab !== "chat"}
+        >
+          <form onSubmit={onSave}>
+            <div className="credential-note">
+              <ShieldCheck aria-hidden="true" />
+              <span>
+                敏感信息只保存在 {storageName}。已保存的内容不会回显。
+              </span>
+            </div>
+            {kind === "mail" && (
               <label>
-                <span>Base URL</span>
+                <span>邮箱账号</span>
                 <input
-                  value={aiBaseUrl}
-                  onChange={(event) => onAiBaseUrl(event.target.value)}
-                  inputMode="url"
-                  spellCheck={false}
+                  aria-label="邮箱账号"
+                  type="text"
+                  value={mailAccount}
+                  onChange={(event) => onMailAccount(event.target.value)}
+                  placeholder="name@sjtu.edu.cn"
+                  inputMode="email"
                   autoCapitalize="off"
-                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="username"
+                  required
                 />
               </label>
-              <label>
-                <span>默认模型</span>
-                <select
-                  value={aiModel}
-                  onChange={(event) => onAiModel(event.target.value)}
+            )}
+            {kind === "ai" && (
+              <>
+                <label>
+                  <span>Base URL</span>
+                  <input
+                    value={aiBaseUrl}
+                    onChange={(event) => onAiBaseUrl(event.target.value)}
+                    inputMode="url"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  <span>默认模型</span>
+                  <select
+                    value={aiModel}
+                    onChange={(event) => onAiModel(event.target.value)}
+                  >
+                    {AI_MODELS.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+            <SecretInput
+              key={kind}
+              label={meta.secretLabel}
+              hint={`${meta.secretLabel}${
+                saved
+                  ? kind === "mail" || kind === "ai"
+                    ? "（留空则保持不变）"
+                    : "（已保存；如需更换请输入新的凭据）"
+                  : ""
+              }`}
+              value={secret}
+              onChange={onSecret}
+              placeholder={meta.placeholder}
+              autoComplete={
+                kind === "mail" && saved ? "current-password" : "new-password"
+              }
+              required={kind !== "mail" && kind !== "ai" && !saved}
+              active={!busy && isPresent}
+            />
+            <footer>
+              {saved && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="aura-tone-danger"
+                  disabled={busy}
+                  onClick={onDelete}
                 >
-                  {AI_MODELS.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </>
-          )}
-          <SecretInput
-            key={kind}
-            label={meta.secretLabel}
-            hint={`${meta.secretLabel}${
-              saved
-                ? kind === "mail" || kind === "ai"
-                  ? "（留空则保持不变）"
-                  : "（已保存；如需更换请输入新的凭据）"
-                : ""
-            }`}
-            value={secret}
-            onChange={onSecret}
-            placeholder={meta.placeholder}
-            autoComplete={
-              kind === "mail" && saved ? "current-password" : "new-password"
-            }
-            required={kind !== "mail" && kind !== "ai" && !saved}
-            active={!busy && isPresent}
-          />
-          <footer>
-            {saved && (
+                  {busyAction === "delete" ? "删除中…" : "删除凭据"}
+                </Button>
+              )}
+              {kind === "ai" && saved && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={onTestAI}
+                >
+                  {busyAction === "test" ? "测试中…" : "测试连接"}
+                </Button>
+              )}
+              <span />
               <Button
                 type="button"
                 variant="ghost"
-                className="aura-tone-danger"
                 disabled={busy}
-                onClick={onDelete}
+                onClick={onClose}
               >
-                {busyAction === "delete" ? "删除中…" : "删除凭据"}
+                取消
               </Button>
-            )}
-            {kind === "ai" && saved && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={onTestAI}
-              >
-                {busyAction === "test" ? "测试中…" : "测试连接"}
+              <Button type="submit" disabled={busy || !canSave}>
+                {busyAction === "save" ? "保存中…" : "保存配置"}
               </Button>
-            )}
-            <span />
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={busy}
-              onClick={onClose}
-            >
-              取消
-            </Button>
-            <Button type="submit" disabled={busy || !canSave}>
-              {busyAction === "save" ? "保存中…" : "保存配置"}
-            </Button>
-          </footer>
-        </form>
+            </footer>
+          </form>
+        </div>
+        {kind === "ai" && (
+          <div
+            id="ai-config-panel-asr"
+            role="tabpanel"
+            aria-labelledby="ai-config-tab-asr"
+            hidden={aiTab !== "asr"}
+          >
+            <ASRSettingsPanel
+              status={settings}
+              onChange={onSettings}
+              onBusyChange={handleASRBusy}
+              active={aiTab === "asr" && isPresent}
+              discardDraft={!isPresent}
+            />
+          </div>
+        )}
       </motion.section>
     </div>,
     document.body,

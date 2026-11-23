@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ASRSettingsPanel } from "@/components/ASRSettingsPanel";
 import {
+  openExternal,
   saveCredential,
   transcribeSelectedAudio,
   updateSettings,
@@ -10,6 +11,7 @@ import type { SettingsStatus } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  openExternal: vi.fn(),
   saveCredential: vi.fn(),
   deleteCredential: vi.fn(),
   transcribeSelectedAudio: vi.fn(),
@@ -68,6 +70,22 @@ describe("独立语音设置", () => {
       ).toBe(false),
     );
     expect(transcribeSelectedAudio).not.toHaveBeenCalled();
+  });
+  it("余额不足时保留明确错误和控制台入口，不自动重复转写", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(transcribeSelectedAudio).mockRejectedValue(
+      new Error("语音识别失败（HTTP 402）：账户欠费或可用余额不足。"),
+    );
+    vi.mocked(openExternal).mockResolvedValue({ status: "opened" });
+    render(<ASRSettingsPanel status={status} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "选择音频并转写" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "语音识别失败（HTTP 402）：账户欠费或可用余额不足。",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "打开硅基流动控制台" }));
+    expect(openExternal).toHaveBeenCalledWith("https://cloud.siliconflow.cn/");
+    expect(transcribeSelectedAudio).toHaveBeenCalledTimes(1);
   });
   it("更改模型未保存时不可转写，不静默回退模型", () => {
     render(<ASRSettingsPanel status={status} onChange={vi.fn()} />);

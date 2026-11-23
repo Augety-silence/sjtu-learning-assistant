@@ -4,6 +4,7 @@ import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { SecretInput } from "@/components/ui/SecretInput";
 import {
   deleteCredential,
+  openExternal,
   saveCredential,
   transcribeSelectedAudio,
   updateSettings,
@@ -14,9 +15,15 @@ import "./asr-settings.css";
 export function ASRSettingsPanel({
   status,
   onChange,
+  onBusyChange,
+  active = true,
+  discardDraft = false,
 }: {
   status: SettingsStatus;
   onChange: (status: SettingsStatus) => void;
+  onBusyChange?: (busy: boolean) => void;
+  active?: boolean;
+  discardDraft?: boolean;
 }) {
   const [endpoint, setEndpoint] = useState("");
   const [model, setModel] = useState("");
@@ -24,6 +31,16 @@ export function ASRSettingsPanel({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [text, setText] = useState("");
+  useEffect(() => {
+    if (discardDraft) {
+      setSecret("");
+      setText("");
+      setError("");
+    }
+  }, [discardDraft]);
+  useEffect(() => {
+    onBusyChange?.(Boolean(busy));
+  }, [busy, onBusyChange]);
   useEffect(() => {
     setEndpoint(
       status.asr_endpoint ??
@@ -43,13 +60,10 @@ export function ASRSettingsPanel({
     }
   };
   return (
-    <section
-      className="settings-panel asr-settings-panel"
-      aria-labelledby="asr-title"
-    >
+    <section className="asr-settings-panel" aria-labelledby="asr-title">
       <div className="section-header">
         <div className="heading-with-info">
-          <h3 id="asr-title">语音识别 · 硅基流动</h3>
+          <h4 id="asr-title">硅基流动</h4>
           <InfoTooltip label="语音接口说明">
             独立于交大聊天模型。选择的音频会发送至此接口（50 MB / 1
             小时），不会批量上传课程录像。Qwen3-ASR
@@ -108,13 +122,15 @@ export function ASRSettingsPanel({
             <SecretInput
               label="语音识别 API Key"
               hint={
-                status.asr_key_saved ? "留空保持已保存密钥" : "独立 API Key"
+                status.asr_key_saved
+                  ? "语音 API Key（留空保持不变）"
+                  : "语音 API Key"
               }
               value={secret}
               onChange={setSecret}
               placeholder="粘贴硅基流动 API Key"
               autoComplete="new-password"
-              active={!busy}
+              active={!busy && active}
               required={false}
             />
           </div>
@@ -171,6 +187,21 @@ export function ASRSettingsPanel({
         </fieldset>
       </form>
       {error && <p role="alert">{error}</p>}
+      {error.includes("HTTP 402") && (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() =>
+            void openExternal("https://cloud.siliconflow.cn/").catch((reason) =>
+              setError(
+                reason instanceof Error ? reason.message : "控制台打开失败",
+              ),
+            )
+          }
+        >
+          打开硅基流动控制台
+        </Button>
+      )}
       {text && (
         <textarea
           aria-label="语音识别结果，可选择复制"

@@ -2773,6 +2773,11 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--asr-self-test"]:
+        if len(sys.argv) != 3 or not Path(sys.argv[2]).is_absolute():
+            return 2
+        from sjtu_learning_assistant.asr_self_test import run
+        return run(Path(sys.argv[2]))
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--mcp-stdio"]:
         from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
         from sjtu_learning_assistant.mcp_server import run_stdio_server

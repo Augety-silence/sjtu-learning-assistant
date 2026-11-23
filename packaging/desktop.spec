@@ -50,6 +50,7 @@ hiddenimports = [
     "keyring.backends.fail",
     "keyring.backends.macOS",
     "keyring.backends.macOS.api",
+    "Security",
     "imageio_ffmpeg",
     "PIL",
     "PIL.Image",

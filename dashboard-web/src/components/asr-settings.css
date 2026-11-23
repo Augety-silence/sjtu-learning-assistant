@@ -1,3 +1,29 @@
+.asr-settings-panel { padding: 20px; }
+.asr-settings-panel h4 { margin: 0; font-size: 14px; }
+.asr-settings-panel .settings-actions { margin-top: 16px; }
+.ai-config-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 0;
+}
+.ai-config-tabs button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.ai-config-tabs button[aria-selected="true"] {
+  color: var(--text-primary);
+  background: var(--surface-subtle);
+}
+.ai-config-tabs button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.config-dialog .asr-settings-panel form { padding: 0; }
 .asr-settings-panel input,
 .asr-settings-panel textarea {
   min-width: 0;

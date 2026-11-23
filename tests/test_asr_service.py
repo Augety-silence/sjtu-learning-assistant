@@ -71,7 +71,7 @@ def test_multipart_upload_no_filename_disclosure(audio):
     assert result == {"ok": True, "model": "Qwen/Qwen3-ASR-1.7B", "text": "测试文字。"}
 
 
-@pytest.mark.parametrize("code", [301, 400, 401, 403, 404, 413, 429, 500])
+@pytest.mark.parametrize("code", [301, 400, 401, 402, 403, 404, 413, 429, 500])
 def test_failure_does_not_retry_or_echo_server(audio, code):
     calls = []
     def handler(request):
