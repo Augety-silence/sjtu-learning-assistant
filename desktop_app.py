@@ -495,6 +495,7 @@ class DesktopBridge:
             "settings_update": self._settings_update,
             "settings_ai_import": self._settings_ai_import,
             "settings_ai_test": self._settings_ai_test,
+            "settings_asr_transcribe": self._settings_asr_transcribe,
             "settings_credential_save": self._settings_credential_save,
             "settings_credential_delete": self._settings_credential_delete,
             "debug_bundle_export": self._debug_bundle_export,
@@ -673,6 +674,8 @@ class DesktopBridge:
                 "ai_enabled",
                 "ai_base_url",
                 "ai_model",
+                "asr_endpoint",
+                "asr_model",
                 "ai_chat_send_shortcut",
                 "ai_reply_language",
                 "ai_attachment_context_budget",
@@ -694,6 +697,16 @@ class DesktopBridge:
     def _settings_ai_test(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.test_ai_connection()
+
+    def _settings_asr_transcribe(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._file_picker is None:
+            raise DashboardError("当前环境不支持选择音频。")
+        selected = self._file_picker()
+        if not selected:
+            return {"cancelled": True}
+        # 路径只能来自原生文件选择器，前端不能传任意文件路径。
+        return self._service.transcribe_selected_audio(Path(selected))
 
     def _settings_credential_save(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "value", "account"})

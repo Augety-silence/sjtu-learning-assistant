@@ -21,6 +21,7 @@ from sjtu_learning_assistant.local_settings import LocalSettings, validate_archi
 from sjtu_learning_assistant.summary_policy import retry_delay_seconds
 
 OUTPUT_FOLDER = "Knowledge Markdown"
+RECOVERY_VERSION = "pdfium-citations-structure-20261123-v1"
 
 
 class CourseMarkdownSync:
@@ -203,6 +204,13 @@ class CourseMarkdownSync:
                 source_hash = digest(path.read_bytes())
                 fingerprint = compilation_fingerprint(source_hash)
                 item = state["items"].setdefault(relative, {})
+                # 仅唤醒本次代码已修复的旧失败；不清空证据、已完成稿或网络退避。
+                if (item.get('status') == 'failed' and item.get('recovery_version') != RECOVERY_VERSION
+                        and any(reason in str(item.get('error', '')) for reason in
+                                ('PdfiumError', '缺少有效来源引用', '缺少完整主题结构'))):
+                    item.update(recovery_version=RECOVERY_VERSION, attempts=0)
+                    item.pop('retry_after', None)
+                    persist()
                 mirror = safe_destination(target, target / "Courses" / Path(relative + ".md"))
                 allowed = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed):

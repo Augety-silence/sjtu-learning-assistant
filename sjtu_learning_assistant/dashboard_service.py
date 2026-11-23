@@ -364,6 +364,12 @@ def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[s
     return command
 
 
+from sjtu_learning_assistant.asr_service import (
+    ASRError, asr_api_key_saved, delete_asr_api_key,
+    get_asr_api_key, save_asr_api_key, transcribe_audio,
+)
+
+
 class DashboardService:
     def __init__(
         self,
@@ -3976,9 +3982,12 @@ class DashboardService:
                 self.ai_key_saver(value)
                 self.settings_store.update({"ai_key_saved": True})
                 self._discard_ai_client()
+            elif kind == "asr":
+                save_asr_api_key(value)
+                self.settings_store.update({"asr_key_saved": True})
             else:
                 raise DashboardError("配置类型不受支持。")
-        except (CredentialStoreError, AIKeychainError) as exc:
+        except (CredentialStoreError, AIKeychainError, ASRError) as exc:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
@@ -4000,9 +4009,12 @@ class DashboardService:
                 delete_ai_api_key()
                 self.settings_store.update({"ai_key_saved": False, "ai_enabled": False})
                 self._discard_ai_client()
+            elif kind == "asr":
+                delete_asr_api_key()
+                self.settings_store.update({"asr_key_saved": False})
             else:
                 raise DashboardError("配置类型不受支持。")
-        except (CredentialStoreError, AIKeychainError) as exc:
+        except (CredentialStoreError, AIKeychainError, ASRError) as exc:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
@@ -4017,6 +4029,16 @@ class DashboardService:
         if {"archive_root", "ai_enabled", "ai_base_url", "ai_key_saved", "course_markdown_enabled", "course_markdown_daily_calls"} & set(payload):
             self._notify_course_markdown_sync(settings_changed=True)
         return self.settings_status()
+
+    def transcribe_selected_audio(self, path: Path) -> dict[str, Any]:
+        settings = self._effective_settings()
+        try:
+            key = get_asr_api_key()
+            if not key:
+                raise ASRError("请先保存独立的语音识别密钥。")
+            return transcribe_audio(path, endpoint=settings.asr_endpoint, model=settings.asr_model, api_key=key)
+        except (ASRError, AIKeychainError) as exc:
+            raise DashboardError(str(exc)) from None
 
     def pick_archive_root(self) -> dict[str, Any]:
         if self.folder_picker is None:
@@ -4102,6 +4124,11 @@ class DashboardService:
             ai_saved = settings.ai_key_saved
             credential_errors = True
         storage_name = credential_storage_name()
+        try:
+            asr_saved = asr_api_key_saved() if settings.asr_key_saved else False
+        except Exception:
+            asr_saved = False
+            credential_errors = True
         credential_error = (
             f"无法读取部分 {storage_name} 配置状态。" if credential_errors else None
         )
@@ -4122,6 +4149,9 @@ class DashboardService:
             "ai_base_url": settings.ai_base_url,
             "ai_model": settings.ai_model,
             "ai_key_saved": ai_saved,
+            "asr_endpoint": settings.asr_endpoint,
+            "asr_model": settings.asr_model,
+            "asr_key_saved": asr_saved,
             "ai_chat_send_shortcut": settings.ai_chat_send_shortcut,
             "ai_reply_language": settings.ai_reply_language,
             "ai_attachment_context_budget": settings.ai_attachment_context_budget,

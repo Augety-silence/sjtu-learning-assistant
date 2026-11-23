@@ -157,7 +157,8 @@ class SummaryCompiler(StudyCompiler):
             return result
         is_compression = prompt.startswith(CONCISE_COMPRESSION_PROMPT)
         is_summary = is_compression or prompt.startswith(SUMMARY_PROMPT)
-        limit = 2 if is_compression else 4 if is_summary else 2
+        structure_repair = data.get('repair_kind') == 'structure-v1'
+        limit = 2 if is_compression or structure_repair else 4 if is_summary else 2
         identity = hashlib.sha256((prompt + json.dumps(data, ensure_ascii=False, sort_keys=True)).encode()).hexdigest()
         resume_key = base + '-resume-v1-' + identity[:12] + '.json'
         previous = self.cached(resume_key)
@@ -234,6 +235,26 @@ class SummaryCompiler(StudyCompiler):
             self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
             state.update(step=step + 1, status='validated')
             self.commit({resume_key: json.dumps(state, ensure_ascii=False)})
+            return result
+        # 只给已耗尽的“主题结构”草稿一次新的定向修复阶段，最多两请求。
+        # 保留旧响应和全部原文；新阶段也持久化，重启/轮询不能重置额度。
+        if (is_summary and not is_compression and not structure_repair
+                and '完整主题结构' in state.get('error', '')):
+            draft = _json(state['draft'])
+            repair_data = {**data, 'draft': draft, 'validation_error': state['error'],
+                           'repair_kind': 'structure-v1'}
+            def structure_validator(value):
+                value = validator(value)
+                protected = ('title', 'abstract', 'tags', 'synonyms', 'covered_pages', 'covered_topics')
+                if (any(value.get(key) != draft.get(key) for key in protected)
+                        or value['markdown'] != canonical_citations(draft['markdown']).strip()):
+                    raise ValueError('主题结构定向修复改动了已有正文；保留检查点。')
+                return value
+            result = self._saved(name + '-structure-v1.json', prompt +
+                '\n只修复topics结构为1–20个实质主题及真实页码映射，合并重复主题但不漏知识；'
+                '保留已有markdown、事实、公式和出处，不重新扩写正文。仍返回完整JSON。',
+                repair_data, structure_validator)
+            self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
             return result
         # 同输入的无效响应不因定时重试重新付费；源/正文修订会产生新身份。
         raise ValueError(state.get('error') or '精炼修复已用尽；检查点保留。')

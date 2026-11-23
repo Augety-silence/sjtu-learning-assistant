@@ -30,6 +30,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import settingsFirstConfigIllustration from "@/assets/empty-states/settings-first-config.webp";
+import { ASRSettingsPanel } from "@/components/ASRSettingsPanel";
 import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -516,6 +517,7 @@ export function SettingsView({
       </section>
 
       <TokenUsageDashboard />
+      <ASRSettingsPanel status={status} onChange={applyStatus} />
 
       <section
         className="configuration-section"

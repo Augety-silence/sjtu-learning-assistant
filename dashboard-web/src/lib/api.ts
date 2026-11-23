@@ -277,6 +277,8 @@ export function updateSettings(
       | "ai_enabled"
       | "ai_base_url"
       | "ai_model"
+      | "asr_endpoint"
+      | "asr_model"
       | "ai_chat_send_shortcut"
       | "ai_reply_language"
       | "ai_attachment_context_budget"
@@ -296,6 +298,15 @@ export function testAiConnection() {
   return invoke<{ ok: boolean; model: string; category: string }>(
     "settings_ai_test",
   );
+}
+
+export function transcribeSelectedAudio() {
+  return invoke<{
+    cancelled?: boolean;
+    ok?: boolean;
+    model?: string;
+    text?: string;
+  }>("settings_asr_transcribe");
 }
 
 export function getCourseMarkdownStatus() {
@@ -357,7 +368,7 @@ export function getKnowledgeMCPConfig() {
 }
 
 export function saveCredential(
-  kind: "canvas" | "mail" | "cloud" | "ai",
+  kind: "canvas" | "mail" | "cloud" | "ai" | "asr",
   value: string,
   account = "",
 ) {
@@ -368,7 +379,7 @@ export function saveCredential(
 }
 
 export function deleteCredential(
-  kind: "canvas" | "mail" | "cloud" | "ai",
+  kind: "canvas" | "mail" | "cloud" | "ai" | "asr",
   account = "",
 ) {
   return invoke<import("@/lib/types").SettingsStatus>(

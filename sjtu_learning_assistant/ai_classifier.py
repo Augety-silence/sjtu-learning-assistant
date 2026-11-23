@@ -335,10 +335,10 @@ class OpenAIClassificationClient:
     def close(self) -> None:
         self._client.close()
 
-    def _record_usage(self, usage: dict[str, int]) -> None:
+    def _record_usage(self, usage: dict[str, int], *, model: str | None = None) -> None:
         if self.usage_recorder is not None:
             try:
-                self.usage_recorder(self.model, usage)
+                self.usage_recorder(model or self.model, usage)
             except Exception as exc:
                 # 计量故障不能导致已计费请求被当作失败重试；不记录异常文本。
                 logging.getLogger(__name__).warning("模型用量记录失败；exception_type=%s", type(exc).__name__)
@@ -356,7 +356,7 @@ class OpenAIClassificationClient:
                     usage.update(normalize_token_usage(payload.get("usage")))
                 return payload
         finally:
-            self._record_usage(usage)
+            self._record_usage(usage, model=str(body.get('model') or self.model))
 
     @classmethod
     def _clean_chat_messages(
@@ -477,8 +477,11 @@ class OpenAIClassificationClient:
         if len(set(expected_ids)) != len(expected_ids):
             raise AIClassificationError("分类输入标识重复。")
         body = {
-            "model": self.model,
+            # 文件分类只需有限 JSON；不让后台继承聊天的长推理模型。
+            # 用户的 chat_completion 模型及设置不变。
+            "model": "deepseek-chat" if self.model == "deepseek-reasoner" else self.model,
             "temperature": 0,
+            "max_tokens": 2048,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {

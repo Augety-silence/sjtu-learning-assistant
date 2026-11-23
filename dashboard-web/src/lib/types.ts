@@ -405,6 +405,9 @@ export interface SyncStatus {
 }
 
 export interface SettingsStatus {
+  asr_endpoint?: string;
+  asr_model?: string;
+  asr_key_saved?: boolean;
   course_markdown_enabled: boolean;
   course_markdown_daily_calls: number;
   archive_root_ready: boolean;
@@ -448,6 +451,7 @@ export interface MarkdownProgressGroup {
   completed: number;
   pending: number;
   failed: number;
+  unavailable?: number;
   ai_completed: number;
   ai_failed: number;
   issues: { name: string; code: string }[];

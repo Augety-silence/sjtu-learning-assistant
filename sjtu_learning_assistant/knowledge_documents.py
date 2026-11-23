@@ -207,37 +207,52 @@ def rendered_pdf(path: Path, cancel: threading.Event) -> Iterator[Path]:
                     process.wait(timeout=5)
 
 
+# PDFium is not thread-safe, even for different documents.  Never keep this
+# lock across a generator yield: the consumer may wait minutes for an API.
+_PDFIUM_LOCK = threading.RLock()
+
+
 def page_images(pdf: Path, *, cached_pages=frozenset()) -> Iterator[tuple[int, bytes | None]]:
     try:
         import pypdfium2 as pdfium
     except ImportError:
         raise DocumentUnsupportedError("缺少 pypdfium2 整页渲染依赖。") from None
-    with pdfium.PdfDocument(pdf) as document:
-        if not 1 <= len(document) <= MAX_PAGES:
+    with _PDFIUM_LOCK:
+        document = pdfium.PdfDocument(pdf)
+    try:
+        with _PDFIUM_LOCK:
+            count = len(document)
+        if not 1 <= count <= MAX_PAGES:
             raise DocumentTextError("课件页数必须在 1—500 页内。")
-        for index in range(len(document)):
+        for index in range(count):
             if index + 1 in cached_pages:
                 yield index + 1, None
                 continue
-            page = document[index]
-            try:
-                width, height = page.get_size()
-                if not 0 < width <= 100_000 or not 0 < height <= 100_000:
-                    raise DocumentTextError("课件页面尺寸无效。")
-                bitmap = page.render(scale=min(2, 2048 / max(width, height)))
+            with _PDFIUM_LOCK:
+                page = document[index]
                 try:
-                    image = bitmap.to_pil().convert("RGB")
-                    output = io.BytesIO()
-                    image.save(output, "JPEG", quality=88, optimize=True)
-                    data = output.getvalue()
-                    image.close()
-                    if len(data) > 4 * 1024**2:
-                        raise DocumentTextError("课件页面图片超过 4 MiB。")
-                    yield index + 1, data
+                    width, height = page.get_size()
+                    if not 0 < width <= 100_000 or not 0 < height <= 100_000:
+                        raise DocumentTextError("课件页面尺寸无效。")
+                    bitmap = page.render(scale=min(2, 2048 / max(width, height)))
+                    try:
+                        image = bitmap.to_pil().convert("RGB")
+                    finally:
+                        bitmap.close()
                 finally:
-                    bitmap.close()
+                    page.close()
+            try:
+                output = io.BytesIO()
+                image.save(output, "JPEG", quality=88, optimize=True)
+                data = output.getvalue()
             finally:
-                page.close()
+                image.close()
+            if len(data) > 4 * 1024**2:
+                raise DocumentTextError("课件页面图片超过 4 MiB。")
+            yield index + 1, data
+    finally:
+        with _PDFIUM_LOCK:
+            document.close()
 
 
 def vision_page_url(jpeg: bytes) -> str:
