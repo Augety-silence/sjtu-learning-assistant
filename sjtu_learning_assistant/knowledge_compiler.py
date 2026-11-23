@@ -456,7 +456,9 @@ class KnowledgeCompilerService:
     def _phase_scan(self, source: Path, target: Path, files: list[Path]) -> None:
         from sjtu_learning_assistant.knowledge_documents import DocumentCompiler, safe_destination
         from sjtu_learning_assistant.document_text import DocumentTextError
-        converter = DocumentCompiler(self.ai_runner, self._cancel, max_calls=self.max_document_calls)
+        from .summary_policy import REVIEW_SAMPLE_PERCENT, SUMMARY_PARALLEL_BATCHES
+        converter = DocumentCompiler(self.ai_runner, self._cancel, max_calls=self.max_document_calls,
+            review_percent=REVIEW_SAMPLE_PERCENT, parallel_batches=SUMMARY_PARALLEL_BATCHES)
         for directory in ("00_MOC", "01_Courses", "02_Concepts", "03_Problems",
                           "04_Formulas", "05_Glossary", "06_Review", "07_Connections",
                           "90_Inbox", "99_System"):

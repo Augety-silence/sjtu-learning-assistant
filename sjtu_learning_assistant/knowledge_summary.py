@@ -4,10 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeResponseError
 from sjtu_learning_assistant.summary_policy import (
-    MAX_SUMMARY_CHARS, MAX_MARKDOWN_CHARS, SUMMARY_POLICY, source_chars, summary_budget, length_request,
+    MAX_SUMMARY_CHARS, MAX_MARKDOWN_CHARS, REVIEW_POLICY, SUMMARY_POLICY,
+    source_chars, summary_budget, length_request, sampled_review, cache_friendly_data,
 )
 
 from sjtu_learning_assistant.knowledge_study import (
@@ -109,11 +112,25 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
 
 
 class SummaryCompiler(StudyCompiler):
-    def __init__(self, request: Callable, cached: Callable, commit: Callable, verify_sources: Callable | None = None):
+    def __init__(self, request: Callable, cached: Callable, commit: Callable, verify_sources: Callable | None = None,
+                 *, review_percent: int = 100, parallel_batches: int = 1):
         super().__init__(request, cached, commit, SUMMARY_VERSION)
         self.prefix = 'summary/' + hashlib.sha256(SUMMARY_VERSION.encode()).hexdigest()[:12] + '/'
         self.verify_sources = verify_sources
         self.verified_visual_pages: set[int] = set()
+        # 默认 100 表示每一稿都送来源审校（历史行为）；生产按抽样比例降频。
+        self.review_percent = max(0, min(100, int(review_percent)))
+        self.parallel_batches = max(1, int(parallel_batches))
+        self.reviewed_parts = 0
+        self.skipped_parts = 0
+        self._stats_lock = threading.Lock()
+
+    def _needs_review(self, data: dict, *, always: bool) -> bool:
+        """合并稿始终审校；分段稿按输入哈希确定性抽样。"""
+        if always or self.review_percent >= 100:
+            return True
+        identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return sampled_review(identity, self.review_percent)
 
     def _review_guidance(self, data: dict) -> str:
         return SUMMARY_REVIEW_GUIDANCE
@@ -215,8 +232,10 @@ class SummaryCompiler(StudyCompiler):
                 # CompilationDeferred 在真正发出前抛出，不推进步数；返回后先保存原响应。
                 try:
                     actual_prompt, actual_payload = length_request(request_prompt, payload)
+                    if not is_summary:
+                        actual_prompt += '\n采用轻量事实审阅：仅列阻断发布的事实、公式或来源错误，最多3项，每项最多120字符；不做措辞润色和重复例题核对。'
                     raw = self.request('deepseek-chat' if is_summary else 'qwen3.8-27b',
-                                       actual_prompt, json.dumps(actual_payload, ensure_ascii=False))
+                                       actual_prompt, json.dumps(cache_friendly_data(actual_payload), ensure_ascii=False))
                 except KnowledgeResponseError as exc:
                     failed = {'content': exc.content, 'error': str(exc)}
                     raw = exc.content
@@ -307,9 +326,17 @@ class SummaryCompiler(StudyCompiler):
         self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
         return result
 
-    def _summary(self, name: str, data: dict, pages: list[int], topic_ids: list[str]) -> tuple[dict, dict]:
+    def _summary(self, name: str, data: dict, pages: list[int], topic_ids: list[str],
+                 *, always_review: bool = True) -> tuple[dict, dict]:
         prompt = SUMMARY_PROMPT + '\n数学记号、符号方向和适用条件须遵循这份原文；只概括已有内容，不自行补证明或改用其他教材约定。' + CHECKPOINT_LENGTH_GUIDANCE
         draft = self._save_summary(name + '.json', prompt, data, pages, topic_ids)
+        if not self._needs_review({**data, 'draft': draft}, always=always_review):
+            # 校验器（页覆盖、引用、公式记号、长度、主题）已全部通过；这里只省略第二轮全量来源阅读。
+            with self._stats_lock:
+                self.skipped_parts += 1
+            return draft, {'approved': True, 'issues': [], 'mode': 'sampled-out'}
+        with self._stats_lock:
+            self.reviewed_parts += 1
         review = self._review(name + '-review.json', {**data, 'draft': draft})
         if not review['approved']:
             repair_data = {**data, 'draft': draft, 'corrections': review['issues']}
@@ -333,7 +360,8 @@ class SummaryCompiler(StudyCompiler):
                         raise ValueError('原图复核返回错误页码；未发布。')
                     by_page = {e['page']: e for e in replacements}
                     data = {**data, 'pages': [by_page.get(e['page'], e) for e in data['pages']]}
-                    self.verified_visual_pages.update(requested)
+                    with self._stats_lock:
+                        self.verified_visual_pages.update(requested)
                     # 删除失败稿的数值锚定，用最新完整证据重新写一次，再独立审校。
                     source_identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
                     draft = self._save_summary(name + '-visual-repair-' + source_identity + '.json', prompt, data,
@@ -344,8 +372,9 @@ class SummaryCompiler(StudyCompiler):
         # 只缓存真实审校过的同内容结果；恢复仍重新校验长度与覆盖。
         self.commit({self.prefix + name + '.json': json.dumps(draft, ensure_ascii=False, indent=2),
                      self.prefix + self._review_key(name + '-review.json', {**data, 'draft': draft}): json.dumps(review)})
-        if name.startswith('part-') and 'pages' in data:
+        if name.startswith('part-') and 'pages' in data and review.get('mode') != 'sampled-out':
             # 原图复核在本次调用内改变输入；同时登记新证据身份，重启无需再生成。
+            # 抽样跳过的稿不写审校键：否则以后全量审校会把“没审”当成“已通过”。
             identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             updated = re.sub(r'-[a-f0-9]{12}$', '-' + identity, name)
             if updated != name:
@@ -356,6 +385,8 @@ class SummaryCompiler(StudyCompiler):
     def compile(self, entries: list[dict]) -> tuple[str, dict, dict]:
         pages = [entry['page'] for entry in entries]
         self.verified_visual_pages = {entry['page'] for entry in entries if entry.get('visual_rechecked')}
+        self.reviewed_parts = 0
+        self.skipped_parts = 0
         _pages(pages, list(range(1, 501)))
         batches, batch = [], []
         for entry in entries:
@@ -365,16 +396,38 @@ class SummaryCompiler(StudyCompiler):
             batch.append(entry)
         if batch:
             batches.append(batch)
-        summaries, checks = [], []
-        for index, batch in enumerate(batches):
+        from .ai_runtime import cancellation_scope, current_cancellation_check
+        cancelled = current_cancellation_check()
+        def run_part(index: int, batch: list[dict]) -> tuple[dict, dict]:
             selected = [entry['page'] for entry in batch]
             chars = sum(source_chars(e.get('source_text') or e.get('text', '')) for e in batch)
             data = {'kind': 'concise_course_summary', 'pages': batch, 'topic_ids': [], 'source_budget': summary_budget(chars, legacy=True)}
             # 原文、视觉复核证据与长度目标一同绑定身份，避免复用错误视觉锚定的旧稿。
             identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
-            draft, review = self._summary(f'part-{index}-{identity}', data, selected, [])
-            summaries.append(draft)
-            checks.append({'pages': selected, 'verified_visual_pages': sorted(self.verified_visual_pages & set(selected)), **review})
+            with cancellation_scope(cancelled):
+                draft, review = self._summary(f'part-{index}-{identity}', data, selected, [], always_review=False)
+            with self._stats_lock:
+                verified = sorted(self.verified_visual_pages & set(selected))
+            return draft, {'pages': selected, 'verified_visual_pages': verified, **review}
+
+        # 分段之间的输入互不依赖，并发发出才用得上 10 RPM 的并行额度；
+        # 合并必须等待全部分段，仍按层串行。
+        parts: list[tuple[dict, dict] | None] = [None] * len(batches)
+        if self.parallel_batches > 1 and len(batches) > 1:
+            with ThreadPoolExecutor(max_workers=min(self.parallel_batches, len(batches)),
+                                    thread_name_prefix="summary-part") as pool:
+                futures = {pool.submit(run_part, index, batch): index for index, batch in enumerate(batches)}
+                try:
+                    for future, index in futures.items():
+                        parts[index] = future.result()
+                except BaseException:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    raise
+        else:
+            for index, batch in enumerate(batches):
+                parts[index] = run_part(index, batch)
+        summaries = [item[0] for item in parts]
+        checks = [item[1] for item in parts]
         level = 0
         while len(summaries) > 1:
             merged = []
@@ -396,5 +449,8 @@ class SummaryCompiler(StudyCompiler):
         body = '# ' + draft['title'].strip() + '\n\n' + draft['markdown'] + '\n'
         report = {'contract': SUMMARY_CONTRACT, 'review_model': 'qwen3.8-27b', 'covered_pages': pages,
                   'checks': checks, 'summary_chars': len(body), 'max_summary_chars': MAX_SUMMARY_CHARS,
+                  'review_policy': f'sampled-{self.review_percent}-percent; merge-always-reviewed; v1',
+                  'reviews_selected': self.reviewed_parts,
+                  'reviews_sampled_out': self.skipped_parts,
                   'source_budget': summary_budget(sum(source_chars(e.get('source_text') or e.get('text', '')) for e in entries))}
         return body, draft, report

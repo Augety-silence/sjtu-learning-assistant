@@ -3709,10 +3709,12 @@ class DashboardService:
 
     def start_course_markdown_sync(self) -> None:
         if getattr(self, "_course_markdown_instance", None) is None:
+            from .summary_policy import REVIEW_SAMPLE_PERCENT, SUMMARY_PARALLEL_BATCHES
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
                 wiki_rebuilder=self._rebuild_course_wiki,
                 max_documents_per_cycle=10, slice_calls=2, workers=6,
+                review_percent=REVIEW_SAMPLE_PERCENT, parallel_batches=SUMMARY_PARALLEL_BATCHES,
             )
         self._course_markdown_instance.start()
 
@@ -3760,7 +3762,7 @@ class DashboardService:
         settings = self._effective_settings()
         from .knowledge_summary import CONCISE_REVIEW_PROMPT, SUMMARY_PROMPT, CONCISE_COMPRESSION_PROMPT
         if system_prompt.startswith(CONCISE_REVIEW_PROMPT):
-            max_tokens = min(max_tokens, 2048)
+            max_tokens = min(max_tokens, 1024)
         elif system_prompt.startswith(SUMMARY_PROMPT):
             max_tokens = min(max_tokens, 7500)
         elif system_prompt.startswith(CONCISE_COMPRESSION_PROMPT):
@@ -3794,25 +3796,28 @@ class DashboardService:
             if isinstance(client, OpenAIClassificationClient):
                 from .provider_usage import ProviderUsageLedger
                 client.usage_recorder = ProviderUsageLedger(self.engine).record
-            result = client.chat_completion(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.1,
-                system_prompt=False,
-                knowledge_compilation=True,
-                response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
-            )
-            content = result.get("content")
-            if (result.get("response_metadata") or {}).get("finish_reason") == "length":
-                from .knowledge_compiler import KnowledgeResponseError
-                raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
-                                             content=content if type(content) is str else '')
-            if type(content) is not str or not content.strip():
-                raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
-            return content.strip()
+            def complete():
+                result = client.chat_completion(
+                    [{"role": "system", "content": system_prompt},
+                     {"role": "user", "content": user_content}],
+                    max_tokens=max_tokens, temperature=0.1, system_prompt=False,
+                    knowledge_compilation=True,
+                    response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
+                )
+                content = result.get("content")
+                if result.get('finish_reason') == 'length' or (result.get("response_metadata") or {}).get("finish_reason") == "length":
+                    from .knowledge_compiler import KnowledgeResponseError
+                    raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
+                                                 content=content if type(content) is str else '')
+                if type(content) is not str or not content.strip():
+                    raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
+                return content.strip()
+            if self.ai_client_factory is OpenAIClassificationClient and 'json' in system_prompt.casefold():
+                from .compilation_cache import CompilationResponseCache
+                cache = CompilationResponseCache(self.local_projects_path.parent / 'compilation-responses.sqlite3')
+                cache_id = cache.identity(identity, system_prompt, user_content, max_tokens)
+                return cache.get_or_compute(cache_id, complete)
+            return complete()
         except AIKeychainError:
             # 与 ai_chat_send 临时客户端分支保持一致：凭据类故障不可重试，
             # 否则会穿透成无文案的内部错误，并被后台编译任务错分类为 internal/retryable。

@@ -30,6 +30,7 @@ class CourseMarkdownSync:
                  compiler_factory: Callable = DocumentCompiler,
                  wiki_rebuilder: Callable | None = None,
                  max_documents_per_cycle: int = 0, slice_calls: int = 0, workers: int = 1,
+                 review_percent: int = 100, parallel_batches: int = 1,
                  today: Callable = lambda: datetime.now().date().isoformat(),
                  now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
@@ -39,6 +40,7 @@ class CourseMarkdownSync:
         self.max_documents_per_cycle = max(0, int(max_documents_per_cycle))
         self.slice_calls = max(0, int(slice_calls))
         self.workers = max(1, min(10, int(workers)))
+        self.review_percent, self.parallel_batches = review_percent, parallel_batches
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -327,6 +329,8 @@ class CourseMarkdownSync:
             if self._stop.is_set() or self._cancel.is_set():
                 raise CompilationDeferred('同步已取消，检查点保留。')
             kwargs = {'max_calls': 0}
+            if self.compiler_factory is DocumentCompiler:
+                kwargs.update(review_percent=self.review_percent, parallel_batches=self.parallel_batches)
             if self.slice_calls:
                 kwargs.update(slice_calls=self.slice_calls, text_first=True)
             local = self.compiler_factory(call, self._cancel, **kwargs)

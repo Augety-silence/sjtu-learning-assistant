@@ -3318,8 +3318,10 @@ class TranscriptService:
                                 self._write_json(path, value)
                         from .ai_runtime import cancellation_scope
                         with cancellation_scope(lambda: self._stop.is_set() or not self.notes_context_provider().enabled):
+                            from .summary_policy import REVIEW_SAMPLE_PERCENT
                             summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit,
-                                                             max_calls=self.notes_slice_calls)
+                                                             max_calls=self.notes_slice_calls,
+                                                             review_percent=REVIEW_SAMPLE_PERCENT)
                         check()
                         # API调用期间来源或人工正文发生变化时，不覆盖新内容。
                         current = self._read_json(directory / "manifest.json")

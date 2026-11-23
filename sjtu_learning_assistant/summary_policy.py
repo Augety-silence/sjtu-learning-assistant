@@ -1,6 +1,7 @@
 """课件／课堂总结的共同长度目标与可恢复退避；原始资料不裁剪。"""
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 
@@ -9,6 +10,18 @@ MAX_MARKDOWN_CHARS = 4850
 MAX_SECTION_TEXT_CHARS = 4700
 # 缓存身份沿用 v1：放宽长度不使已付费、已审校的旧结果全量失效。
 SUMMARY_POLICY = "source-ratio-30-percent-v1; max-readable-3000; retry-backoff-v1"
+
+# 分段稿按确定性抽样送全量来源审校；合并稿始终审校，避免抽样后整篇失去来源锚定。
+REVIEW_SAMPLE_PERCENT = 20
+REVIEW_POLICY = f"sampled-{REVIEW_SAMPLE_PERCENT}-percent; merge-always-reviewed; v1"
+SUMMARY_PARALLEL_BATCHES = 3
+
+
+def cache_friendly_data(data: dict) -> dict:
+    """原文固定在前，草稿及修复意见在后；不删改内容或检查点身份。"""
+    first = ('pages', 'cues', 'input_summaries', 'draft_markdown')
+    return {**{key: data[key] for key in first if key in data},
+            **{key: data[key] for key in sorted(data) if key not in first}}
 
 
 def source_chars(text: str) -> int:
@@ -46,3 +59,16 @@ def length_request(prompt: str, data: dict) -> tuple[str, dict]:
 def retry_delay_seconds(attempts: int) -> int:
     """连续失败逐步退避到6小时，不因达到3次而永久跳过。"""
     return (300, 900, 2700, 7200, 21600)[min(4, max(0, attempts - 1))]
+
+
+def sampled_review(identity: str, percent: int = REVIEW_SAMPLE_PERCENT) -> bool:
+    """确定性抽样：同一份输入在任何重启、任何机器上都得到同一结论。
+
+    不能用随机数，否则续编会把同一份稿反复送入或不送入审校，既不可复现也浪费额度。
+    """
+    if percent >= 100:
+        return True
+    if percent <= 0:
+        return False
+    value = int(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8], 16) % 100
+    return value < percent

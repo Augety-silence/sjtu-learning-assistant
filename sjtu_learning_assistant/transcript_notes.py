@@ -9,6 +9,7 @@ from typing import Callable, Mapping
 from sjtu_learning_assistant.transcript_pipeline import chunk_cues, normalize_cues, parse_vtt
 from sjtu_learning_assistant.summary_policy import (
     MAX_SUMMARY_CHARS, MAX_SECTION_TEXT_CHARS, SUMMARY_POLICY, source_chars, summary_budget, length_request,
+    sampled_review, cache_friendly_data,
 )
 
 CONTRACT = "classroom-notes-v1"
@@ -126,7 +127,7 @@ class SummaryDeferred(RuntimeError):
 
 def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
                     cached: Callable = lambda key: None, commit: Callable = lambda key, value: None,
-                    max_calls: int = 0) -> tuple[str, dict]:
+                    max_calls: int = 0, review_percent: int = 100) -> tuple[str, dict]:
     cues = normalize_cues(parse_vtt(raw_vtt))
     chunks = chunk_cues(cues, target_chars=4500, max_chars=5000, overlap_cues=0, max_cues=80)
     if not chunks:
@@ -146,7 +147,9 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
             return saved
         system = REVIEW_PROMPT if "task" in data else MERGE_PROMPT if "input_summaries" in data else PROMPT
         request_system, request_data = length_request(system, data)
-        payload = json.dumps(request_data, ensure_ascii=False)
+        payload = json.dumps(cache_friendly_data(request_data), ensure_ascii=False)
+        if 'task' in data:
+            request_system += '\n轻量来源审阅：只核对事实、必要条件和来源错误，不核对口头措辞或例题细节；最多3项，每项最多120字符。'
         if len(payload) + len(system) > 14000:
             raise ValueError("课堂总结输入超过分块限制。")
         raw_key = cache_key(data) + '-response-v1'
@@ -159,7 +162,7 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
             try:
                 response = client.chat_completion(
                     [{"role": "system", "content": request_system}, {"role": "user", "content": payload}],
-                    max_tokens=7500, temperature=0, system_prompt=False,
+                    max_tokens=1024 if 'task' in data else 7500, temperature=0, system_prompt=False,
                     response_format={"type": "json_object"},
                 )
             except KnowledgeResponseError as exc:
@@ -229,22 +232,31 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
                                     "source_budget": summary_budget(chars, legacy=True)}, covered, allowed))
         drafts = merged
     draft = drafts[0]
-    # 最终稿逐块对照原始字幕，而不只检查有损的中间摘要。
+    # 最终稿引用的原始块必审，其余按稳定输入抽样；生成仍处理全部原始字幕。
+    cited = {e['cue_id'] for section in draft['sections'] for e in section['evidence']}
+    reviewed_chunks, skipped_chunks = [], []
     for chunk in chunks:
         review_data = {"task": "本次是审校任务，覆盖先前的生成格式要求：不要返回sections，不重新编写。对照本块原始字幕检查完整课堂总结中的事实、前提和本块实质主题遗漏。"
                           "只返回{\"approved\":true或false,\"covered_chunks\":[当前块编号],\"issues\":[具体问题]}，无关本块的其他内容不判断。",
                           "covered_chunks": [chunk.index], "draft": wire(draft),
                           "cues": [{"cue_id": cue.cue_id, "text": cue.text} for cue in chunk.cues]}
+        must_review = bool(cited & {cue.cue_id for cue in chunk.cues})
+        if not must_review and not sampled_review(cache_key(review_data), review_percent):
+            skipped_chunks.append(chunk.index)
+            continue
         review = request(review_data)
         covered = review.get("covered_chunks")
         if (review.get("approved") is not True or type(covered) is not list or any(type(n) is not int for n in covered)
                 or covered != [chunk.index] or review.get("issues") != []):
             raise ValueError("课堂总结来源审校未通过；原始字幕和旧正式资料保留。")
         commit(cache_key(review_data), review)
+        reviewed_chunks.append(chunk.index)
     body = render_summary(draft, timing)
     return body, {"contract": CONTRACT, "prompt_version": PROMPT_VERSION, "covered_chunks": list(range(len(chunks))),
                   "summary_chars": len(body), "max_summary_chars": MAX_SUMMARY_CHARS,
                   "source_cues": len(cues), "calls": calls, "draft": draft,
+                  "review_policy": f'sampled-{review_percent}-percent; cited-chunks-always-reviewed; v1',
+                  "reviewed_chunks": reviewed_chunks, "reviews_sampled_out": skipped_chunks,
                   "source_budget": summary_budget(sum(source_chars(c.text) for c in cues))}
 
 

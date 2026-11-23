@@ -313,13 +313,17 @@ def preferred_visual_output(outputs: dict, page: int) -> str | None:
 
 class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
-                 slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images):
+                 slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images,
+                 review_percent: int = 100, parallel_batches: int = 1):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
         self.max_calls, self.calls, self.cached_pages = max_calls, 0, 0
         self.slice_calls = max(0, int(slice_calls))
         self.text_first = text_first
+        self.review_percent, self.parallel_batches = review_percent, parallel_batches
+        # 分段并发后调用计数与轮转额度会被多个线程同时判断，必须原子化。
+        self._calls_lock = threading.Lock()
         self.model_fallbacks: list[dict[str, str]] = []
         self._persist_model_fallbacks: Callable | None = None
 
@@ -329,16 +333,17 @@ class DocumentCompiler:
         for attempt in range(2):
             if self.cancel.is_set():
                 raise DocumentTextError("课件编译已取消。")
-            if self.max_calls and self.calls >= self.max_calls:
-                raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
-            if self.slice_calls and self.calls >= self.slice_calls:
-                raise CompilationDeferred("已保存检查点，轮转处理下一份课件。")
+            with self._calls_lock:
+                if self.max_calls and self.calls >= self.max_calls:
+                    raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
+                if self.slice_calls and self.calls >= self.slice_calls:
+                    raise CompilationDeferred("已保存检查点，轮转处理下一份课件。")
+                self.calls += 1
             if request_model != model:
                 self.model_fallbacks.append({'requested_model': model, 'used_model': request_model,
                                              'category': fallback_category})
                 if self._persist_model_fallbacks is not None:
                     self._persist_model_fallbacks()
-            self.calls += 1
             try:
                 return self.runner(request_model, system, content)
             except (AIClassificationError, KnowledgeAPIError) as exc:
@@ -386,9 +391,11 @@ class DocumentCompiler:
             except (ValueError, AttributeError, RecursionError):
                 raise DocumentTextError("课件编译清单损坏，未覆盖现有输出。") from None
         directory.mkdir(parents=True, exist_ok=True)
+        state_lock = threading.RLock()
 
         def persist():
-            _atomic_write(safe_destination(target, manifest_path), json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+            with state_lock:
+                _atomic_write(safe_destination(target, manifest_path), json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
         events = state.get('model_fallbacks', [])
         if (type(events) is not list or len(events) > 2000
@@ -448,7 +455,12 @@ class DocumentCompiler:
             candidate = safe_destination(target, directory / name)
             if not candidate.is_file() or candidate.stat().st_size > MAX_SOURCE_BYTES or digest(candidate.read_bytes()) != expected:
                 raise DocumentTextError("生成文件已被修改或丢失，已保留并停止此课件自动更新。")
+        # 分段并发只并行网络请求；清单与状态写入仍串行，避免多个线程同时改写 outputs。
         def commit(contents: dict[str, str | bytes], number: int | None = None):
+            with state_lock:
+                return _commit_locked(contents, number)
+
+        def _commit_locked(contents: dict[str, str | bytes], number: int | None = None):
             items = []
             try:
                 for name, content in contents.items():
@@ -552,7 +564,8 @@ class DocumentCompiler:
             raise DocumentTextError("渲染页数与原文页数不一致，未生成完成标记。")
         # 页稿作为证据层复用；最终正文按全课件知识依赖重组，而不是每四页拼接。
         def cached(name):
-            return (directory / name).read_text(encoding="utf-8") if name in state["outputs"] else None
+            with state_lock:
+                return (directory / name).read_text(encoding="utf-8") if name in state["outputs"] else None
         verification_outputs = {}
         entries = []
         for number, note in enumerate(notes, 1):
@@ -581,7 +594,8 @@ class DocumentCompiler:
                 verified.append({**entry, 'text': response, 'visual_rechecked': True})
             return verified
         try:
-            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources).compile(entries)
+            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources,
+                review_percent=self.review_percent, parallel_batches=self.parallel_batches).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
@@ -591,7 +605,8 @@ class DocumentCompiler:
             raise DocumentTextError("编译期间素材已变化；已完成旧版本页面保留，请重试。")
         if len(study) > MAX_SUMMARY_CHARS:
             raise DocumentTextError("精炼总结超过5000字符；旧正式稿保留。")
-        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: source-reviewed\nsummary_chars: {len(study)}\n"
+        quality = 'source-sampled' if report['reviews_sampled_out'] else 'source-reviewed'
+        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: {quality}\nsummary_chars: {len(study)}\n"
                 + f"abstract: {json.dumps(plan['abstract'], ensure_ascii=False)}\nauto_tags: {json.dumps(plan['tags'], ensure_ascii=False)}\nsynonyms: {json.dumps(plan['synonyms'], ensure_ascii=False)}\n" + "---\n\n"
                 + study)
         # 契约升级保留旧完整稿和审校记录，不只留下页级原文；人工修改已在上面的哈希闸门阻断。
