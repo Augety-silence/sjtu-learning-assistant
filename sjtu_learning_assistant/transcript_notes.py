@@ -127,7 +127,8 @@ class SummaryDeferred(RuntimeError):
 
 def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
                     cached: Callable = lambda key: None, commit: Callable = lambda key, value: None,
-                    max_calls: int = 0, review_percent: int = 100) -> tuple[str, dict]:
+                    max_calls: int = 0, review_percent: int = 100, auto_recovery: bool = False,
+                    recovery_epoch: int = 0) -> tuple[str, dict]:
     cues = normalize_cues(parse_vtt(raw_vtt))
     chunks = chunk_cues(cues, target_chars=4500, max_chars=5000, overlap_cues=0, max_cues=80)
     if not chunks:
@@ -157,6 +158,12 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         if not isinstance(response, Mapping):
             if max_calls and calls >= max_calls:
                 raise SummaryDeferred()
+            if data.get('automatic_recovery'):
+                # 追加式预约账本：结果未知的请求不因重启再次付费；最多两次。
+                reservation = raw_key + '-reserved'
+                if cached(reservation) is not None:
+                    raise ValueError('自动修复额度已用尽；上次响应未知，检查点保留。')
+                commit(reservation, {'reserved': True})
             calls += 1
             from .knowledge_compiler import KnowledgeResponseError
             try:
@@ -183,11 +190,28 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
             validated = _validate(value, covered, allowed, timing)
         except ValueError as exc:
             # 只允许一次对照完整原始输入的修复，不切片、猜引文或静默转换结构。
-            corrected = request({**data,
-                "repair": str(exc) + " 每段cue_ids必须为1–8个真实cue_id字符串，不写quote。重写完整JSON，不添加无来源事实。"})
-            validated = _validate(corrected, covered, allowed, timing)
+            repair = {**data, "repair": str(exc) + " 每段cue_ids必须为1–8个真实cue_id字符串，不写quote。重写完整JSON，不添加无来源事实。"}
+            try:
+                corrected = request(repair)
+                validated = _validate(corrected, covered, allowed, timing)
+            except ValueError as failure:
+                if not auto_recovery:
+                    raise
+                validated = recover(data, lambda value: _validate(value, covered, allowed, timing), str(failure))
         commit(cache_key(data), validated)
         return validated
+
+    def recover(data, validate, error):
+        from .summary_policy import AUTO_RECOVERY_VERSION
+        for attempt in range(2):
+            recovery = {**data, 'automatic_recovery': AUTO_RECOVERY_VERSION, 'recovery_attempt': attempt,
+                        'recovery_epoch': recovery_epoch,
+                        'repair': error + ' 对照原始来源修复指定校验错误，不添加事实、猜测ID或只回填覆盖编号。返回完整JSON。'}
+            try:
+                return validate(request(recovery))
+            except ValueError:
+                continue
+        raise ValueError('自动修复额度已用尽；原字幕与草稿保留，等待检查或手动重试。')
 
     drafts = []
     def wire(draft: dict) -> dict:
@@ -244,10 +268,35 @@ def compile_summary(raw_vtt: str, client, *, check: Callable = lambda: None,
         if not must_review and not sampled_review(cache_key(review_data), review_percent):
             skipped_chunks.append(chunk.index)
             continue
-        review = request(review_data)
-        covered = review.get("covered_chunks")
-        if (review.get("approved") is not True or type(covered) is not list or any(type(n) is not int for n in covered)
-                or covered != [chunk.index] or review.get("issues") != []):
+        def validate_review(value):
+            covered = value.get('covered_chunks')
+            if (type(value.get('approved')) is not bool or type(covered) is not list
+                    or any(type(n) is not int for n in covered) or covered != [chunk.index]
+                    or type(value.get('issues')) is not list
+                    or any(type(issue) is not str for issue in value['issues'])):
+                raise ValueError('课堂总结审校JSON结构无效。')
+            return value
+        try:
+            review = validate_review(request(review_data))
+        except ValueError as exc:
+            if not auto_recovery:
+                raise
+            review = recover(review_data, validate_review, str(exc))
+        if auto_recovery and (review['approved'] is not True or review['issues'] != []):
+            # 旧全量审阅的拒绝不直接套用到新的轻量政策；只给同稿一次独立复核。
+            # 通过结果仍复用，复核响应与预约独立持久化；新复核拒绝绝不自动改为通过。
+            from .summary_policy import AUTO_RECOVERY_VERSION
+            refreshed = {**review_data, 'automatic_recovery': AUTO_RECOVERY_VERSION,
+                         'recovery_attempt': 'review-policy-v2',
+                         'recovery_epoch': recovery_epoch,
+                         'review_policy': '只检查实际事实、关键条件和来源错误；不因省略重复例题、口头措辞或非关键细节拒绝。'
+                                          '对照本块来源独立判断，不沿用旧审阅结论，也不预设通过。'}
+            try:
+                review = validate_review(request(refreshed))
+            except ValueError:
+                raise ValueError('自动修复额度已用尽；审校复核响应无效，原字幕保留。') from None
+        if review['approved'] is not True or review['issues'] != []:
+            # 真实来源拒绝不作为格式修复，更不能改成approved=true凑完成数。
             raise ValueError("课堂总结来源审校未通过；原始字幕和旧正式资料保留。")
         commit(cache_key(review_data), review)
         reviewed_chunks.append(chunk.index)

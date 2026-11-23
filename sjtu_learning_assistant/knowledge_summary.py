@@ -89,7 +89,9 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
     validate_tables(markdown)
     validate_math_notation(markdown)
     topics = result.get('topics')
-    if type(topics) is not list or not 1 <= len(topics) <= 20:
+    # 长课件可包含超过20个真实主题；元数据数量不应触发全文重写。
+    # 仍保留有界结构、逐项名称与真实页码校验，不补造主题。
+    if type(topics) is not list or not 1 <= len(topics) <= 200:
         raise ValueError('精炼总结缺少完整主题结构。')
     covered = set()
     for topic in topics:
@@ -113,7 +115,7 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
 
 class SummaryCompiler(StudyCompiler):
     def __init__(self, request: Callable, cached: Callable, commit: Callable, verify_sources: Callable | None = None,
-                 *, review_percent: int = 100, parallel_batches: int = 1):
+                 *, review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False):
         super().__init__(request, cached, commit, SUMMARY_VERSION)
         self.prefix = 'summary/' + hashlib.sha256(SUMMARY_VERSION.encode()).hexdigest()[:12] + '/'
         self.verify_sources = verify_sources
@@ -124,6 +126,7 @@ class SummaryCompiler(StudyCompiler):
         self.reviewed_parts = 0
         self.skipped_parts = 0
         self._stats_lock = threading.Lock()
+        self.auto_recovery = auto_recovery
 
     def _needs_review(self, data: dict, *, always: bool) -> bool:
         """合并稿始终审校；分段稿按输入哈希确定性抽样。"""
@@ -175,7 +178,8 @@ class SummaryCompiler(StudyCompiler):
         is_compression = prompt.startswith(CONCISE_COMPRESSION_PROMPT)
         is_summary = is_compression or prompt.startswith(SUMMARY_PROMPT)
         structure_repair = data.get('repair_kind') == 'structure-v1'
-        limit = 2 if is_compression or structure_repair else 4 if is_summary else 2
+        automatic_repair = data.get('repair_kind') == 'automatic-patch-v2'
+        limit = 2 if is_compression or structure_repair or automatic_repair else 4 if is_summary else 2
         identity = hashlib.sha256((prompt + json.dumps(data, ensure_ascii=False, sort_keys=True)).encode()).hexdigest()
         resume_key = base + '-resume-v1-' + identity[:12] + '.json'
         previous = self.cached(resume_key)
@@ -193,6 +197,12 @@ class SummaryCompiler(StudyCompiler):
                 if old.get('input') == old_identity and old.get('draft'):
                     retained, error, legacy_steps = old['draft'], old.get('error', ''), max(legacy_steps, min(2, old.get('step', 0)))
             state = {'input': identity, 'step': min(legacy_steps, limit), 'draft': retained, 'error': error}
+        reserved = state.get('reserved_step')
+        if automatic_repair and type(reserved) is int:
+            # 预约后已落盘的响应优先验收；没有响应表示上次结果未知，不再次发同一步。
+            if (self.cached(base + f'-response-v1-{identity[:12]}-{reserved}.txt') is not None
+                    or self.cached(base + f'-failed-response-v1-{identity[:12]}-{reserved}.json') is not None):
+                state['step'] = reserved
         # 旧 3000 字失败草稿在新上限内可直接继续来源审校，即使旧修复次数已耗尽。
         if state.get('draft') and not any(term in state.get('error', '') for term in ('截断', '达到长度上限')):
             try:
@@ -208,7 +218,9 @@ class SummaryCompiler(StudyCompiler):
             if step:
                 payload = {**data, 'draft': state.get('draft'), 'validation_error': state.get('error'),
                            'repair_attempt': step}
-                if is_compression:
+                if automatic_repair:
+                    request_prompt += '\n仅修复指定返回结构和校验错误；继续遵守最后约定的JSON补丁字段，不重抄其他内容。'
+                elif is_compression:
                     request_prompt += '\n按照validation_error修正长度或JSON格式；仍只返回markdown字段的完整JSON，不增加事实。'
                 elif is_summary:
                     request_prompt += SUMMARY_REPAIR_GUIDANCE
@@ -230,16 +242,29 @@ class SummaryCompiler(StudyCompiler):
             raw = failed['content'] if failed is not None else self.cached(response_key)
             if raw is None and failed is None:
                 # CompilationDeferred 在真正发出前抛出，不推进步数；返回后先保存原响应。
+                # 新恢复阶段先预约次数：网络超时或进程退出后不重复同一付费尝试。
+                # 切片尚未发请求的让出不消耗预约，响应仍先于校验落盘。
+                if automatic_repair:
+                    state.update(step=step + 1, reserved_step=step)
+                    self.commit({resume_key: json.dumps(state, ensure_ascii=False)})
                 try:
                     actual_prompt, actual_payload = length_request(request_prompt, payload)
                     if not is_summary:
                         actual_prompt += '\n采用轻量事实审阅：仅列阻断发布的事实、公式或来源错误，最多3项，每项最多120字符；不做措辞润色和重复例题核对。'
-                    raw = self.request('deepseek-chat' if is_summary else 'qwen3.8-27b',
+                    raw = self.request('deepseek-chat' if is_summary or automatic_repair else 'qwen3.8-27b',
                                        actual_prompt, json.dumps(cache_friendly_data(actual_payload), ensure_ascii=False))
-                except KnowledgeResponseError as exc:
+                except Exception as exc:
+                    from .knowledge_documents import CompilationDeferred
+                    if isinstance(exc, CompilationDeferred):
+                        if automatic_repair:
+                            state.update(step=step)
+                            state.pop('reserved_step', None)
+                            self.commit({resume_key: json.dumps(state, ensure_ascii=False)})
+                        raise
+                    if not isinstance(exc, KnowledgeResponseError):
+                        raise
                     failed = {'content': exc.content, 'error': str(exc)}
                     raw = exc.content
-                    # 内容和不可发布原因在同一检查点中原子保存，完整JSON的截断稿也不能通过。
                     self.commit({failed_key: json.dumps(failed, ensure_ascii=False)})
                 else:
                     self.commit({response_key: raw})
@@ -249,15 +274,19 @@ class SummaryCompiler(StudyCompiler):
                 result = validator(_json(raw))
             except ValueError as exc:
                 state.update(step=step + 1, draft=raw, error=str(exc))
+                state.pop('reserved_step', None)
                 self.commit({resume_key: json.dumps(state, ensure_ascii=False)})
                 continue
             self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
             state.update(step=step + 1, status='validated')
+            state.pop('reserved_step', None)
             self.commit({resume_key: json.dumps(state, ensure_ascii=False)})
             return result
         # 只给已耗尽的“主题结构”草稿一次新的定向修复阶段，最多两请求。
         # 保留旧响应和全部原文；新阶段也持久化，重启/轮询不能重置额度。
-        if (is_summary and not is_compression and not structure_repair
+        if self.auto_recovery and not automatic_repair:
+            return self._recover_patch(name, prompt, data, validator, state, base)
+        if (is_summary and not is_compression and not structure_repair and not automatic_repair
                 and '完整主题结构' in state.get('error', '')):
             draft = _json(state['draft'])
             repair_data = {**data, 'draft': draft, 'validation_error': state['error'],
@@ -276,7 +305,36 @@ class SummaryCompiler(StudyCompiler):
             self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
             return result
         # 同输入的无效响应不因定时重试重新付费；源/正文修订会产生新身份。
+        if automatic_repair:
+            raise ValueError('自动修复额度已用尽；草稿保留，等待检查或手动重试。')
         raise ValueError(state.get('error') or '精炼修复已用尽；检查点保留。')
+
+    def _recover_patch(self, name, prompt, data, validator, state, base):
+        """独立的两次修复预算；只修改失败字段，其他付费正文本地合并。"""
+        try:
+            draft = _json(state.get('draft'))
+        except ValueError:
+            draft = None
+        error = str(state.get('error') or '')
+        fields = ('topics',) if draft and ('主题结构' in error or '主题无效' in error or '页码无效' in error) else (
+            ('markdown',) if draft and ('正文' in error or '来源引用' in error) else None)
+        patch_prompt = prompt + '\n自动恢复v2：保留已有有效内容，只修复validation_error指出的问题。'
+        repair_data = {**data, 'draft': draft or state.get('draft'), 'validation_error': error,
+                       'repair_kind': 'automatic-patch-v2'}
+        if fields:
+            patch_prompt += '\n只返回字段' + ','.join(fields) + '的JSON补丁，不返回或重抄其他字段；主题用真实来源映射，不凭空补页码。'
+            if fields == ('topics',):
+                repair_data['draft'] = {'topics': draft.get('topics')}
+            def patched(value):
+                if set(value) != set(fields):
+                    raise ValueError('定向修复只能返回指定字段。')
+                return validator({**draft, **value})
+        else:
+            patch_prompt += '\n返回完整JSON；对照完整来源修复，不能只补覆盖页码冒充内容完整。'
+            patched = validator
+        result = self._saved(name + '-automatic-patch-v2.json', patch_prompt, repair_data, patched)
+        self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
+        return result
 
     def _save_summary(self, name, prompt, data, pages, topic_ids):
         validator = lambda value: validate_summary(value, pages, topic_ids)

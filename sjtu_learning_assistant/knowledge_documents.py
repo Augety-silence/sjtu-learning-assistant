@@ -314,7 +314,7 @@ def preferred_visual_output(outputs: dict, page: int) -> str | None:
 class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
                  slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images,
-                 review_percent: int = 100, parallel_batches: int = 1):
+                 review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
@@ -322,6 +322,7 @@ class DocumentCompiler:
         self.slice_calls = max(0, int(slice_calls))
         self.text_first = text_first
         self.review_percent, self.parallel_batches = review_percent, parallel_batches
+        self.auto_recovery = auto_recovery
         # 分段并发后调用计数与轮转额度会被多个线程同时判断，必须原子化。
         self._calls_lock = threading.Lock()
         self.model_fallbacks: list[dict[str, str]] = []
@@ -347,8 +348,11 @@ class DocumentCompiler:
             try:
                 return self.runner(request_model, system, content)
             except (AIClassificationError, KnowledgeAPIError) as exc:
-                if attempt or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}:
-                    raise KnowledgeCompilerError(str(exc)) from None
+                if (attempt or self.auto_recovery and '自动恢复v2' in system
+                        or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}):
+                    failure = KnowledgeCompilerError(str(exc))
+                    failure.category = exc.category
+                    raise failure from None
                 if model == 'deepseek-chat' and exc.category in {'timeout', 'network', 'upstream_service'}:
                     request_model, fallback_category = VISION_MODEL, exc.category
                 if self.cancel.wait(12):
@@ -370,7 +374,9 @@ class DocumentCompiler:
             except (DocumentTextError, KnowledgeCompilerError):
                 raise
             except Exception as exc:
-                raise DocumentTextError(f"课件处理失败（{type(exc).__name__}）；已完成页面保留。") from None
+                failure = DocumentTextError(f"课件处理失败（{type(exc).__name__}）；已完成页面保留。")
+                failure.category = getattr(exc, 'category', '')
+                raise failure from None
 
     def _compile_snapshot(self, source: Path, original: Path, path: Path, target: Path, source_hash: str) -> Path:
         relative = original.relative_to(source).as_posix()
@@ -595,7 +601,8 @@ class DocumentCompiler:
             return verified
         try:
             study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources,
-                review_percent=self.review_percent, parallel_batches=self.parallel_batches).compile(entries)
+                review_percent=self.review_percent, parallel_batches=self.parallel_batches,
+                auto_recovery=self.auto_recovery).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None

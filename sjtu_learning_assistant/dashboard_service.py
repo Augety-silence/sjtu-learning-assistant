@@ -977,6 +977,7 @@ class DashboardService:
                     notes_context_provider=self._lesson_summary_ai_context,
                     notes_slice_calls=2,
                     notes_workers=4,
+                    notes_auto_recovery=True,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
@@ -3715,6 +3716,7 @@ class DashboardService:
                 wiki_rebuilder=self._rebuild_course_wiki,
                 max_documents_per_cycle=10, slice_calls=2, workers=6,
                 review_percent=REVIEW_SAMPLE_PERCENT, parallel_batches=SUMMARY_PARALLEL_BATCHES,
+                auto_recovery=True,
             )
         self._course_markdown_instance.start()
 

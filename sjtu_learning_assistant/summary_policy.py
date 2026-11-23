@@ -15,6 +15,14 @@ SUMMARY_POLICY = "source-ratio-30-percent-v1; max-readable-3000; retry-backoff-v
 REVIEW_SAMPLE_PERCENT = 20
 REVIEW_POLICY = f"sampled-{REVIEW_SAMPLE_PERCENT}-percent; merge-always-reviewed; v1"
 SUMMARY_PARALLEL_BATCHES = 3
+AUTO_RECOVERY_VERSION = 'bounded-patches-topics-20261123-v2'
+
+
+def recovery_delay_seconds(attempts: int, error: str = '') -> int:
+    """网络恢复快退避；结构恢复限次，不全库清空缓存或每日额度。"""
+    if any(word in error.lower() for word in ('超时', 'timeout', 'network', 'connection', '网络', '连接')):
+        return (30, 90, 180, 600, 1800)[min(4, max(0, attempts - 1))]
+    return (60, 180, 600, 1800)[min(3, max(0, attempts - 1))]
 
 
 def cache_friendly_data(data: dict) -> dict:
