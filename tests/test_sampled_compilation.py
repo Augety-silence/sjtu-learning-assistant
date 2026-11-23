@@ -6,7 +6,8 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from office_fixtures import knowledge_response
 from sjtu_learning_assistant.ai_runtime import cancellation_scope, current_cancellation_check
@@ -132,6 +133,37 @@ class SampledCompilationTests(unittest.TestCase):
             self.assertIsNone(cache.get(key))
             now[0] += 20
             self.assertIsNone(cache.get('2'))
+
+    def test_desktop_compilation_runner_reuses_response_and_rejects_truncation(self):
+        from sjtu_learning_assistant.dashboard_service import DashboardService
+        from sjtu_learning_assistant.knowledge_compiler import KnowledgeResponseError
+        from sjtu_learning_assistant.knowledge_summary import SUMMARY_PROMPT
+        class FakeClient:
+            calls = 0
+            truncated = False
+            def __init__(self, **kwargs):
+                pass
+            def chat_completion(self, messages, **kwargs):
+                type(self).calls += 1
+                return {'content': '{"markdown":"已保存的完整响应"}',
+                        'finish_reason': 'length' if self.truncated else 'stop'}
+        with tempfile.TemporaryDirectory() as temp, patch(
+                'sjtu_learning_assistant.dashboard_service.OpenAIClassificationClient', FakeClient):
+            service = DashboardService.__new__(DashboardService)
+            service._client_lock = threading.RLock()
+            service._effective_settings = lambda: SimpleNamespace(ai_enabled=True, ai_key_saved=True, ai_base_url='https://example.invalid/v1')
+            service.ai_key_loader = lambda: 'test-key'
+            service.ai_client_factory = FakeClient
+            service.local_projects_path = Path(temp) / 'projects.json'
+            service.engine = object()
+            result = service._run_knowledge_compiler_ai('deepseek-chat', SUMMARY_PROMPT, '{"pages":[]}')
+            self.assertEqual(result, service._run_knowledge_compiler_ai('deepseek-chat', SUMMARY_PROMPT, '{"pages":[]}'))
+            self.assertEqual(1, FakeClient.calls)
+            FakeClient.truncated = True
+            for _ in range(2):
+                with self.assertRaises(KnowledgeResponseError):
+                    service._run_knowledge_compiler_ai('deepseek-chat', SUMMARY_PROMPT, '{"pages":[1]}')
+            self.assertEqual(3, FakeClient.calls, '截断响应不得作为完整响应缓存')
 
 
 if __name__ == '__main__':
