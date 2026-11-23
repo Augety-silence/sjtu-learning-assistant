@@ -18,7 +18,18 @@ import {
   Paperclip,
   Wrench,
 } from "lucide-react";
-import { type ComponentType, useEffect, useId, useRef, useState } from "react";
+import {
+  type ComponentType,
+  memo,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { ExecutionNote } from "@/components/AIExecutionNote";
+
+export { ExecutionNote } from "@/components/AIExecutionNote";
+
 import type { AIAgentLiveStatus, AIAgentTrace, AIToolRun } from "@/lib/types";
 
 const toolIcons: Record<string, ComponentType<{ "aria-hidden"?: boolean }>> = {
@@ -216,11 +227,7 @@ export function traceRejectedCount(toolRuns: AIToolRun[]) {
   return toolRuns.filter((run) => run.status === "rejected").length;
 }
 
-export function ExecutionNote({ text }: { text?: string }) {
-  return text?.trim() ? <p className="ai-execution-note">{text}</p> : null;
-}
-
-export function TraceRun({ run }: { run: AIToolRun }) {
+export const TraceRun = memo(function TraceRun({ run }: { run: AIToolRun }) {
   const ok = run.status === "ok";
   const [open, setOpen] = useState(false);
   const Icon = toolIcons[run.tool_name] ?? Wrench;
@@ -276,7 +283,7 @@ export function TraceRun({ run }: { run: AIToolRun }) {
       </details>
     </>
   );
-}
+});
 
 // 不带时区的 ISO 时间（旧版后端从 SQLite 读回的 UTC）按 UTC 解析，
 // 否则 Date.parse 会当成本地时间，在 UTC+8 下多算 8 小时。
@@ -503,8 +510,11 @@ export function InlineAgentExecution({
                 </li>
               ))}
               {trace?.pending_text && (
-                <li>
-                  <ExecutionNote text={trace.pending_text} />
+                <li key={`pending-${runCount}`}>
+                  <ExecutionNote
+                    text={trace.pending_text}
+                    streaming={running}
+                  />
                 </li>
               )}
               {running && (

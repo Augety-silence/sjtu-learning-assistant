@@ -1,137 +1,21 @@
 import { Check, ChevronDown, Copy, FileText } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import {
-  Children,
-  isValidElement,
-  memo,
-  type ReactNode,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { AIFileChangeCard, fileChangeIds } from "@/components/AIFileChangeCard";
+import { MessageMarkdown } from "@/components/AIMarkdown";
 import { motionDuration, motionEase } from "@/lib/motion";
-import {
-  rehypeStreamFade,
-  useStreamFade,
-  useStreamReveal,
-} from "@/lib/streamReveal";
+import { useStreamFade, useStreamReveal } from "@/lib/streamReveal";
 import type {
   AIAgentLiveStatus,
   AIAgentTrace,
   AIChatMessage,
 } from "@/lib/types";
 
-// 桌面端以 file:// 加载，target=_blank 链接由 pywebview 交给系统打开
-// （Windows 为 os.startfile）；只放行绝对 http(s)/mailto，相对、file、UNC 链接一律去掉 href。
-function safeMarkdownUrl(url: string, key: string) {
-  const value = url.trim();
-  if (key === "href" && /^(https?:\/\/|mailto:)/i.test(value)) return value;
-  if (key !== "href" && /^https?:\/\//i.test(value)) return value;
-  return null;
-}
+export { safeRemarkPlugins } from "@/components/AIMarkdown";
 
-// 旧 WKWebView 不支持 GFM 自动链接内部的 lookbehind，降级 CommonMark。
-export function safeRemarkPlugins() {
-  try {
-    new RegExp("(?<=a)b");
-    return [remarkGfm];
-  } catch {
-    return [];
-  }
-}
-
-const remarkPlugins = safeRemarkPlugins();
-
-function NumberedCodeBlock({ children }: { children?: ReactNode }) {
-  const child = Children.count(children) === 1 ? Children.only(children) : null;
-  if (!isValidElement<{ children?: ReactNode; className?: string }>(child)) {
-    return <pre>{children}</pre>;
-  }
-  const source = String(child.props.children ?? "").replace(/\n$/, "");
-  return (
-    <pre className="ai-code-with-lines">
-      <code className={child.props.className}>
-        {source.split("\n").map((line, index) => (
-          <span className="ai-code-line" key={`${index}-${line}`}>
-            <span className="ai-code-line-number" aria-hidden="true">
-              {index + 1}
-            </span>
-            <span>{line || " "}</span>
-          </span>
-        ))}
-      </code>
-    </pre>
-  );
-}
-
-const MessageMarkdown = memo(function MessageMarkdown({
-  content,
-  showCodeLineNumbers,
-  clip = false,
-  fade = null,
-}: {
-  content: string;
-  showCodeLineNumbers: boolean;
-  clip?: boolean;
-  fade?: ReturnType<typeof useStreamFade>;
-}) {
-  const markdown = (
-    <ReactMarkdown
-      remarkPlugins={remarkPlugins}
-      rehypePlugins={
-        fade ? [rehypeSanitize, [rehypeStreamFade, fade]] : [rehypeSanitize]
-      }
-      urlTransform={safeMarkdownUrl}
-      components={{
-        a: ({ node: _node, ...props }) => (
-          <a {...props} target="_blank" rel="noreferrer" />
-        ),
-        // Never auto-load remote images from model output: a prompt-injected
-        // reply could encode local data into the URL and leak it without a
-        // click. Render a text placeholder (no <a>, so `[![x](u)](v)` stays
-        // valid markup) and keep the address visible on hover.
-        img: ({ src, alt }) => (
-          <span title={typeof src === "string" ? src : undefined}>
-            [图片：{alt || "外部图片"}]
-          </span>
-        ),
-        table: ({ node: _node, ...props }) => (
-          <div
-            className="ai-markdown-table"
-            role="region"
-            aria-label="表格内容"
-            tabIndex={0}
-          >
-            <table {...props} />
-          </div>
-        ),
-        ...(showCodeLineNumbers
-          ? {
-              pre: ({ node: _node, children }) => (
-                <NumberedCodeBlock>{children}</NumberedCodeBlock>
-              ),
-            }
-          : {}),
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  );
-  return (
-    <div className="ai-markdown">
-      {clip ? <div className="ai-markdown-clip">{markdown}</div> : markdown}
-    </div>
-  );
-});
-
-// 超过这个长度或行数的用户消息默认折叠，避免一次粘贴就占满整屏、把回复挤出视野。
+// 长用户消息默认折叠，避免一次粘贴占满阅读区。
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 12;
 

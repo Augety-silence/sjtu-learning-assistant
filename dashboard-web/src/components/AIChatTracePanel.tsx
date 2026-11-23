@@ -86,10 +86,14 @@ function ActivityTraceStep({
                 run={run}
               />
             ))}
-            <ExecutionNote text={trace.pending_text} />
+            <ExecutionNote
+              key={`pending-${trace.tool_runs.length}`}
+              text={trace.pending_text}
+              streaming={live && open}
+            />
           </div>
         ) : trace.pending_text ? (
-          <ExecutionNote text={trace.pending_text} />
+          <ExecutionNote text={trace.pending_text} streaming={live && open} />
         ) : (
           <p className="ai-trace-no-tools">本轮未调用工具。</p>
         )}

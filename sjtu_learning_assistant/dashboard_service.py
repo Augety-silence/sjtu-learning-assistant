@@ -61,6 +61,7 @@ from sjtu_learning_assistant.ai_classifier import (
     AIClassificationError,
     OpenAIClassificationClient,
 )
+from sjtu_learning_assistant.ai_stream_buffer import AIStreamEventBuffer
 from sjtu_learning_assistant.ai_keychain import (
     AIKeychainError,
     ai_api_key_saved,
@@ -3439,46 +3440,27 @@ class DashboardService:
         attachment_ids: object | None,
         page_context: Mapping[str, Any],
     ) -> None:
-        buffers: dict[str, list[str]] = {"content_delta": [], "reasoning_delta": [], "progress_delta": []}
-
-        def flush(kind: str) -> None:
-            parts = buffers[kind]
-            if not parts:
-                return
-            self.ai_tasks.append_event(task_id, kind, {"delta": "".join(parts)})
-            parts.clear()
-
-        def event(kind: str, payload: dict[str, Any]) -> None:
+        def check_active() -> None:
             if self.ai_tasks.is_cancel_requested(task_id):
                 raise AITaskCancelled("AI 任务已取消。")
-            if kind in buffers:
-                delta = payload.get("delta")
-                if type(delta) is str and delta:
-                    buffers[kind].append(delta)
-                    if sum(len(part) for part in buffers[kind]) >= (64 if kind == "progress_delta" else 12):
-                        flush(kind)
-                return
-            flush("reasoning_delta")
-            flush("progress_delta")
-            flush("content_delta")
-            self.ai_tasks.append_event(task_id, kind, payload)
 
         try:
             self.ai_tasks.start(task_id)
-            result = self.ai_chat_send(
-                session_id,
-                content,
-                model,
-                depth,
-                preset_id,
-                attachment_ids,
-                task_id=task_id,
-                page_context=page_context,
-                event_callback=event,
-            )
-            flush("reasoning_delta")
-            flush("progress_delta")
-            flush("content_delta")
+            with AIStreamEventBuffer(
+                lambda kind, payload: self.ai_tasks.append_event(task_id, kind, payload),
+                check_active,
+            ) as buffer:
+                result = self.ai_chat_send(
+                    session_id,
+                    content,
+                    model,
+                    depth,
+                    preset_id,
+                    attachment_ids,
+                    task_id=task_id,
+                    page_context=page_context,
+                    event_callback=buffer.add,
+                )
             self.ai_tasks.complete(task_id, {"chat_result": result})
         except AITaskCancelled:
             self.ai_tasks.finish_cancelled(task_id)

@@ -665,8 +665,9 @@ describe("AIChatView", () => {
     // 流式文字按节奏逐步渐显（被拆入渐显元素），最终完整显示在回复气泡中。
     await waitFor(() =>
       expect(
-        container.querySelector(".ai-message-assistant .ai-markdown")
-          ?.textContent,
+        container.querySelector(
+          ".ai-message-assistant .ai-message-body > .ai-markdown",
+        )?.textContent,
       ).toBe("第 4 页介绍了开课概况。"),
     );
     // 正文开始流式输出后，执行详情跟随到回复气泡顶部，不会消失。
@@ -707,7 +708,9 @@ describe("AIChatView", () => {
       ),
     );
     expect(
-      container.querySelector(".ai-markdown")?.textContent ?? "",
+      container.querySelector(
+        ".ai-message-assistant .ai-message-body > .ai-markdown",
+      )?.textContent ?? "",
     ).not.toContain("正在查课程。");
     emit({
       type: "tool",
@@ -740,8 +743,9 @@ describe("AIChatView", () => {
     emit({ type: "content_delta", delta: "已找到一份课件。" });
     await waitFor(() =>
       expect(
-        container.querySelector(".ai-message-assistant .ai-markdown")
-          ?.textContent,
+        container.querySelector(
+          ".ai-message-assistant .ai-message-body > .ai-markdown",
+        )?.textContent,
       ).toBe("已找到一份课件。"),
     );
     expect(container.textContent).not.toContain("临时候选答案");
