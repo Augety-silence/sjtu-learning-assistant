@@ -33,6 +33,11 @@ export interface CompiledKnowledgeDocument {
   snippet?: string;
   folder?: string;
   contract?: string;
+  source_type?: string;
+  review_status?: string;
+  timed?: boolean;
+  timestamps?: string;
+  provenance?: Record<string, unknown>;
   error?: string | null;
   course_id?: string;
   course_name?: string;
@@ -93,6 +98,8 @@ export interface AIToolRun {
   result_summary: unknown;
   /** 单次工具执行耗时（毫秒）；旧记录没有该字段。 */
   duration_ms?: number | null;
+  /** 模型公开的执行说明；不包含 reasoning_content。 */
+  progress_text?: string;
 }
 
 /** 后端推送的本轮进度（模型请求、自动重试）。 */
@@ -116,6 +123,8 @@ export interface AIAgentTrace {
   status: string;
   steps: number;
   tool_runs: AIToolRun[];
+  /** 当前模型段落尚未确认是最终答复，暂存于执行时间线。 */
+  pending_text?: string;
   created_at?: string | null;
   /** 本轮从发送到完成的耗时（毫秒）；未知时为空。 */
   duration_ms?: number | null;
@@ -218,6 +227,11 @@ export interface AIChatSendResult {
   trace: AIAgentTrace;
   user_message: AIChatMessage;
   assistant_message: AIChatMessage;
+}
+
+export interface AIChatSteerResult {
+  task_id: string;
+  user_message: AIChatMessage;
 }
 
 export interface AIPageContext {
@@ -405,6 +419,12 @@ export interface SyncStatus {
 }
 
 export interface SettingsStatus {
+  asr_endpoint?: string;
+  asr_model?: string;
+  asr_key_saved?: boolean;
+  recording_asr_enabled?: boolean;
+  recording_asr_paused?: boolean;
+  recording_asr_scope?: "all_unfinished";
   course_markdown_enabled: boolean;
   course_markdown_daily_calls: number;
   archive_root_ready: boolean;
@@ -448,6 +468,7 @@ export interface MarkdownProgressGroup {
   completed: number;
   pending: number;
   failed: number;
+  unavailable?: number;
   ai_completed: number;
   ai_failed: number;
   issues: { name: string; code: string }[];
@@ -1420,4 +1441,49 @@ export interface Phase1UncertainSpan {
   start: number;
   end: number;
   cue_ids: string[];
+}
+
+export interface RecordingASRJob {
+  source_id: string;
+  title?: string;
+  course_name?: string;
+  status: string;
+  error?: string | null;
+  status_label?: string;
+  chunks_completed?: number;
+  chunks_total?: number;
+  attempts?: number;
+  retryable?: boolean;
+}
+export interface RecordingASRStatus {
+  state?: string;
+  error?: string | null;
+  account_blocked?: boolean;
+  draining?: boolean;
+  safe_to_exit?: boolean;
+  drain_error?: string | null;
+  enabled: boolean;
+  paused: boolean;
+  busy?: boolean;
+  in_flight?: number;
+  scanning?: boolean;
+  status?: string;
+  scope?: string;
+  counts?: Record<string, number>;
+  coverage?: {
+    status: string;
+    total_courses: number | null;
+    scanned_courses: number;
+    missing_sources: number;
+    inaccessible_courses: Array<{
+      course_id: string;
+      course_name: string;
+      reason: string;
+    }>;
+  };
+}
+export interface RecordingASRJobs {
+  items: Array<RecordingASRJob>;
+  total?: number;
+  truncated?: boolean;
 }

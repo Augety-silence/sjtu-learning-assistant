@@ -356,6 +356,7 @@ class TranscriptService:
         playback_auto_retry_limit: int = 3,
         notes_slice_calls: int = 0,
         notes_workers: int = 1,
+        notes_auto_recovery: bool = False,
     ) -> None:
         self.root = Path(root).expanduser()
         self.enable_phase1 = (
@@ -393,6 +394,7 @@ class TranscriptService:
         self._source_thread: threading.Thread | None = None
         self.notes_slice_calls = max(0, int(notes_slice_calls))
         self.notes_workers = max(1, min(10, int(notes_workers)))
+        self.notes_auto_recovery = notes_auto_recovery
         self.lease_seconds = max(30, int(lease_seconds))
         self._owner = dict(
             pid=os.getpid(),
@@ -849,7 +851,9 @@ class TranscriptService:
                 manifest = self._read_json(manifest_path)
                 self._refresh_manifest_versions(manifest, job, ai_context)
                 if type(manifest.get("lesson_notes")) is dict:
-                    manifest["lesson_notes"].update(attempts=0, retry_after=None)
+                    notes = manifest['lesson_notes']
+                    notes.update(attempts=0, retry_after=None, auto_paused=False,
+                                 recovery_epoch=int(notes.get('recovery_epoch') or 0) + 1)
                 self._write_json(manifest_path, manifest)
                 self._next_notes_scan = 0
         return self.start_batch(
@@ -3287,6 +3291,14 @@ class TranscriptService:
                     if not context.enabled or context.client is None:
                         continue
                     fingerprint = _sha256((NOTES_PROMPT_VERSION + context.model + context.endpoint_fingerprint + manifest["raw_sha256"]).encode())
+                    from .summary_policy import AUTO_RECOVERY_VERSION, recovery_delay_seconds
+                    if (self.notes_auto_recovery and notes.get('status') == 'pending' and notes.get('auto_recovery_version') != AUTO_RECOVERY_VERSION
+                            and notes.get('error_code') in ('task_error', 'validation', 'schema', 'format', 'timeout', 'network', 'connection', 'response_format')):
+                        notes.update(auto_recovery_version=AUTO_RECOVERY_VERSION, attempts=0, retry_after=None)
+                        notes.pop('auto_paused', None)
+                        self._write_json(directory / 'manifest.json', manifest)
+                    if self.notes_auto_recovery and notes.get('fingerprint') == fingerprint and notes.get('auto_paused'):
+                        continue
                     retry = _parse_time(notes.get('retry_after'))
                     if notes.get('fingerprint') == fingerprint and retry and retry > self.now_provider():
                         continue
@@ -3301,6 +3313,8 @@ class TranscriptService:
                         if latest and (latest[1].get("cancel_requested") or latest[0].get("cancel_requested")):
                             raise TranscriptPipelineCancelled()
                     try:
+                        if self.notes_auto_recovery:
+                            manifest.setdefault('lesson_notes', {})['auto_recovery_version'] = AUTO_RECOVERY_VERSION
                         manifest.setdefault("lesson_notes", {}).update(last_dispatched_at=self.now_provider().isoformat())
                         self._write_json(directory / "manifest.json", manifest)
                         cache_parent = directory / "lesson-checkpoints"
@@ -3318,8 +3332,11 @@ class TranscriptService:
                                 self._write_json(path, value)
                         from .ai_runtime import cancellation_scope
                         with cancellation_scope(lambda: self._stop.is_set() or not self.notes_context_provider().enabled):
+                            from .summary_policy import REVIEW_SAMPLE_PERCENT
                             summary, report = compile_summary(raw, context.client, check=check, cached=cached, commit=commit,
-                                                             max_calls=self.notes_slice_calls)
+                                                             max_calls=self.notes_slice_calls,
+                                                             review_percent=REVIEW_SAMPLE_PERCENT, auto_recovery=self.notes_auto_recovery,
+                                                             recovery_epoch=int(notes.get('recovery_epoch') or 0))
                         check()
                         # API调用期间来源或人工正文发生变化时，不覆盖新内容。
                         current = self._read_json(directory / "manifest.json")
@@ -3338,9 +3355,14 @@ class TranscriptService:
                                 last_dispatched_at=self.now_provider().isoformat())
                             self._write_json(directory / "manifest.json", current)
                             return True
-                        current.setdefault("lesson_notes", {}).update(status="pending", error_code=self._diagnostic_code(exc),
+                        code = 'validation' if isinstance(exc, ValueError) else self._diagnostic_code(exc)
+                        paused = self.notes_auto_recovery and ('自动修复额度已用尽' in str(exc) or '来源审校未通过' in str(exc)
+                                  or code in ('authentication', 'endpoint_or_model', 'request_parameters', 'storage')
+                                  or attempts + 1 >= 8)
+                        current.setdefault("lesson_notes", {}).update(status="pending", error_code=code,
+                            auto_paused=paused,
                             attempts=min(1_000_000, attempts + 1), fingerprint=fingerprint,
-                            retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(attempts + 1))).isoformat())
+                            retry_after=(self.now_provider() + timedelta(seconds=recovery_delay_seconds(attempts + 1, code) if self.notes_auto_recovery else retry_delay_seconds(attempts + 1))).isoformat())
                         self._write_json(directory / "manifest.json", current)
                     return True
             except (OSError, TranscriptError, ValueError, TypeError, AttributeError):

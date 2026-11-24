@@ -13,6 +13,11 @@ from uuid import uuid4
 _cancellation = threading.local()
 
 
+def current_cancellation_check():
+    """显式传递到分段线程，避免并发请求丢失暂停/退出信号。"""
+    return getattr(_cancellation, 'check', lambda: False)
+
+
 @contextmanager
 def cancellation_scope(cancelled):
     previous = getattr(_cancellation, 'check', None)

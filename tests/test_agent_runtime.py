@@ -269,7 +269,8 @@ class AgentRuntimeTests(unittest.TestCase):
         conversation, runs = [], []
         loop._knowledge_fallback(requests, conversation, runs, state, 10, None)
         self.assertEqual(1, sum(run["tool_name"] == "search_compiled_knowledge" for run in runs))
-        for conversation, started in (([{"role":"user","content":"x" * 54000}],10), ([{"role":"user","content":"x"}] * 64,10), ([], -1000)):
+        from sjtu_learning_assistant.agent_runtime.loop import CONTEXT_CHAR_BUDGET
+        for conversation, started in (([{"role":"user","content":"x" * CONTEXT_CHAR_BUDGET}],10), ([{"role":"user","content":"x"}] * 64,10), ([], -1000)):
             state = {"calls":0,"queries":set(),"reads":[],"originals":set()}
             runs = []
             loop._knowledge_fallback(requests, conversation, runs, state, started, None)
@@ -685,6 +686,47 @@ class AgentRuntimeTests(unittest.TestCase):
             deltas,
         )
 
+    def test_public_progress_is_kept_between_tools_not_in_final_answer(self) -> None:
+        class StreamingClient(ScriptedClient):
+            supports_streaming = True
+
+            def chat_completion_stream(inner_self, messages, **kwargs):
+                reply = inner_self.chat_completion(messages, **kwargs)
+                kwargs["on_delta"]("content", reply["content"])
+                kwargs["on_delta"]("reasoning", "私有推理，不属于执行说明")
+                return reply
+
+        client = StreamingClient([
+            {"content": "先读取课程列表。", "tool_calls": [{"id": "p1", "function": {"name": "list_courses", "arguments": '{"limit":2}'}}]},
+            {"content": "再核对课程文件。", "tool_calls": [{"id": "p2", "function": {"name": "list_course_files", "arguments": '{"course_id":"course-1"}'}}]},
+            {"content": "已找到一份课件。", "tool_calls": []},
+        ])
+        events = []
+        result = AgentLoop(client, self.registry, preset("list_courses", "list_course_files")).run(
+            [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=500,
+            temperature=0, event_callback=lambda kind, payload: events.append((kind, payload)),
+        )
+        self.assertEqual("已找到一份课件。", result.content)
+        self.assertEqual(["先读取课程列表。", "再核对课程文件。"], [run["progress_text"] for run in result.tool_runs])
+        self.assertEqual(["已找到一份课件。"], [payload["delta"] for kind, payload in events if kind == "content_delta"])
+        self.assertNotIn("私有推理", json.dumps(result.tool_runs, ensure_ascii=False))
+        final_start = next(index for index, event in enumerate(events) if event[0] == "answer_start")
+        self.assertTrue(all(index < final_start for index, event in enumerate(events) if event[0] == "tool"))
+
+    def test_identical_nonretryable_tool_failure_is_executed_only_once(self) -> None:
+        from unittest.mock import patch
+
+        client = ScriptedClient([
+            {"content": "", "tool_calls": [{"id": str(index), "function": {"name": "list_courses", "arguments": '{"limit":2}'}}]}
+            for index in range(2)
+        ] + [{"content": "索引不可用，不能确认。", "tool_calls": []}])
+        with patch.object(self.registry, "execute", side_effect=AgentToolError("索引不可用", category="knowledge_unavailable", retryable=False)) as execute:
+            result = AgentLoop(client, self.registry, preset("list_courses")).run(
+                [{"role": "user", "content": "你好"}], user_text="你好", max_tokens=500, temperature=0,
+            )
+        self.assertEqual(1, execute.call_count)
+        self.assertEqual("duplicate_failure", result.tool_runs[1]["result_summary"]["category"])
+
     def test_multimodal_attachment_uses_non_streaming_completion(self) -> None:
         class MultimodalClient:
             supports_streaming = True
@@ -809,7 +851,7 @@ class AgentRuntimeTests(unittest.TestCase):
 
         call = {"content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_courses", "arguments": "{}"}}]}
         client = ScriptedClient([call, {"content": "已完成", "tool_calls": []}])
-        history = [{"role": "user", "content": "甲" * 13_500} for _ in range(4)]
+        history = [{"role": "user", "content": "甲" * 13_500} for _ in range(8)]
         result = AgentLoop(client, LargeResultRegistry(), preset("list_courses")).run(
             history, user_text="甲" * 13_500, max_tokens=100, temperature=0
         )
@@ -879,8 +921,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("tool", requests[1]["messages"][-1]["role"])
         self.assertEqual("call-1", requests[1]["messages"][-1]["tool_call_id"])
         self.assertEqual("list_courses", requests[1]["messages"][-1]["name"])
-        self.assertIn(("content_delta", {"delta": "共有"}), deltas)
-        self.assertIn(("content_delta", {"delta": "一门课程。"}), deltas)
+        self.assertIn(("progress_delta", {"delta": "共有"}), deltas)
+        self.assertIn(("answer_start", {}), deltas)
+        self.assertIn(("content_delta", {"delta": "共有一门课程。"}), deltas)
 
     def test_stream_timeout_before_any_output_is_retried_with_status_events(self) -> None:
         attempts = []

@@ -586,7 +586,7 @@ export function AIChatComposer({
               title={
                 stopping
                   ? "正在等待当前模型或工具请求返回"
-                  : "停止当前任务并清空排队消息"
+                  : "停止当前会话的任务"
               }
               disabled={stopping}
               onClick={onCancel}
@@ -604,7 +604,8 @@ export function AIChatComposer({
           <Button
             type="submit"
             size="icon"
-            aria-label="发送消息"
+            aria-label={busy ? "补充指令" : "发送消息"}
+            title={busy ? "立即补充当前任务的要求" : "发送消息"}
             disabled={
               attachmentBusy ||
               (!draft.trim() && attachments.length === 0) ||

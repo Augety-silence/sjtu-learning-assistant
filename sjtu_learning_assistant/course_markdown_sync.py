@@ -18,9 +18,10 @@ from sjtu_learning_assistant.knowledge_documents import (
     skipped_active_content, retained_source_markdown,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
-from sjtu_learning_assistant.summary_policy import retry_delay_seconds
+from sjtu_learning_assistant.summary_policy import retry_delay_seconds, recovery_delay_seconds, AUTO_RECOVERY_VERSION
 
 OUTPUT_FOLDER = "Knowledge Markdown"
+RECOVERY_VERSION = "pdfium-citations-structure-20261123-v1"
 
 
 class CourseMarkdownSync:
@@ -29,6 +30,7 @@ class CourseMarkdownSync:
                  compiler_factory: Callable = DocumentCompiler,
                  wiki_rebuilder: Callable | None = None,
                  max_documents_per_cycle: int = 0, slice_calls: int = 0, workers: int = 1,
+                 review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
                  today: Callable = lambda: datetime.now().date().isoformat(),
                  now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
@@ -38,6 +40,8 @@ class CourseMarkdownSync:
         self.max_documents_per_cycle = max(0, int(max_documents_per_cycle))
         self.slice_calls = max(0, int(slice_calls))
         self.workers = max(1, min(10, int(workers)))
+        self.review_percent, self.parallel_batches = review_percent, parallel_batches
+        self.auto_recovery = auto_recovery
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -75,7 +79,16 @@ class CourseMarkdownSync:
         while not self._stop.is_set():
             self._wake.clear()
             self.run_once()
-            self._wake.wait(1 if self.status().get("has_runnable") else self.interval)
+            self._wake.wait(self._wait_seconds())
+
+    def _wait_seconds(self) -> float:
+        status = self.status()
+        if status.get('has_runnable'):
+            return 1
+        retry = status.get('next_retry_at')
+        if retry:
+            return max(1, min(self.interval, (datetime.fromisoformat(retry) - self.now_provider()).total_seconds()))
+        return self.interval
 
     def run_once(self) -> None:
         """只由单一 worker 调用；测试可同步调用，不需要启动 UI。"""
@@ -203,6 +216,22 @@ class CourseMarkdownSync:
                 source_hash = digest(path.read_bytes())
                 fingerprint = compilation_fingerprint(source_hash)
                 item = state["items"].setdefault(relative, {})
+                if (self.auto_recovery and item.get('status') in ('failed', 'pending')
+                        and item.get('auto_recovery_version') != AUTO_RECOVERY_VERSION
+                        and any(reason in str(item.get('error', '')) for reason in
+                                ('精炼', '主题讲义页码', '请求超时', 'DashboardError', 'PdfiumError'))):
+                    # 只唤醒已知可恢复失败一次；付费检查点与其预算绝不重置。
+                    item.update(auto_recovery_version=AUTO_RECOVERY_VERSION)
+                    item.pop('retry_after', None)
+                    item.pop('auto_paused', None)
+                    persist()
+                # 仅唤醒本次代码已修复的旧失败；不清空证据、已完成稿或网络退避。
+                if (item.get('status') == 'failed' and item.get('recovery_version') != RECOVERY_VERSION
+                        and any(reason in str(item.get('error', '')) for reason in
+                                ('PdfiumError', '缺少有效来源引用', '缺少完整主题结构'))):
+                    item.update(recovery_version=RECOVERY_VERSION)
+                    item.pop('retry_after', None)
+                    persist()
                 mirror = safe_destination(target, target / "Courses" / Path(relative + ".md"))
                 allowed = {item.get("mirror_hash"), item.get("pending_hash")} - {None}
                 if mirror.exists() and (not mirror.is_file() or digest(mirror.read_bytes()) not in allowed):
@@ -216,13 +245,20 @@ class CourseMarkdownSync:
                     continue
                 skipped = skipped_active_content(path)
                 if skipped:
+                    oversize = any(reason.startswith('oversize_reference_') for reason in skipped)
                     if item.get('fingerprint') != fingerprint or item.get('status') != 'retained':
-                        body = retained_source_markdown(source, path, source_hash, skipped)
-                        if digest(path.read_bytes()) != source_hash:
-                            raise DocumentTextError('提取期间课件已变化，请等待下次同步。')
-                        publish(item, mirror, body)
-                        item.update(fingerprint=fingerprint, status='retained', text_ready=True,
-                                    skipped_parts=skipped, quality_status='source-only', attempts=0)
+                        if oversize and mirror.is_file():
+                            # 过重教材（>50 MiB 或非课件 PDF >200 页）只暂停 AI 编译；
+                            # 已有正文镜像与检查点原样保留，不覆盖、不清空。
+                            item.update(fingerprint=fingerprint, status='retained', text_ready=True,
+                                        skipped_parts=skipped, quality_status='source-only', attempts=0)
+                        else:
+                            body = retained_source_markdown(source, path, source_hash, skipped)
+                            if digest(path.read_bytes()) != source_hash:
+                                raise DocumentTextError('提取期间课件已变化，请等待下次同步。')
+                            publish(item, mirror, body)
+                            item.update(fingerprint=fingerprint, status='retained', text_ready=True,
+                                        skipped_parts=skipped, quality_status='source-only', attempts=0)
                         item.pop('retry_after', None)
                         item.pop('error', None)
                         persist()
@@ -270,6 +306,7 @@ class CourseMarkdownSync:
         dispatched = 0
         selected = []
         has_runnable = False
+        next_retry = None
         for index, (path, relative, fingerprint, item, mirror) in enumerate(prepared):
             self._set(phase="ai_summary", current_file=path.name)
             if self._stop.is_set() or self._cancel.is_set():
@@ -283,12 +320,21 @@ class CourseMarkdownSync:
                     continue
                 # 失败逐步退避，不设每日调用总额，也不因3次失败锁死任务。
                 attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint else 0
+                if self.auto_recovery and attempts >= 8:
+                    # 版本唤醒也不能补充失败预算；局部兼容修复可离线复验检查点。
+                    item.update(auto_paused=True, status='failed')
+                    persist()
+                if self.auto_recovery and item.get('fingerprint') == fingerprint and item.get('auto_paused'):
+                    failed += 1
+                    issues.append(relative + '：自动恢复已暂停；已有内容保留。')
+                    continue
                 if item.get("fingerprint") == fingerprint and item.get("retry_after"):
                     try:
                         retry_at = datetime.fromisoformat(item['retry_after'])
                         if retry_at.tzinfo is None:
                             retry_at = retry_at.replace(tzinfo=timezone.utc)
                         if retry_at > self.now_provider():
+                            next_retry = min(next_retry, retry_at) if next_retry else retry_at
                             failed += 1
                             issues.append(relative + "：冷却后自动续编。")
                             continue
@@ -314,13 +360,23 @@ class CourseMarkdownSync:
                 item.update(status='failed', error=str(exc))
                 persist()
 
+        # 只剩一两份可执行课件时，短切片会让第三页因额度提前退出，
+        # 随后只能等待最后的慢页。少量任务扩至最多六次，仍由共享限流预约。
+        effective_slice_calls = self.slice_calls
+        if (self.auto_recovery and self.workers > 1 and 0 < len(selected) <= 2
+                and 0 < self.slice_calls < 6):
+            effective_slice_calls = min(6, self.slice_calls * 3)
+
         def compile_one(entry):
             path = entry[0]
             if self._stop.is_set() or self._cancel.is_set():
                 raise CompilationDeferred('同步已取消，检查点保留。')
             kwargs = {'max_calls': 0}
+            if self.compiler_factory is DocumentCompiler:
+                kwargs.update(review_percent=self.review_percent, parallel_batches=self.parallel_batches,
+                              auto_recovery=self.auto_recovery)
             if self.slice_calls:
-                kwargs.update(slice_calls=self.slice_calls, text_first=True)
+                kwargs.update(slice_calls=effective_slice_calls, text_first=True)
             local = self.compiler_factory(call, self._cancel, **kwargs)
             from .ai_runtime import cancellation_scope
             with cancellation_scope(lambda: self._stop.is_set() or self._cancel.is_set() or not self.settings().ai_enabled):
@@ -340,6 +396,7 @@ class CourseMarkdownSync:
                         item['attempts'] = 0
                         item.pop('retry_after', None)
                         item.pop('error', None)
+                        item.pop('auto_paused', None)
                         persist()
                         completed += 1
                     except CompilationDeferred:
@@ -356,22 +413,37 @@ class CourseMarkdownSync:
                             pending += 1
                             continue
                         failed += 1
-                        item.update(status='failed', error=str(exc), retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat())
+                        category = str(getattr(exc, 'category', ''))
+                        delay = recovery_delay_seconds(item.get('attempts', 1), str(exc) + category) if self.auto_recovery else retry_delay_seconds(item.get('attempts', 1))
+                        retry_at = self.now_provider() + timedelta(seconds=delay)
+                        item.update(status='failed', error=str(exc), retry_after=retry_at.isoformat())
+                        if self.auto_recovery and ('自动修复额度已用尽' in str(exc) or item.get('attempts', 0) >= 8
+                                or category in ('authentication', 'credential', 'endpoint_or_model', 'request_parameters', 'storage')):
+                            item['auto_paused'] = True
+                        else:
+                            next_retry = min(next_retry, retry_at) if next_retry else retry_at
                         issues.append(relative + '：' + str(exc))
                         persist()
-                    except Exception:
+                    except Exception as exc:
                         failed += 1
-                        item.update(status='failed', error='处理失败；已有文件保留。', retry_after=(self.now_provider() + timedelta(seconds=retry_delay_seconds(item.get('attempts', 1)))).isoformat())
+                        delay = recovery_delay_seconds(item.get('attempts', 1), type(exc).__name__) if self.auto_recovery else retry_delay_seconds(item.get('attempts', 1))
+                        retry_at = self.now_provider() + timedelta(seconds=delay)
+                        item.update(status='failed', error='处理失败；已有文件保留。', retry_after=retry_at.isoformat())
+                        if self.auto_recovery and item.get('attempts', 0) >= 8:
+                            item['auto_paused'] = True
+                        else:
+                            next_retry = min(next_retry, retry_at) if next_retry else retry_at
                         issues.append(relative + '：处理失败；已有文件保留。')
                         persist()
                     self._set(completed=completed, failed=failed, pending=pending, issues=issues[:20])
         # 没有可执行的总结时才补 Wiki，不挡首批正文。
-        if not self.max_documents_per_cycle or not has_runnable:
+        if not self.max_documents_per_cycle or not has_runnable and not next_retry:
             self._set(phase="wiki", current_file=None)
             update_wiki()
         self._set(status="paused" if self._cancel.is_set() else "running" if has_runnable else "completed_with_warnings" if failed or issues else "completed",
                   phase="idle", current_file=None,
                   completed=completed, retained=retained, failed=failed, pending=pending, has_runnable=has_runnable,
+                  next_retry_at=next_retry.isoformat() if next_retry else None,
                   calls_today=quota["used"], issues=issues[:20])
 
     @staticmethod

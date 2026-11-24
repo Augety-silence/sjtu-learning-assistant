@@ -137,6 +137,9 @@ def _pages(value: Any, allowed: list[int]) -> list[int]:
 
 def canonical_citations(text: str) -> str:
     # 只转换明确的课件出处写法，不从正文数字猜页码。
+    # 模型常返回 [p.4] / [pp.4–6]；页码已经存在，不应为补“课件”重付费。
+    text = re.sub(r"\[(?:[Pp]{1,2})[.．]\s*(\d+\s*(?:[–—\-至]\s*\d+)?(?:\s*[,，、;；]\s*(?:p\.\s*)?\d+\s*(?:[–—\-至]\s*\d+)?)*)\]",
+                  lambda m: "[课件 p." + m.group(1) + "]", text)
     text = re.sub(r"\[课件\s*第\s*(\d+)\s*(?:[–—\-至]\s*(\d+)\s*)?页\]",
                   lambda m: "[课件 p." + m.group(1) + ("–" + m.group(2) if m.group(2) else "") + "]", text)
     text = re.sub(r"\[课件\s+[Pp](?:\.|．)?\s*(\d+)\s*(?:[–—\-至]\s*(\d+)\s*)?\]",

@@ -1392,6 +1392,28 @@
   min-width: 0;
 }
 
+.ai-execution-note {
+  margin: 8px 0;
+  padding: 0 4px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ai-execution-note .ai-markdown { font: inherit; color: inherit; }
+.ai-execution-note .ai-markdown > :first-child { margin-top: 0; }
+.ai-execution-note .ai-markdown > :last-child { margin-bottom: 0; }
+.ai-execution-note .ai-markdown :is(p, ul, ol, pre, table) { margin: 0.4em 0; }
+.ai-execution-note .ai-markdown :is(h1, h2, h3, h4, h5, h6) { font-size: 1em; font-weight: 650; margin: 0.7em 0 0.3em; }
+.ai-execution-note .ai-markdown :is(ul, ol) { padding-left: 1.4em; }
+.ai-execution-note .ai-markdown ul { list-style: disc; }
+.ai-execution-note .ai-markdown ol { list-style: decimal; }
+.ai-execution-note .ai-markdown a { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+.ai-execution-note .ai-markdown pre { max-width: 100%; overflow-x: auto; white-space: pre; }
+
 .ai-turn-trace .ai-tool-run {
   border: 1px solid color-mix(in srgb, var(--aura-border) 88%, transparent);
   border-radius: 9px;

@@ -97,6 +97,64 @@ def test_task_timestamps_are_serialized_with_utc_offset():
     assert all(event["created_at"].endswith("+00:00") for event in snapshot["events"])
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_agent_context_capacity_is_shared_by_both_request_modes(stream):
+    from sjtu_learning_assistant.ai_limits import MAX_AGENT_CONTEXT_CHARS, MAX_AGENT_TOOL_MESSAGE_CHARS, MAX_CHAT_MESSAGE_CHARS
+
+    requests = []
+    def handler(request):
+        requests.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"完成"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', headers={"content-type": "text/event-stream"}, request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "完成"}}]}, request=request)
+
+    messages = [{"role": "user", "content": "课程"}]
+    for index in range(4):
+        messages.extend([
+            {"role": "assistant", "content": "", "tool_calls": [{"id": str(index), "type": "function", "function": {"name": "read_compiled_knowledge", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": str(index), "name": "read_compiled_knowledge", "content": "文" * 24000},
+        ])
+    client = OpenAIClassificationClient(api_key="fake", transport=httpx.MockTransport(handler), limiter=lambda: None)
+    call = client.chat_completion_stream if stream else client.chat_completion
+    try:
+        assert call(messages, system_prompt=False)["content"] == "完成"
+        assert len(requests) == 1
+        # 本地检索容量增加，不放宽用户单条输入限制，也不取消总容量边界。
+        for invalid in ([{**messages[0], "content": "文" * (MAX_CHAT_MESSAGE_CHARS + 1)}, *messages[1:]],
+                        [*messages[:-1], {**messages[-1], "content": "文" * (MAX_AGENT_TOOL_MESSAGE_CHARS + 1)}],
+                        [*messages, {"role": "tool", "tool_call_id": "extra", "content": "文" * 24000}, {"role": "tool", "tool_call_id": "extra2", "content": "文" * 24000}]):
+            with pytest.raises(AIClassificationError):
+                call(invalid, system_prompt=False)
+        assert len(requests) == 1
+        assert MAX_AGENT_CONTEXT_CHARS == 120000
+    finally:
+        client.close()
+
+
+def test_execution_progress_buffer_flushes_before_tool_and_final_answer():
+    import threading
+    from types import SimpleNamespace
+    from sjtu_learning_assistant.dashboard_service import DashboardService
+
+    events = []
+    fake_ledger = SimpleNamespace(
+        start=lambda _: None, is_cancel_requested=lambda _: False,
+        append_event=lambda _, kind, payload: events.append((kind, payload)),
+        complete=lambda *_: None,
+    )
+    def send(*args, event_callback, **kwargs):
+        for value in ["正在", "查课程"]:
+            event_callback("progress_delta", {"delta": value})
+        event_callback("tool", {"tool_name": "list_courses"})
+        event_callback("progress_delta", {"delta": "候选答案"})
+        event_callback("answer_start", {})
+        event_callback("content_delta", {"delta": "最终结果"})
+        return {}
+    fake_service = SimpleNamespace(ai_tasks=fake_ledger, ai_chat_send=send, _ai_task_lock=threading.Lock(), _ai_task_threads={})
+    DashboardService._run_ai_chat_task(fake_service, task_id="test", session_id="test", content="课程", model=None, depth=None, preset_id=None, attachment_ids=None, page_context={})
+    assert events == [("progress_delta", {"delta": "正在查课程"}), ("tool", {"tool_name": "list_courses"}), ("progress_delta", {"delta": "候选答案"}), ("answer_start", {}), ("content_delta", {"delta": "最终结果"})]
+
+
 def test_unknown_usage_is_not_reported_as_zero_and_consumes_reserved_output():
     store = ledger()
     task_id = store.create(None, model="deepseek-chat")["task"]["id"]

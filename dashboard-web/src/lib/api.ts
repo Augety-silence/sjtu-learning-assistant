@@ -277,6 +277,8 @@ export function updateSettings(
       | "ai_enabled"
       | "ai_base_url"
       | "ai_model"
+      | "asr_endpoint"
+      | "asr_model"
       | "ai_chat_send_shortcut"
       | "ai_reply_language"
       | "ai_attachment_context_budget"
@@ -296,6 +298,15 @@ export function testAiConnection() {
   return invoke<{ ok: boolean; model: string; category: string }>(
     "settings_ai_test",
   );
+}
+
+export function transcribeSelectedAudio() {
+  return invoke<{
+    cancelled?: boolean;
+    ok?: boolean;
+    model?: string;
+    text?: string;
+  }>("settings_asr_transcribe");
 }
 
 export function getCourseMarkdownStatus() {
@@ -357,7 +368,7 @@ export function getKnowledgeMCPConfig() {
 }
 
 export function saveCredential(
-  kind: "canvas" | "mail" | "cloud" | "ai",
+  kind: "canvas" | "mail" | "cloud" | "ai" | "asr",
   value: string,
   account = "",
 ) {
@@ -368,7 +379,7 @@ export function saveCredential(
 }
 
 export function deleteCredential(
-  kind: "canvas" | "mail" | "cloud" | "ai",
+  kind: "canvas" | "mail" | "cloud" | "ai" | "asr",
   account = "",
 ) {
   return invoke<import("@/lib/types").SettingsStatus>(
@@ -403,6 +414,35 @@ export function createAiChatSession(
     thinking_depth: thinkingDepth,
     preset_id: presetId,
   });
+}
+
+export async function steerAiChatTask(
+  sessionId: string,
+  taskId: string,
+  content: string,
+  requestId: string,
+  attachmentIds?: number[],
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await invoke<import("@/lib/types").AIChatSteerResult>(
+        "ai_chat_steer",
+        {
+          session_id: sessionId,
+          task_id: taskId,
+          content,
+          request_id: requestId,
+          ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        },
+      );
+    } catch (error) {
+      if (!isTransientTaskPollError(error)) throw error;
+      if (attempt >= MAX_TRANSIENT_TASK_POLL_FAILURES) {
+        throw Object.assign(error, { category: "steering_unconfirmed" });
+      }
+      await waitForTaskPoll(250 * (attempt + 1));
+    }
+  }
 }
 
 export const AI_CHAT_STREAM_EVENT = "sjtu-ai-chat-stream";
@@ -445,7 +485,9 @@ const TRANSIENT_TASK_POLL_CODES = new Set([
 ]);
 const MAX_TRANSIENT_TASK_POLL_FAILURES = 2;
 
-function isTransientTaskPollError(error: unknown) {
+function isTransientTaskPollError(
+  error: unknown,
+): error is BridgeInvocationError {
   return (
     error instanceof BridgeInvocationError &&
     TRANSIENT_TASK_POLL_CODES.has(error.code)
@@ -518,7 +560,20 @@ function emitAIStreamEvents(
   sessionId: string,
 ) {
   for (const event of snapshot.events) {
-    if (event.kind === "content_delta" || event.kind === "reasoning_delta") {
+    if (event.kind === "steering_applied") {
+      emitAIStream({
+        ...event.payload,
+        type: "steering_applied",
+        task_id: taskId,
+        session_id: sessionId,
+      });
+    }
+    if (
+      event.kind === "content_delta" ||
+      event.kind === "reasoning_delta" ||
+      event.kind === "progress_delta" ||
+      event.kind === "answer_start"
+    ) {
       emitAIStream({
         type: event.kind,
         task_id: taskId,
@@ -1614,3 +1669,25 @@ export function removeLocalProject(projectId: string) {
     { project_id: projectId },
   );
 }
+
+export const getRecordingASRStatus = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_status");
+export const getRecordingASRJobs = (limit = 100) =>
+  invoke<import("@/lib/types").RecordingASRJobs>("recording_asr_jobs", {
+    limit,
+  });
+export const scanRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_scan");
+export const startRecordingASR = (consent: boolean) =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_start", {
+    consent,
+  });
+export const pauseRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_pause");
+export const resumeRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_resume");
+export const retryRecordingASR = (sourceId: string, confirmUnknown = false) =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_retry", {
+    source_id: sourceId,
+    confirm_unknown: confirmUnknown,
+  });

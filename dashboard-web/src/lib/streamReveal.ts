@@ -39,6 +39,7 @@ export function useStreamReveal(
   text: string,
   active: boolean,
   reduceMotion: boolean,
+  frameMs: number = REVEAL_FRAME_MS,
 ): string {
   const animate = active && !reduceMotion;
   const [shown, setShown] = useState(() => (animate ? 0 : text.length));
@@ -51,15 +52,15 @@ export function useStreamReveal(
     // 只用 rAF 回调给出的时间戳计时：不同环境中 performance.now() 与回调时间基准可能不同。
     let last: number | null = null;
     const tick = (now: number) => {
-      if (last === null) last = now - REVEAL_FRAME_MS;
+      if (last === null) last = now - frameMs;
       const elapsed = now - last;
-      if (elapsed >= REVEAL_FRAME_MS || elapsed < 0) {
+      if (elapsed >= frameMs || elapsed < 0) {
         last = now;
         setShown((current) =>
           nextRevealLength(
             textRef.current,
             current,
-            elapsed < 0 ? REVEAL_FRAME_MS : elapsed,
+            elapsed < 0 ? frameMs : elapsed,
           ),
         );
       }
@@ -67,7 +68,7 @@ export function useStreamReveal(
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [animate]);
+  }, [animate, frameMs]);
 
   if (!animate) return text;
   return text.slice(0, Math.min(shown, text.length));

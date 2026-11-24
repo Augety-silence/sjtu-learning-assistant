@@ -48,6 +48,22 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("同步进度小窗口", () => {
+  it("学校暂无字幕单列展示，不计入失败", async () => {
+    vi.mocked(getMarkdownSyncProgress).mockResolvedValue({
+      ...state,
+      transcripts: {
+        ...state.transcripts,
+        total: 441,
+        completed: 194,
+        unavailable: 247,
+      },
+    });
+    render(<MarkdownSyncProgress onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "同步进度" }));
+    expect(await screen.findByText("暂无字幕 247")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "暂无字幕说明" })).toBeTruthy();
+    expect(screen.getByText(/学校暂未提供/).hasAttribute("hidden")).toBe(true);
+  });
   it("默认不轮询，按需展示基础完成和独立总结、空字幕及异常", async () => {
     vi.mocked(getMarkdownSyncProgress).mockResolvedValue(state);
     render(<MarkdownSyncProgress onNavigate={vi.fn()} />);

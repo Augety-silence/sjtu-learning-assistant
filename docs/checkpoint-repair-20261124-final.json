@@ -1,0 +1,365 @@
+{
+  "observed_at": "2026-11-24T14:21:23.102154+08:00",
+  "app_version": "1.8.18",
+  "app_revision": "f431815658f5ce209da64e4c7edfc0eef3b37807",
+  "app_running": true,
+  "status": {
+    "ai_enabled": true,
+    "inflight": 4,
+    "queued": 2
+  },
+  "verification": {
+    "observed_at": 1795501280.04586,
+    "protected_files": 1004,
+    "protected_changed": 0,
+    "new_courses": 3,
+    "new_transcripts": 6,
+    "course_checks": [
+      {
+        "file": "note_1_modeling.pdf",
+        "pages": 7,
+        "chars": 3116
+      },
+      {
+        "file": "第2章_线性表.pptx",
+        "pages": 96,
+        "chars": 3631
+      },
+      {
+        "file": "20260914_management accounting_chapter 1 成本性态与变动成本法 updated.pptx",
+        "pages": 27,
+        "chars": 1211
+      }
+    ],
+    "note_checks": [
+      {
+        "id": "a30e382cc0443ca37a3b30f632d2e72f",
+        "chars": 507
+      },
+      {
+        "id": "7d00f772121b59104939805e8c61e49d",
+        "chars": 911
+      },
+      {
+        "id": "3b589e32e3ff7ff8045d5f1d920a1e37",
+        "chars": 536
+      },
+      {
+        "id": "d8c88a55bf1f0daa15f2ad796d0fe2a2",
+        "chars": 291
+      },
+      {
+        "id": "e7de24f8234984af9473c7871a081f7e",
+        "chars": 749
+      },
+      {
+        "id": "e4cf3f0decdaae9994a70fbdf83d1f21",
+        "chars": 698
+      }
+    ],
+    "courses": {
+      "retained": 16,
+      "completed": 73,
+      "failed": 7,
+      "pending": 2
+    },
+    "transcripts": {
+      "completed": 195
+    }
+  },
+  "old_after": {
+    "observed_at": 1795501280.8684642,
+    "courses": {
+      "retained": 16,
+      "completed": 73,
+      "failed": 7,
+      "pending": 2
+    },
+    "transcripts": {
+      "completed": 195
+    },
+    "auto_paused_courses": 7,
+    "auto_paused_transcripts": 0,
+    "protected_files": 700,
+    "protected_changed": 0,
+    "elapsed_seconds": 59576.9,
+    "new_courses": 17,
+    "new_transcripts": 19,
+    "new_course_checks": [
+      {
+        "pages": 7,
+        "summary_chars": 3116
+      },
+      {
+        "pages": 110,
+        "summary_chars": 3806
+      },
+      {
+        "pages": 96,
+        "summary_chars": 3631
+      },
+      {
+        "pages": 81,
+        "summary_chars": 2059
+      },
+      {
+        "pages": 51,
+        "summary_chars": 4468
+      },
+      {
+        "pages": 135,
+        "summary_chars": 4613
+      },
+      {
+        "pages": 74,
+        "summary_chars": 2297
+      },
+      {
+        "pages": 73,
+        "summary_chars": 2623
+      },
+      {
+        "pages": 46,
+        "summary_chars": 3796
+      },
+      {
+        "pages": 53,
+        "summary_chars": 1562
+      },
+      {
+        "pages": 75,
+        "summary_chars": 2108
+      },
+      {
+        "pages": 27,
+        "summary_chars": 1211
+      },
+      {
+        "pages": 37,
+        "summary_chars": 2751
+      },
+      {
+        "pages": 42,
+        "summary_chars": 3544
+      },
+      {
+        "pages": 29,
+        "summary_chars": 2653
+      },
+      {
+        "pages": 26,
+        "summary_chars": 3011
+      },
+      {
+        "pages": 32,
+        "summary_chars": 2362
+      }
+    ]
+  },
+  "progress": {
+    "time": "2026-11-24T14:21:22",
+    "courses": {
+      "retained": 16,
+      "completed": 73,
+      "pending": 7,
+      "failed": 8
+    },
+    "subtitle_states": {
+      "raw_ready": 172,
+      "interrupted": 16,
+      "partial": 7
+    },
+    "lesson_summaries": {
+      "completed": 195
+    },
+    "requests": {
+      "recent": 104,
+      "last_minute": 7,
+      "peak_rolling_minute": 8,
+      "inflight": 4,
+      "queued": 2,
+      "outcomes": {
+        "http_success": 97,
+        "ReadTimeout": 1,
+        "ConnectTimeout": 2,
+        "null": 4
+      },
+      "input_tokens": 979270,
+      "output_tokens": 89948,
+      "cached_tokens": 0
+    }
+  },
+  "unfinished_active_courses": [
+    {
+      "file": "习题课2_队列二叉树.pptx",
+      "status": "failed",
+      "paused": true,
+      "attempts": 1,
+      "error": "自动修复额度已用尽；草稿保留，等待检查或手动重试。",
+      "processed_pages": 31
+    },
+    {
+      "file": "第3章_栈.pptx",
+      "status": "failed",
+      "paused": true,
+      "attempts": 1,
+      "error": "自动修复额度已用尽；草稿保留，等待检查或手动重试。",
+      "processed_pages": 88
+    },
+    {
+      "file": "第5章_树.pdf",
+      "status": "failed",
+      "paused": true,
+      "attempts": 1,
+      "error": "自动修复额度已用尽；草稿保留，等待检查或手动重试。",
+      "processed_pages": 113
+    },
+    {
+      "file": "玉仁 and 云君 - 大模型基础（浙江大学）.pdf",
+      "status": "pending",
+      "paused": false,
+      "attempts": 4,
+      "error": null,
+      "processed_pages": 290
+    },
+    {
+      "file": "鑫 et al. - 大语言模型（人民大学）.pdf",
+      "status": "pending",
+      "paused": false,
+      "attempts": 4,
+      "error": null,
+      "processed_pages": 318
+    },
+    {
+      "file": "9-大语言模型.pdf",
+      "status": "failed",
+      "paused": true,
+      "attempts": 8,
+      "error": "精炼总结来源审校未通过；草稿与旧正式稿均保留。",
+      "processed_pages": 92
+    },
+    {
+      "file": "第8章_查找与排序.pdf",
+      "status": "failed",
+      "paused": true,
+      "attempts": 1,
+      "error": "自动修复额度已用尽；草稿保留，等待检查或手动重试。",
+      "processed_pages": 76
+    },
+    {
+      "file": "10-提示工程.pdf",
+      "status": "failed",
+      "paused": true,
+      "attempts": 8,
+      "error": "多模态页面响应结构不完整；未将其标为完成。",
+      "processed_pages": 44
+    },
+    {
+      "file": "20261123_management accounting_chapter 8 定价决策.pptx",
+      "status": "failed",
+      "paused": true,
+      "attempts": 1,
+      "error": "自动修复额度已用尽；草稿保留，等待检查或手动重试。",
+      "processed_pages": 45
+    }
+  ],
+  "large_documents": [
+    {
+      "file": "玉仁 and 云君 - 大模型基础（浙江大学）.pdf",
+      "status": "pending",
+      "paused": false,
+      "attempts": 4,
+      "error": null,
+      "processed_pages": 290,
+      "total_pages": 290
+    },
+    {
+      "file": "鑫 et al. - 大语言模型（人民大学）.pdf",
+      "status": "pending",
+      "paused": false,
+      "attempts": 4,
+      "error": null,
+      "processed_pages": 318,
+      "total_pages": 391
+    }
+  ],
+  "targeted_requests": 40,
+  "targeted_limit": 64,
+  "backups": [
+    {
+      "path": "/Users/bytedance/Applications/SJTU App Backups/SJTU Learning Assistant 1.8.18 before checkpoint repair 20261124.app",
+      "exists": true
+    },
+    {
+      "path": "/Users/bytedance/Applications/SJTU App Backups/SJTU Learning Assistant 1.8.18 before short-fragment repair 20261124.app",
+      "exists": true
+    },
+    {
+      "path": "/Users/bytedance/Applications/SJTU App Backups/SJTU Learning Assistant 1.8.18 before final fragment validation 20261124.app",
+      "exists": true
+    }
+  ],
+  "code_sha256": {
+    "knowledge_summary.py": "bd6b028459d6388adfedeb81b83660fbb8d69711c3292acc1d592e8648222c15",
+    "knowledge_documents.py": "418fa1ba22111d7e27658bf4d9d5de17d55cbfd45dfa64399e3811e613aed7e2",
+    "course_markdown_sync.py": "d200ef304d3f7f552fe08e9c18a50196314b277f3bfb723e9f33784a6bc1664f",
+    "transcript_notes.py": "1a462d1ff2e65a41b72476a17867bcda5d6966f711b366104b7e418043554043",
+    "ai_runtime.py": "44a56ab858c9b6a72fd6de2b27ca7155221d4c90c403f88809af968dff0f8658"
+  },
+  "latest_tests": {
+    "passed": 155,
+    "subtests": 39
+  },
+  "original_paused_transcript_checks": [
+    {
+      "id": "a30e382cc0443ca37a3b30f632d2e72f",
+      "completed": true,
+      "source_unchanged": true,
+      "reviewed_chunks": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "id": "7d00f772121b59104939805e8c61e49d",
+      "completed": true,
+      "source_unchanged": true,
+      "reviewed_chunks": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "id": "3b589e32e3ff7ff8045d5f1d920a1e37",
+      "completed": true,
+      "source_unchanged": true,
+      "reviewed_chunks": [
+        0,
+        1
+      ]
+    },
+    {
+      "id": "d8c88a55bf1f0daa15f2ad796d0fe2a2",
+      "completed": true,
+      "source_unchanged": true,
+      "reviewed_chunks": [
+        0
+      ]
+    },
+    {
+      "id": "e4cf3f0decdaae9994a70fbdf83d1f21",
+      "completed": true,
+      "source_unchanged": true,
+      "reviewed_chunks": [
+        0,
+        1,
+        2
+      ]
+    }
+  ],
+  "original_five_paused_transcripts_completed": true
+}

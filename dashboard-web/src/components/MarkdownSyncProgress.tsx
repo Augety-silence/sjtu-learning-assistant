@@ -62,6 +62,14 @@ function ProgressRow({
           </dd>
         </div>
       </dl>
+      {(group.unavailable ?? 0) > 0 && (
+        <div className="heading-with-info">
+          <span>暂无字幕 {group.unavailable}</span>
+          <InfoTooltip label="暂无字幕说明">
+            学校暂未提供这些录像的字幕。自动低频复查，不调用模型，也不计入转换失败。
+          </InfoTooltip>
+        </div>
+      )}
       {group.truncated && <p role="status">已达扫描范围上限，统计不完整</p>}
       {group.issues.length > 0 && (
         <details>

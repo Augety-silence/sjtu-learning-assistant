@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -31,11 +32,60 @@ CONTRACT = "course-lecture-v2"
 MAX_PAGES = 500
 MAX_COMPILED_TEXT_CHARS = MAX_PAGES * 12_000
 MAX_SOURCE_BYTES = 100 * 1024**2
+MAX_REFERENCE_BYTES = 50 * 1024**2
+MAX_REFERENCE_PAGES = 200
+MAX_COURSEWARE_MARKERS = frozenset({'课件'})
 MAX_MANIFEST_BYTES = 2 * 1024**2
 
 
 class CompilationDeferred(DocumentTextError):
     """公平调度切片结束，不是 API 失败或每日额度。"""
+
+
+def _rolling_page_results(inputs, build, workers):
+    """有界页窗口：完成一页即补下一页，不等待最慢页再发整批。
+
+    build 在返回前持久化响应与页面；失败后停止新增，但收齐已经在途的页。
+    迭代器始终由协调线程读取，PDFium 渲染不会进入网络线程。
+    """
+    if workers == 1:
+        for entry in inputs:
+            yield build(*entry)
+        return
+    iterator = iter(inputs)
+    from .ai_runtime import cancellation_scope, current_cancellation_check
+    cancelled = current_cancellation_check() or (lambda: False)
+    def run(entry):
+        with cancellation_scope(cancelled):
+            return build(*entry)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='document-page') as pool:
+        pending, exhausted = set(), False
+        failure = None
+        while pending or not exhausted:
+            while not exhausted and failure is None and len(pending) < workers:
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending.add(pool.submit(run, entry))
+            if not pending:
+                break
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    # 额度切片不能掩盖另一在途页的真实失败，避免失败计数被退回。
+                    if failure is None or isinstance(failure, CompilationDeferred) and not isinstance(exc, CompilationDeferred):
+                        failure = exc
+                else:
+                    yield result
+            if failure is not None:
+                exhausted = True
+        if failure is not None:
+            raise failure
+
 SOURCE_RECHECK_PROMPT = PAGE_PROMPT + """\n这是来源矛盾的原图复核，不要相信旧视觉转写或草稿推断。逐项以本次整页图为准。
 表格必须完整保留表头、前导目标变量系数列、行名、右端项，各行列数与表头一致，不错位移动系数。
 区分原始文字未提取的图片公式与课件实际缺失，不把 OCR 错误说成教师课件错误。
@@ -126,13 +176,36 @@ def _validate_renderable_pptx(path: Path) -> None:
         archive.close()
 
 
+def _oversize_reference_reasons(path: Path) -> list[str]:
+    """非课件教材过重（>50 MiB 或 PDF >200 页）时只保留原件，不进入 AI 编译；课件不受此限。"""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if any(part in MAX_COURSEWARE_MARKERS for part in path.parts):
+        return []
+    reasons = set()
+    if size > MAX_REFERENCE_BYTES:
+        reasons.add('oversize_reference_over_50MiB')
+    if path.suffix.casefold() == '.pdf':
+        try:
+            import pypdfium2 as pdfium
+            pages = len(pdfium.PdfDocument(str(path)))
+        except Exception:
+            pages = 0
+        if pages > MAX_REFERENCE_PAGES:
+            reasons.add('oversize_reference_over_pages')
+    return sorted(reasons)
+
+
 def skipped_active_content(path: Path) -> list[str]:
     """只检查包目录和关系 XML；从不读取宏/对象内容、运行 Office 或访问外链。"""
+    oversize = _oversize_reference_reasons(path)
     suffix = path.suffix.casefold()
     if suffix in {'.pptm', '.docm', '.xlsm', '.potm', '.ppsm', '.ppt', '.doc', '.xls'}:
-        return ['macro_or_binary']
+        return sorted(set(oversize) | {'macro_or_binary'})
     if suffix not in {'.pptx', '.docx', '.xlsx'}:
-        return []
+        return oversize
     archive, names = _open_ooxml(path, list_active_parts=True)
     reasons = set()
     try:
@@ -149,16 +222,20 @@ def skipped_active_content(path: Path) -> list[str]:
                         reasons.add('external_link')
     finally:
         archive.close()
-    return sorted(reasons)
+    return sorted(reasons | set(oversize))
 
 
 def retained_source_markdown(source: Path, path: Path, source_hash: str, reasons: list[str]) -> str:
     relative = path.relative_to(source).as_posix()
-    try:
-        extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
-        text = '\n\n'.join(f'## 第 {number} 页\n\n{unit}' for number, unit in enumerate(extracted.units, 1))
-    except DocumentTextError:
-        text = ''  # 宏/二进制等不支持静态提取时仅保留文件登记，不交给 Office。
+    if any(reason.startswith('oversize_reference_') for reason in reasons):
+        # 超过 50 MiB 的教材不打开正文、不进入 AI 编译，只登记并保留原件。
+        text = ''
+    else:
+        try:
+            extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
+            text = '\n\n'.join(f'## 第 {number} 页\n\n{unit}' for number, unit in enumerate(extracted.units, 1))
+        except DocumentTextError:
+            text = ''  # 宏/二进制等不支持静态提取时仅保留文件登记，不交给 Office。
     return ('---\ntype: course-document\n' + f'source: {json.dumps(relative, ensure_ascii=False)}\n'
             + f'source_sha256: {source_hash}\nconverted_by: local-text\nquality_status: source-only\n'
             + 'multimodal_status: skipped_active_content\nskipped_parts: ' + json.dumps(reasons) + '\n---\n\n'
@@ -207,37 +284,52 @@ def rendered_pdf(path: Path, cancel: threading.Event) -> Iterator[Path]:
                     process.wait(timeout=5)
 
 
+# PDFium is not thread-safe, even for different documents.  Never keep this
+# lock across a generator yield: the consumer may wait minutes for an API.
+_PDFIUM_LOCK = threading.RLock()
+
+
 def page_images(pdf: Path, *, cached_pages=frozenset()) -> Iterator[tuple[int, bytes | None]]:
     try:
         import pypdfium2 as pdfium
     except ImportError:
         raise DocumentUnsupportedError("缺少 pypdfium2 整页渲染依赖。") from None
-    with pdfium.PdfDocument(pdf) as document:
-        if not 1 <= len(document) <= MAX_PAGES:
+    with _PDFIUM_LOCK:
+        document = pdfium.PdfDocument(pdf)
+    try:
+        with _PDFIUM_LOCK:
+            count = len(document)
+        if not 1 <= count <= MAX_PAGES:
             raise DocumentTextError("课件页数必须在 1—500 页内。")
-        for index in range(len(document)):
+        for index in range(count):
             if index + 1 in cached_pages:
                 yield index + 1, None
                 continue
-            page = document[index]
-            try:
-                width, height = page.get_size()
-                if not 0 < width <= 100_000 or not 0 < height <= 100_000:
-                    raise DocumentTextError("课件页面尺寸无效。")
-                bitmap = page.render(scale=min(2, 2048 / max(width, height)))
+            with _PDFIUM_LOCK:
+                page = document[index]
                 try:
-                    image = bitmap.to_pil().convert("RGB")
-                    output = io.BytesIO()
-                    image.save(output, "JPEG", quality=88, optimize=True)
-                    data = output.getvalue()
-                    image.close()
-                    if len(data) > 4 * 1024**2:
-                        raise DocumentTextError("课件页面图片超过 4 MiB。")
-                    yield index + 1, data
+                    width, height = page.get_size()
+                    if not 0 < width <= 100_000 or not 0 < height <= 100_000:
+                        raise DocumentTextError("课件页面尺寸无效。")
+                    bitmap = page.render(scale=min(2, 2048 / max(width, height)))
+                    try:
+                        image = bitmap.to_pil().convert("RGB")
+                    finally:
+                        bitmap.close()
                 finally:
-                    bitmap.close()
+                    page.close()
+            try:
+                output = io.BytesIO()
+                image.save(output, "JPEG", quality=88, optimize=True)
+                data = output.getvalue()
             finally:
-                page.close()
+                image.close()
+            if len(data) > 4 * 1024**2:
+                raise DocumentTextError("课件页面图片超过 4 MiB。")
+            yield index + 1, data
+    finally:
+        with _PDFIUM_LOCK:
+            document.close()
 
 
 def vision_page_url(jpeg: bytes) -> str:
@@ -298,13 +390,20 @@ def preferred_visual_output(outputs: dict, page: int) -> str | None:
 
 class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
-                 slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images):
+                 slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images,
+                 review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
+                 content_recovery: bool = False):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
         self.max_calls, self.calls, self.cached_pages = max_calls, 0, 0
         self.slice_calls = max(0, int(slice_calls))
         self.text_first = text_first
+        self.review_percent, self.parallel_batches = review_percent, parallel_batches
+        self.auto_recovery = auto_recovery
+        self.content_recovery = content_recovery
+        # 分段并发后调用计数与轮转额度会被多个线程同时判断，必须原子化。
+        self._calls_lock = threading.Lock()
         self.model_fallbacks: list[dict[str, str]] = []
         self._persist_model_fallbacks: Callable | None = None
 
@@ -314,21 +413,25 @@ class DocumentCompiler:
         for attempt in range(2):
             if self.cancel.is_set():
                 raise DocumentTextError("课件编译已取消。")
-            if self.max_calls and self.calls >= self.max_calls:
-                raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
-            if self.slice_calls and self.calls >= self.slice_calls:
-                raise CompilationDeferred("已保存检查点，轮转处理下一份课件。")
+            with self._calls_lock:
+                if self.max_calls and self.calls >= self.max_calls:
+                    raise DocumentTextError("已达到本次 API 调用上限；已完成页面保留，下次增量续编。")
+                if self.slice_calls and self.calls >= self.slice_calls:
+                    raise CompilationDeferred("已保存检查点，轮转处理下一份课件。")
+                self.calls += 1
             if request_model != model:
                 self.model_fallbacks.append({'requested_model': model, 'used_model': request_model,
                                              'category': fallback_category})
                 if self._persist_model_fallbacks is not None:
                     self._persist_model_fallbacks()
-            self.calls += 1
             try:
                 return self.runner(request_model, system, content)
             except (AIClassificationError, KnowledgeAPIError) as exc:
-                if attempt or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}:
-                    raise KnowledgeCompilerError(str(exc)) from None
+                if (attempt or self.auto_recovery and (system == PAGE_PROMPT or '自动恢复v2' in system)
+                        or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}):
+                    failure = KnowledgeCompilerError(str(exc))
+                    failure.category = exc.category
+                    raise failure from None
                 if model == 'deepseek-chat' and exc.category in {'timeout', 'network', 'upstream_service'}:
                     request_model, fallback_category = VISION_MODEL, exc.category
                 if self.cancel.wait(12):
@@ -350,7 +453,9 @@ class DocumentCompiler:
             except (DocumentTextError, KnowledgeCompilerError):
                 raise
             except Exception as exc:
-                raise DocumentTextError(f"课件处理失败（{type(exc).__name__}）；已完成页面保留。") from None
+                failure = DocumentTextError(f"课件处理失败（{type(exc).__name__}）；已完成页面保留。")
+                failure.category = getattr(exc, 'category', '')
+                raise failure from None
 
     def _compile_snapshot(self, source: Path, original: Path, path: Path, target: Path, source_hash: str) -> Path:
         relative = original.relative_to(source).as_posix()
@@ -371,9 +476,11 @@ class DocumentCompiler:
             except (ValueError, AttributeError, RecursionError):
                 raise DocumentTextError("课件编译清单损坏，未覆盖现有输出。") from None
         directory.mkdir(parents=True, exist_ok=True)
+        state_lock = threading.RLock()
 
         def persist():
-            _atomic_write(safe_destination(target, manifest_path), json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+            with state_lock:
+                _atomic_write(safe_destination(target, manifest_path), json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
         events = state.get('model_fallbacks', [])
         if (type(events) is not list or len(events) > 2000
@@ -433,7 +540,12 @@ class DocumentCompiler:
             candidate = safe_destination(target, directory / name)
             if not candidate.is_file() or candidate.stat().st_size > MAX_SOURCE_BYTES or digest(candidate.read_bytes()) != expected:
                 raise DocumentTextError("生成文件已被修改或丢失，已保留并停止此课件自动更新。")
+        # 分段并发只并行网络请求；清单与状态写入仍串行，避免多个线程同时改写 outputs。
         def commit(contents: dict[str, str | bytes], number: int | None = None):
+            with state_lock:
+                return _commit_locked(contents, number)
+
+        def _commit_locked(contents: dict[str, str | bytes], number: int | None = None):
             items = []
             try:
                 for name, content in contents.items():
@@ -494,7 +606,7 @@ class DocumentCompiler:
             close_images = getattr(images, "close", None)
             if callable(close_images):
                 resources.callback(close_images)
-            for number, jpeg in images:
+            def build_page(number, jpeg):
                 if self.cancel.is_set():
                     raise DocumentTextError("课件编译已取消。")
                 if number > len(document.units):
@@ -503,7 +615,8 @@ class DocumentCompiler:
                 if key in state["pages"]:
                     if state["pages"][key] != page_name or page_name not in state["outputs"]:
                         raise DocumentTextError("课件页面检查点无效。")
-                    self.cached_pages += 1
+                    with state_lock:
+                        self.cached_pages += 1
                     note = (directory / page_name).read_text(encoding="utf-8")
                 else:
                     if self.max_calls and self.calls >= self.max_calls:
@@ -516,9 +629,26 @@ class DocumentCompiler:
                         response = ("## 页面主题\n原生文本页\n## 知识点\n" + native
                                     + "\n## 公式与图表\n已完整提取原生文本；无图形绘制。\n## 例题与易错点\n以原文为准。\n## 待确认项\n无新增推断。")
                     else:
-                        response = self._request(VISION_MODEL, PAGE_PROMPT,
-                            [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
-                             {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
+                        response_name = f"responses/page-{number:04d}-" + digest(PAGE_PROMPT.encode())[:12] + '.json'
+                        with state_lock:
+                            saved_response = (directory / response_name).read_text(encoding='utf-8') if response_name in state['outputs'] else None
+                        if saved_response is not None:
+                            try:
+                                paid = json.loads(saved_response)
+                                if (type(paid) is not dict or paid.get('page') != number or paid.get('source_hash') != source_hash
+                                        or paid.get('model') != VISION_MODEL or type(paid.get('response')) is not str):
+                                    raise ValueError()
+                                response = paid['response']
+                            except (ValueError, AttributeError, RecursionError):
+                                raise DocumentTextError('逐页响应检查点无效，未重新付费或覆盖。') from None
+                        else:
+                            response = self._request(VISION_MODEL, PAGE_PROMPT,
+                                [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
+                                 {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
+                            # 原始付费响应先保存；栏目校验或取消不会丢掉可离线恢复的结果。
+                            commit({response_name: json.dumps({'page': number, 'source_hash': source_hash,
+                                        'model': VISION_MODEL, 'response': response}, ensure_ascii=False),
+                                    f"assets/page-{number:04d}.jpg": jpeg})
                     if self.cancel.is_set():
                         raise DocumentTextError("课件编译已取消。")
                     try:
@@ -532,12 +662,18 @@ class DocumentCompiler:
                             + f"# 第 {number} 页\n\n![原始页面](../assets/page-{number:04d}.jpg)\n\n## 原始提取\n\n"
                             + native + "\n\n## 逐页知识解读\n\n" + response.strip() + "\n")
                     commit({f"assets/page-{number:04d}.jpg": jpeg, page_name: note}, number)
-                notes.append(note.replace("(../assets/", "(assets/"))
+                return number, note.replace("(../assets/", "(assets/")
+            page_workers = min(3, max(1, int(self.parallel_batches))) if self.auto_recovery and not all_cached else 1
+            completed_pages = {}
+            for number, note in _rolling_page_results(images, build_page, page_workers):
+                completed_pages[number] = note
+            notes = [completed_pages[number] for number in sorted(completed_pages)]
         if len(notes) != document.unit_count:
             raise DocumentTextError("渲染页数与原文页数不一致，未生成完成标记。")
         # 页稿作为证据层复用；最终正文按全课件知识依赖重组，而不是每四页拼接。
         def cached(name):
-            return (directory / name).read_text(encoding="utf-8") if name in state["outputs"] else None
+            with state_lock:
+                return (directory / name).read_text(encoding="utf-8") if name in state["outputs"] else None
         verification_outputs = {}
         entries = []
         for number, note in enumerate(notes, 1):
@@ -557,16 +693,29 @@ class DocumentCompiler:
                 response = cached(name)
                 if response is None:
                     image = safe_destination(target, directory / f'assets/page-{number:04d}.jpg')
-                    response = self._request(VISION_MODEL, SOURCE_RECHECK_PROMPT,
-                        [{'type': 'text', 'text': json.dumps({'page': number, 'source_text': entry['source_text'], 'previous_visual': entry['text'], 'issues': issues}, ensure_ascii=False)},
-                         {'type': 'image_url', 'image_url': {'url': vision_page_url(image.read_bytes())}}])
+                    raw_name = name + '.response.json'
+                    raw_response = cached(raw_name)
+                    if raw_response is None:
+                        response = self._request(VISION_MODEL, SOURCE_RECHECK_PROMPT,
+                            [{'type': 'text', 'text': json.dumps({'page': number, 'source_text': entry['source_text'], 'previous_visual': entry['text'], 'issues': issues}, ensure_ascii=False)},
+                             {'type': 'image_url', 'image_url': {'url': vision_page_url(image.read_bytes())}}])
+                        commit({raw_name: json.dumps({'response': response}, ensure_ascii=False)})
+                    else:
+                        try:
+                            response = json.loads(raw_response)['response']
+                            if type(response) is not str:
+                                raise ValueError()
+                        except (ValueError, KeyError, TypeError, RecursionError):
+                            raise DocumentTextError('原图复核响应检查点无效，未重新付费或覆盖。') from None
                     response = page_markdown(response)
                     commit({name: response})
                 verification_outputs[number] = name
                 verified.append({**entry, 'text': response, 'visual_rechecked': True})
             return verified
         try:
-            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources).compile(entries)
+            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources,
+                review_percent=self.review_percent, parallel_batches=self.parallel_batches,
+                auto_recovery=self.auto_recovery, content_recovery=self.content_recovery).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
@@ -576,7 +725,8 @@ class DocumentCompiler:
             raise DocumentTextError("编译期间素材已变化；已完成旧版本页面保留，请重试。")
         if len(study) > MAX_SUMMARY_CHARS:
             raise DocumentTextError("精炼总结超过5000字符；旧正式稿保留。")
-        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: source-reviewed\nsummary_chars: {len(study)}\n"
+        quality = 'source-sampled' if report['reviews_sampled_out'] else 'source-reviewed'
+        body = ("---\n" + f"type: course-document\nsource: {json.dumps(relative, ensure_ascii=False)}\nsource_type: {path.suffix.casefold()[1:]}\nsource_id: {source_id}\nsource_sha256: {source_hash}\nconverted_by: libreoffice-pdfium-qwen\nmodel: {VISION_MODEL}\ncontract: {SUMMARY_CONTRACT}\nquality_status: {quality}\nsummary_chars: {len(study)}\n"
                 + f"abstract: {json.dumps(plan['abstract'], ensure_ascii=False)}\nauto_tags: {json.dumps(plan['tags'], ensure_ascii=False)}\nsynonyms: {json.dumps(plan['synonyms'], ensure_ascii=False)}\n" + "---\n\n"
                 + study)
         # 契约升级保留旧完整稿和审校记录，不只留下页级原文；人工修改已在上面的哈希闸门阻断。

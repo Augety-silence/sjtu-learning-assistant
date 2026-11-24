@@ -509,6 +509,12 @@ class BudgetedAIClient:
         try:
             response = getattr(self._client, method)(messages, **kwargs)
             return response
+        except Exception as exc:
+            # 中断响应也是已付费请求：保留上游已给的实际用量，无计数时仍保守计费。
+            partial = getattr(exc, 'partial_response', None)
+            if type(partial) is dict:
+                response = partial
+            raise
         finally:
             self._ledger.record_call(
                 self._task_id,

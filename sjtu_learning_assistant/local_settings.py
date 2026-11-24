@@ -60,6 +60,12 @@ LEGACY_KEYS = PRE_AI_KEYS - {"mail_account"}
 PRE_COURSE_SYNC_KEYS = ALLOWED_KEYS
 COURSE_SYNC_KEYS = frozenset({"course_markdown_enabled", "course_markdown_daily_calls"})
 ALLOWED_KEYS = ALLOWED_KEYS | COURSE_SYNC_KEYS
+PRE_ASR_KEYS = ALLOWED_KEYS
+ASR_KEYS = frozenset({"asr_endpoint", "asr_model", "asr_key_saved"})
+ALLOWED_KEYS = ALLOWED_KEYS | ASR_KEYS
+PRE_RECORDING_ASR_KEYS = ALLOWED_KEYS
+RECORDING_ASR_KEYS = frozenset(("recording_asr_enabled", "recording_asr_paused", "recording_asr_scope"))
+ALLOWED_KEYS = ALLOWED_KEYS | RECORDING_ASR_KEYS
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
 # ERROR_ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION while a reader or
 # scanner holds settings.json open without FILE_SHARE_DELETE.
@@ -90,6 +96,12 @@ class LocalSettings:
     theme_mode: str = "system"
     course_markdown_enabled: bool = False
     course_markdown_daily_calls: int = 0  # 兼容旧设置字段；自动同步不再使用每日额度。
+    asr_endpoint: str = "https://api.siliconflow.cn/v1/audio/transcriptions"
+    asr_model: str = "XingChenAGI/XingChenASR-V3.2-Ultra"
+    asr_key_saved: bool = False
+    recording_asr_enabled: bool = False
+    recording_asr_paused: bool = True
+    recording_asr_scope: str = "all_unfinished"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -183,6 +195,14 @@ def validate_ai_model(value: object) -> str:
     return value.strip()
 
 
+def validate_asr_model(value: object) -> str:
+    if type(value) is not str or not value.strip() or len(value) > 200:
+        raise SettingsError("语音识别模型名称不正确。")
+    if any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value.strip()):
+        raise SettingsError("语音识别模型名称不正确。")
+    return value.strip()
+
+
 def _validate_choice(value: object, allowed: frozenset[str], label: str) -> str:
     if type(value) is not str or value not in allowed:
         raise SettingsError(f"{label}不受支持。")
@@ -210,6 +230,12 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         raise SettingsError("没有可更新的设置。")
 
     result: dict[str, Any] = {}
+    if "recording_asr_scope" in payload:
+        result.update(recording_asr_scope=_validate_choice(payload.get("recording_asr_scope"), frozenset(("all_unfinished",)), "录播转写范围"))
+    if "asr_endpoint" in payload:
+        result["asr_endpoint"] = validate_ai_base_url(payload["asr_endpoint"])
+    if "asr_model" in payload:
+        result["asr_model"] = validate_asr_model(payload["asr_model"])
     if "course_markdown_daily_calls" in payload:
         value = payload["course_markdown_daily_calls"]
         if type(value) is not int or not 0 <= value <= 1000:
@@ -243,10 +269,13 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         )
     for key in (
         "course_markdown_enabled",
+        "recording_asr_enabled",
+        "recording_asr_paused",
         "auto_download_current_term",
         "organize_by_category",
         "ai_enabled",
         "ai_key_saved",
+        "asr_key_saved",
         "ai_auto_open_activity",
         "ai_code_line_numbers",
     ):
@@ -304,6 +333,8 @@ def _salvage_settings(payload: object, mail_account: str) -> dict[str, Any]:
             except SettingsError:
                 continue
             archive_valid = archive_valid or key == "archive_root"
+    # Invalid or incomplete consent never authorizes uploads.
+    values.update(recording_asr_enabled=False, recording_asr_paused=True)
     if not archive_valid:
         # Missing or invalid archive_root means the default root was silently
         # substituted: never start bulk downloads into it.
@@ -394,6 +425,12 @@ class SettingsStore:
         if isinstance(payload, dict) and set(payload) == PRE_COURSE_SYNC_KEYS:
             defaults = LocalSettings()
             payload = {**payload, **{key: getattr(defaults, key) for key in COURSE_SYNC_KEYS}}
+        if isinstance(payload, dict) and set(payload) == PRE_ASR_KEYS:
+            defaults = LocalSettings()
+            payload = {**payload, **{key: getattr(defaults, key) for key in ASR_KEYS}}
+        if isinstance(payload, dict) and not (set(payload) - ALLOWED_KEYS):
+            for key in RECORDING_ASR_KEYS:
+                payload.setdefault(key, getattr(LocalSettings(), key))
         try:
             values = _validate_mapping(payload, partial=False)
         except SettingsError:

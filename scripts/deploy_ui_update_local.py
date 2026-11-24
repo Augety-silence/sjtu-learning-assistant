@@ -62,7 +62,11 @@ def main():
         if BACKUP.exists() or STAGED.exists():
             raise RuntimeError("备份或暂存路径已存在，不覆盖")
         subprocess.run(("codesign", "--verify", "--deep", "--strict", str(bundle)), check=True)
-        subprocess.run(("osascript", "-e", 'tell application "SJTU Learning Assistant" to quit'), check=True)
+        # 已退出时不能发送 AppleEvent：macOS 可能先重新启动 App，再执行 quit，
+        # 从而又触发启动同步，部署会误以为旧 App 一直不退出。
+        main_running = subprocess.run(("pgrep", "-f", "^/Applications/SJTU Learning Assistant.app/Contents/MacOS/SJTU Learning Assistant$"), capture_output=True).returncode == 0
+        if main_running:
+            subprocess.run(("osascript", "-e", 'tell application "SJTU Learning Assistant" to quit'), check=True)
         deadline = time.monotonic() + 30
         while subprocess.run(("pgrep", "-f", "^/Applications/SJTU Learning Assistant.app/Contents/MacOS/"), capture_output=True).returncode == 0:
             if time.monotonic() > deadline:

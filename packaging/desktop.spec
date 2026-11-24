@@ -44,12 +44,18 @@ datas = [
     *copy_metadata("pypdfium2"),
 ]
 
+datas += copy_metadata("imageio-ffmpeg", recursive=True)
+datas += copy_metadata("pypdf", recursive=True)
+datas += copy_metadata("Pillow", recursive=True)
+datas.append((str(ROOT / "licenses" / "FFmpeg.txt"), "licenses"))
+
 hiddenimports = [
     "logging.config",
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.macOS",
     "keyring.backends.macOS.api",
+    "Security",
     "imageio_ffmpeg",
     "PIL",
     "PIL.Image",

@@ -20,6 +20,11 @@
 | bottle、proxy_tools | MIT | https://github.com/bottlepy/bottle；https://github.com/jtushman/proxy_tools |
 | PyObjC（core、Cocoa、Quartz、Security、WebKit） | MIT | https://github.com/ronaldoussoren/pyobjc |
 
+| imageio-ffmpeg（Python 包装库） | BSD-2-Clause | https://github.com/imageio/imageio-ffmpeg；不等于执行文件许可证。 |
+| FFmpeg（独立执行文件） | 所检查供应商构建声明 GPL-2.0-or-later | https://github.com/imageio/imageio-binaries；完整 GPL 文本及分发限制见 licenses/FFmpeg.txt，须核验精确对应源码。 |
+| pypdf | BSD-3-Clause | https://github.com/py-pdf/pypdf |
+| Pillow（运行时及构建） | MIT-CMU；另附第三方声明 | https://github.com/python-pillow/Pillow；完整声明随分发包元数据保留。 |
+
 Apple 的系统框架由 macOS 提供；Windows WebView2、.NET 运行时与系统通知框架由 Windows 提供。它们不会复制到本仓库。应用发布包应同时携带各分发包自带的完整许可证文本；本文件不是许可证全文的替代品。
 
 ## 前端运行时
@@ -71,7 +76,7 @@ SOFTWARE.
 |---|---|---|
 | PyInstaller | GPL-2.0-or-later WITH Bootloader-exception | https://github.com/pyinstaller/pyinstaller；仅用于构建。其 bootloader exception 允许分发生成的应用包，不把 PyInstaller 作为本项目运行时库使用。|
 | packaging | Apache-2.0 OR BSD-2-Clause | https://github.com/pypa/packaging |
-| Pillow | MIT-CMU | https://github.com/python-pillow/Pillow；仅用于从项目原创图形生成 `.icns`。|
+| Pillow（构建用途） | MIT-CMU | 同时属于运行时依赖，见上方声明；构建时生成项目图标。|
 | Vite、Vitest、`@vitejs/plugin-react` | MIT | https://github.com/vitejs/vite；https://github.com/vitest-dev/vitest；仅构建/测试。|
 | Tailwind CSS、PostCSS、Autoprefixer | MIT | https://github.com/tailwindlabs/tailwindcss；https://github.com/postcss/postcss；https://github.com/postcss/autoprefixer；仅构建。|
 | Biome | MIT OR Apache-2.0 | https://github.com/biomejs/biome；仅 lint。|
@@ -85,3 +90,7 @@ SOFTWARE.
 ## 项目图标
 
 `packaging/icon-source.svg` 为本项目原创的中性字母/书本图形，Copyright 2026 周济睿，按本项目 MIT License 发布；不使用上海交通大学校徽或其他学校商标。
+
+## FFmpeg 二进制分发限制
+
+Python 包许可证检查不验证 FFmpeg 链接库及构建脚本；检查通过不代表允许分发执行文件。精确对应源码未核验前，不上传安装包或二进制 CI 产物。源码 PR 的测试和构建保留，二进制上传由仓库变量 FFMPEG_BINARY_REDISTRIBUTION_CLEARED 显式控制。

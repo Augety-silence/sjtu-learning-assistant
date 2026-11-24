@@ -61,6 +61,8 @@ from sjtu_learning_assistant.ai_classifier import (
     AIClassificationError,
     OpenAIClassificationClient,
 )
+from sjtu_learning_assistant.ai_stream_buffer import AIStreamEventBuffer
+from sjtu_learning_assistant.chat_steering import ChatSteeringControl, active_chat_task, create_chat_task
 from sjtu_learning_assistant.ai_keychain import (
     AIKeychainError,
     ai_api_key_saved,
@@ -110,6 +112,7 @@ from sjtu_learning_assistant.ai_tasks import (
     AITaskLedger,
     BudgetedAIClient,
     normalize_page_context,
+    _retry_write as retry_ai_write,
 )
 from sjtu_learning_assistant.video_service import (
     SJTUVideoError,
@@ -127,6 +130,7 @@ from sjtu_learning_assistant.local_settings import (
     LocalSettings,
     SettingsError,
     SettingsStore,
+    _validate_mapping as validate_settings_payload,
     validate_ai_base_url,
     validate_ai_model,
 )
@@ -140,6 +144,8 @@ from sjtu_learning_assistant.models import (
     AIChatMessageAttachment,
     AIChatSession,
     AIManagedFile,
+    AITask,
+    AITaskEvent,
     Announcement,
     Assignment,
     Course,
@@ -364,6 +370,12 @@ def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[s
     return command
 
 
+from sjtu_learning_assistant.asr_service import (
+    ASRError, asr_api_key_saved, delete_asr_api_key,
+    get_asr_api_key, save_asr_api_key, transcribe_audio, transcribe_audio_chunked,
+)
+
+
 class DashboardService:
     def __init__(
         self,
@@ -386,6 +398,7 @@ class DashboardService:
         media_service: Any | None = None,
         video_service: Any | None = None,
         transcript_service: Any | None = None,
+        recording_asr_service: Any | None = None,
         update_service: Any | None = None,
         cloud_provider_factory: Callable[[], CloudStorageProvider] = SJTUCloudPanProvider,
         local_projects_path: Path | None = None,
@@ -415,6 +428,7 @@ class DashboardService:
         self.ai_tasks = AITaskLedger(engine, now_provider=self.now)
         self._ai_task_threads: dict[str, threading.Thread] = {}
         self._ai_task_lock = threading.Lock()
+        self._chat_steering_controls: dict[str, ChatSteeringControl] = {}
         self.local_projects_path = Path(
             local_projects_path or APP_SUPPORT_DIR / "local-projects.json"
         )
@@ -445,6 +459,10 @@ class DashboardService:
         self.media_features = media_service or MediaFeatureService()
         self._video_service_instance = video_service
         self._transcript_service_instance = transcript_service
+        self._recording_asr_instance = recording_asr_service
+        self._recording_asr_quit_lock = threading.Lock()
+        self._recording_asr_quit_drained = False
+        self._recording_asr_coverage = dict(status="not_scanned", total_courses=None, scanned_courses=0, inaccessible_courses=(), missing_sources=0)
         self.update_service = update_service or UpdateService(__version__)
         self.ai_files = AIManagedFileService(
             engine,
@@ -970,6 +988,7 @@ class DashboardService:
                     notes_context_provider=self._lesson_summary_ai_context,
                     notes_slice_calls=2,
                     notes_workers=4,
+                    notes_auto_recovery=True,
                     course_metadata_provider=lambda: transcript_course_metadata(self.engine),
                     memory_root=self.local_projects_path.parent / "transcripts" / "v2" / "course_memory",
                 )
@@ -1016,6 +1035,177 @@ class DashboardService:
         service.notify(retry=True)
         service.start()
         return {"status": "queued", "scope": "all_courses"}
+
+    def _recording_asr_sources(self):
+        """Discover every synced course; partial coverage is explicit."""
+        metadata = transcript_course_metadata(self.engine)
+        courses = self._subtitle_courses()
+        known_ids = set(course_id for course_id, _ in courses)
+        missing_courses = tuple(course_id for course_id in metadata if course_id not in known_ids)
+        coverage = dict(status="scanning", total_courses=len(courses) + len(missing_courses), scanned_courses=0,
+                        inaccessible_courses=list(), missing_sources=0)
+        for course_id in missing_courses:
+            coverage.get("inaccessible_courses").append(dict(course_id=course_id,
+                course_name=metadata.get(course_id, dict()).get("course_name") or "未命名课程",
+                reason="缺少有效学校录像来源标识，未猜测或绕过权限。"))
+        self._recording_asr_coverage = coverage
+        for course_id, course_name in courses:
+            try:
+                videos = self._video_service().list_course_videos(course_id, course_name=course_name, limit=10000)
+            except Exception:
+                coverage.get("inaccessible_courses").append(dict(course_id=course_id, course_name=course_name,
+                    reason="课程录像目录不可访问或分页未能确认完整；未绕过学校权限。"))
+                continue
+            coverage.update(scanned_courses=coverage.get("scanned_courses") + 1)
+            for video in videos:
+                source_id = video.get("source_id")
+                try:
+                    source_course, _ = parse_remote_source_id(source_id)
+                    if str(source_course) != course_id:
+                        raise ValueError()
+                except (ValueError, TypeError, SJTUVideoError):
+                    coverage.update(missing_sources=coverage.get("missing_sources") + 1)
+                    continue
+                yield dict(source_id=source_id, course_id=course_id, course_name=course_name,
+                           title=str(video.get("title") or "未命名录播"),
+                           term_name=metadata.get(course_id, dict()).get("term_name") or "未识别学期")
+        coverage.update(status="partial" if coverage.get("inaccessible_courses") or coverage.get("missing_sources") else "complete")
+
+    def _recording_asr_service(self, *, restart_closed=False):
+        from sjtu_learning_assistant.recording_asr_service import RecordingASRService
+        with self._client_lock:
+            if self._closed:
+                raise DashboardError("应用正在关闭。")
+            if restart_closed and self._recording_asr_instance is not None:
+                previous = self._recording_asr_instance.status()
+                if previous.get("state") == "draining":
+                    raise DashboardError("正在保存已发送的语音识别响应，请等待排空完成后再继续。")
+                if previous.get("state") in ("closed", "drain_error"):
+                    if previous.get("safe_to_exit") is not True or previous.get("drain_error"):
+                        raise DashboardError("上次语音响应排空遇到存储错误；不会重置检查点或自动重新发送。")
+                    self._recording_asr_instance = None
+                    self._recording_asr_quit_drained = False
+            if self._recording_asr_instance is None:
+                self._recording_asr_instance = RecordingASRService(
+                    settings=self._effective_settings, discover_sources=self._recording_asr_sources,
+                    fetch_subtitles=self.video_subtitles, fetch_playback=self.video,
+                    root=self.local_projects_path.parent / "recording-asr" / "v1",
+                    markdown_root=lambda: Path(self._effective_settings().archive_root) / "Knowledge Markdown")
+            return self._recording_asr_instance
+
+    def _recording_asr_call(self, method, *args, **kwargs):
+        from sjtu_learning_assistant.recording_asr_service import RecordingASRError
+        try:
+            worker = self._recording_asr_service(restart_closed=method in ("start", "resume", "scan", "retry"))
+            return getattr(worker, method)(*args, **kwargs)
+        except RecordingASRError as exc:
+            raise DashboardError(self._recording_asr_error(str(exc))) from None
+        except ASRError as exc:
+            raise DashboardError(str(exc)) from None
+        except DashboardError:
+            raise
+        except Exception:
+            raise DashboardError("录播转写操作失败；请检查语音密钥、账户余额及任务状态。") from None
+
+    def start_recording_asr_sync(self):
+        settings = self._effective_settings()
+        if settings.recording_asr_enabled and not settings.recording_asr_paused:
+            self._recording_asr_call("resume")
+
+    @staticmethod
+    def _recording_asr_error(code):
+        if type(code) is not str or re.fullmatch(r"[a-z_0-9]{1,100}", code) is None:
+            return "录播转写未完成；错误详情不可安全展示，请查看本机任务状态。"
+        errors = dict(
+            explicit_asr_upload_consent_required="请先明确授权批量外发录播音频。",
+            independent_asr_key_required="请先保存自己的独立语音 API Key。",
+            confirm_unknown_may_repeat_charge_required="上次响应未知；重发可能重复扣费，请明确确认后再重试。",
+            lifetime_attempt_budget_exhausted="手动重试预算已耗尽；不会清空已付费响应或自动重发。",
+            job_busy="该录播正在处理，请先暂停并等待已发送响应保存。",
+            asr_http_402="语音识别失败（HTTP 402）：账户余额不足。充值后仅手动重试失败项，不会自动重发。",
+            markdown_user_edit_protected="Markdown 已被人工修改，已保护；不会覆盖人工稿。",
+            request_outcome_unknown="请求响应未知，可能已经扣费；请查看任务并明确确认后再重试。")
+        return errors.get(code, "录播转写未完成（" + code + "）；请查看任务状态，已保存检查点不会重置。")
+
+    def recording_asr_status(self):
+        result = dict(self._recording_asr_call("status"))
+        coverage = dict(self._recording_asr_coverage)
+        coverage.update(inaccessible_courses=list(coverage.get("inaccessible_courses", ())))
+        settings = self._effective_settings()
+        result.update(enabled=bool(result.get("consent") and settings.recording_asr_enabled),
+                      scanning=bool(result.get("scanning") or result.get("state") == "discovering" or result.get("scan_requested", False) or coverage.get("status") == "scanning"),
+                      busy=bool(result.get("busy") or result.get("draining") or result.get("active")),
+                      in_flight=result.get("in_flight", int(bool(result.get("active") and result.get("active").get("state") == "transcribing"))),
+                      scope=settings.recording_asr_scope, coverage=coverage)
+        if result.get("drain_error"):
+            result.update(drain_error=self._recording_asr_error(result.get("drain_error")),
+                          error=self._recording_asr_error(result.get("drain_error")))
+        elif result.get("error"):
+            result.update(error=self._recording_asr_error(result.get("error")))
+        return result
+
+    def recording_asr_jobs(self, *, limit=100):
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("录播转写任务数量限制不正确。")
+        raw = self._recording_asr_call("jobs", limit=limit)
+        items = list()
+        for job in raw:
+            item = dict(job)
+            item.update(status=job.get("state", "checkpoint_error"),
+                        chunks_total=job.get("chunk_count"), chunks_completed=job.get("completed_chunks"),
+                        retryable=bool(job.get("source_id") and job.get("can_retry") and job.get("state") not in ("queued", "asr_completed")))
+            if job.get("error"):
+                item.update(error=self._recording_asr_error(job.get("error")))
+            items.append(item)
+        total = self._recording_asr_call("status").get("counts", dict()).get("total", len(items))
+        return dict(items=items, total=total, truncated=total > len(items))
+
+    def recording_asr_scan(self):
+        return self._recording_asr_call("scan")
+
+    def recording_asr_start(self, *, consent):
+        if consent is not True:
+            raise DashboardError("尚未授权批量外发录播音频。")
+        self.settings_store.update(dict(recording_asr_enabled=True, recording_asr_paused=False,
+                                       recording_asr_scope="all_unfinished"))
+        try:
+            return self._recording_asr_call("start", consent=True)
+        except Exception:
+            self.settings_store.update(dict(recording_asr_paused=True))
+            raise
+
+    def recording_asr_pause(self):
+        self.settings_store.update(dict(recording_asr_paused=True))
+        return self._recording_asr_call("pause")
+
+    def recording_asr_resume(self):
+        if not self._effective_settings().recording_asr_enabled:
+            raise DashboardError("请先明确授权批量外发录播音频。")
+        self.settings_store.update(dict(recording_asr_paused=False))
+        try:
+            return self._recording_asr_call("resume")
+        except Exception:
+            self.settings_store.update(dict(recording_asr_paused=True))
+            raise
+
+    def recording_asr_retry(self, source_id, *, confirm_unknown=False):
+        if not self._effective_settings().recording_asr_enabled:
+            raise DashboardError("请先明确授权批量外发录播音频。")
+        return self._recording_asr_call("retry", source_id, confirm_unknown=confirm_unknown)
+
+    def _notify_recording_asr_settings(self):
+        # Changed endpoints/models/destinations pause, retain paid responses,
+        # and require explicit resume. Never reset or silently resubmit.
+        worker = self._recording_asr_instance
+        if worker is None and not getattr(self._effective_settings(), "recording_asr_enabled", False):
+            return
+        if worker is not None:
+            worker.pause()
+        self.settings_store.update(dict(recording_asr_paused=True))
+        if worker is not None:
+            changed = getattr(worker, "settings_changed", None)
+            if callable(changed):
+                changed()
 
     def _transcript_course(self, course_id: int | str) -> tuple[str, str]:
         if isinstance(course_id, bool) or type(course_id) not in [int, str]:
@@ -3026,11 +3216,17 @@ class DashboardService:
         attachment_ids: object | None = None,
         *,
         task_id: str | None = None,
+        persisted_user_id: int | None = None,
+        steering_control: ChatSteeringControl | None = None,
         page_context: Mapping[str, Any] | None = None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
+        if task_id is None:
+            with Session(self.engine) as session:
+                if active_chat_task(session, session_id):
+                    raise DashboardError('这段对话已有任务在运行，请发送补充指令或新开对话。')
         # 本轮开始时刻：用户消息以它入库，助手消息以完成时刻入库，两者之差即本轮耗时，
         # 无需新增数据库列（避免回退到旧版 App 时遇到未知迁移版本）。
         turn_started_at = self.now()
@@ -3108,9 +3304,13 @@ class DashboardService:
             if chat is None:
                 raise NotFoundError("对话不存在或已被删除。")
             selected_preset_id = preset_id if preset_id is not None else chat.preset_id
+            original = session.get(AIChatMessage, persisted_user_id) if persisted_user_id is not None else None
+            if persisted_user_id is not None and (original is None or original.session_id != session_id or original.role != 'user' or original.content != text):
+                raise DashboardError('原始任务输入不一致，未继续执行。')
             history = session.scalars(
                 select(AIChatMessage)
                 .where(AIChatMessage.session_id == session_id)
+                .where(AIChatMessage.sequence < original.sequence if original is not None else True)
                 .order_by(AIChatMessage.sequence.desc())
                 .limit(HISTORY_SCAN_LIMIT)
             ).all()
@@ -3245,9 +3445,7 @@ class DashboardService:
             )
             assert client is not None
             options = CHAT_DEPTH_OPTIONS[selected_depth]
-            agent_result = AgentLoop(
-                client,
-                ReadOnlyToolRegistry(
+            registry = ReadOnlyToolRegistry(
                     self.engine,
                     now_provider=self.now,
                     ai_file_service=self.ai_files,
@@ -3255,15 +3453,17 @@ class DashboardService:
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
                     compiled_knowledge=self._compiled_knowledge_service(),
-                ),
-                preset,
-            ).run(
+                )
+            if steering_control is not None:
+                steering_control.attach_registry(registry)
+            agent_result = AgentLoop(client, registry, preset).run(
                 prompt,
                 user_text=text,
                 max_tokens=int(options["max_tokens"]),
                 temperature=float(options["temperature"]),
                 attachment_ids=selected_attachment_ids,
                 event_callback=event_callback,
+                **({'steering_control': steering_control} if steering_control is not None else {}),
             )
         except (AIKeychainError, AIClassificationError) as exc:
             self._persist_failed_agent_trace(session_id, preset.id)
@@ -3310,18 +3510,19 @@ class DashboardService:
                         steps=agent_result.steps,
                         tool_runs=safe_tool_runs,
                     )
-                    user_row = AIChatMessage(
-                        session_id=session_id,
-                        sequence=next_sequence,
-                        role="user",
-                        content=text,
-                        model=selected_model,
-                        trace_id=trace_id,
-                        created_at=min(turn_started_at, now),
-                    )
+                    if persisted_user_id is not None:
+                        user_row = session.get(AIChatMessage, persisted_user_id)
+                        if user_row is None or user_row.session_id != session_id:
+                            raise NotFoundError('原始任务输入不存在或已被删除。')
+                        user_row.trace_id = trace_id
+                        user_row.model = selected_model
+                    else:
+                        user_row = AIChatMessage(
+                            session_id=session_id, sequence=next_sequence, role='user', content=text,
+                            model=selected_model, trace_id=trace_id, created_at=min(turn_started_at, now))
                     assistant_row = AIChatMessage(
                         session_id=session_id,
-                        sequence=next_sequence + 1,
+                        sequence=next_sequence if persisted_user_id is not None else next_sequence + 1,
                         role="assistant",
                         content=agent_result.content,
                         reasoning_content=agent_result.reasoning_content,
@@ -3337,7 +3538,7 @@ class DashboardService:
                             managed_file_id=attachment_id,
                             position=position,
                         )
-                        for position, attachment_id in enumerate(selected_attachment_ids)
+                        for position, attachment_id in enumerate(selected_attachment_ids) if persisted_user_id is None
                     )
                     chat.model = str(model)
                     chat.thinking_depth = selected_depth
@@ -3393,14 +3594,27 @@ class DashboardService:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
         context = normalize_page_context(page_context)
+        if attachment_ids is None:
+            selected_attachments = []
+        elif type(attachment_ids) is list and len(attachment_ids) <= 20 and all(type(identity) is int and 0 < identity <= 9_007_199_254_740_991 for identity in attachment_ids):
+            selected_attachments = list(dict.fromkeys(attachment_ids))
+        else:
+            raise DashboardError('附件标识列表无效。')
+        try:
+            for identity in selected_attachments:
+                self.ai_files.get(identity)
+        except AIFileError as exc:
+            raise DashboardError(str(exc), category='attachment', retryable=False) from None
         settings = self._effective_settings()
         selected_model, _ = self._chat_model(model, depth, settings.ai_model)
         # 页面上下文（如“来自：概览”）只决定证据范围；预算始终按学习对话计，
         # 否则会套用概览页“单次调用”的预算，多步工具调用在第 2 次就失败。
-        snapshot = self.ai_tasks.create(
-            context, model=selected_model, capability_page_id="ai-chat"
-        )
+        try:
+            snapshot, original_id = create_chat_task(self.ai_tasks, context, session_id, content.strip(), selected_model, selected_attachments)
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
         task_id = str(snapshot["task"]["id"])
+        control = ChatSteeringControl(self.ai_tasks, task_id, session_id, original_id)
         thread = threading.Thread(
             target=self._run_ai_chat_task,
             kwargs={
@@ -3412,13 +3626,24 @@ class DashboardService:
                 "preset_id": preset_id,
                 "attachment_ids": attachment_ids,
                 "page_context": context,
+                "persisted_user_id": original_id,
+                "steering_control": control,
             },
             name=f"ai-chat-{task_id[:8]}",
             daemon=True,
         )
         with self._ai_task_lock:
             self._ai_task_threads[task_id] = thread
-        thread.start()
+            self._chat_steering_controls[task_id] = control
+        try:
+            thread.start()
+        except RuntimeError:
+            control.close()
+            with self._ai_task_lock:
+                self._ai_task_threads.pop(task_id, None)
+                self._chat_steering_controls.pop(task_id, None)
+            self.ai_tasks.fail(task_id, 'AI 任务启动失败，原始输入已保存。', category='internal', retryable=True)
+            raise DashboardError('AI 任务启动失败，原始输入已保存，请重试。') from None
         return snapshot
 
     def _run_ai_chat_task(
@@ -3432,45 +3657,32 @@ class DashboardService:
         preset_id: object | None,
         attachment_ids: object | None,
         page_context: Mapping[str, Any],
+        persisted_user_id: int | None = None,
+        steering_control: ChatSteeringControl | None = None,
     ) -> None:
-        buffers: dict[str, list[str]] = {"content_delta": [], "reasoning_delta": []}
-
-        def flush(kind: str) -> None:
-            parts = buffers[kind]
-            if not parts:
-                return
-            self.ai_tasks.append_event(task_id, kind, {"delta": "".join(parts)})
-            parts.clear()
-
-        def event(kind: str, payload: dict[str, Any]) -> None:
+        def check_active() -> None:
             if self.ai_tasks.is_cancel_requested(task_id):
                 raise AITaskCancelled("AI 任务已取消。")
-            if kind in buffers:
-                delta = payload.get("delta")
-                if type(delta) is str and delta:
-                    buffers[kind].append(delta)
-                    if sum(len(part) for part in buffers[kind]) >= 12:
-                        flush(kind)
-                return
-            flush("reasoning_delta")
-            flush("content_delta")
-            self.ai_tasks.append_event(task_id, kind, payload)
 
         try:
             self.ai_tasks.start(task_id)
-            result = self.ai_chat_send(
-                session_id,
-                content,
-                model,
-                depth,
-                preset_id,
-                attachment_ids,
-                task_id=task_id,
-                page_context=page_context,
-                event_callback=event,
-            )
-            flush("reasoning_delta")
-            flush("content_delta")
+            with AIStreamEventBuffer(
+                lambda kind, payload: self.ai_tasks.append_event(task_id, kind, payload),
+                check_active,
+            ) as buffer:
+                result = self.ai_chat_send(
+                    session_id,
+                    content,
+                    model,
+                    depth,
+                    preset_id,
+                    attachment_ids,
+                    task_id=task_id,
+                    page_context=page_context,
+                    event_callback=buffer.add,
+                    **({'persisted_user_id': persisted_user_id, 'steering_control': steering_control}
+                       if steering_control is not None else {}),
+                )
             self.ai_tasks.complete(task_id, {"chat_result": result})
         except AITaskCancelled:
             self.ai_tasks.finish_cancelled(task_id)
@@ -3493,8 +3705,93 @@ class DashboardService:
                 task_id, "AI 任务执行失败，请稍后重试。", category="internal", retryable=True
             )
         finally:
+            if steering_control is not None:
+                steering_control.close()
             with self._ai_task_lock:
                 self._ai_task_threads.pop(task_id, None)
+                if hasattr(self, '_chat_steering_controls'):
+                    self._chat_steering_controls.pop(task_id, None)
+
+    def ai_chat_steer(self, session_id: str, task_id: str, content: object,
+                      request_id: object, attachment_ids: object | None = None) -> dict[str, Any]:
+        """即时补充同一任务；重复 RPC 返回同一消息，不重复模型调用或预约。"""
+        if type(session_id) is not str or not session_id or len(session_id) > 36 or type(task_id) is not str or not task_id or len(task_id) > 36:
+            raise DashboardError('对话或任务标识无效。')
+        if type(content) is not str or not content.strip() or len(content) > 4000:
+            raise DashboardError('补充消息不能为空或超过 4000 字。')
+        if type(request_id) is not str or not request_id.strip() or len(request_id) > 128 or not request_id.isprintable():
+            raise DashboardError('补充消息请求标识无效。')
+        text = content.strip()
+        if attachment_ids is None:
+            identities = []
+        elif type(attachment_ids) is list and len(attachment_ids) <= 20 and all(type(identity) is int and 0 < identity <= 9_007_199_254_740_991 for identity in attachment_ids):
+            identities = list(dict.fromkeys(attachment_ids))
+        else:
+            raise DashboardError('附件标识列表无效。')
+        try:
+            metadata = [self.ai_files.get(identity) for identity in identities]
+            summaries = self.ai_files.summary_context(identities)
+            if self.ai_files.vision_message_parts(identities):
+                raise DashboardError('执行中补充图片需要新开对话；本次补充尚未发送。', category='attachment', retryable=False)
+        except AIFileError as exc:
+            raise DashboardError(str(exc), category='attachment', retryable=False) from None
+        with self._ai_task_lock:
+            control = self._chat_steering_controls.get(task_id)
+
+        def existing(session):
+            bindings = session.scalars(select(AITaskEvent).where(AITaskEvent.task_id == task_id, AITaskEvent.kind == 'chat_binding')).all()
+            if len(bindings) != 1 or bindings[0].payload.get('session_id') != session_id:
+                raise DashboardError('该任务不属于当前对话。')
+            events = session.scalars(select(AITaskEvent).where(AITaskEvent.task_id == task_id, AITaskEvent.kind == 'steering_requested')).all()
+            matches = [event for event in events if event.payload.get('request_id') == request_id]
+            if matches:
+                payload = matches[0].payload
+                if payload.get('content') != text or payload.get('attachment_ids', []) != identities:
+                    raise DashboardError('重复请求标识的补充内容不一致，未重复发送。')
+                row = session.get(AIChatMessage, payload.get('message_id'))
+                if row is None or row.session_id != session_id:
+                    raise DashboardError('补充消息不存在或已被删除。')
+                return row, events
+            return None, events
+
+        with Session(self.engine) as session:
+            row, _ = existing(session)
+            if row is not None:
+                return {'task_id': task_id, 'user_message': self._chat_message_dto(row, [], metadata)}
+        if control is None or control.session_id != session_id:
+            raise DashboardError('当前任务已结束或尚未连接，补充未发送；请重试或新开对话。')
+        try:
+            with control.submission_scope():
+                def write():
+                    with Session(self.engine) as session, session.begin():
+                        session.execute(update(AIChatSession).where(AIChatSession.id == session_id)
+                                        .values(updated_at=AIChatSession.updated_at))
+                        row, events = existing(session)
+                        if row is not None:
+                            return self._chat_message_dto(row, [], metadata), None
+                        task = session.get(AITask, task_id)
+                        if task is None or task.status not in ('queued', 'running') or task.cancel_requested:
+                            raise DashboardError('当前任务已结束，补充未发送；请重新发送或新开对话。')
+                        if len(events) >= 12:
+                            raise DashboardError('本轮补充次数已达上限，未重置预算；请新开对话。')
+                        sequence = int(session.scalar(select(func.max(AIChatMessage.sequence)).where(AIChatMessage.session_id == session_id)) or 0) + 1
+                        row = AIChatMessage(session_id=session_id, sequence=sequence, role='user', content=text,
+                                            model=task.model, created_at=self.now())
+                        session.add(row)
+                        session.flush()
+                        session.add_all(AIChatMessageAttachment(message_id=row.id, managed_file_id=identity, position=index)
+                                        for index, identity in enumerate(identities))
+                        payload = dict(content=text, message_id=row.id, request_id=request_id, attachment_ids=identities,
+                                       attachment_context=summaries)
+                        self.ai_tasks._event(session, task_id, 'steering_requested', payload)
+                        session.get(AIChatSession, session_id).updated_at = self.now()
+                        return self._chat_message_dto(row, [], metadata), payload
+                message, payload = retry_ai_write(write)
+                if payload is not None:
+                    control.queue_persisted(payload)
+            return {'task_id': task_id, 'user_message': message}
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
 
     def ai_task_status(self, task_id: str, after_sequence: int = 0) -> dict[str, Any]:
         try:
@@ -3504,7 +3801,12 @@ class DashboardService:
 
     def ai_task_cancel(self, task_id: str) -> dict[str, Any]:
         try:
-            return self.ai_tasks.cancel(task_id)
+            result = self.ai_tasks.cancel(task_id)
+            with self._ai_task_lock:
+                control = self._chat_steering_controls.get(task_id)
+            if control is not None and result['task']['cancel_requested']:
+                control.cancel()
+            return result
         except AITaskError as exc:
             raise DashboardError(str(exc)) from None
 
@@ -3719,10 +4021,13 @@ class DashboardService:
 
     def start_course_markdown_sync(self) -> None:
         if getattr(self, "_course_markdown_instance", None) is None:
+            from .summary_policy import REVIEW_SAMPLE_PERCENT, SUMMARY_PARALLEL_BATCHES
             self._course_markdown_instance = CourseMarkdownSync(
                 self._effective_settings, self._course_markdown_paths, self._run_knowledge_compiler_ai,
                 wiki_rebuilder=self._rebuild_course_wiki,
                 max_documents_per_cycle=10, slice_calls=2, workers=6,
+                review_percent=REVIEW_SAMPLE_PERCENT, parallel_batches=SUMMARY_PARALLEL_BATCHES,
+                auto_recovery=True,
             )
         self._course_markdown_instance.start()
 
@@ -3731,6 +4036,11 @@ class DashboardService:
         return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
 
     def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        recording = getattr(self, "_recording_asr_instance", None)
+        if recording is not None:
+            # Ordinary sync completion refreshes discovery; it must not stop the
+            # already-consented ASR batch. Config changes pause, not terminal-close.
+            recording.notify(settings_changed=settings_changed)
         subtitles = getattr(self, "_subtitle_sync_instance", None)
         if subtitles is not None and not settings_changed:
             subtitles.notify()
@@ -3770,7 +4080,7 @@ class DashboardService:
         settings = self._effective_settings()
         from .knowledge_summary import CONCISE_REVIEW_PROMPT, SUMMARY_PROMPT, CONCISE_COMPRESSION_PROMPT
         if system_prompt.startswith(CONCISE_REVIEW_PROMPT):
-            max_tokens = min(max_tokens, 2048)
+            max_tokens = min(max_tokens, 1024)
         elif system_prompt.startswith(SUMMARY_PROMPT):
             max_tokens = min(max_tokens, 7500)
         elif system_prompt.startswith(CONCISE_COMPRESSION_PROMPT):
@@ -3804,25 +4114,28 @@ class DashboardService:
             if isinstance(client, OpenAIClassificationClient):
                 from .provider_usage import ProviderUsageLedger
                 client.usage_recorder = ProviderUsageLedger(self.engine).record
-            result = client.chat_completion(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.1,
-                system_prompt=False,
-                knowledge_compilation=True,
-                response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
-            )
-            content = result.get("content")
-            if (result.get("response_metadata") or {}).get("finish_reason") == "length":
-                from .knowledge_compiler import KnowledgeResponseError
-                raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
-                                             content=content if type(content) is str else '')
-            if type(content) is not str or not content.strip():
-                raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
-            return content.strip()
+            def complete():
+                result = client.chat_completion(
+                    [{"role": "system", "content": system_prompt},
+                     {"role": "user", "content": user_content}],
+                    max_tokens=max_tokens, temperature=0.1, system_prompt=False,
+                    knowledge_compilation=True,
+                    response_format={"type": "json_object"} if "json" in system_prompt.casefold() else None,
+                )
+                content = result.get("content")
+                if result.get('finish_reason') == 'length' or (result.get("response_metadata") or {}).get("finish_reason") == "length":
+                    from .knowledge_compiler import KnowledgeResponseError
+                    raise KnowledgeResponseError("知识库响应被截断；请压缩重组完整JSON，不得直接发布。",
+                                                 content=content if type(content) is str else '')
+                if type(content) is not str or not content.strip():
+                    raise KnowledgeCompilerError("AI 未返回可用的知识库内容。")
+                return content.strip()
+            if self.ai_client_factory is OpenAIClassificationClient and 'json' in system_prompt.casefold():
+                from .compilation_cache import CompilationResponseCache
+                cache = CompilationResponseCache(self.local_projects_path.parent / 'compilation-responses.sqlite3')
+                cache_id = cache.identity(identity, system_prompt, user_content, max_tokens)
+                return cache.get_or_compute(cache_id, complete)
+            return complete()
         except AIKeychainError:
             # 与 ai_chat_send 临时客户端分支保持一致：凭据类故障不可重试，
             # 否则会穿透成无文案的内部错误，并被后台编译任务错分类为 internal/retryable。
@@ -3908,8 +4221,48 @@ class DashboardService:
         except (KnowledgeCompilerError, LocalProjectError) as exc:
             raise DashboardError(str(exc)) from None
 
+    def prepare_recording_asr_quit(self):
+        """Drain the existing worker before Cocoa native termination or cleanup.
+
+        Never create a worker, revoke consent or discard paid responses here.
+        The synchronous native closing handler must finish before NSApp exits.
+        """
+        recording = getattr(self, "_recording_asr_instance", None)
+        if recording is None:
+            return True
+        quit_lock = getattr(self, "_recording_asr_quit_lock", None)
+        if quit_lock is None:
+            quit_lock = self._recording_asr_quit_lock = threading.Lock()
+        with quit_lock:
+            if getattr(self, "_recording_asr_quit_drained", False):
+                return True
+            try:
+                self.settings_store.update(dict(recording_asr_paused=True))
+            except (OSError, SettingsError):
+                # Its independent manifest still records pause. A settings disk
+                # error must never skip preserving the already-sent response.
+                pass
+            try:
+                recording.pause()
+            finally:
+                recording.close()
+                wait_closed = getattr(recording, "wait_closed", None)
+                if callable(wait_closed):
+                    if wait_closed(timeout=None) is False:
+                        return False
+                else:
+                    busy = getattr(recording, "busy", None)
+                    if callable(busy) and busy():
+                        return False
+            self._recording_asr_quit_drained = True
+            return True
+
     def close(self) -> None:
         """Idempotently close all service-owned network clients."""
+        with self._client_lock:
+            if self._closed:
+                return
+        self.prepare_recording_asr_quit()
         subtitles = getattr(self, "_subtitle_sync_instance", None)
         if subtitles is not None:
             subtitles.close()
@@ -3946,7 +4299,7 @@ class DashboardService:
             task_ids = tuple(self._ai_task_threads)
         for task_id in task_ids:
             try:
-                self.ai_tasks.cancel(task_id)
+                self.ai_task_cancel(task_id)
             except Exception:
                 pass
         for temporary in (self._material_temp, self._academic_temp):
@@ -3976,9 +4329,13 @@ class DashboardService:
                 self.ai_key_saver(value)
                 self.settings_store.update({"ai_key_saved": True})
                 self._discard_ai_client()
+            elif kind == "asr":
+                self._notify_recording_asr_settings()
+                save_asr_api_key(value)
+                self.settings_store.update(dict(asr_key_saved=True))
             else:
                 raise DashboardError("配置类型不受支持。")
-        except (CredentialStoreError, AIKeychainError) as exc:
+        except (CredentialStoreError, AIKeychainError, ASRError) as exc:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
@@ -4000,14 +4357,25 @@ class DashboardService:
                 delete_ai_api_key()
                 self.settings_store.update({"ai_key_saved": False, "ai_enabled": False})
                 self._discard_ai_client()
+            elif kind == "asr":
+                self._notify_recording_asr_settings()
+                delete_asr_api_key()
+                self.settings_store.update(dict(asr_key_saved=False))
             else:
                 raise DashboardError("配置类型不受支持。")
-        except (CredentialStoreError, AIKeychainError) as exc:
+        except (CredentialStoreError, AIKeychainError, ASRError) as exc:
             raise DashboardError(str(exc)) from exc
         return self.settings_status()
 
     def update_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        settings = self.settings_store.update(dict(payload))
+        if set(payload) & set(("recording_asr_enabled", "recording_asr_paused", "recording_asr_scope")):
+            raise DashboardError("请使用录播转写的明确授权、暂停或继续操作。")
+        changes = validate_settings_payload(dict(payload), partial=True)
+        previous = self._effective_settings()
+        if any(key in changes and getattr(previous, key) != changes.get(key)
+               for key in ("archive_root", "asr_endpoint", "asr_model")):
+            self._notify_recording_asr_settings()
+        settings = self.settings_store.update(changes)
         if self._archive_root_override is None:
             self.archive_root = Path(settings.archive_root)
             self.ai_files.archive_root = self.archive_root
@@ -4018,6 +4386,16 @@ class DashboardService:
             self._notify_course_markdown_sync(settings_changed=True)
         return self.settings_status()
 
+    def transcribe_selected_audio(self, path: Path) -> dict[str, Any]:
+        settings = self._effective_settings()
+        try:
+            key = get_asr_api_key()
+            if not key:
+                raise ASRError("请先保存独立的语音识别密钥。")
+            return transcribe_audio_chunked(path, endpoint=settings.asr_endpoint, model=settings.asr_model, api_key=key)
+        except (ASRError, AIKeychainError) as exc:
+            raise DashboardError(str(exc)) from None
+
     def pick_archive_root(self) -> dict[str, Any]:
         if self.folder_picker is None:
             raise DashboardError("当前环境不支持选择文件夹。")
@@ -4026,7 +4404,10 @@ class DashboardService:
             # 原生选择器取消时返回 None；个别平台/测试替身返回 ""，一并按取消处理，
             # 否则会把空串写进设置并报“归档目录不能为空”。
             return {"cancelled": True, "settings": self.settings_status()}
-        updated = self.settings_store.update({"archive_root": selected})
+        changes = validate_settings_payload(dict(archive_root=selected), partial=True)
+        if self._effective_settings().archive_root != changes.get("archive_root"):
+            self._notify_recording_asr_settings()
+        updated = self.settings_store.update(changes)
         if self._archive_root_override is None:
             self.archive_root = Path(updated.archive_root)
             self.ai_files.archive_root = self.archive_root
@@ -4102,6 +4483,11 @@ class DashboardService:
             ai_saved = settings.ai_key_saved
             credential_errors = True
         storage_name = credential_storage_name()
+        try:
+            asr_saved = asr_api_key_saved() if settings.asr_key_saved else False
+        except Exception:
+            asr_saved = False
+            credential_errors = True
         credential_error = (
             f"无法读取部分 {storage_name} 配置状态。" if credential_errors else None
         )
@@ -4122,6 +4508,12 @@ class DashboardService:
             "ai_base_url": settings.ai_base_url,
             "ai_model": settings.ai_model,
             "ai_key_saved": ai_saved,
+            "asr_endpoint": settings.asr_endpoint,
+            "asr_model": settings.asr_model,
+            "asr_key_saved": asr_saved,
+            "recording_asr_enabled": settings.recording_asr_enabled,
+            "recording_asr_paused": settings.recording_asr_paused,
+            "recording_asr_scope": settings.recording_asr_scope,
             "ai_chat_send_shortcut": settings.ai_chat_send_shortcut,
             "ai_reply_language": settings.ai_reply_language,
             "ai_attachment_context_budget": settings.ai_attachment_context_budget,

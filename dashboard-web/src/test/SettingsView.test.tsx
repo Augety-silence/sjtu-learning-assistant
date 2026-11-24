@@ -12,6 +12,7 @@ import {
   pickArchiveRoot,
   saveCredential,
   testAiConnection,
+  transcribeSelectedAudio,
   updateSettings,
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
@@ -28,6 +29,8 @@ vi.mock("@/lib/api", () => ({
   getProviderUsage: vi.fn(async () => ({
     periods: { today: { calls: 0, metrics: {} } },
   })),
+  getRecordingASRStatus: vi.fn(async () => ({ enabled: false, paused: true })),
+  getRecordingASRJobs: vi.fn(async () => ({ items: [] })),
   checkForUpdates: vi.fn(),
   getSettings: vi.fn(),
   openExternal: vi.fn(),
@@ -37,6 +40,7 @@ vi.mock("@/lib/api", () => ({
   deleteCredential: vi.fn(),
   exportDebugBundle: vi.fn(),
   testAiConnection: vi.fn(),
+  transcribeSelectedAudio: vi.fn(),
   updateSettings: vi.fn(),
 }));
 
@@ -66,6 +70,81 @@ const status: SettingsStatus = {
 };
 
 describe("SettingsView", () => {
+  it("语音识别只在 AI 配置页签内出现，不占用设置首页", async () => {
+    render(<SettingsView />);
+    const buttons = await screen.findAllByRole("button", { name: "修改配置" });
+    expect(screen.queryByRole("button", { name: "保存语音配置" })).toBeNull();
+    fireEvent.click(buttons[3]);
+    expect(
+      screen
+        .getByRole("tab", { name: "聊天模型" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "语音识别" }));
+    expect(screen.getByRole("button", { name: "保存语音配置" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "保存配置" })).toBeNull();
+    expect(screen.getByRole("dialog").querySelector("form form")).toBeNull();
+  });
+
+  it("保存语音配置不改聊天密钥，关闭窗口会清除未提交语音密钥", async () => {
+    vi.mocked(saveCredential).mockResolvedValue({
+      ...status,
+      asr_key_saved: true,
+    });
+    render(<SettingsView />);
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "修改配置" }))[3],
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "语音识别" }));
+    fireEvent.change(screen.getByLabelText("语音识别 API Key"), {
+      target: { value: "synthetic-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
+    await waitFor(() =>
+      expect(saveCredential).toHaveBeenCalledWith("asr", "synthetic-key"),
+    );
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "关闭配置窗口" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.change(screen.getByLabelText("语音识别 API Key"), {
+      target: { value: "unsaved-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "关闭配置窗口" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getAllByRole("button", { name: "修改配置" })[3]);
+    fireEvent.click(screen.getByRole("tab", { name: "语音识别" }));
+    expect(
+      (screen.getByLabelText("语音识别 API Key") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("语音保存失败展示错误并保留输入，不错误调用识别或保存聊天密钥", async () => {
+    vi.mocked(saveCredential).mockRejectedValueOnce(
+      new Error("Keychain -25308"),
+    );
+    render(<SettingsView />);
+    fireEvent.click(
+      (await screen.findAllByRole("button", { name: "修改配置" }))[3],
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "语音识别" }));
+    fireEvent.change(screen.getByLabelText("语音识别 API Key"), {
+      target: { value: "synthetic-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存语音配置" }));
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Keychain -25308",
+    );
+    expect(
+      (screen.getByLabelText("语音识别 API Key") as HTMLInputElement).value,
+    ).toBe("synthetic-key");
+    expect(transcribeSelectedAudio).not.toHaveBeenCalled();
+  });
+
   it("设置读取完成后显现正文，使用较长的淡入时长", async () => {
     let finish: ((value: SettingsStatus) => void) | undefined;
     vi.mocked(getSettings).mockReturnValueOnce(

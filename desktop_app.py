@@ -63,6 +63,7 @@ from sjtu_learning_assistant.cloud_drive_service import (
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
 from sjtu_learning_assistant.transcript_service import ARTIFACT_FILES
+from sjtu_learning_assistant.video_service import parse_remote_source_id, SJTUVideoError
 from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import (
@@ -495,6 +496,14 @@ class DesktopBridge:
             "settings_update": self._settings_update,
             "settings_ai_import": self._settings_ai_import,
             "settings_ai_test": self._settings_ai_test,
+            "settings_asr_transcribe": self._settings_asr_transcribe,
+            "recording_asr_status": lambda payload: self._without_payload(payload, service.recording_asr_status),
+            "recording_asr_jobs": self._recording_asr_jobs,
+            "recording_asr_scan": lambda payload: self._without_payload(payload, service.recording_asr_scan),
+            "recording_asr_start": self._recording_asr_start,
+            "recording_asr_pause": lambda payload: self._without_payload(payload, service.recording_asr_pause),
+            "recording_asr_resume": lambda payload: self._without_payload(payload, service.recording_asr_resume),
+            "recording_asr_retry": self._recording_asr_retry,
             "settings_credential_save": self._settings_credential_save,
             "settings_credential_delete": self._settings_credential_delete,
             "debug_bundle_export": self._debug_bundle_export,
@@ -505,6 +514,7 @@ class DesktopBridge:
             "ai_chat_new": self._ai_chat_new,
             "ai_chat_send": self._ai_chat_send,
             "ai_chat_stream_start": self._ai_chat_stream_start,
+            "ai_chat_steer": self._ai_chat_steer,
             "ai_task_status": self._ai_task_status,
             "ai_task_cancel": self._ai_task_cancel,
             "ai_usage_summary": self._ai_usage_summary,
@@ -673,6 +683,8 @@ class DesktopBridge:
                 "ai_enabled",
                 "ai_base_url",
                 "ai_model",
+                "asr_endpoint",
+                "asr_model",
                 "ai_chat_send_shortcut",
                 "ai_reply_language",
                 "ai_attachment_context_budget",
@@ -694,6 +706,41 @@ class DesktopBridge:
     def _settings_ai_test(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.test_ai_connection()
+
+    def _settings_asr_transcribe(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        if self._file_picker is None:
+            raise DashboardError("当前环境不支持选择音频。")
+        selected = self._file_picker()
+        if not selected:
+            return {"cancelled": True}
+        # 路径只能来自原生文件选择器，前端不能传任意文件路径。
+        return self._service.transcribe_selected_audio(Path(selected))
+
+    def _recording_asr_jobs(self, payload):
+        _only_keys(payload, set(("limit",)))
+        limit = payload.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("录播转写任务数量限制不正确。")
+        return self._service.recording_asr_jobs(limit=limit)
+
+    def _recording_asr_start(self, payload):
+        _only_keys(payload, set(("consent",)))
+        if payload.get("consent") is not True:
+            raise DashboardError("请先明确授权将全部未完成录播音频发送到语音识别接口。")
+        return self._service.recording_asr_start(consent=True)
+
+    def _recording_asr_retry(self, payload):
+        _only_keys(payload, set(("source_id", "confirm_unknown")))
+        source_id = payload.get("source_id")
+        try:
+            parse_remote_source_id(source_id)
+        except (ValueError, TypeError, SJTUVideoError):
+            raise DashboardError("录播来源标识不正确。") from None
+        confirm_unknown = payload.get("confirm_unknown", False)
+        if type(confirm_unknown) is not bool:
+            raise DashboardError("未知响应重试确认必须是布尔值。")
+        return self._service.recording_asr_retry(source_id, confirm_unknown=confirm_unknown)
 
     def _settings_credential_save(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "value", "account"})
@@ -819,6 +866,21 @@ class DesktopBridge:
         if type(after_sequence) is not int or after_sequence < 0:
             raise DashboardError("AI 任务事件游标无效。")
         return self._service.ai_task_status(task_id, after_sequence)
+
+    def _ai_chat_steer(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {'session_id', 'task_id', 'content', 'request_id', 'attachment_ids'})
+        attachment_ids = payload.get('attachment_ids')
+        if attachment_ids is not None:
+            if type(attachment_ids) is not list or len(attachment_ids) > 20:
+                raise DashboardError('附件标识列表无效。')
+            attachment_ids = [_positive_id(value, '附件标识') for value in attachment_ids]
+        return self._service.ai_chat_steer(
+            self._chat_session_id(payload),
+            _bounded_id(payload.get('task_id'), limit=36, label='AI 任务标识'),
+            payload.get('content'),
+            _bounded_id(payload.get('request_id'), limit=128, label='补充请求标识'),
+            attachment_ids,
+        )
 
     def _ai_task_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"task_id"})
@@ -2550,6 +2612,22 @@ def _install_macos_background_lifecycle() -> bool:
         return False
 
 
+def _install_recording_asr_quit_guard(window, service):
+    """Cocoa Cmd-Q must preserve an in-flight paid response before NSApp exits."""
+    prepare = getattr(service, "prepare_recording_asr_quit", None)
+    if not callable(prepare):
+        return
+    def before_native_quit():
+        try:
+            # pywebview closing handlers are synchronous/cancellable. Our Mac
+            # background red-button delegate hides instead, so it does not pause.
+            return False if prepare() is False else None
+        except Exception as exc:
+            LOGGER.warning("录播ASR退出排空失败；exception_type=%s", type(exc).__name__)
+            return False  # refuse unsafe termination; never discard/resend
+    window.events.closing += before_native_quit
+
+
 def _initialize_desktop_window(window: object) -> None:
     _enable_macos_window_material(window)
     if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
@@ -2709,6 +2787,7 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
             text_select=True,
         )
+        _install_recording_asr_quit_guard(window, service)
         scheduler.start()
         automatic_start = getattr(service, "start_course_markdown_sync", None)
         if callable(automatic_start):
@@ -2720,6 +2799,12 @@ def run_desktop_app() -> int:
             except Exception as exc:
                 # 可选字幕存储不可用不能挡住整个App；不记录路径、正文或凭据。
                 LOGGER.warning("已保存字幕MD自动补齐启动失败；exception_type=%s", type(exc).__name__)
+        recording_asr_start = getattr(service, "start_recording_asr_sync", None)
+        if callable(recording_asr_start):
+            try:
+                recording_asr_start()
+            except Exception as exc:
+                LOGGER.warning("录播ASR启动失败；exception_type=%s", type(exc).__name__)
         start_options = {
             "debug": False,
             "private_mode": False,
@@ -2760,6 +2845,11 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--asr-self-test"]:
+        if len(sys.argv) != 3 or not Path(sys.argv[2]).is_absolute():
+            return 2
+        from sjtu_learning_assistant.asr_self_test import run
+        return run(Path(sys.argv[2]))
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--mcp-stdio"]:
         from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
         from sjtu_learning_assistant.mcp_server import run_stdio_server

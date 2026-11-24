@@ -29,6 +29,7 @@ KNOWN_TOOLS = frozenset(
         "search_compiled_knowledge",
         "read_compiled_knowledge",
         "browse_knowledge_wiki",
+        "get_knowledge_status",
         "list_workspace_files",
         "read_workspace_file",
         "propose_file_change",

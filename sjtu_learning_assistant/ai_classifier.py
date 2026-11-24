@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ import httpx
 
 from sjtu_learning_assistant.ai_limits import (
     MAX_CHAT_CONTEXT_CHARS,
+    MAX_AGENT_CONTEXT_CHARS,
+    MAX_AGENT_TOOL_MESSAGE_CHARS,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_CHAT_MESSAGES,
     MAX_KNOWLEDGE_MESSAGE_CHARS,
@@ -134,6 +137,100 @@ class _DeltaCallbackAbort(Exception):
     def __init__(self, original: BaseException) -> None:
         super().__init__(type(original).__name__)
         self.original = original
+
+
+class _RequestWatch:
+    """取消本次请求的网络流，不关闭其他会话共用的 HTTP 客户端。"""
+
+    def __init__(self, check: Callable[[], None] | None):
+        self.callback = check
+        self._stop = threading.Event()
+        self._thread = None
+        self._stream = None
+        self._response = None
+        self._abort: Exception | None = None
+        self.partial_response: dict[str, Any] = {}
+        self.response_snapshot = None
+
+    def _interrupt_stream(self):
+        # httpx 默认使用 HTTP/1.1，每个网络流仅属于本次请求。
+        stream = self._stream
+        if stream is not None:
+            try:
+                connection = stream.get_extra_info('socket')
+                if connection is not None:
+                    connection.shutdown(socket.SHUT_RDWR)
+            except (OSError, AttributeError):
+                pass
+            try:
+                stream.close()
+            except (OSError, AttributeError):
+                pass
+        if self._response is not None:
+            try:
+                self._response.close()
+            except (OSError, RuntimeError):
+                pass
+
+    def check(self):
+        if self._abort is not None:
+            raise _DeltaCallbackAbort(self._abort)
+        if self.callback is not None:
+            try:
+                self.callback()
+            except Exception as exc:
+                raise _DeltaCallbackAbort(exc) from None
+
+    def cancelled(self):
+        # 共享限流预约的取消回调必须返回布尔值，保证预约行先结束。
+        # 原始补充/取消异常由 __exit__ 还原，不能从队列检查中提前抛出。
+        try:
+            self.check()
+        except _DeltaCallbackAbort as abort:
+            self._abort = abort.original
+            self._interrupt_stream()
+            return True
+        return False
+
+    def trace(self, event, info):
+        if event in ('connection.connect_tcp.complete', 'connection.start_tls.complete'):
+            self._stream = info.get('return_value')
+            if self._abort is not None:
+                self._interrupt_stream()
+                self.check()
+
+    def response(self, response, *, check=True):
+        self._response = response
+        if check:
+            self.check()
+
+    def __enter__(self):
+        self.check()
+        if self.callback is not None:
+            def observe():
+                while not self._stop.wait(0.1):
+                    try:
+                        self.callback()
+                    except Exception as exc:
+                        self._abort = exc
+                        self._interrupt_stream()
+                        return
+            self._thread = threading.Thread(target=observe, name='ai-request-interrupt', daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        original = error.original if isinstance(error, _DeltaCallbackAbort) else self._abort
+        if original is not None:
+            if self.response_snapshot is not None:
+                self.partial_response = self.response_snapshot()
+            original.partial_response = dict(self.partial_response)
+            raise _DeltaCallbackAbort(original) from None
+        if error is not None and self.response_snapshot is not None:
+            error.partial_response = self.response_snapshot()
 
 
 class AIToolsUnsupportedError(AIClassificationError):
@@ -269,6 +366,7 @@ _GLOBAL_LIMITER = SixSecondRateLimiter()
 
 
 class OpenAIClassificationClient:
+    supports_request_checks = True
     def __init__(
         self,
         *,
@@ -319,6 +417,10 @@ class OpenAIClassificationClient:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
             transport=transport,
+            http2=False,
+            # 可中断请求必须能捕获自己的 socket；连接复用时 httpcore 不发 connect trace。
+            # 禁用空闲连接复用也避免收尾竞态关闭被另一会话复用的连接。
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
         try:
             idle_seconds = float(
@@ -335,36 +437,47 @@ class OpenAIClassificationClient:
     def close(self) -> None:
         self._client.close()
 
-    def _record_usage(self, usage: dict[str, int]) -> None:
+    def _record_usage(self, usage: dict[str, int], *, model: str | None = None) -> None:
         if self.usage_recorder is not None:
             try:
-                self.usage_recorder(self.model, usage)
+                self.usage_recorder(model or self.model, usage)
             except Exception as exc:
                 # 计量故障不能导致已计费请求被当作失败重试；不记录异常文本。
                 logging.getLogger(__name__).warning("模型用量记录失败；exception_type=%s", type(exc).__name__)
 
-    def _post_completion(self, body: Mapping) -> object:
+    def _post_completion(self, body: Mapping, *, request_check=None) -> object:
         usage: dict[str, int] = {}
         try:
             from contextlib import nullcontext
-            runtime = self._runtime.request(dict(body), usage, cancelled=lambda: self._client.is_closed) if self._runtime else nullcontext()
-            with runtime:
-                response = self._client.post("chat/completions", json=dict(body))
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, Mapping):
-                    usage.update(normalize_token_usage(payload.get("usage")))
-                return payload
+            with _RequestWatch(request_check) as watch:
+                def cancelled():
+                    return watch.cancelled() or self._client.is_closed
+                runtime = self._runtime.request(dict(body), usage, cancelled=cancelled) if self._runtime else nullcontext()
+                with runtime:
+                    extras = {'extensions': {'trace': watch.trace}} if request_check is not None else {}
+                    response = self._client.post("chat/completions", json=dict(body), **extras)
+                    # post 已读完整响应，先归档用量再处理此刻到达的补充/取消。
+                    watch.response(response, check=False)
+                    response.raise_for_status()
+                    payload = response.json()
+                    if isinstance(payload, Mapping):
+                        usage.update(normalize_token_usage(payload.get("usage")))
+                        watch.partial_response = {'raw_response': dict(payload), 'usage': dict(usage)}
+                    watch.check()
+                    return payload
         finally:
-            self._record_usage(usage)
+            self._record_usage(usage, model=str(body.get('model') or self.model))
 
     @classmethod
     def _clean_chat_messages(
-        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS
+        cls, messages: list[dict[str, Any]], *, max_message_chars: int = MAX_CHAT_MESSAGE_CHARS,
+        max_tool_chars: int = MAX_CHAT_MESSAGE_CHARS,
     ) -> tuple[list[dict[str, Any]], int]:
         """Validate and normalize OpenAI chat history for both request modes."""
         if type(max_message_chars) is not int or not 1 <= max_message_chars <= MAX_KNOWLEDGE_MESSAGE_CHARS:
             raise AIClassificationError("AI 消息长度预算无效。")
+        if type(max_tool_chars) is not int or not 1 <= max_tool_chars <= MAX_AGENT_TOOL_MESSAGE_CHARS:
+            raise AIClassificationError("AI 工具消息长度预算无效。")
         if not messages or len(messages) > MAX_CHAT_MESSAGES:
             raise AIClassificationError("AI 对话消息数量无效。", category="context_too_long")
         clean_messages: list[dict[str, Any]] = []
@@ -389,7 +502,8 @@ class OpenAIClassificationClient:
             clean_content: Any
             content_length = 0
             if type(content) is str:
-                if len(content) > max_message_chars or (role in {"user", "system"} and not content.strip()):
+                limit = max_tool_chars if role == "tool" else max_message_chars
+                if len(content) > limit or (role in {"user", "system"} and not content.strip()):
                     raise AIClassificationError("单条消息不能为空或超过长度限制。", category="context_too_long")
                 clean_content = content.strip()
                 content_length = len(content)
@@ -477,8 +591,11 @@ class OpenAIClassificationClient:
         if len(set(expected_ids)) != len(expected_ids):
             raise AIClassificationError("分类输入标识重复。")
         body = {
-            "model": self.model,
+            # 文件分类只需有限 JSON；不让后台继承聊天的长推理模型。
+            # 用户的 chat_completion 模型及设置不变。
+            "model": "deepseek-chat" if self.model == "deepseek-reasoner" else self.model,
             "temperature": 0,
+            "max_tokens": 2048,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -559,6 +676,7 @@ class OpenAIClassificationClient:
         system_prompt: bool = True,
         response_format: Mapping[str, str] | None = None,
         knowledge_compilation: bool = False,
+        request_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if response_format is not None and (
             not isinstance(response_format, Mapping) or dict(response_format) != {"type": "json_object"}
@@ -568,8 +686,12 @@ class OpenAIClassificationClient:
             raise AIClassificationError("知识编译上下文只用于独立、无工具的编译请求。")
         if knowledge_compilation and any(type(m) is not dict or m.get('role') not in {'system', 'user'} for m in messages):
             raise AIClassificationError("知识编译不能混入工具或聊天历史。")
-        clean_messages, total_length = self._clean_chat_messages(messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS)
-        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_CHAT_CONTEXT_CHARS
+        agent_context = bool(tools) or any(type(m) is dict and m.get("role") == "tool" for m in messages)
+        clean_messages, total_length = self._clean_chat_messages(
+            messages, max_message_chars=MAX_KNOWLEDGE_MESSAGE_CHARS if knowledge_compilation else MAX_CHAT_MESSAGE_CHARS,
+            max_tool_chars=MAX_AGENT_TOOL_MESSAGE_CHARS if agent_context else MAX_CHAT_MESSAGE_CHARS,
+        )
+        context_limit = MAX_KNOWLEDGE_CONTEXT_CHARS if knowledge_compilation else MAX_AGENT_CONTEXT_CHARS if agent_context else MAX_CHAT_CONTEXT_CHARS
         if total_length > context_limit or len(context) > 12_000:
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
@@ -622,7 +744,7 @@ class OpenAIClassificationClient:
                 request_body["response_format"] = dict(response_format)
             if self.model != "deepseek-reasoner":
                 request_body["temperature"] = max(0.0, min(float(temperature), 1.5))
-            payload = self._post_completion(request_body)
+            payload = self._post_completion(request_body, request_check=request_check)
             choices = payload.get("choices") if type(payload) is dict else None
             if type(choices) is not list or not choices:
                 raise ValueError("invalid choices")
@@ -653,6 +775,8 @@ class OpenAIClassificationClient:
                 response_metadata=response_metadata,
             )
 
+        except _DeltaCallbackAbort as abort:
+            raise abort.original from None
         except AIClassificationError:
             raise
         except httpx.HTTPStatusError as exc:
@@ -718,10 +842,12 @@ class OpenAIClassificationClient:
         on_delta: Callable[[str, str], None] | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: object | None = None,
+        request_check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Consume an OpenAI-compatible SSE response, including tool continuations."""
-        clean_messages, total_length = self._clean_chat_messages(messages)
-        if total_length > MAX_CHAT_CONTEXT_CHARS:
+        agent_context = bool(tools) or any(type(m) is dict and m.get("role") == "tool" for m in messages)
+        clean_messages, total_length = self._clean_chat_messages(messages, max_tool_chars=MAX_AGENT_TOOL_MESSAGE_CHARS if agent_context else MAX_CHAT_MESSAGE_CHARS)
+        if total_length > (MAX_AGENT_CONTEXT_CHARS if agent_context else MAX_CHAT_CONTEXT_CHARS):
             raise AIClassificationError("AI 对话内容过长，请开始新对话。", category="context_too_long")
         request_messages: list[dict[str, Any]] = []
         if system_prompt:
@@ -775,7 +901,7 @@ class OpenAIClassificationClient:
             except Exception as exc:
                 raise _DeltaCallbackAbort(exc) from None
 
-        def consume(request_body: Mapping[str, object]) -> dict[str, Any]:
+        def consume(request_body: Mapping[str, object], watch: _RequestWatch) -> dict[str, Any]:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             tool_call_parts: dict[int, dict[str, str]] = {}
@@ -783,14 +909,22 @@ class OpenAIClassificationClient:
             finish_reason: str | None = None
             stream_started_at = time.monotonic()
             received_done = False
+            watch.response_snapshot = lambda: dict(
+                content=''.join(content_parts), reasoning_content=''.join(reasoning_parts),
+                raw_tool_calls=dict(tool_call_parts), usage=dict(usage),
+                response_metadata=dict(finish_reason='interrupted', usage=dict(usage)))
+            extras = {'extensions': {'trace': watch.trace}} if request_check is not None else {}
             with self._client.stream(
                 "POST",
                 "chat/completions",
                 json=dict(request_body),
                 timeout=self._stream_timeout,
+                **extras,
             ) as response:
+                watch.response(response)
                 response.raise_for_status()
                 for line in _iter_sse_lines(response.iter_bytes(), started_at=stream_started_at):
+                    watch.check()
                     if not line or not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
@@ -928,18 +1062,28 @@ class OpenAIClassificationClient:
                 stream_state["usage"] = {}
                 from contextlib import nullcontext
                 measured = {}
-                runtime = self._runtime.request(dict(request_body), measured, cancelled=lambda: self._client.is_closed) if self._runtime else nullcontext()
                 try:
-                    with runtime:
-                        try:
-                            return consume(request_body)
-                        finally:
-                            measured.update(stream_state["usage"])
+                    with _RequestWatch(request_check) as watch:
+                        def cancelled():
+                            return watch.cancelled() or self._client.is_closed
+                        runtime = self._runtime.request(dict(request_body), measured, cancelled=cancelled) if self._runtime else nullcontext()
+                        with runtime:
+                            try:
+                                return consume(request_body, watch)
+                            finally:
+                                measured.update(stream_state["usage"])
+                except Exception as exc:
+                    partial = getattr(exc.original if isinstance(exc, _DeltaCallbackAbort) else exc, 'partial_response', None)
+                    if type(partial) is dict:
+                        stream_state['partial_response'] = partial
+                    raise
                 finally:
                     self._record_usage(stream_state["usage"])
             return self._run_stream(metered_consume, body, tools)
         except AIClassificationError as error:
             error.emitted_output = stream_state["emitted"]
+            if type(stream_state.get('partial_response')) is dict:
+                error.partial_response = stream_state['partial_response']
             raise
 
     def _run_stream(
