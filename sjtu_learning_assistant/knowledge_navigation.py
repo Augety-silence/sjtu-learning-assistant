@@ -5,7 +5,7 @@ import hashlib
 from collections import defaultdict
 from pathlib import PurePosixPath
 
-AUTOMATIC_SOURCES = frozenset({"automatic-courses", "automatic-transcripts"})
+AUTOMATIC_SOURCES = frozenset({"automatic-courses", "automatic-transcripts", "automatic-recording-asr"})
 
 
 def navigation_scopes(documents: list[dict]) -> dict[str, str]:
@@ -18,7 +18,7 @@ def navigation_scopes(documents: list[dict]) -> dict[str, str]:
     groups = defaultdict(list)
     for doc in documents:
         parts = PurePosixPath(doc["folder"]).parts
-        if doc["source_id"] in AUTOMATIC_SOURCES and len(parts) >= 2:
+        if (doc.get("source_id") in AUTOMATIC_SOURCES or doc.get("source_id", "").startswith("automatic-recording-asr:")) and len(parts) >= 2:
             groups[parts[0]].append(doc)
     scopes = {}
     for top, docs in groups.items():

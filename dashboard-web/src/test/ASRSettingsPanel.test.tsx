@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ASRSettingsPanel } from "@/components/ASRSettingsPanel";
 import {
+  getRecordingASRJobs,
+  getRecordingASRStatus,
   openExternal,
   saveCredential,
   transcribeSelectedAudio,
@@ -11,6 +13,10 @@ import type { SettingsStatus } from "@/lib/types";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  getRecordingASRStatus: vi
+    .fn()
+    .mockResolvedValue({ enabled: false, paused: true }),
+  getRecordingASRJobs: vi.fn().mockResolvedValue({ items: [] }),
   openExternal: vi.fn(),
   saveCredential: vi.fn(),
   deleteCredential: vi.fn(),
@@ -22,6 +28,13 @@ const status = {
   asr_model: "Qwen/Qwen3-ASR-1.7B",
   asr_key_saved: true,
 } as SettingsStatus;
+beforeEach(() => {
+  vi.mocked(getRecordingASRStatus).mockResolvedValue({
+    enabled: false,
+    paused: true,
+  });
+  vi.mocked(getRecordingASRJobs).mockResolvedValue({ items: [] });
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();

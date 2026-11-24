@@ -50,6 +50,7 @@ function documentTitle(doc: CompiledKnowledgeDocument) {
 }
 
 function documentStatus(doc: CompiledKnowledgeDocument) {
+  if (doc.contract === "recording-asr-raw-v1") return "MD完成/人工未校对";
   if (doc.status === "completed" && doc.contract === "course-summary-v1")
     return "精炼课程总结";
   if (doc.status === "completed" && doc.contract === "course-study-v3")

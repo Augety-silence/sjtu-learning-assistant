@@ -1669,3 +1669,25 @@ export function removeLocalProject(projectId: string) {
     { project_id: projectId },
   );
 }
+
+export const getRecordingASRStatus = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_status");
+export const getRecordingASRJobs = (limit = 100) =>
+  invoke<import("@/lib/types").RecordingASRJobs>("recording_asr_jobs", {
+    limit,
+  });
+export const scanRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_scan");
+export const startRecordingASR = (consent: boolean) =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_start", {
+    consent,
+  });
+export const pauseRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_pause");
+export const resumeRecordingASR = () =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_resume");
+export const retryRecordingASR = (sourceId: string, confirmUnknown = false) =>
+  invoke<import("@/lib/types").RecordingASRStatus>("recording_asr_retry", {
+    source_id: sourceId,
+    confirm_unknown: confirmUnknown,
+  });

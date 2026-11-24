@@ -63,6 +63,7 @@ from sjtu_learning_assistant.cloud_drive_service import (
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
 from sjtu_learning_assistant.transcript_service import ARTIFACT_FILES
+from sjtu_learning_assistant.video_service import parse_remote_source_id, SJTUVideoError
 from sjtu_learning_assistant.update_service import UpdateServiceError
 from sjtu_learning_assistant.timetable import TimetableError, TimetableService
 from sjtu_learning_assistant.dashboard_service import (
@@ -496,6 +497,13 @@ class DesktopBridge:
             "settings_ai_import": self._settings_ai_import,
             "settings_ai_test": self._settings_ai_test,
             "settings_asr_transcribe": self._settings_asr_transcribe,
+            "recording_asr_status": lambda payload: self._without_payload(payload, service.recording_asr_status),
+            "recording_asr_jobs": self._recording_asr_jobs,
+            "recording_asr_scan": lambda payload: self._without_payload(payload, service.recording_asr_scan),
+            "recording_asr_start": self._recording_asr_start,
+            "recording_asr_pause": lambda payload: self._without_payload(payload, service.recording_asr_pause),
+            "recording_asr_resume": lambda payload: self._without_payload(payload, service.recording_asr_resume),
+            "recording_asr_retry": self._recording_asr_retry,
             "settings_credential_save": self._settings_credential_save,
             "settings_credential_delete": self._settings_credential_delete,
             "debug_bundle_export": self._debug_bundle_export,
@@ -708,6 +716,31 @@ class DesktopBridge:
             return {"cancelled": True}
         # 路径只能来自原生文件选择器，前端不能传任意文件路径。
         return self._service.transcribe_selected_audio(Path(selected))
+
+    def _recording_asr_jobs(self, payload):
+        _only_keys(payload, set(("limit",)))
+        limit = payload.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise DashboardError("录播转写任务数量限制不正确。")
+        return self._service.recording_asr_jobs(limit=limit)
+
+    def _recording_asr_start(self, payload):
+        _only_keys(payload, set(("consent",)))
+        if payload.get("consent") is not True:
+            raise DashboardError("请先明确授权将全部未完成录播音频发送到语音识别接口。")
+        return self._service.recording_asr_start(consent=True)
+
+    def _recording_asr_retry(self, payload):
+        _only_keys(payload, set(("source_id", "confirm_unknown")))
+        source_id = payload.get("source_id")
+        try:
+            parse_remote_source_id(source_id)
+        except (ValueError, TypeError, SJTUVideoError):
+            raise DashboardError("录播来源标识不正确。") from None
+        confirm_unknown = payload.get("confirm_unknown", False)
+        if type(confirm_unknown) is not bool:
+            raise DashboardError("未知响应重试确认必须是布尔值。")
+        return self._service.recording_asr_retry(source_id, confirm_unknown=confirm_unknown)
 
     def _settings_credential_save(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "value", "account"})
@@ -2579,6 +2612,22 @@ def _install_macos_background_lifecycle() -> bool:
         return False
 
 
+def _install_recording_asr_quit_guard(window, service):
+    """Cocoa Cmd-Q must preserve an in-flight paid response before NSApp exits."""
+    prepare = getattr(service, "prepare_recording_asr_quit", None)
+    if not callable(prepare):
+        return
+    def before_native_quit():
+        try:
+            # pywebview closing handlers are synchronous/cancellable. Our Mac
+            # background red-button delegate hides instead, so it does not pause.
+            return False if prepare() is False else None
+        except Exception as exc:
+            LOGGER.warning("录播ASR退出排空失败；exception_type=%s", type(exc).__name__)
+            return False  # refuse unsafe termination; never discard/resend
+    window.events.closing += before_native_quit
+
+
 def _initialize_desktop_window(window: object) -> None:
     _enable_macos_window_material(window)
     if not _MACOS_NATIVE_DROP_HOOK_INSTALLED:
@@ -2738,6 +2787,7 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
             text_select=True,
         )
+        _install_recording_asr_quit_guard(window, service)
         scheduler.start()
         automatic_start = getattr(service, "start_course_markdown_sync", None)
         if callable(automatic_start):
@@ -2749,6 +2799,12 @@ def run_desktop_app() -> int:
             except Exception as exc:
                 # 可选字幕存储不可用不能挡住整个App；不记录路径、正文或凭据。
                 LOGGER.warning("已保存字幕MD自动补齐启动失败；exception_type=%s", type(exc).__name__)
+        recording_asr_start = getattr(service, "start_recording_asr_sync", None)
+        if callable(recording_asr_start):
+            try:
+                recording_asr_start()
+            except Exception as exc:
+                LOGGER.warning("录播ASR启动失败；exception_type=%s", type(exc).__name__)
         start_options = {
             "debug": False,
             "private_mode": False,

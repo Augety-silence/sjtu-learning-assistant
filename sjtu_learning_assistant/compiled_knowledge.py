@@ -13,6 +13,7 @@ from typing import Callable, Any
 from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.local_settings import SettingsStore
 from sjtu_learning_assistant.path_safety import is_macos_system_alias
+from sjtu_learning_assistant.video_service import parse_remote_source_id, SJTUVideoError
 
 MAX_INDEX_BYTES = 2 * 1024**2
 MAX_DOCUMENT_BYTES = 24 * 1024**2
@@ -104,7 +105,7 @@ def _integer(value: object, name: str, minimum: int, maximum: int) -> int:
 class CompiledKnowledge:
     def __init__(self, settings: Callable = lambda: SettingsStore().load(),
                  projects_path: Path = APP_SUPPORT_DIR / "local-projects.json", metadata: Callable | None = None, engine=None,
-                 transcript_root: Path | None = None, transcript_metadata: Callable | None = None):
+                 transcript_root: Path | None = None, transcript_metadata: Callable | None = None, recording_asr_root: Path | None = None):
         self.settings = settings
         self.projects_path = projects_path
         if metadata is None and engine is not None:
@@ -115,7 +116,8 @@ class CompiledKnowledge:
         if transcript_metadata is None and engine is not None:
             from sjtu_learning_assistant.course_scope import transcript_course_metadata
             transcript_metadata = lambda: transcript_course_metadata(engine)
-        self.transcript_metadata = transcript_metadata or (lambda: {})
+        self.transcript_metadata = transcript_metadata or (lambda: dict())
+        self.recording_asr_root = Path(recording_asr_root) if recording_asr_root is not None else projects_path.parent / "recording-asr" / "v1"
 
     def _catalog(self) -> tuple[list[dict], list[dict], list[str], bool]:
         sources, documents, issues = [], [], []
@@ -226,7 +228,6 @@ class CompiledKnowledge:
                     try:
                         manifest = _json(_safe(root, directory.name + "/manifest.json"))
                         identity = manifest.get("source", {}).get("source_id")
-                        from sjtu_learning_assistant.video_service import parse_remote_source_id
                         course_id, _ = parse_remote_source_id(identity)
                         if hashlib.sha256(identity.encode()).hexdigest()[:32] != directory.name:
                             continue
@@ -255,8 +256,84 @@ class CompiledKnowledge:
                     sources.append(source)
         except (CompiledKnowledgeError, OSError):
             issues.append("课堂资料目录不可访问。")
+        # Untimed native recording-ASR notes are independently generated raw MD,
+        # never transcript VTT/Phase1, summaries or approved knowledge counters.
+        try:
+            recording_root = _safe(self.recording_asr_root)
+            marker = _safe(recording_root, "manifest.json")
+            if marker.is_file():
+                manifest = _json(marker)
+                if manifest.get("version") != 1:
+                    raise CompiledKnowledgeError("录播ASR清单版本不支持。")
+                jobs_root = _safe(recording_root, "jobs")
+                course_metadata = self.transcript_metadata()
+                recording_sources = dict()
+                for directory in sorted(jobs_root.iterdir()):
+                    if len(documents) >= MAX_ENTRIES:
+                        truncated = True
+                        break
+                    try:
+                        if directory.is_symlink() or not directory.is_dir():
+                            raise CompiledKnowledgeError("录播ASR检查点目录无效。")
+                        job = _json(_safe(jobs_root, directory.name + "/job.json"))
+                        identity = job.get("source_id")
+                        course_id, _ = parse_remote_source_id(identity)
+                        course_id = str(course_id)
+                        expected_directory = hashlib.sha256(identity.encode()).hexdigest().__getitem__(slice(None, 16))
+                        if directory.name != expected_directory or str(job.get("course_id")) != course_id:
+                            raise CompiledKnowledgeError("录播ASR身份不一致。")
+                        if job.get("state") not in ("completed", "user_edit_protected") or not job.get("markdown_relative"):
+                            continue
+                        relative = job.get("markdown_relative")
+                        if PurePosixPath(relative).parts.__getitem__(0) != "Recordings ASR" or not relative.endswith(".md"):
+                            raise CompiledKnowledgeError("录播ASR文档路径无效。")
+                        # The backend may pin an earlier authorized output root.
+                        # Reading is confined to that dedicated Recording ASR subtree.
+                        output_root = Path(job.get("markdown_root") or automatic)
+                        authorized_roots = manifest.get("authorized_markdown_roots", list())
+                        if (type(authorized_roots) is not list
+                                or any(type(value) is not str for value in authorized_roots)):
+                            raise CompiledKnowledgeError("录播ASR授权目录清单无效。")
+                        # Only the configured root is a legacy fallback. Earlier
+                        # roots must be authorized by the native worker manifest.
+                        allowed_roots = set(authorized_roots)
+                        allowed_roots.add(str(Path(automatic).absolute()))
+                        if (not output_root.is_absolute() or output_root.name != "Knowledge Markdown"
+                                or str(output_root.absolute()) not in allowed_roots):
+                            raise CompiledKnowledgeError("录播ASR输出目录未经授权。")
+                        path = _safe(output_root, relative)
+                        raw = _read_bytes(path, MAX_DOCUMENT_BYTES)
+                        root_key = str(output_root)
+                        source = recording_sources.get(root_key)
+                        if source is None:
+                            source_id = "automatic-recording-asr"
+                            if output_root != automatic:
+                                source_id += ":" + hashlib.sha256(root_key.encode()).hexdigest().__getitem__(slice(None, 16))
+                            source = dict(id=source_id, name="录播原始转写（人工未校对）", kind="automatic", root=str(output_root))
+                            recording_sources.update(((root_key, source),))
+                        entry = self._entry(source, relative, "completed")
+                        course = dict(course_metadata.get(course_id, dict()))
+                        from sjtu_learning_assistant.knowledge_compiler import _safe_name
+                        term_name = course.get("term_name") or job.get("term_name") or "未识别学期"
+                        course_name = course.get("course_name") or job.get("course_name") or course_id
+                        entry.update(course, course_id=course_id, course_name=course_name,
+                            term_name=term_name, video_source_id=identity, title=str(job.get("title") or "录播原文") + ".md",
+                            folder=_safe_name(term_name) + "/" + _safe_name(course_name) + "/录播原始转写",
+                            contract="recording-asr-raw-v1", source_type="machine_transcript",
+                            review_status="unreviewed", status_label="MD完成/人工未校对",
+                            timed=False, timestamps="none", asr_model=job.get("model"),
+                            text_sha256=job.get("text_sha256"), text_chars=job.get("text_chars"),
+                            content_sha256=hashlib.sha256(raw).hexdigest(),
+                            user_modified=hashlib.sha256(raw).hexdigest() != job.get("markdown_sha256"),
+                            provenance=dict(source_id=identity, model=job.get("model"), timestamps="none", reviewed=False))
+                        documents.append(entry)
+                    except (CompiledKnowledgeError, ValueError, TypeError, AttributeError, IndexError, SJTUVideoError):
+                        issues.append("部分录播ASR检查点或MD不可访问，已保留原件并跳过。")
+                sources.extend(recording_sources.values())
+        except (CompiledKnowledgeError, OSError):
+            issues.append("录播原始转写目录不可访问，未将未知范围记作零。")
         for source in sources:
-            source["count"] = sum(doc["source_id"] == source["id"] for doc in documents)
+            source.update(count=sum(doc.get("source_id") == source.get("id") for doc in documents))
         return sources, documents, list(dict.fromkeys(issues)), truncated
 
     @staticmethod
@@ -410,11 +487,13 @@ class CompiledKnowledge:
     def open_path(self, source_id: object, document_id: object = "") -> Path:
         if document_id:
             source, document = self._resolve(document_id)
-            if source["id"] != source_id:
+            if source.get("id") != source_id:
                 raise CompiledKnowledgeError("文档不属于此知识来源。")
-            return _safe(Path(source["root"]), document["relative_path"])
+            return _safe(Path(source.get("root")), document.get("relative_path"))
         sources, _, _, _ = self._catalog()
-        source = next((item for item in sources if item["id"] == source_id), None)
+        source = next((item for item in sources if item.get("id") == source_id), None)
         if source is None:
             raise CompiledKnowledgeError("知识来源已失效。")
-        return _safe(Path(source["root"]))
+        if str(source.get("id") or "").startswith("automatic-recording-asr"):
+            return _safe(Path(source.get("root")), "Recordings ASR")
+        return _safe(Path(source.get("root")))

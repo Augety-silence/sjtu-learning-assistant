@@ -26,7 +26,7 @@ def audio(tmp_path):
 
 
 def invoke(audio, handler, **kwargs):
-    return transcribe_audio(audio, endpoint="https://api.siliconflow.cn/v1/audio/transcriptions", model="Qwen/Qwen3-ASR-1.7B", api_key="test-not-a-real-secret", transport=httpx.MockTransport(handler), **kwargs)
+    return transcribe_audio(audio, endpoint="https://api.siliconflow.cn/v1/audio/transcriptions", model="Qwen/Qwen3-ASR-1.7B", api_key="synthetic-key", transport=httpx.MockTransport(handler), **kwargs)
 
 
 def test_old_settings_migrate_without_changing_llm(tmp_path):
@@ -39,7 +39,7 @@ def test_old_settings_migrate_without_changing_llm(tmp_path):
     updated = SettingsStore(path).load(environ={})
     assert updated.ai_model == "minimax" and updated.ai_key_saved and updated.ai_enabled
     assert not updated.asr_key_saved
-    assert updated.asr_model == "Qwen/Qwen3-ASR-1.7B"
+    assert updated.asr_model == "XingChenAGI/XingChenASR-V3.2-Ultra"
     SettingsStore(path).save(updated)
     assert set(json.loads(path.read_text())) == set(updated.to_dict())
 
@@ -62,7 +62,7 @@ def test_separate_keychain_service_and_no_echo():
 def test_multipart_upload_no_filename_disclosure(audio):
     def handler(request):
         assert request.url.path == "/v1/audio/transcriptions"
-        assert request.headers["authorization"].split()[1] == "test-not-a-real-secret"
+        assert request.headers.get("authorization") == "Bearer synthetic-key"
         assert b"Qwen/Qwen3-ASR-1.7B" in request.content
         assert b'filename="audio.wav"' in request.content
         assert b"private-class-name" not in request.content

@@ -124,6 +124,7 @@ jobs:
       - name: 打包 artifact（不签名、不公证）
         run: ditto -c -k --sequesterRsrc --keepParent "dist/SJTU Learning Assistant.app" "dist/SJTU-Learning-Assistant-macOS-unsigned.zip"
       - uses: actions/upload-artifact@v4
+        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
         with:
           name: SJTU-Learning-Assistant-macOS-unsigned
           path: dist/SJTU-Learning-Assistant-macOS-unsigned.zip
@@ -155,6 +156,7 @@ jobs:
         shell: pwsh
         run: scripts/build_windows_app.ps1
       - uses: actions/upload-artifact@v4
+        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
         with:
           name: SJTU-Learning-Assistant-Windows-x64
           path: |

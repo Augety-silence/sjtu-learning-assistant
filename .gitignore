@@ -66,3 +66,6 @@ course-materials/
 .LSOverride
 ._*
 Thumbs.db
+
+# Generated chat-steering preview
+/dashboard-web/chat-steering-preview-dist/

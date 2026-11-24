@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import type { SettingsStatus } from "@/lib/types";
 import "./asr-settings.css";
+import { RecordingASRPanel } from "./RecordingASRPanel";
 
 export function ASRSettingsPanel({
   status,
@@ -46,7 +47,7 @@ export function ASRSettingsPanel({
       status.asr_endpoint ??
         "https://api.siliconflow.cn/v1/audio/transcriptions",
     );
-    setModel(status.asr_model ?? "Qwen/Qwen3-ASR-1.7B");
+    setModel(status.asr_model ?? "XingChenAGI/XingChenASR-V3.2-Ultra");
   }, [status.asr_endpoint, status.asr_model]);
   const run = async (action: string, task: () => Promise<void>) => {
     setBusy(action);
@@ -65,9 +66,9 @@ export function ASRSettingsPanel({
         <div className="heading-with-info">
           <h4 id="asr-title">硅基流动</h4>
           <InfoTooltip label="语音接口说明">
-            独立于交大聊天模型。选择的音频会发送至此接口（50 MB / 1
-            小时），不会批量上传课程录像。Qwen3-ASR
-            是否可用及费用以账户实际权限为准，不自动切换模型或重试。返回文字不含精确字幕时间轴。
+            独立于交大聊天模型，只需自己的语音 API Key。全部未完成录播仅在下方
+            明确授权后外发处理，可暂停、续传和有界手动重试。费用以账户权限为准，
+            不自动切换模型。完整原文 MD 标记为人工未校对，不伪造字幕时间轴。
           </InfoTooltip>
         </div>
       </div>
@@ -115,6 +116,7 @@ export function ASRSettingsPanel({
               />
             </label>
             <datalist id="asr-models">
+              <option value="XingChenAGI/XingChenASR-V3.2-Ultra" />
               <option value="Qwen/Qwen3-ASR-1.7B" />
               <option value="FunAudioLLM/SenseVoiceSmall" />
               <option value="TeleAI/TeleSpeechASR" />
@@ -186,6 +188,19 @@ export function ASRSettingsPanel({
           </div>
         </fieldset>
       </form>
+      <RecordingASRPanel
+        settings={status}
+        active={active}
+        disabled={
+          Boolean(busy) ||
+          Boolean(secret) ||
+          endpoint.trim() !==
+            (status.asr_endpoint ??
+              "https://api.siliconflow.cn/v1/audio/transcriptions") ||
+          model.trim() !==
+            (status.asr_model ?? "XingChenAGI/XingChenASR-V3.2-Ultra")
+        }
+      />
       {error && <p role="alert">{error}</p>}
       {error.includes("HTTP 402") && (
         <Button

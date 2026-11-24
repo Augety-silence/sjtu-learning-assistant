@@ -33,6 +33,11 @@ export interface CompiledKnowledgeDocument {
   snippet?: string;
   folder?: string;
   contract?: string;
+  source_type?: string;
+  review_status?: string;
+  timed?: boolean;
+  timestamps?: string;
+  provenance?: Record<string, unknown>;
   error?: string | null;
   course_id?: string;
   course_name?: string;
@@ -417,6 +422,9 @@ export interface SettingsStatus {
   asr_endpoint?: string;
   asr_model?: string;
   asr_key_saved?: boolean;
+  recording_asr_enabled?: boolean;
+  recording_asr_paused?: boolean;
+  recording_asr_scope?: "all_unfinished";
   course_markdown_enabled: boolean;
   course_markdown_daily_calls: number;
   archive_root_ready: boolean;
@@ -1433,4 +1441,49 @@ export interface Phase1UncertainSpan {
   start: number;
   end: number;
   cue_ids: string[];
+}
+
+export interface RecordingASRJob {
+  source_id: string;
+  title?: string;
+  course_name?: string;
+  status: string;
+  error?: string | null;
+  status_label?: string;
+  chunks_completed?: number;
+  chunks_total?: number;
+  attempts?: number;
+  retryable?: boolean;
+}
+export interface RecordingASRStatus {
+  state?: string;
+  error?: string | null;
+  account_blocked?: boolean;
+  draining?: boolean;
+  safe_to_exit?: boolean;
+  drain_error?: string | null;
+  enabled: boolean;
+  paused: boolean;
+  busy?: boolean;
+  in_flight?: number;
+  scanning?: boolean;
+  status?: string;
+  scope?: string;
+  counts?: Record<string, number>;
+  coverage?: {
+    status: string;
+    total_courses: number | null;
+    scanned_courses: number;
+    missing_sources: number;
+    inaccessible_courses: Array<{
+      course_id: string;
+      course_name: string;
+      reason: string;
+    }>;
+  };
+}
+export interface RecordingASRJobs {
+  items: Array<RecordingASRJob>;
+  total?: number;
+  truncated?: boolean;
 }

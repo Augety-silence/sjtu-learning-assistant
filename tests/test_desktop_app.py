@@ -898,11 +898,14 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         scheduler = Mock()
         backup_manager = Mock()
         dashboard.settings_store.load.return_value = SimpleNamespace(mail_account="student")
+        class ClosingEvent:
+            def __iadd__(self, handler):
+                return self
         webview = SimpleNamespace(
             OPEN_DIALOG=1,
             FOLDER_DIALOG=2,
             windows=[],
-            create_window=Mock(),
+            create_window=Mock(return_value=SimpleNamespace(events=SimpleNamespace(closing=ClosingEvent()))),
             start=Mock(),
         )
         index_payload = b"<html>packaged frontend</html>"

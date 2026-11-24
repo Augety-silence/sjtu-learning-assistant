@@ -29,6 +29,8 @@ vi.mock("@/lib/api", () => ({
   getProviderUsage: vi.fn(async () => ({
     periods: { today: { calls: 0, metrics: {} } },
   })),
+  getRecordingASRStatus: vi.fn(async () => ({ enabled: false, paused: true })),
+  getRecordingASRJobs: vi.fn(async () => ({ items: [] })),
   checkForUpdates: vi.fn(),
   getSettings: vi.fn(),
   openExternal: vi.fn(),
