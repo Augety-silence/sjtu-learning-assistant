@@ -66,7 +66,8 @@ CONCISE_COMPRESSION_PROMPT = """你是中文课程资料的精炼编辑。输入
 """
 
 
-def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None = None) -> dict:
+def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None = None,
+                     *, fragment: bool = False) -> dict:
     declared = result.get('covered_pages')
     if (type(declared) is list and all(type(n) is int for n in declared)
             and set(declared) == set(pages)):
@@ -78,7 +79,8 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
     _strings(result.get('tags'), 0, 8, 80)
     _strings(result.get('synonyms'), 0, 8, 80)
     markdown = result.get('markdown')
-    if type(markdown) is not str or not 60 <= len(markdown) <= MAX_MARKDOWN_CHARS:
+    minimum_chars = 1 if fragment else 60
+    if type(markdown) is not str or not minimum_chars <= len(markdown) <= MAX_MARKDOWN_CHARS:
         actual = len(markdown) if type(markdown) is str else '非文本'
         if type(markdown) is str and len(markdown) < 60:
             raise ValueError(f'精炼总结正文当前{actual}字符，少于60字符；请依据完整来源补齐缺失的核心知识、条件与真实引用，不能只凑字数或继续压缩。')
@@ -93,7 +95,7 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
     topics = result.get('topics')
     # 长课件可包含超过20个真实主题；元数据数量不应触发全文重写。
     # 仍保留有界结构、逐项名称与真实页码校验，不补造主题。
-    if type(topics) is not list or not 1 <= len(topics) <= 200:
+    if type(topics) is not list or not (0 if fragment else 1) <= len(topics) <= 200:
         raise ValueError('精炼总结缺少完整主题结构。')
     covered = set()
     for topic in topics:
@@ -424,8 +426,8 @@ class SummaryCompiler(StudyCompiler):
         self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
         return result
 
-    def _save_summary(self, name, prompt, data, pages, topic_ids):
-        validator = lambda value: validate_summary(value, pages, topic_ids)
+    def _save_summary(self, name, prompt, data, pages, topic_ids, *, fragment=False):
+        validator = lambda value: validate_summary(value, pages, topic_ids, fragment=fragment)
         base = self.prefix + name
         saved = self.cached(base)
         if saved is not None:
@@ -478,9 +480,12 @@ class SummaryCompiler(StudyCompiler):
         return result
 
     def _summary(self, name: str, data: dict, pages: list[int], topic_ids: list[str],
-                 *, always_review: bool = True) -> tuple[dict, dict]:
+                 *, always_review: bool = True, fragment: bool = False) -> tuple[dict, dict]:
         prompt = SUMMARY_PROMPT + '\n数学记号、符号方向和适用条件须遵循这份原文；只概括已有内容，不自行补证明或改用其他教材约定。' + CHECKPOINT_LENGTH_GUIDANCE
-        draft = self._save_summary(name + '.json', prompt, data, pages, topic_ids)
+        draft = self._save_summary(name + '.json', prompt, data, pages, topic_ids, fragment=fragment)
+        # 无教学内容的封底分段无需凑字数或虚构主题。只有多段输入可用此兼容，
+        # 短段/空主题必须完整来源复核，不能通过20%抽样直接进入合并。
+        always_review = always_review or fragment and (len(draft['markdown']) < 60 or not draft['topics'])
         if not self._needs_review({**data, 'draft': draft}, always=always_review):
             # 校验器（页覆盖、引用、公式记号、长度、主题）已全部通过；这里只省略第二轮全量来源阅读。
             with self._stats_lock:
@@ -494,7 +499,7 @@ class SummaryCompiler(StudyCompiler):
             identity = hashlib.sha256(json.dumps(repair_data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             draft = self._save_summary(name + '-repair-' + identity + '.json', prompt +
                                 '\n根据来源证据逐项核实审校意见，重写完整精炼总结；意见本身也可能错误。仍须满足长度上限，不附纠错日志。',
-                                repair_data, pages, topic_ids)
+                                repair_data, pages, topic_ids, fragment=fragment)
             review = self._review(name + '-repair-' + identity + '-review.json', {**data, 'draft': draft})
         if not review['approved']:
             if self.verify_sources and 'pages' in data:
@@ -516,7 +521,7 @@ class SummaryCompiler(StudyCompiler):
                     # 删除失败稿的数值锚定，用最新完整证据重新写一次，再独立审校。
                     source_identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
                     draft = self._save_summary(name + '-visual-repair-' + source_identity + '.json', prompt, data,
-                                              pages, topic_ids)
+                                              pages, topic_ids, fragment=fragment)
                     review = self._review(name + '-visual-repair-' + source_identity + '-review.json', {**data, 'draft': draft})
         if not review['approved']:
             raise ValueError('精炼总结来源审校未通过；草稿与旧正式稿均保留。')
@@ -556,7 +561,8 @@ class SummaryCompiler(StudyCompiler):
             # 原文、视觉复核证据与长度目标一同绑定身份，避免复用错误视觉锚定的旧稿。
             identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             with cancellation_scope(cancelled):
-                draft, review = self._summary(f'part-{index}-{identity}', data, selected, [], always_review=False)
+                draft, review = self._summary(f'part-{index}-{identity}', data, selected, [],
+                                              always_review=False, fragment=len(batches) > 1)
             with self._stats_lock:
                 verified = sorted(self.verified_visual_pages & set(selected))
             return draft, {'pages': selected, 'verified_visual_pages': verified, **review}
@@ -597,6 +603,8 @@ class SummaryCompiler(StudyCompiler):
             summaries = merged
             level += 1
         draft = summaries[0]
+        # 最终阅读稿仍使用严格最小篇幅、非空主题、全页覆盖与引用规则。
+        validate_summary(draft, pages, draft['covered_topics'])
         body = '# ' + draft['title'].strip() + '\n\n' + draft['markdown'] + '\n'
         report = {'contract': SUMMARY_CONTRACT, 'review_model': 'qwen3.8-27b', 'covered_pages': pages,
                   'checks': checks, 'summary_chars': len(body), 'max_summary_chars': MAX_SUMMARY_CHARS,
