@@ -221,7 +221,7 @@ class CourseMarkdownSync:
                         and any(reason in str(item.get('error', '')) for reason in
                                 ('精炼', '主题讲义页码', '请求超时', 'DashboardError', 'PdfiumError'))):
                     # 只唤醒已知可恢复失败一次；付费检查点与其预算绝不重置。
-                    item.update(auto_recovery_version=AUTO_RECOVERY_VERSION, attempts=0)
+                    item.update(auto_recovery_version=AUTO_RECOVERY_VERSION)
                     item.pop('retry_after', None)
                     item.pop('auto_paused', None)
                     persist()
@@ -229,7 +229,7 @@ class CourseMarkdownSync:
                 if (item.get('status') == 'failed' and item.get('recovery_version') != RECOVERY_VERSION
                         and any(reason in str(item.get('error', '')) for reason in
                                 ('PdfiumError', '缺少有效来源引用', '缺少完整主题结构'))):
-                    item.update(recovery_version=RECOVERY_VERSION, attempts=0)
+                    item.update(recovery_version=RECOVERY_VERSION)
                     item.pop('retry_after', None)
                     persist()
                 mirror = safe_destination(target, target / "Courses" / Path(relative + ".md"))
@@ -313,6 +313,10 @@ class CourseMarkdownSync:
                     continue
                 # 失败逐步退避，不设每日调用总额，也不因3次失败锁死任务。
                 attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint else 0
+                if self.auto_recovery and attempts >= 8:
+                    # 版本唤醒也不能补充失败预算；局部兼容修复可离线复验检查点。
+                    item.update(auto_paused=True, status='failed')
+                    persist()
                 if self.auto_recovery and item.get('fingerprint') == fingerprint and item.get('auto_paused'):
                     failed += 1
                     issues.append(relative + '：自动恢复已暂停；已有内容保留。')
@@ -349,6 +353,13 @@ class CourseMarkdownSync:
                 item.update(status='failed', error=str(exc))
                 persist()
 
+        # 只剩一两份可执行课件时，短切片会让第三页因额度提前退出，
+        # 随后只能等待最后的慢页。少量任务扩至最多六次，仍由共享限流预约。
+        effective_slice_calls = self.slice_calls
+        if (self.auto_recovery and self.workers > 1 and 0 < len(selected) <= 2
+                and 0 < self.slice_calls < 6):
+            effective_slice_calls = min(6, self.slice_calls * 3)
+
         def compile_one(entry):
             path = entry[0]
             if self._stop.is_set() or self._cancel.is_set():
@@ -358,7 +369,7 @@ class CourseMarkdownSync:
                 kwargs.update(review_percent=self.review_percent, parallel_batches=self.parallel_batches,
                               auto_recovery=self.auto_recovery)
             if self.slice_calls:
-                kwargs.update(slice_calls=self.slice_calls, text_first=True)
+                kwargs.update(slice_calls=effective_slice_calls, text_first=True)
             local = self.compiler_factory(call, self._cancel, **kwargs)
             from .ai_runtime import cancellation_scope
             with cancellation_scope(lambda: self._stop.is_set() or self._cancel.is_set() or not self.settings().ai_enabled):

@@ -80,6 +80,8 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
     markdown = result.get('markdown')
     if type(markdown) is not str or not 60 <= len(markdown) <= MAX_MARKDOWN_CHARS:
         actual = len(markdown) if type(markdown) is str else '非文本'
+        if type(markdown) is str and len(markdown) < 60:
+            raise ValueError(f'精炼总结正文当前{actual}字符，少于60字符；请依据完整来源补齐缺失的核心知识、条件与真实引用，不能只凑字数或继续压缩。')
         raise ValueError(f'精炼总结正文当前{actual}字符，需60–4850字符，整份阅读正文最多5000字符；请重组压缩到4300字符以内，不能截断。')
     markdown = canonical_citations(markdown).strip()
     if re.search(r'^#\s|^#{1,6}\s*第\s*\d+\s*页', markdown, re.M):
@@ -98,6 +100,11 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
         if type(topic) is not dict:
             raise ValueError('精炼总结主题无效。')
         _strings([topic.get('name')], 1, 1, 80)
+        declared = topic.get('pages')
+        if type(declared) is list and all(type(n) is int for n in declared):
+            # 主题来源映射只去重和排序已有整数，不补页、不删越界页或转换类型。
+            # 后续 _pages 仍核验非空和当前分批证据的实际范围。
+            topic['pages'] = sorted(set(declared))
         covered.update(_pages(topic.get('pages'), pages))
     # topics 是实质主题的来源映射，不是逐页点名表。全文处理范围已单独验证；
     # 是否遗漏知识仍由完整原文审校核验，不能用补造主题／引用凑机械覆盖。
@@ -115,7 +122,8 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
 
 class SummaryCompiler(StudyCompiler):
     def __init__(self, request: Callable, cached: Callable, commit: Callable, verify_sources: Callable | None = None,
-                 *, review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False):
+                 *, review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
+                 content_recovery: bool = False):
         super().__init__(request, cached, commit, SUMMARY_VERSION)
         self.prefix = 'summary/' + hashlib.sha256(SUMMARY_VERSION.encode()).hexdigest()[:12] + '/'
         self.verify_sources = verify_sources
@@ -127,6 +135,8 @@ class SummaryCompiler(StudyCompiler):
         self.skipped_parts = 0
         self._stats_lock = threading.Lock()
         self.auto_recovery = auto_recovery
+        # 只由显式选择失败资料的恢复工具开启；日常轮询不追加内容修复额度。
+        self.content_recovery = content_recovery
 
     def _needs_review(self, data: dict, *, always: bool) -> bool:
         """合并稿始终审校；分段稿按输入哈希确定性抽样。"""
@@ -219,7 +229,10 @@ class SummaryCompiler(StudyCompiler):
                 payload = {**data, 'draft': state.get('draft'), 'validation_error': state.get('error'),
                            'repair_attempt': step}
                 if automatic_repair:
-                    request_prompt += '\n仅修复指定返回结构和校验错误；继续遵守最后约定的JSON补丁字段，不重抄其他内容。'
+                    if data.get('content_recovery_stage') == '20261124':
+                        request_prompt += '\n这是有界的完整内容修复；逐项核实最新validation_error，对照全部原文或全部input_summaries返回完整JSON，不只回填覆盖编号。'
+                    else:
+                        request_prompt += '\n仅修复指定返回结构和校验错误；继续遵守最后约定的JSON补丁字段，不重抄其他内容。'
                 elif is_compression:
                     request_prompt += '\n按照validation_error修正长度或JSON格式；仍只返回markdown字段的完整JSON，不增加事实。'
                 elif is_summary:
@@ -326,13 +339,88 @@ class SummaryCompiler(StudyCompiler):
             if fields == ('topics',):
                 repair_data['draft'] = {'topics': draft.get('topics')}
             def patched(value):
-                if set(value) != set(fields):
-                    raise ValueError('定向修复只能返回指定字段。')
-                return validator({**draft, **value})
+                # 某些已付费响应附带完整元数据或解释字段。只提取本次修复字段；
+                # 不接受响应对旧正文、处理范围或其他来源元数据的覆盖。
+                # 原响应仍由 _saved 原样留存，缓存身份和已预约次数不变。
+                if any(field not in value for field in fields):
+                    raise ValueError('定向修复缺少指定字段。')
+                selected = {field: value[field] for field in fields}
+                return validator({**draft, **selected})
         else:
             patch_prompt += '\n返回完整JSON；对照完整来源修复，不能只补覆盖页码冒充内容完整。'
             patched = validator
-        result = self._saved(name + '-automatic-patch-v2.json', patch_prompt, repair_data, patched)
+        try:
+            result = self._saved(name + '-automatic-patch-v2.json', patch_prompt, repair_data, patched)
+        except ValueError as exc:
+            if (not self.content_recovery or not prompt.startswith(SUMMARY_PROMPT)
+                    or not str(exc).startswith('自动修复额度已用尽')):
+                raise
+            # 先在新的显式内容恢复范围内复验付费完整响应。单字段合并仍不合格时，
+            # 不把旧正文的真实缺失假装成字段兼容问题；后续使用完整来源独立修复。
+            identity = hashlib.sha256((patch_prompt + json.dumps(repair_data, ensure_ascii=False, sort_keys=True)).encode()).hexdigest()
+            patch_state_raw = self.cached(self.prefix + name + '-automatic-patch-v2.json-resume-v1-' + identity[:12] + '.json')
+            patch_state = _json(patch_state_raw) if patch_state_raw is not None else {}
+            latest = None
+            try:
+                latest = _json(patch_state.get('draft'))
+            except ValueError:
+                pass
+            candidates = []
+            if latest is not None and not any(term in str(patch_state.get('error') or '') for term in ('截断', '达到长度上限')):
+                if fields and draft is not None and all(field in latest for field in fields):
+                    candidates.append({**draft, **{field: latest[field] for field in fields}})
+                candidates.append(latest)
+            return self._recover_content(name, prompt, data, validator, draft, base, candidates=candidates)
+        self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
+        return result
+
+    def _recover_content(self, name, prompt, data, validator, draft, base, *, candidates=()):
+        """显式目标资料的完整内容修复；稳定输入账本与终身两次预约，不递归追加。"""
+        if not self.content_recovery or not prompt.startswith(SUMMARY_PROMPT) or not any(
+                key in data for key in ('pages', 'input_summaries')):
+            raise ValueError('未开启指定来源的内容修复；检查点保留。')
+        error, retained = '', None
+        # 完整响应通过原校验器时可零请求继续来源审校。旧稿与原响应仍保留在
+        # 各自检查点中，只有本阶段的有效派生结果写回当前未完成草稿。
+        for candidate in (draft, *candidates):
+            if type(candidate) is not dict:
+                continue
+            try:
+                result = validator(candidate)
+            except ValueError as exc:
+                if retained is None:
+                    retained, error = candidate, str(exc)
+                continue
+            self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
+            return result
+        known = ('精炼总结遗漏输入页面', '精炼总结合并遗漏输入主题', '精炼总结缺少完整主题结构',
+                 '精炼总结主题无效', '主题讲义页码无效', '精炼总结缺少有效来源引用',
+                 '讲义引用页码无效', '精炼总结正文当前', '整份精炼总结正文超过5000字符',
+                 '讲义数学符号不一致')
+        if retained is None or not error.startswith(known):
+            raise ValueError(error or '未识别的内容失败；不追加模型修复，检查点保留。')
+        stage_name = name + '-content-recovery-20261124.json'
+        input_key = self.prefix + stage_name + '-input.json'
+        source_identity = hashlib.sha256((prompt + json.dumps(data, ensure_ascii=False, sort_keys=True)).encode()).hexdigest()
+        saved = self.cached(input_key)
+        if saved is not None:
+            frozen = _json(saved)
+            if (frozen.get('source_input') != source_identity or type(frozen.get('data')) is not dict
+                    or type(frozen.get('prompt')) is not str
+                    or frozen['data'].get('content_recovery_stage') != '20261124'):
+                raise ValueError('内容修复输入与已预约阶段不一致；不重置修复额度。')
+        else:
+            # 先固定首次来源、草稿与错误，后续版本或错误措辞变化不会换身份再付费。
+            recovery_data = {**data, 'draft': retained, 'validation_error': error,
+                             'repair_kind': 'automatic-patch-v2', 'content_recovery_stage': '20261124'}
+            recovery_prompt = prompt + '\n指定资料内容恢复20261124：这是生命周期最多两次的完整JSON修复。'
+            recovery_prompt += ('完整读取所有pages或所有input_summaries，只依据所给来源修复validation_error。'
+                                '真实缺失的主题、正文知识和条件必须补齐；越界引用和主题页码须按来源纠正，不能只回填编号冒充覆盖。'
+                                '保留已有正确内容及必要公式，不添加来源外事实；短正文要补来源知识，不继续压缩或空泛凑字数。'
+                                '返回完整title、abstract、tags、synonyms、markdown、covered_pages、covered_topics、topics的JSON；仍须通过严格结构、来源和审校。')
+            frozen = {'source_input': source_identity, 'prompt': recovery_prompt, 'data': recovery_data}
+            self.commit({input_key: json.dumps(frozen, ensure_ascii=False)})
+        result = self._saved(stage_name, frozen['prompt'], frozen['data'], validator)
         self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
         return result
 
@@ -379,8 +467,13 @@ class SummaryCompiler(StudyCompiler):
                                              'target_markdown_chars': target,
                                              'retain_fraction': round(target / len(retained['markdown']), 2)}}
         compact_identity = hashlib.sha256(json.dumps(retained, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
-        result = self._saved(name + '-compact-' + compact_identity + '.json', CONCISE_COMPRESSION_PROMPT,
-                             compact_data, lambda value: validator({**retained, 'markdown': value.get('markdown')}))
+        try:
+            result = self._saved(name + '-compact-' + compact_identity + '.json', CONCISE_COMPRESSION_PROMPT,
+                                 compact_data, lambda value: validator({**retained, 'markdown': value.get('markdown')}))
+        except ValueError:
+            if not self.content_recovery:
+                raise
+            return self._recover_content(name, prompt, data, validator, retained, base)
         self.commit({base: json.dumps(result, ensure_ascii=False, indent=2)})
         return result
 

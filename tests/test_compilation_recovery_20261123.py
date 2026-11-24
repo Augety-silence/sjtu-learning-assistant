@@ -171,7 +171,7 @@ class RetryRecoveryTests(unittest.TestCase):
         self.worker.run_once()
         item = json.loads(marker.read_text(encoding='utf-8'))['items'][self.path.relative_to(self.source).as_posix()]
         self.assertEqual(RECOVERY_VERSION, item['recovery_version'])
-        self.assertEqual(1, item['attempts'])
+        self.assertEqual(7, item['attempts'])
         self.assertGreater(self.runner.call_count, before)
         before = self.runner.call_count
         self.worker.run_once()

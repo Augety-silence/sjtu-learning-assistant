@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -36,6 +37,52 @@ MAX_MANIFEST_BYTES = 2 * 1024**2
 
 class CompilationDeferred(DocumentTextError):
     """公平调度切片结束，不是 API 失败或每日额度。"""
+
+
+def _rolling_page_results(inputs, build, workers):
+    """有界页窗口：完成一页即补下一页，不等待最慢页再发整批。
+
+    build 在返回前持久化响应与页面；失败后停止新增，但收齐已经在途的页。
+    迭代器始终由协调线程读取，PDFium 渲染不会进入网络线程。
+    """
+    if workers == 1:
+        for entry in inputs:
+            yield build(*entry)
+        return
+    iterator = iter(inputs)
+    from .ai_runtime import cancellation_scope, current_cancellation_check
+    cancelled = current_cancellation_check() or (lambda: False)
+    def run(entry):
+        with cancellation_scope(cancelled):
+            return build(*entry)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='document-page') as pool:
+        pending, exhausted = set(), False
+        failure = None
+        while pending or not exhausted:
+            while not exhausted and failure is None and len(pending) < workers:
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending.add(pool.submit(run, entry))
+            if not pending:
+                break
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    # 额度切片不能掩盖另一在途页的真实失败，避免失败计数被退回。
+                    if failure is None or isinstance(failure, CompilationDeferred) and not isinstance(exc, CompilationDeferred):
+                        failure = exc
+                else:
+                    yield result
+            if failure is not None:
+                exhausted = True
+        if failure is not None:
+            raise failure
+
 SOURCE_RECHECK_PROMPT = PAGE_PROMPT + """\n这是来源矛盾的原图复核，不要相信旧视觉转写或草稿推断。逐项以本次整页图为准。
 表格必须完整保留表头、前导目标变量系数列、行名、右端项，各行列数与表头一致，不错位移动系数。
 区分原始文字未提取的图片公式与课件实际缺失，不把 OCR 错误说成教师课件错误。
@@ -314,7 +361,8 @@ def preferred_visual_output(outputs: dict, page: int) -> str | None:
 class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
                  slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images,
-                 review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False):
+                 review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
+                 content_recovery: bool = False):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
@@ -323,6 +371,7 @@ class DocumentCompiler:
         self.text_first = text_first
         self.review_percent, self.parallel_batches = review_percent, parallel_batches
         self.auto_recovery = auto_recovery
+        self.content_recovery = content_recovery
         # 分段并发后调用计数与轮转额度会被多个线程同时判断，必须原子化。
         self._calls_lock = threading.Lock()
         self.model_fallbacks: list[dict[str, str]] = []
@@ -348,7 +397,7 @@ class DocumentCompiler:
             try:
                 return self.runner(request_model, system, content)
             except (AIClassificationError, KnowledgeAPIError) as exc:
-                if (attempt or self.auto_recovery and '自动恢复v2' in system
+                if (attempt or self.auto_recovery and (system == PAGE_PROMPT or '自动恢复v2' in system)
                         or exc.category not in {"timeout", "network", "upstream_service", "rate_limit_or_quota"}):
                     failure = KnowledgeCompilerError(str(exc))
                     failure.category = exc.category
@@ -527,7 +576,7 @@ class DocumentCompiler:
             close_images = getattr(images, "close", None)
             if callable(close_images):
                 resources.callback(close_images)
-            for number, jpeg in images:
+            def build_page(number, jpeg):
                 if self.cancel.is_set():
                     raise DocumentTextError("课件编译已取消。")
                 if number > len(document.units):
@@ -536,7 +585,8 @@ class DocumentCompiler:
                 if key in state["pages"]:
                     if state["pages"][key] != page_name or page_name not in state["outputs"]:
                         raise DocumentTextError("课件页面检查点无效。")
-                    self.cached_pages += 1
+                    with state_lock:
+                        self.cached_pages += 1
                     note = (directory / page_name).read_text(encoding="utf-8")
                 else:
                     if self.max_calls and self.calls >= self.max_calls:
@@ -549,9 +599,26 @@ class DocumentCompiler:
                         response = ("## 页面主题\n原生文本页\n## 知识点\n" + native
                                     + "\n## 公式与图表\n已完整提取原生文本；无图形绘制。\n## 例题与易错点\n以原文为准。\n## 待确认项\n无新增推断。")
                     else:
-                        response = self._request(VISION_MODEL, PAGE_PROMPT,
-                            [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
-                             {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
+                        response_name = f"responses/page-{number:04d}-" + digest(PAGE_PROMPT.encode())[:12] + '.json'
+                        with state_lock:
+                            saved_response = (directory / response_name).read_text(encoding='utf-8') if response_name in state['outputs'] else None
+                        if saved_response is not None:
+                            try:
+                                paid = json.loads(saved_response)
+                                if (type(paid) is not dict or paid.get('page') != number or paid.get('source_hash') != source_hash
+                                        or paid.get('model') != VISION_MODEL or type(paid.get('response')) is not str):
+                                    raise ValueError()
+                                response = paid['response']
+                            except (ValueError, AttributeError, RecursionError):
+                                raise DocumentTextError('逐页响应检查点无效，未重新付费或覆盖。') from None
+                        else:
+                            response = self._request(VISION_MODEL, PAGE_PROMPT,
+                                [{"type": "text", "text": f"第 {number} 页；请结合整页图像与原始文字进行知识编译。\n<source>\n{native}\n</source>"},
+                                 {"type": "image_url", "image_url": {"url": vision_page_url(jpeg)}}])
+                            # 原始付费响应先保存；栏目校验或取消不会丢掉可离线恢复的结果。
+                            commit({response_name: json.dumps({'page': number, 'source_hash': source_hash,
+                                        'model': VISION_MODEL, 'response': response}, ensure_ascii=False),
+                                    f"assets/page-{number:04d}.jpg": jpeg})
                     if self.cancel.is_set():
                         raise DocumentTextError("课件编译已取消。")
                     try:
@@ -565,7 +632,12 @@ class DocumentCompiler:
                             + f"# 第 {number} 页\n\n![原始页面](../assets/page-{number:04d}.jpg)\n\n## 原始提取\n\n"
                             + native + "\n\n## 逐页知识解读\n\n" + response.strip() + "\n")
                     commit({f"assets/page-{number:04d}.jpg": jpeg, page_name: note}, number)
-                notes.append(note.replace("(../assets/", "(assets/"))
+                return number, note.replace("(../assets/", "(assets/")
+            page_workers = min(3, max(1, int(self.parallel_batches))) if self.auto_recovery and not all_cached else 1
+            completed_pages = {}
+            for number, note in _rolling_page_results(images, build_page, page_workers):
+                completed_pages[number] = note
+            notes = [completed_pages[number] for number in sorted(completed_pages)]
         if len(notes) != document.unit_count:
             raise DocumentTextError("渲染页数与原文页数不一致，未生成完成标记。")
         # 页稿作为证据层复用；最终正文按全课件知识依赖重组，而不是每四页拼接。
@@ -591,9 +663,20 @@ class DocumentCompiler:
                 response = cached(name)
                 if response is None:
                     image = safe_destination(target, directory / f'assets/page-{number:04d}.jpg')
-                    response = self._request(VISION_MODEL, SOURCE_RECHECK_PROMPT,
-                        [{'type': 'text', 'text': json.dumps({'page': number, 'source_text': entry['source_text'], 'previous_visual': entry['text'], 'issues': issues}, ensure_ascii=False)},
-                         {'type': 'image_url', 'image_url': {'url': vision_page_url(image.read_bytes())}}])
+                    raw_name = name + '.response.json'
+                    raw_response = cached(raw_name)
+                    if raw_response is None:
+                        response = self._request(VISION_MODEL, SOURCE_RECHECK_PROMPT,
+                            [{'type': 'text', 'text': json.dumps({'page': number, 'source_text': entry['source_text'], 'previous_visual': entry['text'], 'issues': issues}, ensure_ascii=False)},
+                             {'type': 'image_url', 'image_url': {'url': vision_page_url(image.read_bytes())}}])
+                        commit({raw_name: json.dumps({'response': response}, ensure_ascii=False)})
+                    else:
+                        try:
+                            response = json.loads(raw_response)['response']
+                            if type(response) is not str:
+                                raise ValueError()
+                        except (ValueError, KeyError, TypeError, RecursionError):
+                            raise DocumentTextError('原图复核响应检查点无效，未重新付费或覆盖。') from None
                     response = page_markdown(response)
                     commit({name: response})
                 verification_outputs[number] = name
@@ -602,7 +685,7 @@ class DocumentCompiler:
         try:
             study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources,
                 review_percent=self.review_percent, parallel_batches=self.parallel_batches,
-                auto_recovery=self.auto_recovery).compile(entries)
+                auto_recovery=self.auto_recovery, content_recovery=self.content_recovery).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
