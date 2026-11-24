@@ -371,7 +371,7 @@ def _desktop_open_command(target: Path | str, *, reveal: bool = False) -> list[s
 
 from sjtu_learning_assistant.asr_service import (
     ASRError, asr_api_key_saved, delete_asr_api_key,
-    get_asr_api_key, save_asr_api_key, transcribe_audio,
+    get_asr_api_key, save_asr_api_key, transcribe_audio, transcribe_audio_chunked,
 )
 
 
@@ -4161,7 +4161,7 @@ class DashboardService:
             key = get_asr_api_key()
             if not key:
                 raise ASRError("请先保存独立的语音识别密钥。")
-            return transcribe_audio(path, endpoint=settings.asr_endpoint, model=settings.asr_model, api_key=key)
+            return transcribe_audio_chunked(path, endpoint=settings.asr_endpoint, model=settings.asr_model, api_key=key)
         except (ASRError, AIKeychainError) as exc:
             raise DashboardError(str(exc)) from None
 

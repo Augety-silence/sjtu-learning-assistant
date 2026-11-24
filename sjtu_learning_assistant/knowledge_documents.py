@@ -32,6 +32,9 @@ CONTRACT = "course-lecture-v2"
 MAX_PAGES = 500
 MAX_COMPILED_TEXT_CHARS = MAX_PAGES * 12_000
 MAX_SOURCE_BYTES = 100 * 1024**2
+MAX_REFERENCE_BYTES = 50 * 1024**2
+MAX_REFERENCE_PAGES = 200
+MAX_COURSEWARE_MARKERS = frozenset({'课件'})
 MAX_MANIFEST_BYTES = 2 * 1024**2
 
 
@@ -173,13 +176,36 @@ def _validate_renderable_pptx(path: Path) -> None:
         archive.close()
 
 
+def _oversize_reference_reasons(path: Path) -> list[str]:
+    """非课件教材过重（>50 MiB 或 PDF >200 页）时只保留原件，不进入 AI 编译；课件不受此限。"""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if any(part in MAX_COURSEWARE_MARKERS for part in path.parts):
+        return []
+    reasons = set()
+    if size > MAX_REFERENCE_BYTES:
+        reasons.add('oversize_reference_over_50MiB')
+    if path.suffix.casefold() == '.pdf':
+        try:
+            import pypdfium2 as pdfium
+            pages = len(pdfium.PdfDocument(str(path)))
+        except Exception:
+            pages = 0
+        if pages > MAX_REFERENCE_PAGES:
+            reasons.add('oversize_reference_over_pages')
+    return sorted(reasons)
+
+
 def skipped_active_content(path: Path) -> list[str]:
     """只检查包目录和关系 XML；从不读取宏/对象内容、运行 Office 或访问外链。"""
+    oversize = _oversize_reference_reasons(path)
     suffix = path.suffix.casefold()
     if suffix in {'.pptm', '.docm', '.xlsm', '.potm', '.ppsm', '.ppt', '.doc', '.xls'}:
-        return ['macro_or_binary']
+        return sorted(set(oversize) | {'macro_or_binary'})
     if suffix not in {'.pptx', '.docx', '.xlsx'}:
-        return []
+        return oversize
     archive, names = _open_ooxml(path, list_active_parts=True)
     reasons = set()
     try:
@@ -196,16 +222,20 @@ def skipped_active_content(path: Path) -> list[str]:
                         reasons.add('external_link')
     finally:
         archive.close()
-    return sorted(reasons)
+    return sorted(reasons | set(oversize))
 
 
 def retained_source_markdown(source: Path, path: Path, source_hash: str, reasons: list[str]) -> str:
     relative = path.relative_to(source).as_posix()
-    try:
-        extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
-        text = '\n\n'.join(f'## 第 {number} 页\n\n{unit}' for number, unit in enumerate(extracted.units, 1))
-    except DocumentTextError:
-        text = ''  # 宏/二进制等不支持静态提取时仅保留文件登记，不交给 Office。
+    if any(reason.startswith('oversize_reference_') for reason in reasons):
+        # 超过 50 MiB 的教材不打开正文、不进入 AI 编译，只登记并保留原件。
+        text = ''
+    else:
+        try:
+            extracted = extract_document(path, path.name, max_chars=MAX_COMPILED_TEXT_CHARS)
+            text = '\n\n'.join(f'## 第 {number} 页\n\n{unit}' for number, unit in enumerate(extracted.units, 1))
+        except DocumentTextError:
+            text = ''  # 宏/二进制等不支持静态提取时仅保留文件登记，不交给 Office。
     return ('---\ntype: course-document\n' + f'source: {json.dumps(relative, ensure_ascii=False)}\n'
             + f'source_sha256: {source_hash}\nconverted_by: local-text\nquality_status: source-only\n'
             + 'multimodal_status: skipped_active_content\nskipped_parts: ' + json.dumps(reasons) + '\n---\n\n'

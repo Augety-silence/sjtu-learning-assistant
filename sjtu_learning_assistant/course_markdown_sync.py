@@ -245,13 +245,20 @@ class CourseMarkdownSync:
                     continue
                 skipped = skipped_active_content(path)
                 if skipped:
+                    oversize = any(reason.startswith('oversize_reference_') for reason in skipped)
                     if item.get('fingerprint') != fingerprint or item.get('status') != 'retained':
-                        body = retained_source_markdown(source, path, source_hash, skipped)
-                        if digest(path.read_bytes()) != source_hash:
-                            raise DocumentTextError('提取期间课件已变化，请等待下次同步。')
-                        publish(item, mirror, body)
-                        item.update(fingerprint=fingerprint, status='retained', text_ready=True,
-                                    skipped_parts=skipped, quality_status='source-only', attempts=0)
+                        if oversize and mirror.is_file():
+                            # 过重教材（>50 MiB 或非课件 PDF >200 页）只暂停 AI 编译；
+                            # 已有正文镜像与检查点原样保留，不覆盖、不清空。
+                            item.update(fingerprint=fingerprint, status='retained', text_ready=True,
+                                        skipped_parts=skipped, quality_status='source-only', attempts=0)
+                        else:
+                            body = retained_source_markdown(source, path, source_hash, skipped)
+                            if digest(path.read_bytes()) != source_hash:
+                                raise DocumentTextError('提取期间课件已变化，请等待下次同步。')
+                            publish(item, mirror, body)
+                            item.update(fingerprint=fingerprint, status='retained', text_ready=True,
+                                        skipped_parts=skipped, quality_status='source-only', attempts=0)
                         item.pop('retry_after', None)
                         item.pop('error', None)
                         persist()

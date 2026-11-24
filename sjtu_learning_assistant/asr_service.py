@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 import stat
+import subprocess
 import sys
+import tempfile
 import threading
 import wave
 from pathlib import Path
@@ -19,8 +22,10 @@ from sjtu_learning_assistant.local_settings import validate_ai_base_url, validat
 ASR_KEYCHAIN_SERVICE = "SJTU Learning Assistant - Speech Recognition"
 ASR_KEYCHAIN_ACCOUNT = "siliconflow-api-key"
 MAX_AUDIO_BYTES = 50 * 1024 * 1024
+MAX_AUDIO_SECONDS = 3600
 SUPPORTED_AUDIO = frozenset({".wav", ".mp3", ".m4a", ".mp4", ".flac", ".ogg", ".webm", ".aac"})
 _request_lock = threading.Lock()
+_chunk_lock = threading.Lock()
 _credential_lock = threading.RLock()
 _cached_asr_key: str | None = None
 LOGGER = logging.getLogger(__name__)
@@ -158,3 +163,103 @@ def transcribe_audio(path: Path, *, endpoint: str, model: str, api_key: str, tra
         return {"ok": True, "model": model, "text": result["text"].strip()}
     finally:
         _request_lock.release()
+
+
+def _duration_seconds(path: Path) -> float:
+    """读取音频时长；未知或无效时返回 0，由体积上限兜底。"""
+    if path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(path), "rb") as source:
+                if source.getframerate() <= 0:
+                    return 0.0
+                return source.getnframes() / source.getframerate()
+        except (wave.Error, EOFError, ZeroDivisionError):
+            return 0.0
+    try:
+        output = subprocess.run(["/usr/bin/afinfo", str(path)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    found = re.search(r"estimated duration:\s*(\d+\.?\d*)", output.stdout)
+    return float(found.group(1)) if found else 0.0
+
+
+def _convert_to_wav(source: Path, destination: Path) -> None:
+    """把压缩音频转成 16 kHz 单声道 PCM WAV，便于按帧切分；不联网、不重试。"""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(source), str(destination)],
+            capture_output=True, text=True, timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise ASRError("无法调用系统音频转换；请改用 WAV 或安装可用解码器。") from None
+    if result.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
+        raise ASRError("音频无法转换为可切分的 WAV。")
+
+
+def _split_wav(source: Path, directory: Path, *, max_seconds: int, max_bytes: int) -> list[Path]:
+    """按最长时长和最大字节双上限切分 PCM WAV；切点取整帧，保留全部采样。"""
+    chunks: list[Path] = []
+    try:
+        with wave.open(str(source), "rb") as reader:
+            params = reader.getparams()
+            rate = reader.getframerate()
+            frame_bytes = params.nchannels * params.sampwidth
+            if rate <= 0 or frame_bytes <= 0:
+                raise ASRError("WAV 采样参数无效。")
+            by_seconds = int(max_seconds * rate)
+            by_bytes = int(max_bytes / frame_bytes)
+            limit = max(1, min(by_seconds, by_bytes))
+            total = reader.getnframes()
+            start = 0
+            while start < total:
+                end = min(total, start + limit)
+                destination = directory / f"chunk-{len(chunks):03d}.wav"
+                with wave.open(str(destination), "wb") as writer:
+                    writer.setparams(params)
+                    reader.setpos(start)
+                    writer.writeframes(reader.readframes(end - start))
+                chunks.append(destination)
+                start = end
+    except (wave.Error, EOFError, ZeroDivisionError):
+        raise ASRError("WAV 音频格式无效，无法切分。") from None
+    if not chunks:
+        raise ASRError("音频没有可转写的内容。")
+    return chunks
+
+
+def transcribe_audio_chunked(path: Path, *, endpoint: str, model: str, api_key: str,
+                             transport: httpx.BaseTransport | None = None) -> dict[str, Any]:
+    """单文件 ≤50 MB 且 ≤1 小时直接转写；否则本地转 WAV 并按双上限切分，逐段转写后合并。
+    全程不自动重试，避免重复计费；临时切片在结束后删除。"""
+    if path.suffix.lower() not in SUPPORTED_AUDIO:
+        raise ASRError("请选择 WAV、MP3、M4A 等音频文件。")
+    if not _chunk_lock.acquire(blocking=False):
+        raise ASRError("已有音频正在切分转写，请等待完成。")
+    try:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            raise ASRError("音频无法读取。") from None
+        duration = _duration_seconds(path)
+        fits = 0 < size <= MAX_AUDIO_BYTES and (duration <= 0 or duration <= MAX_AUDIO_SECONDS)
+        if fits:
+            return transcribe_audio(path, endpoint=endpoint, model=model, api_key=api_key, transport=transport)
+        with tempfile.TemporaryDirectory(prefix="sjtu-asr-chunks-") as raw:
+            work = Path(raw)
+            source = path
+            if path.suffix.lower() != ".wav":
+                source = work / "source.wav"
+                _convert_to_wav(path, source)
+            chunks = _split_wav(source, work, max_seconds=MAX_AUDIO_SECONDS, max_bytes=MAX_AUDIO_BYTES)
+            pieces: list[str] = []
+            for chunk in chunks:
+                result = transcribe_audio(chunk, endpoint=endpoint, model=model, api_key=api_key, transport=transport)
+                value = result.get("text") if isinstance(result, dict) else None
+                if isinstance(value, str) and value.strip():
+                    pieces.append(value.strip())
+            merged = "\n".join(pieces)
+            if not merged:
+                raise ASRError("语音接口未返回可用文字。")
+            return {"ok": True, "model": model, "text": merged, "chunks": len(chunks)}
+    finally:
+        _chunk_lock.release()
