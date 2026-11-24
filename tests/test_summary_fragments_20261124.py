@@ -30,6 +30,14 @@ class FragmentSummaryTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_summary(dict(self.draft(), **changes), [27], fragment=True)
 
+    def test_uncited_non_teaching_fragment_is_allowed_only_before_full_review(self):
+        draft = self.draft()
+        draft['markdown'] = '本页为封底，无实质教学内容。'
+        self.assertIs(draft, validate_summary(draft, [27], fragment=True))
+        draft['topics'] = [dict(name='教学主题', pages=[27])]
+        with self.assertRaisesRegex(ValueError, '有效来源引用'):
+            validate_summary(draft, [27], fragment=True)
+
     def test_exhausted_short_paid_draft_is_revalidated_without_new_generation(self):
         cache, request = {}, Mock()
         compiler = SummaryCompiler(request, cache.get, cache.update, auto_recovery=True)

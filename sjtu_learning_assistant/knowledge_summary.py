@@ -88,7 +88,10 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
     markdown = canonical_citations(markdown).strip()
     if re.search(r'^#\s|^#{1,6}\s*第\s*\d+\s*页', markdown, re.M):
         raise ValueError('精炼总结仍是逐页稿或含重复主标题。')
-    if not cited_pages(markdown) or not cited_pages(markdown) <= set(pages):
+    references = cited_pages(markdown)
+    # 无实质主题的中间段可能只说明“封底、无教学内容”，没有核心结论可引。
+    # 此兼容仍强制整段来源审校；已有引用必须真实，最终稿必须有有效引用。
+    if (not references and not (fragment and result.get('topics') == [])) or not references <= set(pages):
         raise ValueError('精炼总结缺少有效来源引用。')
     validate_tables(markdown)
     validate_math_notation(markdown)
