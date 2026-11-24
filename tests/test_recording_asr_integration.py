@@ -20,7 +20,7 @@ def test_new_defaults_and_previous_model_preserved(tmp_path):
     payload.update(asr_model="Explicit/LegacyModel", asr_key_saved=True, ai_key_saved=True, ai_enabled=True)
     for key in RECORDING_ASR_KEYS:
         payload.pop(key)
-    store.path.write_text(json.dumps(payload))
+    store.path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
     migrated = store.load(environ=dict())
     assert migrated.asr_model == "Explicit/LegacyModel" and migrated.asr_key_saved
     assert migrated.ai_key_saved and migrated.ai_enabled
@@ -37,7 +37,7 @@ def test_recording_preferences_strict_and_corruption_no_consent(tmp_path):
         with pytest.raises(SettingsError): store.update(payload)
     payload = store.load(environ=dict()).to_dict()
     payload.update(theme_mode="invalid")
-    store.path.write_text(json.dumps(payload))
+    store.path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
     recovered = store.load(environ=dict())
     assert not recovered.recording_asr_enabled and recovered.recording_asr_paused
 
@@ -136,7 +136,7 @@ def write_catalog_fixture(tmp_path, job_changes=None):
     archive = tmp_path / "archive"
     root = tmp_path / "recording-asr" / "v1"
     root.mkdir(parents=True)
-    (root / "manifest.json").write_text(json.dumps(dict(version=1,consent=True,paused=True)))
+    (root / "manifest.json").write_text(json.dumps(dict(version=1,consent=True,paused=True)), encoding="utf-8", newline="\n")
     identity = "sjtu-video:1:2"
     key = hashlib.sha256(identity.encode()).hexdigest().__getitem__(slice(None,16))
     job_root = root / "jobs" / key
@@ -145,12 +145,12 @@ def write_catalog_fixture(tmp_path, job_changes=None):
     output = archive / "Knowledge Markdown" / relative
     output.parent.mkdir(parents=True)
     raw = "---\ntimed: false\ntimestamps: none\n---\n# 原始机器转写\n\n" + "".join("原始全文并未校对。" for _ in range(1200)) + "原始全文结尾"
-    output.write_text(raw,encoding="utf-8")
+    output.write_text(raw,encoding="utf-8", newline="\n")
     job = dict(source_id=identity,course_id="1",course_name="Course",term_name="Term",title="Lecture",
         state="completed",model="XingChenAGI/XingChenASR-V3.2-Ultra",markdown_relative=relative,
         markdown_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),text_chars=len(raw),text_sha256=hashlib.sha256(raw.encode()).hexdigest())
     job.update(job_changes or dict())
-    (job_root / "job.json").write_text(json.dumps(job))
+    (job_root / "job.json").write_text(json.dumps(job), encoding="utf-8", newline="\n")
     catalog = CompiledKnowledge(lambda:SimpleNamespace(archive_root=str(archive)),tmp_path / "local-projects.json",
         recording_asr_root=root,transcript_metadata=lambda:dict())
     return catalog, output, job_root, raw
@@ -175,14 +175,14 @@ def test_catalog_raw_fulltext_provenance_no_vtt_or_false_approved(tmp_path):
 
 def test_catalog_preserves_edits_and_rejects_cross_root_and_identity(tmp_path):
     catalog, output, job_root, raw = write_catalog_fixture(tmp_path)
-    output.write_text(raw + "\n人工补充",encoding="utf-8")
+    output.write_text(raw + "\n人工补充",encoding="utf-8", newline="\n")
     entry = catalog.search().get("items").__getitem__(0)
     assert entry.get("user_modified") is True and entry.get("review_status") == "unreviewed"
     assert output.read_text(encoding="utf-8").endswith("人工补充")
     job_path = job_root / "job.json"
     job = json.loads(job_path.read_text(encoding="utf-8"))
     for changes in (dict(course_id="wrong"),dict(markdown_relative="../outside.md"),dict(markdown_relative="raw.vtt")):
-        invalid = dict(job); invalid.update(changes); job_path.write_text(json.dumps(invalid))
+        invalid = dict(job); invalid.update(changes); job_path.write_text(json.dumps(invalid), encoding="utf-8", newline="\n")
         result = catalog.search()
         assert result.get("count") == 0 and result.get("issues")
     assert output.read_text(encoding="utf-8").endswith("人工补充")

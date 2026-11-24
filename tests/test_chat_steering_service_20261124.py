@@ -123,7 +123,7 @@ def test_sealing_checks_pending_atomically_and_rejects_late_new_inputs(service):
 def test_text_attachment_scope_expands_and_paid_responses_are_append_only(service, tmp_path):
     session_id, task_id, control = start(service)
     source = tmp_path / '补充资料.txt'
-    source.write_text('已核查来源内容。')
+    source.write_text('已核查来源内容。', encoding="utf-8", newline="\n")
     attachment = service.ai_attachment_ingest(source)
     registry = SimpleNamespace(attachment_ids=frozenset())
     control.attach_registry(registry)

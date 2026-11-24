@@ -1,13 +1,18 @@
 """独立 ASR 配置、安全存储及真实 multipart 格式的离线回归。"""
+import errno
 import json
+import os
+import stat
 import wave
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
+from sjtu_learning_assistant import asr_service
 from sjtu_learning_assistant.asr_service import (
     ASRError, ASR_KEYCHAIN_SERVICE, MAX_AUDIO_BYTES, delete_asr_api_key,
     get_asr_api_key, save_asr_api_key, transcribe_audio,
@@ -98,18 +103,87 @@ def test_timeout_releases_lock(audio):
     assert invoke(audio, lambda r: httpx.Response(200, json={"text": "ok"}))["ok"]
 
 
-def test_size_and_symlink_no_request(audio, tmp_path):
-    handler = Mock()
-    link = tmp_path / "link.wav"
-    link.symlink_to(audio)
-    with pytest.raises(ASRError):
-        invoke(link, handler)
+@pytest.mark.parametrize("nofollow", (True, False), ids=("native", "without-nofollow"))
+def test_size_and_symlink_no_request(audio, tmp_path, monkeypatch, nofollow):
+    if not nofollow:
+        monkeypatch.delattr(asr_service.os, "O_NOFOLLOW", raising=False)
+    handler = Mock(return_value=httpx.Response(200, json=dict(text="unexpected upload")))
     huge = tmp_path / "huge.mp3"
     with huge.open("wb") as stream:
         stream.truncate(MAX_AUDIO_BYTES + 1)
     with pytest.raises(ASRError):
         invoke(huge, handler)
     handler.assert_not_called()
+    link = tmp_path / "link.wav"
+    try:
+        link.symlink_to(audio)
+    except NotImplementedError:
+        pytest.skip("Platform does not support symlinks")
+    except OSError as exc:
+        if (getattr(exc, "winerror", None) == 1314
+                or exc.errno in (errno.EPERM, errno.EACCES, errno.ENOSYS, errno.ENOTSUP)):
+            pytest.skip("Symlink creation is unavailable or requires platform privileges")
+        raise
+    with pytest.raises(ASRError):
+        invoke(link, handler)
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ("empty", "oversize", "directory"))
+def test_invalid_audio_no_request_without_nofollow(tmp_path, monkeypatch, kind):
+    monkeypatch.delattr(asr_service.os, "O_NOFOLLOW", raising=False)
+    path = tmp_path / "invalid.mp3"
+    if kind == "directory":
+        path.mkdir()
+    else:
+        with path.open("wb") as stream:
+            stream.truncate(MAX_AUDIO_BYTES + 1 if kind == "oversize" else 0)
+    handler = Mock(return_value=httpx.Response(200, json=dict(text="unexpected upload")))
+    with pytest.raises(ASRError):
+        invoke(path, handler)
+    handler.assert_not_called()
+
+
+def test_regular_audio_without_nofollow(audio, monkeypatch):
+    monkeypatch.delattr(asr_service.os, "O_NOFOLLOW", raising=False)
+    handler = Mock(return_value=httpx.Response(200, json=dict(text="ok")))
+    assert invoke(audio, handler).get("text") == "ok"
+    handler.assert_called_once()
+
+
+def test_reparse_point_no_open_or_request(audio, monkeypatch):
+    metadata = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=0x400)
+    monkeypatch.setattr(Path, "lstat", lambda self: metadata)
+    opener = Mock(side_effect=AssertionError("Reparse point must not be opened"))
+    monkeypatch.setattr(asr_service.os, "open", opener)
+    handler = Mock(return_value=httpx.Response(200, json=dict(text="unexpected upload")))
+    with pytest.raises(ASRError):
+        invoke(audio, handler)
+    opener.assert_not_called()
+    handler.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ("descriptor", "path-recheck"))
+def test_audio_identity_race_closes_descriptor_without_request(audio, tmp_path, monkeypatch, phase):
+    monkeypatch.delattr(asr_service.os, "O_NOFOLLOW", raising=False)
+    replacement = tmp_path / "replacement.wav"
+    replacement.write_bytes(audio.read_bytes())
+    original_open, original_lstat = os.open, Path.lstat
+    descriptors = list()
+    def changed_open(path, flags):
+        descriptor = original_open(replacement if phase == "descriptor" else path, flags)
+        descriptors.append(descriptor)
+        if phase == "path-recheck":
+            monkeypatch.setattr(Path, "lstat", lambda self: replacement.stat() if self == audio else original_lstat(self))
+        return descriptor
+    monkeypatch.setattr(asr_service.os, "open", changed_open)
+    handler = Mock(return_value=httpx.Response(200, json=dict(text="unexpected upload")))
+    with pytest.raises(ASRError, match="发生变化"):
+        invoke(audio, handler)
+    handler.assert_not_called()
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors.pop())
 
 
 @pytest.mark.parametrize("endpoint", ["http://example.com", "https://example.com:99999", "https://user:password@example.com", "https://example.com?q=secret"])

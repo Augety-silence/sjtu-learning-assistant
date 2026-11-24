@@ -44,8 +44,13 @@ class CompilationResponseCache:
             raise OSError('编译缓存路径不安全。')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.path, timeout=10)
-        os.chmod(self.path, 0o600)
-        db.execute('CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, content TEXT NOT NULL, sha TEXT NOT NULL, created REAL NOT NULL)')
+        try:
+            os.chmod(self.path, 0o600)
+            db.execute('CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, content TEXT NOT NULL, sha TEXT NOT NULL, created REAL NOT NULL)')
+        except BaseException:
+            # Ownership transfers to the caller only after setup succeeds.
+            db.close()
+            raise
         return db
 
     def get(self, identity: str) -> str | None:

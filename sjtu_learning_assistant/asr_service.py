@@ -115,6 +115,39 @@ def delete_asr_api_key(*, keyring_module: Any = None) -> None:
             _cached_asr_key = None
 
 
+def _regular_audio_file(metadata: os.stat_result) -> bool:
+    # Windows reparse points need explicit rejection even without O_NOFOLLOW.
+    return (stat.S_ISREG(metadata.st_mode)
+            and not (getattr(metadata, "st_file_attributes", 0)
+                     & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)))
+
+
+def _open_audio_file(path: Path):
+    """Reject links before opening, then verify the descriptor is the selected file."""
+    descriptor = None
+    try:
+        before = path.lstat()
+        if not _regular_audio_file(before):
+            raise ASRError("音频须为普通文件，不能是符号链接或重解析点。")
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        after = path.lstat()
+        if (not _regular_audio_file(opened) or not _regular_audio_file(after)
+                or not os.path.samestat(before, opened)
+                or not os.path.samestat(after, opened)):
+            raise ASRError("音频文件在打开时发生变化，请重新选择。")
+        audio = os.fdopen(descriptor, "rb")
+        descriptor = None  # The file object now owns the descriptor.
+        return audio
+    except OSError:
+        raise ASRError("音频无法读取。") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def transcribe_audio(path: Path, *, endpoint: str, model: str, api_key: str, transport: httpx.BaseTransport | None = None) -> dict[str, Any]:
     endpoint = validate_ai_base_url(endpoint)
     model = validate_asr_model(model)
@@ -124,11 +157,7 @@ def transcribe_audio(path: Path, *, endpoint: str, model: str, api_key: str, tra
     if not _request_lock.acquire(blocking=False):
         raise ASRError("已有音频正在转写，请等待完成。")
     try:
-        try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-        except OSError:
-            raise ASRError("音频无法读取。") from None
-        with os.fdopen(descriptor, "rb") as audio:
+        with _open_audio_file(path) as audio:
             metadata = os.fstat(audio.fileno())
             if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= MAX_AUDIO_BYTES:
                 raise ASRError("音频须为普通文件，大小在 0—50 MB 之间。")

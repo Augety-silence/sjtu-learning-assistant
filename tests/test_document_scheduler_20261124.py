@@ -93,9 +93,9 @@ class PageCheckpointTests(unittest.TestCase):
         self.assertEqual(1, request.call_count)
         responses = list(self.target.rglob('responses/*.json'))
         self.assertEqual(1, len(responses))
-        response = json.loads(responses[0].read_text())
+        response = json.loads(responses[0].read_text(encoding="utf-8"))
         self.assertEqual(request.return_value, response['response'])
-        manifest = json.loads((responses[0].parent.parent / 'manifest.json').read_text())
+        manifest = json.loads((responses[0].parent.parent / 'manifest.json').read_text(encoding="utf-8"))
         self.assertFalse(manifest['pages'])
         self.assertIn(responses[0].relative_to(responses[0].parent.parent).as_posix(), manifest['outputs'])
 
@@ -112,7 +112,7 @@ class PageCheckpointTests(unittest.TestCase):
             DocumentCompiler(runner, self.cancel, auto_recovery=True, parallel_batches=3).compile(
                 self.source, self.path, self.target)
         manifest_path = next(self.target.rglob('manifest.json'))
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual({'2'}, set(manifest['pages']))
         self.assertEqual(2, len(list(self.target.rglob('responses/*.json'))))
         self.assertFalse(list(self.target.rglob('document.md')))
@@ -155,13 +155,13 @@ class PageCheckpointTests(unittest.TestCase):
         self.addCleanup(worker.close)
         worker.run_once()
         marker = self.source / 'Knowledge Markdown/99_System/Course-Sync.json'
-        state = json.loads(marker.read_text())
+        state = json.loads(marker.read_text(encoding="utf-8"))
         item = next(iter(state['items'].values()))
         item.update(attempts=8, auto_paused=False, error='DashboardError', auto_recovery_version='old')
-        marker.write_text(json.dumps(state))
+        marker.write_text(json.dumps(state), encoding="utf-8", newline="\n")
         before = request.call_count
         worker.run_once()
-        after = next(iter(json.loads(marker.read_text())['items'].values()))
+        after = next(iter(json.loads(marker.read_text(encoding="utf-8"))['items'].values()))
         self.assertEqual(before, request.call_count)
         self.assertEqual(8, after['attempts'])
         self.assertTrue(after['auto_paused'])
@@ -185,6 +185,6 @@ class PageCheckpointTests(unittest.TestCase):
         slices.clear()
         worker.run_once()
         self.assertEqual([2, 2, 2], slices)
-        state = json.loads((self.source / 'Knowledge Markdown/99_System/Course-Sync.json').read_text())
+        state = json.loads((self.source / 'Knowledge Markdown/99_System/Course-Sync.json').read_text(encoding="utf-8"))
         self.assertTrue(all(item['attempts'] == 0 for item in state['items'].values()),
                         '正常切片不增加失败次数')

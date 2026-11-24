@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -114,9 +115,54 @@ class SampledCompilationTests(unittest.TestCase):
             self.assertEqual(1, compute.call_count)
             self.assertEqual(1, len(set(results)))
             self.assertEqual(results[0], CompilationResponseCache(path).get(key))
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute('UPDATE responses SET content=? WHERE id=?', ('{"markdown":"篡改"}', key))
             self.assertIsNone(cache.get(key))
+
+    def test_cache_connections_close_on_success_and_failure_and_rollback(self):
+        connections, failure = list(), SimpleNamespace(stage=None)
+        original_connect = sqlite3.connect
+        class TrackedConnection(sqlite3.Connection):
+            closed = False
+            def close(self):
+                self.closed = True
+                super().close()
+            def execute(self, sql, parameters=()):
+                if ((failure.stage == 'schema' and sql.startswith('CREATE'))
+                        or (failure.stage == 'read' and sql.startswith('SELECT'))
+                        or (failure.stage == 'write' and sql.startswith('DELETE'))):
+                    raise sqlite3.OperationalError('synthetic database failure')
+                return super().execute(sql, parameters)
+        def connect(path, timeout):
+            db = original_connect(path, timeout=timeout, factory=TrackedConnection)
+            connections.append(db)  # Keep references so GC cannot hide a leak.
+            return db
+        with tempfile.TemporaryDirectory() as temp, patch(
+                'sjtu_learning_assistant.compilation_cache.sqlite3.connect', connect):
+            cache = CompilationResponseCache(Path(temp) / 'cache.sqlite3')
+            content = json.dumps(dict(markdown='cached paid response'))
+            self.assertIsNone(cache.get('missing'))
+            cache.store('saved', content)
+            self.assertEqual(content, cache.get('saved'))
+            for stage in ('chmod', 'schema', 'read', 'write'):
+                with self.subTest(stage=stage):
+                    before = len(connections)
+                    failure.stage = stage
+                    if stage == 'chmod':
+                        with patch('sjtu_learning_assistant.compilation_cache.os.chmod', side_effect=OSError('synthetic permission failure')):
+                            self.assertIsNone(cache.get('saved'))
+                    elif stage == 'write':
+                        cache.store('saved', json.dumps(dict(markdown='must be rolled back')))
+                    else:
+                        self.assertIsNone(cache.get('saved'))
+                    self.assertEqual(before + 1, len(connections))
+                    self.assertTrue(next(reversed(connections)).closed)
+                    failure.stage = None
+                    self.assertEqual(content, cache.get('saved'))
+            self.assertTrue(all(db.closed for db in connections))
+            for db in connections:
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    db.execute('SELECT 1')
 
     def test_cache_does_not_store_failure_invalid_or_expired_responses(self):
         with tempfile.TemporaryDirectory() as temp:
