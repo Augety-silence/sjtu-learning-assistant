@@ -224,6 +224,11 @@ export interface AIChatSendResult {
   assistant_message: AIChatMessage;
 }
 
+export interface AIChatSteerResult {
+  task_id: string;
+  user_message: AIChatMessage;
+}
+
 export interface AIPageContext {
   page_id: ViewName;
   source?: string;

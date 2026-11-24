@@ -39,11 +39,11 @@ import {
   resumeAiChatMessageTask,
   revealAiAttachment,
   sendAiChatMessage,
+  steerAiChatTask,
   updateSettings,
 } from "@/lib/api";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type {
-  AIAgentLiveStatus,
   AIAgentPreset,
   AIChatMessage,
   AIChatPreferences,
@@ -54,6 +54,7 @@ import type {
   AIThinkingDepth,
   AIWorkspaceStatus,
 } from "@/lib/types";
+import { useChatSessionTasks } from "@/lib/useChatSessionTasks";
 import { useResizablePanes } from "@/lib/useResizablePanes";
 
 const NATIVE_FILE_DROP_EVENT = "sjtu-native-file-drop";
@@ -100,6 +101,7 @@ interface PendingChatRequest {
   model: AIModel;
   depth: AIThinkingDepth;
   presetId: string;
+  steeringTaskId?: string;
 }
 
 interface FailedChatRequest {
@@ -115,6 +117,9 @@ interface PersistedChatTask {
 
 const ACTIVE_CHAT_TASK_PREFIX = "ai-chat-running-task:";
 const RESUME_RETRY_NOTICE = "暂时无法确认后台任务状态，正在自动重新连接…";
+const PENDING_STEERING_PREFIX = "ai-chat-pending-steering:";
+const STEERING_RETRY_NOTICE =
+  "补充指令暂未确认，已保留；重新连接后将按原标识重试。";
 
 function readPersistedChatTask(sessionId: string): PersistedChatTask | null {
   const key = `${ACTIVE_CHAT_TASK_PREFIX}${sessionId}`;
@@ -172,14 +177,13 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [contextTitle, setContextTitle] = useState<string | null>(null);
   const [model, setModel] = useState<AIModel>("auto");
   const [depth, setDepth] = useState<AIThinkingDepth>("standard");
-  const [busy, setBusy] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
-  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
-  // 当前任务的开始时刻（毫秒或后端 ISO 时间），用于每轮执行详情的实时计时。
-  const [runningStartedAt, setRunningStartedAt] = useState<
-    number | string | null
-  >(null);
+  const sessionTasks = useChatSessionTasks();
+  const activeTask = active ? sessionTasks.tasks.current.get(active.id) : null;
+  const busy = Boolean(activeTask);
+  const stopping = activeTask?.stopping ?? false;
+  const runningTaskId = activeTask?.taskId ?? null;
+  const runningStartedAt = activeTask?.startedAt ?? null;
+  const liveStatus = activeTask?.liveStatus ?? null;
   // 自定义技能管理与 AI 工作区。
   const [skillManager, setSkillManager] = useState<{
     skillId: string | null;
@@ -215,11 +219,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setWorkspaceBusy(false);
     }
   };
-  // 后端推送的最新进度（请求模型 / 自动重试），只对当前任务生效。
-  const [liveStatus, setLiveStatus] = useState<{
-    taskId: string;
-    status: AIAgentLiveStatus;
-  } | null>(null);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachments, setAttachments] = useState<AIManagedAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -232,10 +231,14 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const [canRetry, setCanRetry] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [motionMessageIds, setMotionMessageIds] = useState<string[]>([]);
-  const [queuedMessageIds, setQueuedMessageIds] = useState<string[]>([]);
   const [activityOpen, setActivityOpen] = useState(() => false);
   const [resumeRetryTick, setResumeRetryTick] = useState(0);
   const pendingQueueRef = useRef<PendingChatRequest[]>([]);
+  const steeringInFlightRef = useRef(new Set<string>());
+  const steeringFlushingRef = useRef(new Set<string>());
+  const composerBySessionRef = useRef(
+    new Map<string, { draft: string; attachments: AIManagedAttachment[] }>(),
+  );
   // Failed requests whose session was no longer active; restored on reopen.
   const failedRequestsRef = useRef(new Map<string, FailedChatRequest[]>());
   const deletedSessionIdsRef = useRef(new Set<string>());
@@ -253,8 +256,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const stickToBottomRef = useRef(true);
   const lastThreadScrollTopRef = useRef(0);
   const pendingComposerFocusRef = useRef(false);
-  const taskAbortRef = useRef<AbortController | null>(null);
-  const taskPollAbortRef = useRef<AbortController | null>(null);
   const restoredFailedRequestIdsRef = useRef(new Set<string>());
   const sessionLoadSequenceRef = useRef(0);
   const nativeDropTimerRef = useRef<number | null>(null);
@@ -271,6 +272,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       }
     >(),
   );
+  if (active)
+    composerBySessionRef.current.set(active.id, { draft, attachments });
   const focusIfPresent = useCallback((target: HTMLElement | null) => {
     if (
       !isPresentRef.current ||
@@ -293,10 +296,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       // unmount there is no composer to restore the prompt or show the stop
       // notice, so aborting here would silently drop the user's question.
       // The backend task finishes and persists; only explicit "停止" cancels.
-      pendingQueueRef.current.splice(0);
       // Stop only this component's poller. The backend task remains active and
       // the next AIChatView instance resumes it from the persisted task id.
-      taskPollAbortRef.current?.abort();
+      for (const task of sessionTasks.tasks.current.values()) {
+        task.pollController.abort();
+      }
     },
     [],
   );
@@ -334,7 +338,29 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       const sessionId = detail.session_id;
       const taskId = detail.task_id;
       if (typeof sessionId !== "string" || typeof taskId !== "string") return;
+      const task = sessionTasks.tasks.current.get(sessionId);
+      if (!task || (task.taskId && task.taskId !== taskId)) return;
+      if (!task.taskId && detail.type !== "start") return;
       const streamId = `stream-${taskId}`;
+      if (detail.type === "steering_applied") {
+        setActive((current) =>
+          current?.id === sessionId
+            ? {
+                ...current,
+                messages: current.messages.filter(
+                  (message) => message.id !== streamId,
+                ),
+                traces: current.traces.map((trace) =>
+                  trace.id === streamId
+                    ? { ...trace, pending_text: "" }
+                    : trace,
+                ),
+              }
+            : current,
+        );
+        sessionTasks.update(sessionId, { liveStatus: null });
+        return;
+      }
       if (detail.type === "status") {
         const raw = detail.status;
         if (!raw || typeof raw !== "object") return;
@@ -347,32 +373,35 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           return;
         const number = (key: string) =>
           typeof value[key] === "number" ? (value[key] as number) : undefined;
-        setLiveStatus({
-          taskId,
-          status: {
-            state: value.state,
-            step: number("step"),
-            attempt: number("attempt"),
-            max_attempts: number("max_attempts"),
-            reason: typeof value.reason === "string" ? value.reason : undefined,
-            delay_seconds: number("delay_seconds"),
-            part: number("part"),
-            max_parts: number("max_parts"),
-            received_at: Date.now(),
+        sessionTasks.update(sessionId, {
+          liveStatus: {
+            taskId,
+            status: {
+              state: value.state,
+              step: number("step"),
+              attempt: number("attempt"),
+              max_attempts: number("max_attempts"),
+              reason:
+                typeof value.reason === "string" ? value.reason : undefined,
+              delay_seconds: number("delay_seconds"),
+              part: number("part"),
+              max_parts: number("max_parts"),
+              received_at: Date.now(),
+            },
           },
         });
         return;
       }
       if (detail.type === "start") {
-        setRunningTaskId(taskId);
-        setLiveStatus((current) =>
-          current?.taskId === taskId ? current : null,
-        );
-        setRunningStartedAt(
-          typeof detail.started_at === "string" && detail.started_at
-            ? detail.started_at
-            : Date.now(),
-        );
+        sessionTasks.update(sessionId, {
+          taskId,
+          startedAt:
+            typeof detail.started_at === "string" && detail.started_at
+              ? detail.started_at
+              : Date.now(),
+          liveStatus:
+            task.liveStatus?.taskId === taskId ? task.liveStatus : null,
+        });
         return;
       }
       if (detail.type === "progress_delta" || detail.type === "answer_start") {
@@ -538,8 +567,182 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setError(failed.message);
   }, []);
 
+  function persistPendingSteering(sessionId: string) {
+    const pending = pendingQueueRef.current.filter(
+      (request) => request.sessionId === sessionId,
+    );
+    const key = `${PENDING_STEERING_PREFIX}${sessionId}`;
+    if (pending.length)
+      window.localStorage.setItem(key, JSON.stringify(pending));
+    else window.localStorage.removeItem(key);
+  }
+
+  function restorePendingSteering(sessionId: string) {
+    try {
+      const raw = window.localStorage.getItem(
+        `${PENDING_STEERING_PREFIX}${sessionId}`,
+      );
+      const pending: PendingChatRequest[] = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(pending)) return;
+      for (const item of pending) {
+        if (
+          item &&
+          item.sessionId === sessionId &&
+          typeof item.optimisticId === "string" &&
+          typeof item.text === "string" &&
+          Array.isArray(item.attachments) &&
+          item.attachments.every(
+            (attachment) => attachment && typeof attachment.id === "number",
+          ) &&
+          !pendingQueueRef.current.some(
+            (existing) => existing.optimisticId === item.optimisticId,
+          )
+        ) {
+          pendingQueueRef.current.push(item);
+        }
+      }
+    } catch {
+      /* A corrupt local record never starts a new model turn. */
+    }
+  }
+
+  function preserveSteeringDraft(request: PendingChatRequest, message: string) {
+    setActive((current) =>
+      current?.id === request.sessionId
+        ? {
+            ...current,
+            messages: current.messages.filter(
+              (item) => item.id !== request.optimisticId,
+            ),
+          }
+        : current,
+    );
+    const failed = { request, message, retryable: false };
+    if (
+      activeSessionIdRef.current === request.sessionId &&
+      isPresentRef.current
+    ) {
+      restoreFailedRequest(failed);
+    } else if (!deletedSessionIdsRef.current.has(request.sessionId)) {
+      const saved = failedRequestsRef.current.get(request.sessionId) ?? [];
+      failedRequestsRef.current.set(request.sessionId, [...saved, failed]);
+    }
+  }
+
+  async function flushSteering(sessionId: string, taskId: string) {
+    if (steeringFlushingRef.current.has(sessionId)) return;
+    steeringFlushingRef.current.add(sessionId);
+    try {
+      for (;;) {
+        const request = pendingQueueRef.current.find(
+          (item) => item.sessionId === sessionId,
+        );
+        if (!request) return;
+        if (sessionTasks.tasks.current.get(sessionId)?.stopping) return;
+        if (request.steeringTaskId && request.steeringTaskId !== taskId) {
+          pendingQueueRef.current = pendingQueueRef.current.filter(
+            (item) => item !== request,
+          );
+          persistPendingSteering(sessionId);
+          preserveSteeringDraft(
+            request,
+            "原任务已结束，补充指令已保留为草稿。请确认后发送。",
+          );
+          continue;
+        }
+        request.steeringTaskId = taskId;
+        persistPendingSteering(sessionId);
+        steeringInFlightRef.current.add(request.optimisticId);
+        try {
+          const result = await steerAiChatTask(
+            sessionId,
+            taskId,
+            request.text,
+            request.optimisticId,
+            request.attachments.map((item) => item.id),
+          );
+          pendingQueueRef.current = pendingQueueRef.current.filter(
+            (item) => item !== request,
+          );
+          persistPendingSteering(sessionId);
+          if (activeSessionIdRef.current === sessionId) {
+            setError((current) =>
+              current === STEERING_RETRY_NOTICE ? null : current,
+            );
+          }
+          setActive((current) => {
+            if (current?.id !== sessionId) return current;
+            if (
+              current.messages.some(
+                (item) => item.id === result.user_message.id,
+              )
+            ) {
+              return {
+                ...current,
+                messages: current.messages.filter(
+                  (item) => item.id !== request.optimisticId,
+                ),
+              };
+            }
+            const messages = current.messages.filter(
+              (item) => item.id !== result.user_message.id,
+            );
+            const index = messages.findIndex(
+              (item) => item.id === request.optimisticId,
+            );
+            if (index >= 0) messages[index] = result.user_message;
+            else messages.push(result.user_message);
+            return { ...current, messages };
+          });
+        } catch (reason) {
+          if (
+            (reason as { category?: string })?.category ===
+            "steering_unconfirmed"
+          ) {
+            if (activeSessionIdRef.current === sessionId) {
+              setError(STEERING_RETRY_NOTICE);
+            }
+            return;
+          }
+          pendingQueueRef.current = pendingQueueRef.current.filter(
+            (item) => item !== request,
+          );
+          persistPendingSteering(sessionId);
+          setActive((current) =>
+            current?.id === sessionId
+              ? {
+                  ...current,
+                  messages: current.messages.filter(
+                    (item) => item.id !== request.optimisticId,
+                  ),
+                }
+              : current,
+          );
+          preserveSteeringDraft(
+            request,
+            reason instanceof Error
+              ? reason.message
+              : "补充指令未被接受，草稿已保留。",
+          );
+        } finally {
+          steeringInFlightRef.current.delete(request.optimisticId);
+        }
+      }
+    } finally {
+      steeringFlushingRef.current.delete(sessionId);
+    }
+  }
+
   const applySession = useCallback(
     (session: AIChatSession) => {
+      if (
+        activeSessionIdRef.current &&
+        activeSessionIdRef.current !== session.id
+      ) {
+        const saved = composerBySessionRef.current.get(session.id);
+        setDraft(saved?.draft ?? "");
+        setAttachments(saved?.attachments ?? []);
+      }
       setMotionMessageIds([]);
       stickToBottomRef.current = true;
       activeSessionIdRef.current = session.id;
@@ -547,7 +750,6 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setModel((session.model as AIModel) || "auto");
       setDepth(session.thinking_depth);
       setSelectedPresetId(session.preset_id);
-      setAttachments([]);
       setCanRetry(false);
       const failed = failedRequestsRef.current.get(session.id);
       if (failed) {
@@ -920,17 +1122,27 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
   const openActivity = useCallback(() => setActivityOpen(true), []);
 
-  const cancelCurrentTask = useCallback(() => {
-    const controller = taskAbortRef.current;
+  const cancelCurrentTask = () => {
+    const sessionId = activeSessionIdRef.current;
+    const task = sessionId ? sessionTasks.tasks.current.get(sessionId) : null;
+    const controller = task?.controller;
     if (controller && !controller.signal.aborted) {
-      setStopping(true);
+      sessionTasks.update(sessionId as string, { stopping: true });
       controller.abort();
     }
-    const queued = pendingQueueRef.current.splice(0);
-    const queuedIds = new Set(queued.map((request) => request.optimisticId));
-    setQueuedMessageIds((current) =>
-      current.filter((id) => !queuedIds.has(id)),
+    const queued = pendingQueueRef.current.filter(
+      (request) =>
+        request.sessionId === sessionId &&
+        !request.steeringTaskId &&
+        !steeringInFlightRef.current.has(request.optimisticId),
     );
+    const queuedIds = new Set(queued.map((request) => request.optimisticId));
+    pendingQueueRef.current = pendingQueueRef.current.filter(
+      (request) => !queuedIds.has(request.optimisticId),
+    );
+    if (sessionId) persistPendingSteering(sessionId);
+    for (const request of queued)
+      preserveSteeringDraft(request, "尚未提交的补充指令已保留为草稿。");
     setActive((current) =>
       current
         ? {
@@ -941,7 +1153,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           }
         : current,
     );
-  }, []);
+  };
 
   async function runSubmission(
     request: PendingChatRequest,
@@ -950,21 +1162,15 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     const attachmentIds = request.attachments.map(
       (attachment) => attachment.id,
     );
-    setQueuedMessageIds((current) =>
-      current.filter((id) => id !== request.optimisticId),
-    );
-    setBusy(true);
-    setStopping(false);
-    setRunningSessionId(request.sessionId);
-    const controller = new AbortController();
-    const pollController = new AbortController();
-    taskAbortRef.current = controller;
-    taskPollAbortRef.current = pollController;
+    const task = sessionTasks.begin(request.sessionId, resumeTaskId);
+    if (!task) return;
+    const { controller, pollController } = task;
     let trackedTaskId = resumeTaskId;
     let retryScheduled = false;
-    setRunningTaskId(resumeTaskId);
-    setCanRetry(false);
+    if (activeSessionIdRef.current === request.sessionId) setCanRetry(false);
     if (resumeTaskId) {
+      restorePendingSteering(request.sessionId);
+      void flushSteering(request.sessionId, resumeTaskId);
       setActive((current) => {
         if (
           current?.id !== request.sessionId ||
@@ -1006,8 +1212,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                 pollSignal: pollController.signal,
                 onTaskStart: (taskId) => {
                   trackedTaskId = taskId;
-                  setRunningTaskId(taskId);
+                  sessionTasks.update(request.sessionId, { taskId });
                   persistChatTask(taskId, request);
+                  void flushSteering(request.sessionId, taskId);
                 },
               },
             )
@@ -1023,41 +1230,44 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                 pollSignal: pollController.signal,
                 onTaskStart: (taskId) => {
                   trackedTaskId = taskId;
-                  setRunningTaskId(taskId);
+                  sessionTasks.update(request.sessionId, { taskId });
                   persistChatTask(taskId, request);
+                  void flushSteering(request.sessionId, taskId);
                 },
               },
             );
       clearPersistedChatTask(request.sessionId, trackedTaskId);
       resumeRetryRef.current.delete(request.sessionId);
-      setError((current) => (current === RESUME_RETRY_NOTICE ? null : current));
-      setMotionMessageIds([result.assistant_message.id]);
+      if (activeSessionIdRef.current === request.sessionId) {
+        setError((current) =>
+          current === RESUME_RETRY_NOTICE ? null : current,
+        );
+        setMotionMessageIds([result.assistant_message.id]);
+      }
       setActive((current) => {
         if (current?.id !== request.sessionId) return current;
         // A resumed task may already be persisted and loaded with the session
         // (it finished while this view was unmounted); drop those copies so the
         // result is not rendered twice with duplicate React keys.
-        const resultIds = new Set([
-          result.user_message.id,
-          result.assistant_message.id,
-        ]);
-        const messages = current.messages.filter(
-          (message) =>
-            !message.id.startsWith("stream-") && !resultIds.has(message.id),
-        );
-        const optimisticIndex = messages.findIndex(
-          (item) => item.id === request.optimisticId,
-        );
-        if (optimisticIndex >= 0) {
-          messages.splice(
-            optimisticIndex,
-            1,
-            result.user_message,
-            result.assistant_message,
-          );
-        } else {
-          messages.push(result.user_message, result.assistant_message);
-        }
+        let replacedUser = false;
+        const messages = current.messages
+          .filter(
+            (message) =>
+              !message.id.startsWith("stream-") &&
+              message.id !== result.assistant_message.id,
+          )
+          .flatMap((message) => {
+            if (
+              message.id !== request.optimisticId &&
+              message.id !== result.user_message.id
+            )
+              return [message];
+            if (replacedUser) return [];
+            replacedUser = true;
+            return [result.user_message];
+          });
+        if (!replacedUser) messages.push(result.user_message);
+        messages.push(result.assistant_message);
         return {
           ...current,
           ...result.session,
@@ -1123,7 +1333,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       }
       resumeRetryRef.current.delete(request.sessionId);
       clearPersistedChatTask(request.sessionId, trackedTaskId);
-      setMotionMessageIds([]);
+      if (activeSessionIdRef.current === request.sessionId)
+        setMotionMessageIds([]);
       setActive((current) =>
         current?.id === request.sessionId
           ? {
@@ -1153,33 +1364,35 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         restoreFailedRequest(failed);
       } else if (deletedSessionIdsRef.current.has(request.sessionId)) {
         // The original conversation was deleted: nothing to restore into.
-        setError(failed.message);
+        // A deleted background session cannot replace the active session's error.
       } else {
         // The user switched conversations meanwhile: keep the draft and
         // attachments with their own session instead of the visible composer,
         // so "重试本次" can never send them to the wrong conversation.
         const stash = failedRequestsRef.current.get(request.sessionId) ?? [];
         failedRequestsRef.current.set(request.sessionId, [...stash, failed]);
-        setError(
-          `另一段对话的消息发送失败（${failed.message}），草稿已保留在原对话中，切回后可重试。`,
-        );
       }
     } finally {
-      if (taskAbortRef.current === controller) taskAbortRef.current = null;
-      if (taskPollAbortRef.current === pollController)
-        taskPollAbortRef.current = null;
-      setStopping(false);
-      const queue = pendingQueueRef.current;
-      const nextIndex = queue.findIndex(
-        (item) => !readPersistedChatTask(item.sessionId),
-      );
-      const next = nextIndex >= 0 ? queue.splice(nextIndex, 1)[0] : undefined;
-      if (next) {
-        void runSubmission(next);
-      } else {
-        setBusy(false);
-        setRunningSessionId(null);
-        setRunningTaskId(null);
+      sessionTasks.finish(request.sessionId, task);
+      if (!retryScheduled && !readPersistedChatTask(request.sessionId)) {
+        const unsent = pendingQueueRef.current.filter(
+          (item) =>
+            item.sessionId === request.sessionId &&
+            !item.steeringTaskId &&
+            !steeringInFlightRef.current.has(item.optimisticId),
+        );
+        for (const item of unsent)
+          preserveSteeringDraft(
+            item,
+            "原任务已结束，未确认的补充指令已保留为草稿。",
+          );
+        const ids = new Set(unsent.map((item) => item.optimisticId));
+        pendingQueueRef.current = pendingQueueRef.current.filter(
+          (item) => !ids.has(item.optimisticId),
+        );
+        persistPendingSteering(request.sessionId);
+      }
+      if (activeSessionIdRef.current === request.sessionId) {
         window.setTimeout(() => {
           // Background reconnect attempts must not pull focus back every few
           // seconds; only recover focus that was lost with the stop button.
@@ -1190,6 +1403,20 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       }
     }
   }
+
+  useEffect(() => {
+    if (loading || !active) return;
+    restorePendingSteering(active.id);
+    const taskId = sessionTasks.tasks.current.get(active.id)?.taskId;
+    if (taskId) void flushSteering(active.id, taskId);
+    else {
+      const request = pendingQueueRef.current.find(
+        (item) => item.sessionId === active.id,
+      );
+      if (request?.steeringTaskId)
+        void flushSteering(active.id, request.steeringTaskId);
+    }
+  }, [active?.id, loading, busy]);
 
   useEffect(() => {
     if (loading || !active || busy) return;
@@ -1208,8 +1435,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     if (retryMatchesTask && retry.cancel) {
       // runSubmission installs its AbortController synchronously; abort it so
       // the resumed poll re-sends the stop request once the backend answers.
-      setStopping(true);
-      taskAbortRef.current?.abort();
+      sessionTasks.update(active.id, { stopping: true });
+      sessionTasks.tasks.current.get(active.id)?.controller.abort();
     }
     // Re-check when busy clears: a session opened while another task was
     // running must still reconnect, otherwise submit() stays blocked.
@@ -1255,9 +1482,19 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
     setError(null);
     setCanRetry(false);
 
-    if (busy) {
+    const running = sessionTasks.tasks.current.get(request.sessionId);
+    if (running) {
+      if (running.stopping) {
+        preserveSteeringDraft(
+          request,
+          "当前任务正在停止，补充指令已保留为草稿。",
+        );
+        return;
+      }
+      request.steeringTaskId = running.taskId ?? undefined;
       pendingQueueRef.current.push(request);
-      setQueuedMessageIds((current) => [...current, optimisticId]);
+      persistPendingSteering(request.sessionId);
+      if (running.taskId) void flushSteering(request.sessionId, running.taskId);
       window.setTimeout(() => focusIfPresent(textareaRef.current), 0);
       return;
     }
@@ -1303,18 +1540,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       deletedSessionIdsRef.current.add(sessionId);
       failedRequestsRef.current.delete(sessionId);
       resumeRetryRef.current.delete(sessionId);
-      const removed = pendingQueueRef.current.filter(
-        (request) => request.sessionId === sessionId,
-      );
       pendingQueueRef.current = pendingQueueRef.current.filter(
         (request) => request.sessionId !== sessionId,
       );
-      const removedIds = new Set(
-        removed.map((request) => request.optimisticId),
-      );
-      setQueuedMessageIds((current) =>
-        current.filter((id) => !removedIds.has(id)),
-      );
+      window.localStorage.removeItem(`${PENDING_STEERING_PREFIX}${sessionId}`);
+      sessionTasks.tasks.current.get(sessionId)?.pollController.abort();
       const remaining = await refreshSessions();
       if (sessionId !== active?.id) return;
       if (remaining[0]) await openSession(remaining[0].id);
@@ -1328,7 +1558,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const selectedPreset =
     presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const hasMessages = Boolean(active?.messages.length);
-  const visibleBusy = busy && active?.id === runningSessionId;
+  const visibleBusy = busy;
   const hasVisibleStream = Boolean(
     active?.messages.some(
       (message) =>
@@ -1600,7 +1830,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                       onRevealAttachment={revealAttachment}
                       showCodeLineNumbers={preferences.ai_code_line_numbers}
                       animateEntry={motionMessageIds.includes(message.id)}
-                      queued={queuedMessageIds.includes(message.id)}
+                      queued={false}
                       running={streaming && visibleBusy}
                       startedAt={streaming ? runningStartedAt : undefined}
                       liveStatus={streaming ? currentLiveStatus : undefined}

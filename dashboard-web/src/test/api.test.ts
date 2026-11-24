@@ -43,6 +43,7 @@ import {
   startArchive,
   startCloudBackup,
   startTranscriptBatch,
+  steerAiChatTask,
   updateSettings,
   updateTranscriptPlayback,
 } from "@/lib/api";
@@ -56,6 +57,120 @@ afterEach(() => {
 });
 
 describe("pywebview bridge client", () => {
+  it("补充指令带会话、任务和幂等标识提交", async () => {
+    const data = {
+      task_id: "task-a",
+      user_message: { id: "7", role: "user", content: "限制到第 4 页" },
+    };
+    const bridge = vi.fn().mockResolvedValue({ ok: true, data });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await expect(
+      steerAiChatTask("session-a", "task-a", "限制到第 4 页", "request-1", [7]),
+    ).resolves.toEqual(data);
+    expect(bridge).toHaveBeenCalledWith("ai_chat_steer", {
+      session_id: "session-a",
+      task_id: "task-a",
+      content: "限制到第 4 页",
+      request_id: "request-1",
+      attachment_ids: [7],
+    });
+  });
+
+  it("补充提交的瞬时失败有界重试并始终沿用原标识", async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: "bridge_failed", message: "桥接失败" },
+      });
+      vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+      const result = steerAiChatTask(
+        "session-a",
+        "task-a",
+        "补充",
+        "request-fixed",
+      ).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await result).toMatchObject({ category: "steering_unconfirmed" });
+      expect(bridge).toHaveBeenCalledTimes(3);
+      for (const call of bridge.mock.calls)
+        expect(call).toEqual([
+          "ai_chat_steer",
+          {
+            session_id: "session-a",
+            task_id: "task-a",
+            content: "补充",
+            request_id: "request-fixed",
+          },
+        ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("补充提交的终态拒绝不重试", async () => {
+    const bridge = vi.fn().mockResolvedValue({
+      ok: false,
+      error: { code: "task_finished", message: "任务已结束" },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await expect(
+      steerAiChatTask("session-a", "task-a", "补充", "request-new"),
+    ).rejects.toThrow("任务已结束");
+    expect(bridge).toHaveBeenCalledOnce();
+  });
+
+  it("补充已应用事件不能覆盖绑定的会话和任务", async () => {
+    const dispatchEvent = vi.fn();
+    const customEvent = vi.fn(function (
+      this: { detail: unknown },
+      _name: string,
+      options: { detail: unknown },
+    ) {
+      this.detail = options.detail;
+    });
+    vi.stubGlobal("dispatchEvent", dispatchEvent);
+    vi.stubGlobal("CustomEvent", customEvent);
+    const chatResult = {
+      session: { id: "session-a" },
+      trace: { id: "trace-a" },
+      user_message: { id: "1", role: "user", content: "读取课件" },
+      assistant_message: { id: "2", role: "assistant", content: "完成" },
+    };
+    const bridge = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        task: {
+          id: "task-a",
+          status: "completed",
+          result: { chat_result: chatResult },
+        },
+        next_sequence: 2,
+        events: [
+          {
+            kind: "steering_applied",
+            payload: {
+              type: "content_delta",
+              session_id: "wrong",
+              task_id: "wrong",
+              request_ids: ["request-1"],
+            },
+          },
+        ],
+      },
+    });
+    vi.stubGlobal("pywebview", { api: { invoke: bridge } });
+    await resumeAiChatMessageTask("session-a", "task-a");
+    expect(customEvent).toHaveBeenCalledWith("sjtu-ai-chat-stream", {
+      detail: {
+        type: "steering_applied",
+        session_id: "session-a",
+        task_id: "task-a",
+        request_ids: ["request-1"],
+      },
+    });
+  });
+
   it("allocates safe playback sequence values across adapter remounts", () => {
     const firstMount = nextTranscriptPlaybackSequence(0, 1_797_000_000_000);
     const secondMount = nextTranscriptPlaybackSequence(0, 1_797_000_000_100);

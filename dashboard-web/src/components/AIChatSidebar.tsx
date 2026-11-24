@@ -140,7 +140,6 @@ export function AIChatSidebar({
   activeSessionId,
   onOpenSession,
   onDeleteSession,
-  busy,
   preferences,
   settingsSaving,
   settingsStatus,
@@ -225,7 +224,7 @@ export function AIChatSidebar({
           <ArrowLeft aria-hidden="true" />
           返回工作台
         </Button>
-        <Button size="sm" onClick={onNew} disabled={busy || !selectedPresetId}>
+        <Button size="sm" onClick={onNew} disabled={!selectedPresetId}>
           <Plus aria-hidden="true" />
           新对话
         </Button>

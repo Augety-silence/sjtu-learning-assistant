@@ -11,6 +11,7 @@ import {
   pickAiAttachment,
   resumeAiChatMessageTask,
   sendAiChatMessage,
+  steerAiChatTask,
   updateSettings,
 } from "@/lib/api";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
@@ -144,6 +145,10 @@ vi.mock("@/lib/api", () => ({
   revealAiAttachment: vi.fn(async () => ({ status: "revealed" })),
   deleteAiChatSession: vi.fn(async () => ({ deleted: true })),
   resumeAiChatMessageTask: vi.fn(),
+  steerAiChatTask: vi.fn(async (_session, taskId, content) => ({
+    task_id: taskId,
+    user_message: { id: "steering-ack", role: "user", content },
+  })),
   getAiWorkspaceStatus: vi.fn(async () => ({
     configured: false,
     available: false,
@@ -536,7 +541,7 @@ describe("AIChatView", () => {
     ).toContain("task-cancel-unconfirmed");
   });
 
-  it("does not start a queued task while cancellation remains unconfirmed", async () => {
+  it("keeps a steering request in the same task while cancellation remains unconfirmed", async () => {
     let rejectFirst: ((reason: Error) => void) | undefined;
     vi.mocked(sendAiChatMessage).mockImplementationOnce(
       (_session, _content, _model, _depth, _preset, _attachments, options) => {
@@ -561,7 +566,7 @@ describe("AIChatView", () => {
 
     fireEvent.change(input, { target: { value: "第二项" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(await screen.findByText("将在当前检索完成后执行")).toBeTruthy();
+    await waitFor(() => expect(steerAiChatTask).toHaveBeenCalledTimes(1));
 
     rejectFirst?.(
       Object.assign(new Error("停止请求超时"), {
@@ -589,6 +594,15 @@ describe("AIChatView", () => {
     fireEvent.change(input, { target: { value: "查课程截止日期" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await screen.findByRole("button", { name: "停止本次任务" });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "start",
+          session_id: "session-1",
+          task_id: "task-live",
+        },
+      }),
+    );
     window.dispatchEvent(
       new CustomEvent("sjtu-ai-chat-stream", {
         detail: {
@@ -701,6 +715,7 @@ describe("AIChatView", () => {
           detail: { session_id: "session-1", task_id: "task-notes", ...detail },
         }),
       );
+    emit({ type: "start" });
     emit({ type: "progress_delta", delta: "正在查课程。" });
     await waitFor(() =>
       expect(container.querySelector(".ai-execution-note")?.textContent).toBe(
@@ -779,6 +794,15 @@ describe("AIChatView", () => {
     fireEvent.change(input, { target: { value: "先检索再失败" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await screen.findByRole("button", { name: "停止本次任务" });
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "start",
+          session_id: "session-1",
+          task_id: "task-failed",
+        },
+      }),
+    );
     window.dispatchEvent(
       new CustomEvent("sjtu-ai-chat-stream", {
         detail: {
@@ -1260,59 +1284,44 @@ describe("AIChatView", () => {
     });
   });
 
-  it("queues a follow-up while Agent is running and sends it next", async () => {
+  it("立即将补充输入提交给执行中的任务，完成后不开第二轮", async () => {
     let resolveFirst:
       | ((value: Awaited<ReturnType<typeof sendAiChatMessage>>) => void)
       | undefined;
-    vi.mocked(sendAiChatMessage)
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveFirst = resolve;
-          }),
-      )
-      .mockResolvedValueOnce({
-        session: {
-          id: "session-1",
-          title: "补充要求",
-          model: "auto",
-          thinking_depth: "standard",
-          preset_id: "general",
-        },
-        trace: { ...trace, id: "trace-2" },
-        user_message: { id: "3", role: "user", content: "只看安泰的课程" },
-        assistant_message: {
-          id: "4",
-          role: "assistant",
-          content: "已按补充要求处理",
-        },
-      });
-
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-first");
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      },
+    );
     render(<AIChatView onBack={vi.fn()} />);
     const input = await screen.findByRole("textbox", { name: "输入问题" });
     fireEvent.change(input, { target: { value: "检索本学期课程" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await screen.findByText("请求已发送，正在等待 Agent 返回");
-
     fireEvent.change(input, { target: { value: "只看安泰的课程" } });
     expect(
-      screen.getByRole("button", { name: "发送消息" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "补充指令" }).hasAttribute("disabled"),
     ).toBe(false);
     expect(
       screen
         .getByRole("button", { name: "添加本地附件" })
         .hasAttribute("disabled"),
     ).toBe(false);
-    expect(
-      screen
-        .getByRole("button", { name: "Agent：学习数据 Agent" })
-        .hasAttribute("disabled"),
-    ).toBe(false);
     fireEvent.keyDown(input, { key: "Enter" });
-
-    expect(await screen.findByText("将在当前检索完成后执行")).toBeTruthy();
+    await waitFor(() =>
+      expect(steerAiChatTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-first",
+        "只看安泰的课程",
+        expect.any(String),
+        [],
+      ),
+    );
+    expect(screen.queryByText("将在当前检索完成后执行")).toBeNull();
     expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
-
     resolveFirst?.({
       session: {
         id: "session-1",
@@ -1323,20 +1332,419 @@ describe("AIChatView", () => {
       },
       trace,
       user_message: { id: "1", role: "user", content: "检索本学期课程" },
-      assistant_message: { id: "2", role: "assistant", content: "第一轮完成" },
+      assistant_message: {
+        id: "2",
+        role: "assistant",
+        content: "已按补充要求处理",
+      },
     });
+    expect(await screen.findByText("已按补充要求处理")).toBeTruthy();
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("只看安泰的课程")).toBeTruthy();
+  });
 
+  it("任务标识返回后立即提交此前输入的补充指令", async () => {
+    let onStart: ((taskId: string) => void) | undefined;
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        onStart = options?.onTaskStart;
+        return new Promise(() => undefined);
+      },
+    );
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "读取课件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "只解释第 4 页" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(steerAiChatTask).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+    ).toContain("只解释第 4 页");
+    onStart?.("task-delayed");
+    await waitFor(() =>
+      expect(steerAiChatTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-delayed",
+        "只解释第 4 页",
+        expect.any(String),
+        [],
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+      ).toBeNull(),
+    );
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("执行中的会话可新建并启动另一个任务，后台完成不会清除当前停止状态", async () => {
+    const first = {
+      id: "session-1",
+      title: "会话 A",
+      model: "auto",
+      thinking_depth: "standard" as const,
+      preset_id: "general",
+      messages: [],
+      traces: [],
+    };
+    const second = { ...first, id: "session-2", title: "会话 B" };
+    vi.mocked(createAiChatSession)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    let resolveFirst:
+      | ((value: Awaited<ReturnType<typeof sendAiChatMessage>>) => void)
+      | undefined;
+    let signalA: AbortSignal | undefined;
+    let signalB: AbortSignal | undefined;
+    vi.mocked(sendAiChatMessage)
+      .mockImplementationOnce(
+        (
+          _session,
+          _content,
+          _model,
+          _depth,
+          _preset,
+          _attachments,
+          options,
+        ) => {
+          options?.onTaskStart?.("task-a");
+          signalA = options?.signal;
+          return new Promise((resolve) => {
+            resolveFirst = resolve;
+          });
+        },
+      )
+      .mockImplementationOnce(
+        (
+          _session,
+          _content,
+          _model,
+          _depth,
+          _preset,
+          _attachments,
+          options,
+        ) => {
+          options?.onTaskStart?.("task-b");
+          signalB = options?.signal;
+          return new Promise(() => undefined);
+        },
+      );
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "任务 A" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    const create = screen.getByRole("button", { name: "新对话" });
+    expect(create.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(create);
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-conversation-heading strong")?.textContent,
+      ).toBe("会话 B"),
+    );
+    const inputB = screen.getByRole("textbox", { name: "输入问题" });
+    fireEvent.change(inputB, { target: { value: "任务 B" } });
+    fireEvent.keyDown(inputB, { key: "Enter" });
     await waitFor(() => expect(sendAiChatMessage).toHaveBeenCalledTimes(2));
     expect(sendAiChatMessage).toHaveBeenLastCalledWith(
-      "session-1",
-      "只看安泰的课程",
+      "session-2",
+      "任务 B",
       "auto",
       "standard",
       "general",
       undefined,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(await screen.findByText("已按补充要求处理")).toBeTruthy();
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "content_delta",
+          session_id: "session-1",
+          task_id: "task-a",
+          delta: "A 的旧消息",
+        },
+      }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("sjtu-ai-chat-stream", {
+        detail: {
+          type: "content_delta",
+          session_id: "session-2",
+          task_id: "old-b",
+          delta: "旧 B 消息",
+        },
+      }),
+    );
+    expect(container.textContent).not.toContain("A 的旧消息");
+    expect(container.textContent).not.toContain("旧 B 消息");
+    fireEvent.click(screen.getByRole("button", { name: "停止本次任务" }));
+    expect(signalB?.aborted).toBe(true);
+    expect(signalA?.aborted).toBe(false);
+    resolveFirst?.({
+      session: first,
+      trace,
+      user_message: { id: "a-user", role: "user", content: "任务 A" },
+      assistant_message: {
+        id: "a-answer",
+        role: "assistant",
+        content: "A 完成",
+      },
+    });
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("ai-chat-running-task:session-1"),
+      ).toBeNull(),
+    );
+    expect(
+      container.querySelector(".ai-conversation-heading strong")?.textContent,
+    ).toBe("会话 B");
+    expect(
+      screen
+        .getByRole("button", { name: "正在停止本次任务" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(container.textContent).not.toContain("A 完成");
+  });
+
+  it("终态拒绝的补充指令恢复草稿，不自动启动第二轮", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-ended");
+        return new Promise(() => undefined);
+      },
+    );
+    vi.mocked(steerAiChatTask).mockRejectedValueOnce(
+      new Error("原任务已经结束，请重新确认补充内容"),
+    );
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "读取课件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "补充条件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(
+      await screen.findByText("原任务已经结束，请重新确认补充内容"),
+    ).toBeTruthy();
+    expect((input as HTMLTextAreaElement).value).toBe("补充条件");
+    expect(
+      container.querySelector(".ai-chat-messages")?.textContent,
+    ).not.toContain("补充条件");
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+    expect(
+      window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+    ).toBeNull();
+  });
+
+  it("补充指令 ACK 不明时重载仍使用同一请求标识", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-uncertain");
+        return new Promise(() => undefined);
+      },
+    );
+    vi.mocked(steerAiChatTask).mockRejectedValueOnce(
+      Object.assign(new Error("桥接暂不可用"), {
+        category: "steering_unconfirmed",
+      }),
+    );
+    const view = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "慢任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "即时补充" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText(
+      "补充指令暂未确认，已保留；重新连接后将按原标识重试。",
+    );
+    const requestId = vi.mocked(steerAiChatTask).mock.calls[0][3];
+    expect(
+      window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+    ).toContain(requestId);
+    fireEvent.click(screen.getByRole("button", { name: "停止本次任务" }));
+    expect(
+      window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+    ).toContain(requestId);
+    view.unmount();
+    vi.mocked(resumeAiChatMessageTask).mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    render(<AIChatView onBack={vi.fn()} />);
+    await waitFor(() => expect(steerAiChatTask).toHaveBeenCalledTimes(2));
+    expect(steerAiChatTask).toHaveBeenLastCalledWith(
+      "session-1",
+      "task-uncertain",
+      "即时补充",
+      requestId,
+      [],
+    );
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("已落库的补充 ACK 重试保持消息顺序", async () => {
+    const request = {
+      sessionId: "session-1",
+      text: "即时补充",
+      optimisticId: "request-accepted",
+      attachments: [],
+      model: "auto",
+      depth: "standard",
+      presetId: "general",
+      steeringTaskId: "task-completed",
+    };
+    window.localStorage.setItem(
+      "ai-chat-pending-steering:session-1",
+      JSON.stringify([request]),
+    );
+    vi.mocked(createAiChatSession).mockResolvedValueOnce({
+      id: "session-1",
+      title: "已完成",
+      model: "auto",
+      thinking_depth: "standard",
+      preset_id: "general",
+      messages: [
+        { id: "original", role: "user", content: "原始要求" },
+        { id: "steering-ack", role: "user", content: "即时补充" },
+        { id: "completed", role: "assistant", content: "完成答案" },
+      ],
+      traces: [],
+    });
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    await waitFor(() =>
+      expect(steerAiChatTask).toHaveBeenCalledWith(
+        "session-1",
+        "task-completed",
+        "即时补充",
+        "request-accepted",
+        [],
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        window.localStorage.getItem("ai-chat-pending-steering:session-1"),
+      ).toBeNull(),
+    );
+    expect(
+      Array.from(
+        container.querySelectorAll(".ai-chat-messages .ai-message-body"),
+      ).map((node) => node.textContent),
+    ).toEqual(["原始要求", "即时补充", "学习数据 Agent完成答案"]);
+    expect(sendAiChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("切换执行中的会话保留各自的草稿", async () => {
+    const first = {
+      id: "session-a",
+      title: "会话 A",
+      model: "auto",
+      thinking_depth: "standard" as const,
+      preset_id: "general",
+      messages: [],
+      traces: [],
+    };
+    const second = { ...first, id: "session-b", title: "会话 B" };
+    vi.mocked(getAiChatSessions).mockResolvedValueOnce({
+      items: [first, second],
+    });
+    vi.mocked(getAiChatSession)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second)
+      .mockResolvedValueOnce(first);
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-a-draft");
+        return new Promise(() => undefined);
+      },
+    );
+    render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "任务 A" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "A 的待发草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "会话 B" }));
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("textbox", {
+            name: "输入问题",
+          }) as HTMLTextAreaElement
+        ).value,
+      ).toBe(""),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "输入问题" }), {
+      target: { value: "B 的待发草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "会话 A" }));
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("textbox", {
+            name: "输入问题",
+          }) as HTMLTextAreaElement
+        ).value,
+      ).toBe("A 的待发草稿"),
+    );
+    expect(screen.getByRole("button", { name: "停止本次任务" })).toBeTruthy();
+    expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("补充指令已应用时清除旧流正文并保留工具结果", async () => {
+    vi.mocked(sendAiChatMessage).mockImplementationOnce(
+      (_session, _content, _model, _depth, _preset, _attachments, options) => {
+        options?.onTaskStart?.("task-steer-stream");
+        return new Promise(() => undefined);
+      },
+    );
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    const input = await screen.findByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "读取课件" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: "停止本次任务" });
+    const emit = (detail: Record<string, unknown>) =>
+      window.dispatchEvent(
+        new CustomEvent("sjtu-ai-chat-stream", {
+          detail: {
+            ...detail,
+            session_id: "session-1",
+            task_id: "task-steer-stream",
+          },
+        }),
+      );
+    emit({
+      type: "tool",
+      run: {
+        tool_name: "list_courses",
+        phase: "model",
+        status: "ok",
+        arguments_summary: {},
+        result_summary: { count: 2 },
+      },
+    });
+    emit({ type: "content_delta", delta: "旧答案" });
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown")
+          ?.textContent,
+      ).toBe("旧答案"),
+    );
+    emit({ type: "steering_applied", request_ids: ["supplement-1"] });
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown"),
+      ).toBeNull(),
+    );
+    emit({ type: "content_delta", delta: "补充后的答案" });
+    await waitFor(() =>
+      expect(
+        container.querySelector(".ai-message-assistant .ai-markdown")
+          ?.textContent,
+      ).toBe("补充后的答案"),
+    );
+    expect(
+      container.querySelector(".ai-message-assistant .ai-turn-trace")
+        ?.textContent,
+    ).toContain("读取课程列表");
   });
 
   it("restores the failed request and offers a real retry", async () => {

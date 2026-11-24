@@ -62,6 +62,7 @@ from sjtu_learning_assistant.ai_classifier import (
     OpenAIClassificationClient,
 )
 from sjtu_learning_assistant.ai_stream_buffer import AIStreamEventBuffer
+from sjtu_learning_assistant.chat_steering import ChatSteeringControl, active_chat_task, create_chat_task
 from sjtu_learning_assistant.ai_keychain import (
     AIKeychainError,
     ai_api_key_saved,
@@ -111,6 +112,7 @@ from sjtu_learning_assistant.ai_tasks import (
     AITaskLedger,
     BudgetedAIClient,
     normalize_page_context,
+    _retry_write as retry_ai_write,
 )
 from sjtu_learning_assistant.video_service import (
     SJTUVideoError,
@@ -141,6 +143,8 @@ from sjtu_learning_assistant.models import (
     AIChatMessageAttachment,
     AIChatSession,
     AIManagedFile,
+    AITask,
+    AITaskEvent,
     Announcement,
     Assignment,
     Course,
@@ -422,6 +426,7 @@ class DashboardService:
         self.ai_tasks = AITaskLedger(engine, now_provider=self.now)
         self._ai_task_threads: dict[str, threading.Thread] = {}
         self._ai_task_lock = threading.Lock()
+        self._chat_steering_controls: dict[str, ChatSteeringControl] = {}
         self.local_projects_path = Path(
             local_projects_path or APP_SUPPORT_DIR / "local-projects.json"
         )
@@ -3034,11 +3039,17 @@ class DashboardService:
         attachment_ids: object | None = None,
         *,
         task_id: str | None = None,
+        persisted_user_id: int | None = None,
+        steering_control: ChatSteeringControl | None = None,
         page_context: Mapping[str, Any] | None = None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
+        if task_id is None:
+            with Session(self.engine) as session:
+                if active_chat_task(session, session_id):
+                    raise DashboardError('这段对话已有任务在运行，请发送补充指令或新开对话。')
         # 本轮开始时刻：用户消息以它入库，助手消息以完成时刻入库，两者之差即本轮耗时，
         # 无需新增数据库列（避免回退到旧版 App 时遇到未知迁移版本）。
         turn_started_at = self.now()
@@ -3116,9 +3127,13 @@ class DashboardService:
             if chat is None:
                 raise NotFoundError("对话不存在或已被删除。")
             selected_preset_id = preset_id if preset_id is not None else chat.preset_id
+            original = session.get(AIChatMessage, persisted_user_id) if persisted_user_id is not None else None
+            if persisted_user_id is not None and (original is None or original.session_id != session_id or original.role != 'user' or original.content != text):
+                raise DashboardError('原始任务输入不一致，未继续执行。')
             history = session.scalars(
                 select(AIChatMessage)
                 .where(AIChatMessage.session_id == session_id)
+                .where(AIChatMessage.sequence < original.sequence if original is not None else True)
                 .order_by(AIChatMessage.sequence.desc())
                 .limit(HISTORY_SCAN_LIMIT)
             ).all()
@@ -3253,9 +3268,7 @@ class DashboardService:
             )
             assert client is not None
             options = CHAT_DEPTH_OPTIONS[selected_depth]
-            agent_result = AgentLoop(
-                client,
-                ReadOnlyToolRegistry(
+            registry = ReadOnlyToolRegistry(
                     self.engine,
                     now_provider=self.now,
                     ai_file_service=self.ai_files,
@@ -3263,15 +3276,17 @@ class DashboardService:
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
                     compiled_knowledge=self._compiled_knowledge_service(),
-                ),
-                preset,
-            ).run(
+                )
+            if steering_control is not None:
+                steering_control.attach_registry(registry)
+            agent_result = AgentLoop(client, registry, preset).run(
                 prompt,
                 user_text=text,
                 max_tokens=int(options["max_tokens"]),
                 temperature=float(options["temperature"]),
                 attachment_ids=selected_attachment_ids,
                 event_callback=event_callback,
+                **({'steering_control': steering_control} if steering_control is not None else {}),
             )
         except (AIKeychainError, AIClassificationError) as exc:
             self._persist_failed_agent_trace(session_id, preset.id)
@@ -3318,18 +3333,19 @@ class DashboardService:
                         steps=agent_result.steps,
                         tool_runs=safe_tool_runs,
                     )
-                    user_row = AIChatMessage(
-                        session_id=session_id,
-                        sequence=next_sequence,
-                        role="user",
-                        content=text,
-                        model=selected_model,
-                        trace_id=trace_id,
-                        created_at=min(turn_started_at, now),
-                    )
+                    if persisted_user_id is not None:
+                        user_row = session.get(AIChatMessage, persisted_user_id)
+                        if user_row is None or user_row.session_id != session_id:
+                            raise NotFoundError('原始任务输入不存在或已被删除。')
+                        user_row.trace_id = trace_id
+                        user_row.model = selected_model
+                    else:
+                        user_row = AIChatMessage(
+                            session_id=session_id, sequence=next_sequence, role='user', content=text,
+                            model=selected_model, trace_id=trace_id, created_at=min(turn_started_at, now))
                     assistant_row = AIChatMessage(
                         session_id=session_id,
-                        sequence=next_sequence + 1,
+                        sequence=next_sequence if persisted_user_id is not None else next_sequence + 1,
                         role="assistant",
                         content=agent_result.content,
                         reasoning_content=agent_result.reasoning_content,
@@ -3345,7 +3361,7 @@ class DashboardService:
                             managed_file_id=attachment_id,
                             position=position,
                         )
-                        for position, attachment_id in enumerate(selected_attachment_ids)
+                        for position, attachment_id in enumerate(selected_attachment_ids) if persisted_user_id is None
                     )
                     chat.model = str(model)
                     chat.thinking_depth = selected_depth
@@ -3401,14 +3417,27 @@ class DashboardService:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
         context = normalize_page_context(page_context)
+        if attachment_ids is None:
+            selected_attachments = []
+        elif type(attachment_ids) is list and len(attachment_ids) <= 20 and all(type(identity) is int and 0 < identity <= 9_007_199_254_740_991 for identity in attachment_ids):
+            selected_attachments = list(dict.fromkeys(attachment_ids))
+        else:
+            raise DashboardError('附件标识列表无效。')
+        try:
+            for identity in selected_attachments:
+                self.ai_files.get(identity)
+        except AIFileError as exc:
+            raise DashboardError(str(exc), category='attachment', retryable=False) from None
         settings = self._effective_settings()
         selected_model, _ = self._chat_model(model, depth, settings.ai_model)
         # 页面上下文（如“来自：概览”）只决定证据范围；预算始终按学习对话计，
         # 否则会套用概览页“单次调用”的预算，多步工具调用在第 2 次就失败。
-        snapshot = self.ai_tasks.create(
-            context, model=selected_model, capability_page_id="ai-chat"
-        )
+        try:
+            snapshot, original_id = create_chat_task(self.ai_tasks, context, session_id, content.strip(), selected_model, selected_attachments)
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
         task_id = str(snapshot["task"]["id"])
+        control = ChatSteeringControl(self.ai_tasks, task_id, session_id, original_id)
         thread = threading.Thread(
             target=self._run_ai_chat_task,
             kwargs={
@@ -3420,13 +3449,24 @@ class DashboardService:
                 "preset_id": preset_id,
                 "attachment_ids": attachment_ids,
                 "page_context": context,
+                "persisted_user_id": original_id,
+                "steering_control": control,
             },
             name=f"ai-chat-{task_id[:8]}",
             daemon=True,
         )
         with self._ai_task_lock:
             self._ai_task_threads[task_id] = thread
-        thread.start()
+            self._chat_steering_controls[task_id] = control
+        try:
+            thread.start()
+        except RuntimeError:
+            control.close()
+            with self._ai_task_lock:
+                self._ai_task_threads.pop(task_id, None)
+                self._chat_steering_controls.pop(task_id, None)
+            self.ai_tasks.fail(task_id, 'AI 任务启动失败，原始输入已保存。', category='internal', retryable=True)
+            raise DashboardError('AI 任务启动失败，原始输入已保存，请重试。') from None
         return snapshot
 
     def _run_ai_chat_task(
@@ -3440,6 +3480,8 @@ class DashboardService:
         preset_id: object | None,
         attachment_ids: object | None,
         page_context: Mapping[str, Any],
+        persisted_user_id: int | None = None,
+        steering_control: ChatSteeringControl | None = None,
     ) -> None:
         def check_active() -> None:
             if self.ai_tasks.is_cancel_requested(task_id):
@@ -3461,6 +3503,8 @@ class DashboardService:
                     task_id=task_id,
                     page_context=page_context,
                     event_callback=buffer.add,
+                    **({'persisted_user_id': persisted_user_id, 'steering_control': steering_control}
+                       if steering_control is not None else {}),
                 )
             self.ai_tasks.complete(task_id, {"chat_result": result})
         except AITaskCancelled:
@@ -3484,8 +3528,93 @@ class DashboardService:
                 task_id, "AI 任务执行失败，请稍后重试。", category="internal", retryable=True
             )
         finally:
+            if steering_control is not None:
+                steering_control.close()
             with self._ai_task_lock:
                 self._ai_task_threads.pop(task_id, None)
+                if hasattr(self, '_chat_steering_controls'):
+                    self._chat_steering_controls.pop(task_id, None)
+
+    def ai_chat_steer(self, session_id: str, task_id: str, content: object,
+                      request_id: object, attachment_ids: object | None = None) -> dict[str, Any]:
+        """即时补充同一任务；重复 RPC 返回同一消息，不重复模型调用或预约。"""
+        if type(session_id) is not str or not session_id or len(session_id) > 36 or type(task_id) is not str or not task_id or len(task_id) > 36:
+            raise DashboardError('对话或任务标识无效。')
+        if type(content) is not str or not content.strip() or len(content) > 4000:
+            raise DashboardError('补充消息不能为空或超过 4000 字。')
+        if type(request_id) is not str or not request_id.strip() or len(request_id) > 128 or not request_id.isprintable():
+            raise DashboardError('补充消息请求标识无效。')
+        text = content.strip()
+        if attachment_ids is None:
+            identities = []
+        elif type(attachment_ids) is list and len(attachment_ids) <= 20 and all(type(identity) is int and 0 < identity <= 9_007_199_254_740_991 for identity in attachment_ids):
+            identities = list(dict.fromkeys(attachment_ids))
+        else:
+            raise DashboardError('附件标识列表无效。')
+        try:
+            metadata = [self.ai_files.get(identity) for identity in identities]
+            summaries = self.ai_files.summary_context(identities)
+            if self.ai_files.vision_message_parts(identities):
+                raise DashboardError('执行中补充图片需要新开对话；本次补充尚未发送。', category='attachment', retryable=False)
+        except AIFileError as exc:
+            raise DashboardError(str(exc), category='attachment', retryable=False) from None
+        with self._ai_task_lock:
+            control = self._chat_steering_controls.get(task_id)
+
+        def existing(session):
+            bindings = session.scalars(select(AITaskEvent).where(AITaskEvent.task_id == task_id, AITaskEvent.kind == 'chat_binding')).all()
+            if len(bindings) != 1 or bindings[0].payload.get('session_id') != session_id:
+                raise DashboardError('该任务不属于当前对话。')
+            events = session.scalars(select(AITaskEvent).where(AITaskEvent.task_id == task_id, AITaskEvent.kind == 'steering_requested')).all()
+            matches = [event for event in events if event.payload.get('request_id') == request_id]
+            if matches:
+                payload = matches[0].payload
+                if payload.get('content') != text or payload.get('attachment_ids', []) != identities:
+                    raise DashboardError('重复请求标识的补充内容不一致，未重复发送。')
+                row = session.get(AIChatMessage, payload.get('message_id'))
+                if row is None or row.session_id != session_id:
+                    raise DashboardError('补充消息不存在或已被删除。')
+                return row, events
+            return None, events
+
+        with Session(self.engine) as session:
+            row, _ = existing(session)
+            if row is not None:
+                return {'task_id': task_id, 'user_message': self._chat_message_dto(row, [], metadata)}
+        if control is None or control.session_id != session_id:
+            raise DashboardError('当前任务已结束或尚未连接，补充未发送；请重试或新开对话。')
+        try:
+            with control.submission_scope():
+                def write():
+                    with Session(self.engine) as session, session.begin():
+                        session.execute(update(AIChatSession).where(AIChatSession.id == session_id)
+                                        .values(updated_at=AIChatSession.updated_at))
+                        row, events = existing(session)
+                        if row is not None:
+                            return self._chat_message_dto(row, [], metadata), None
+                        task = session.get(AITask, task_id)
+                        if task is None or task.status not in ('queued', 'running') or task.cancel_requested:
+                            raise DashboardError('当前任务已结束，补充未发送；请重新发送或新开对话。')
+                        if len(events) >= 12:
+                            raise DashboardError('本轮补充次数已达上限，未重置预算；请新开对话。')
+                        sequence = int(session.scalar(select(func.max(AIChatMessage.sequence)).where(AIChatMessage.session_id == session_id)) or 0) + 1
+                        row = AIChatMessage(session_id=session_id, sequence=sequence, role='user', content=text,
+                                            model=task.model, created_at=self.now())
+                        session.add(row)
+                        session.flush()
+                        session.add_all(AIChatMessageAttachment(message_id=row.id, managed_file_id=identity, position=index)
+                                        for index, identity in enumerate(identities))
+                        payload = dict(content=text, message_id=row.id, request_id=request_id, attachment_ids=identities,
+                                       attachment_context=summaries)
+                        self.ai_tasks._event(session, task_id, 'steering_requested', payload)
+                        session.get(AIChatSession, session_id).updated_at = self.now()
+                        return self._chat_message_dto(row, [], metadata), payload
+                message, payload = retry_ai_write(write)
+                if payload is not None:
+                    control.queue_persisted(payload)
+            return {'task_id': task_id, 'user_message': message}
+        except AITaskError as exc:
+            raise DashboardError(str(exc)) from None
 
     def ai_task_status(self, task_id: str, after_sequence: int = 0) -> dict[str, Any]:
         try:
@@ -3495,7 +3624,12 @@ class DashboardService:
 
     def ai_task_cancel(self, task_id: str) -> dict[str, Any]:
         try:
-            return self.ai_tasks.cancel(task_id)
+            result = self.ai_tasks.cancel(task_id)
+            with self._ai_task_lock:
+                control = self._chat_steering_controls.get(task_id)
+            if control is not None and result['task']['cancel_requested']:
+                control.cancel()
+            return result
         except AITaskError as exc:
             raise DashboardError(str(exc)) from None
 
@@ -3943,7 +4077,7 @@ class DashboardService:
             task_ids = tuple(self._ai_task_threads)
         for task_id in task_ids:
             try:
-                self.ai_tasks.cancel(task_id)
+                self.ai_task_cancel(task_id)
             except Exception:
                 pass
         for temporary in (self._material_temp, self._academic_temp):

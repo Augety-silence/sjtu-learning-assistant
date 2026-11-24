@@ -506,6 +506,7 @@ class DesktopBridge:
             "ai_chat_new": self._ai_chat_new,
             "ai_chat_send": self._ai_chat_send,
             "ai_chat_stream_start": self._ai_chat_stream_start,
+            "ai_chat_steer": self._ai_chat_steer,
             "ai_task_status": self._ai_task_status,
             "ai_task_cancel": self._ai_task_cancel,
             "ai_usage_summary": self._ai_usage_summary,
@@ -832,6 +833,21 @@ class DesktopBridge:
         if type(after_sequence) is not int or after_sequence < 0:
             raise DashboardError("AI 任务事件游标无效。")
         return self._service.ai_task_status(task_id, after_sequence)
+
+    def _ai_chat_steer(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _only_keys(payload, {'session_id', 'task_id', 'content', 'request_id', 'attachment_ids'})
+        attachment_ids = payload.get('attachment_ids')
+        if attachment_ids is not None:
+            if type(attachment_ids) is not list or len(attachment_ids) > 20:
+                raise DashboardError('附件标识列表无效。')
+            attachment_ids = [_positive_id(value, '附件标识') for value in attachment_ids]
+        return self._service.ai_chat_steer(
+            self._chat_session_id(payload),
+            _bounded_id(payload.get('task_id'), limit=36, label='AI 任务标识'),
+            payload.get('content'),
+            _bounded_id(payload.get('request_id'), limit=128, label='补充请求标识'),
+            attachment_ids,
+        )
 
     def _ai_task_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"task_id"})

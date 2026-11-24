@@ -416,6 +416,35 @@ export function createAiChatSession(
   });
 }
 
+export async function steerAiChatTask(
+  sessionId: string,
+  taskId: string,
+  content: string,
+  requestId: string,
+  attachmentIds?: number[],
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await invoke<import("@/lib/types").AIChatSteerResult>(
+        "ai_chat_steer",
+        {
+          session_id: sessionId,
+          task_id: taskId,
+          content,
+          request_id: requestId,
+          ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        },
+      );
+    } catch (error) {
+      if (!isTransientTaskPollError(error)) throw error;
+      if (attempt >= MAX_TRANSIENT_TASK_POLL_FAILURES) {
+        throw Object.assign(error, { category: "steering_unconfirmed" });
+      }
+      await waitForTaskPoll(250 * (attempt + 1));
+    }
+  }
+}
+
 export const AI_CHAT_STREAM_EVENT = "sjtu-ai-chat-stream";
 
 function activeAIPageContext() {
@@ -456,7 +485,9 @@ const TRANSIENT_TASK_POLL_CODES = new Set([
 ]);
 const MAX_TRANSIENT_TASK_POLL_FAILURES = 2;
 
-function isTransientTaskPollError(error: unknown) {
+function isTransientTaskPollError(
+  error: unknown,
+): error is BridgeInvocationError {
   return (
     error instanceof BridgeInvocationError &&
     TRANSIENT_TASK_POLL_CODES.has(error.code)
@@ -529,6 +560,14 @@ function emitAIStreamEvents(
   sessionId: string,
 ) {
   for (const event of snapshot.events) {
+    if (event.kind === "steering_applied") {
+      emitAIStream({
+        ...event.payload,
+        type: "steering_applied",
+        task_id: taskId,
+        session_id: sessionId,
+      });
+    }
     if (
       event.kind === "content_delta" ||
       event.kind === "reasoning_delta" ||
