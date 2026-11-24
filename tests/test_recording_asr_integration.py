@@ -305,3 +305,68 @@ def test_explicit_actions_recreate_only_safely_closed_worker(tmp_path):
             with pytest.raises(DashboardError): service._recording_asr_service(restart_closed=True)
             factory.assert_not_called()
             assert service._recording_asr_instance is original
+
+def test_catalog_snapshot_waits_for_state_writer(tmp_path):
+    import os
+    import threading
+    from sjtu_learning_assistant import compiled_knowledge as module
+    from sjtu_learning_assistant.recording_asr_service import _lock_fd, _unlock_fd
+    catalog, output, job_root, raw = write_catalog_fixture(tmp_path)
+    state_lock = catalog.recording_asr_root / "state.lock"
+    descriptor = os.open(state_lock, os.O_CREAT | os.O_RDWR, 0o600)
+    attempted, job_read = threading.Event(), threading.Event()
+    values, errors = list(), list()
+    real_json = module._json
+    def locked_reader(fd, blocking=True):
+        attempted.set()
+        return _lock_fd(fd, blocking=blocking)
+    def read_json(path):
+        if path.name == "job.json":
+            job_read.set()
+        return real_json(path)
+    def scan():
+        try:
+            values.append(catalog.search(source_id="automatic-recording-asr"))
+        except BaseException as exc:
+            errors.append(exc)
+    _lock_fd(descriptor)
+    try:
+        with patch("sjtu_learning_assistant.recording_asr_service._lock_fd", side_effect=locked_reader), patch.object(module, "_json", side_effect=read_json):
+            thread = threading.Thread(target=scan)
+            thread.start()
+            assert attempted.wait(1)
+            assert not job_read.is_set()
+            _unlock_fd(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            thread.join(2)
+            assert not thread.is_alive()
+        assert not errors
+        assert job_read.is_set() and values.__getitem__(0).get("count") == 1
+    finally:
+        if descriptor is not None:
+            _unlock_fd(descriptor)
+            os.close(descriptor)
+
+
+def test_catalog_releases_state_lock_before_markdown_read(tmp_path):
+    import os
+    from sjtu_learning_assistant import compiled_knowledge as module
+    from sjtu_learning_assistant.recording_asr_service import _lock_fd, _unlock_fd
+    catalog, output, job_root, raw = write_catalog_fixture(tmp_path)
+    state_lock = catalog.recording_asr_root / "state.lock"
+    observed = list()
+    original = module._read_bytes
+    def read_bytes(path, maximum):
+        if path == output:
+            fd = os.open(state_lock, os.O_RDWR)
+            try:
+                _lock_fd(fd, blocking=False)
+                observed.append(True)
+                _unlock_fd(fd)
+            finally:
+                os.close(fd)
+        return original(path, maximum)
+    with patch.object(module, "_read_bytes", side_effect=read_bytes):
+        assert catalog.search(source_id="automatic-recording-asr").get("count") == 1
+    assert observed

@@ -84,7 +84,10 @@ class BackendTests(unittest.TestCase):
     def state(self, instance, expected):
         self.wait(lambda: bool(instance.jobs()) and instance.jobs()[0]["state"] == expected)
     def disk(self, instance):
-        return json.loads((instance._directory(SOURCE) / "job.json").read_text(encoding="utf-8"))
+        # Match production readers: keep the observation under the writer's
+        # companion lock so Windows cannot open a rename-in-progress target.
+        with instance._locked():
+            return json.loads((instance._directory(SOURCE) / "job.json").read_text(encoding="utf-8"))
     def put(self, instance, job):
         with instance._locked():
             service._json_write(instance._directory(SOURCE) / "job.json", job)
@@ -741,6 +744,47 @@ class BackendTests(unittest.TestCase):
             self.assertEqual([original, str(changed)], instance._manifest()["authorized_markdown_roots"])
         self.assertEqual(original, self.disk(instance)["markdown_root"])
         self.assertFalse(changed.exists())
+
+    def test_disk_observation_waits_for_cross_instance_state_writer(self):
+        writer = self.create()
+        writer.scan()
+        self.wait(lambda: bool(writer.jobs()))
+        reader = self.create()
+        job = self.disk(writer)
+        attempted, opened, done = threading.Event(), threading.Event(), threading.Event()
+        results, errors = [], []
+        native_lock = service._lock_fd
+        native_read = Path.read_text
+        def observe():
+            try:
+                results.append(self.disk(reader))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+        thread = threading.Thread(target=observe)
+        def trace_lock(fd, *, blocking=True):
+            if threading.current_thread() is thread:
+                attempted.set()
+            return native_lock(fd, blocking=blocking)
+        def trace_read(path, *args, **kwargs):
+            if path == writer._directory(SOURCE) / "job.json":
+                opened.set()
+            return native_read(path, *args, **kwargs)
+        with patch.object(service, "_lock_fd", side_effect=trace_lock), patch.object(Path, "read_text", new=trace_read):
+            with writer._locked():
+                thread.start()
+                self.assertTrue(attempted.wait(1))
+                self.assertFalse(opened.wait(.05), "reader opened job.json while state writer held its lock")
+                self.assertFalse(done.is_set())
+                job["title"] = "Snapshot written under state lock"
+                service._json_write(writer._directory(SOURCE) / "job.json", job)
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(errors)
+        self.assertTrue(opened.is_set())
+        self.assertEqual("Snapshot written under state lock", results[0]["title"])
+        self.assertFalse(self.requests)
 
 class AudioSafetyTests(unittest.TestCase):
     def test_packaged_ffmpeg_resolution_without_system_binary(self):

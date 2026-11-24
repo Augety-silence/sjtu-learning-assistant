@@ -96,6 +96,40 @@ def _json(path: Path) -> dict:
         raise CompiledKnowledgeError("知识索引损坏；原文件未修改。") from None
 
 
+def _recording_snapshot(root: Path):
+    """Read queue JSON under its portable companion lock, then release for MD IO."""
+    from sjtu_learning_assistant.recording_asr_service import _lock_fd, _unlock_fd
+    lock_path = _safe(root, "state.lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    acquired = False
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise CompiledKnowledgeError("录播ASR状态锁无效。")
+        _lock_fd(descriptor)
+        acquired = True
+        manifest = _json(_safe(root, "manifest.json"))
+        jobs_root = _safe(root, "jobs")
+        snapshots, issues = list(), list()
+        truncated = False
+        for directory in sorted(jobs_root.iterdir()):
+            if len(snapshots) >= MAX_ENTRIES:
+                truncated = True
+                break
+            try:
+                if directory.is_symlink() or not directory.is_dir():
+                    raise CompiledKnowledgeError("录播ASR检查点目录无效。")
+                job = _json(_safe(jobs_root, directory.name + "/job.json"))
+                snapshots.append((directory.name, job))
+            except CompiledKnowledgeError:
+                issues.append("部分录播ASR检查点不可访问，已跳过。")
+        return manifest, snapshots, issues, truncated
+    finally:
+        if acquired:
+            _unlock_fd(descriptor)
+        os.close(descriptor)
+
+
 def _integer(value: object, name: str, minimum: int, maximum: int) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         raise CompiledKnowledgeError(f"{name}超出范围。")
@@ -262,25 +296,23 @@ class CompiledKnowledge:
             recording_root = _safe(self.recording_asr_root)
             marker = _safe(recording_root, "manifest.json")
             if marker.is_file():
-                manifest = _json(marker)
+                manifest, job_snapshots, snapshot_issues, snapshot_truncated = _recording_snapshot(recording_root)
+                issues.extend(snapshot_issues)
+                truncated = truncated or snapshot_truncated
                 if manifest.get("version") != 1:
                     raise CompiledKnowledgeError("录播ASR清单版本不支持。")
-                jobs_root = _safe(recording_root, "jobs")
                 course_metadata = self.transcript_metadata()
                 recording_sources = dict()
-                for directory in sorted(jobs_root.iterdir()):
+                for directory_name, job in job_snapshots:
                     if len(documents) >= MAX_ENTRIES:
                         truncated = True
                         break
                     try:
-                        if directory.is_symlink() or not directory.is_dir():
-                            raise CompiledKnowledgeError("录播ASR检查点目录无效。")
-                        job = _json(_safe(jobs_root, directory.name + "/job.json"))
                         identity = job.get("source_id")
                         course_id, _ = parse_remote_source_id(identity)
                         course_id = str(course_id)
                         expected_directory = hashlib.sha256(identity.encode()).hexdigest().__getitem__(slice(None, 16))
-                        if directory.name != expected_directory or str(job.get("course_id")) != course_id:
+                        if directory_name != expected_directory or str(job.get("course_id")) != course_id:
                             raise CompiledKnowledgeError("录播ASR身份不一致。")
                         if job.get("state") not in ("completed", "user_edit_protected") or not job.get("markdown_relative"):
                             continue
