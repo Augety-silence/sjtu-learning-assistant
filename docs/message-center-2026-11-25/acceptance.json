@@ -90,7 +90,10 @@
     "citation_count": 1,
     "valid_local_references": 1,
     "trace_count": 1,
-    "private_content_exported": false
+    "private_content_exported": false,
+    "metadata_verified_references": 1,
+    "references_outside_first_100": 1,
+    "email_scope_respected": true
   },
   "installed_binary_mcp": {
     "packaged_mcp": true,
@@ -105,7 +108,39 @@
     "ai_enabled_restored": true,
     "signing": "ad-hoc",
     "strict_codesign_verified": true,
-    "production_source_commit": "102b8b7",
-    "total_messages_after_history_sync": 1617
+    "production_source_commit": "2beb47bad00f600332edff8b15518cf83f735d30",
+    "total_messages_after_history_sync": 1617,
+    "installed_executable_sha256": "2dd9baa313dd816f958723362cc8ea5b325378cbeb703052e1a464c018ac2d6a",
+    "built_executable_sha256": "2dd9baa313dd816f958723362cc8ea5b325378cbeb703052e1a464c018ac2d6a",
+    "installed_process_verified": true,
+    "prefetch_backup_saved": true
+  },
+  "final_installed_native": {
+    "data": "actual local account",
+    "model_calls": 0,
+    "mail_before": 1169,
+    "mail_after": 1169,
+    "older_than_100_visible": true,
+    "history_complete": true,
+    "cursor_account_matches": true,
+    "all_messages": 1617,
+    "kinds": {
+      "email": 1169,
+      "announcement": 169,
+      "assignment": 279
+    },
+    "reference_opens_same_message": true,
+    "old_message_has_body": true,
+    "body_only_keyword_matches": true,
+    "ai_search_has_citations": true,
+    "keyword_counts": {
+      "考试": 34,
+      "作业": 382,
+      "通知": 689
+    },
+    "reopen_preserves_count": true,
+    "native_real_reference": true,
+    "native_no_extra_labels": true,
+    "native_narrow_no_horizontal_overflow": true
   }
 }
