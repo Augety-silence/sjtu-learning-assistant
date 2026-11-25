@@ -40,7 +40,7 @@ def main():
         finally:
             print(json.dumps(result, ensure_ascii=False), flush=True)
             window.destroy()
-    webview.start(check, gui="cocoa")
+    webview.start(check, gui="cocoa", http_server=True)
     if not result["ok"]:
         raise SystemExit(1)
 

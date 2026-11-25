@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import plistlib
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -15,13 +16,29 @@ from pathlib import Path
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+from sjtu_learning_assistant.database import APP_SUPPORT_DIR, DEFAULT_SQLITE_PATH
 from sjtu_learning_assistant.local_settings import SettingsStore
 
 STATE = Path("/tmp/sjtu-message-center-deploy-20261125.json")
 APP = Path("/Applications/SJTU Learning Assistant.app")
 BACKUP = Path.home() / "Applications/SJTU App Backups/SJTU Learning Assistant before message center 20261125.app"
 STAGED = Path("/Applications/SJTU Learning Assistant message center 20261125 staging.app")
+DATA_BACKUP = BACKUP.parent / "message center data before 20261125"
+
+
+def backup_data(store):
+    DATA_BACKUP.mkdir(mode=0o700, exist_ok=False)
+    for source in (DEFAULT_SQLITE_PATH, APP_SUPPORT_DIR / "ai-runtime.sqlite3"):
+        if source.is_file():
+            target = DATA_BACKUP / source.name
+            with sqlite3.connect("file:" + quote(str(source)) + "?mode=ro", uri=True) as original:
+                with sqlite3.connect(target) as copy:
+                    original.backup(copy)
+            os.chmod(target, 0o600)
+    if store.path.is_file():
+        target = DATA_BACKUP / "settings.json"
+        shutil.copy2(store.path, target)
+        os.chmod(target, 0o600)
 
 
 def requests():
@@ -72,6 +89,7 @@ def main():
             if time.monotonic() > deadline:
                 raise RuntimeError("App 未正常退出，不强制杀进程")
             time.sleep(.2)
+        backup_data(store)
         subprocess.run(("/usr/bin/ditto", str(bundle), str(STAGED)), check=True)
         BACKUP.parent.mkdir(parents=True, exist_ok=True)
         os.replace(APP, BACKUP)
