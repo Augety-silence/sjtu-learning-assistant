@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from sjtu_learning_assistant.agent_runtime.tools import ReadOnlyToolRegistry
+from sjtu_learning_assistant.agent_runtime import AgentLoop, AgentPreset
 from sjtu_learning_assistant.dashboard_service import DashboardService
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
@@ -90,6 +91,45 @@ class ArchiveTests(unittest.TestCase):
         page = self.service.message_archive("assignment", query="排版要求")
         self.assertEqual(2, page["total"])
         self.assertEqual({"当前课程", "往期课程"}, {row["source_label"] for row in page["items"]})
+
+    def prefetch(self, question):
+        registry = ReadOnlyToolRegistry(self.engine, mail_account=self.account)
+        preset = AgentPreset("messages", "消息", "消息", ("search_messages",), "根据检索回答")
+        messages, runs = AgentLoop(None, registry, preset)._prefetch(question)
+        self.assertEqual(1, len(messages))
+        self.assertEqual("ok", runs[0]["status"])
+        return json.loads(messages[0]["content"].split("：", 1)[1])["result"]
+
+    def test_history_prefetch_finds_body_match_outside_recent_100(self):
+        result = self.prefetch("查找历史邮件中的考试通知")
+        self.assertEqual(1, result["count"])
+        self.assertEqual("通知 1", result["items"][0]["title"])
+        self.assertEqual("email", result["items"][0]["kind"])
+
+    def test_quoted_keyword_keeps_literal_percent(self):
+        result = self.prefetch("搜索邮件「100%」")
+        self.assertEqual(1, result["count"])
+        self.assertEqual("通知 1", result["items"][0]["title"])
+
+    def test_general_recent_mail_prefetch_keeps_source_and_bounded_context(self):
+        result = self.prefetch("最近邮件有哪些")
+        self.assertEqual(20, result["count"])
+        self.assertTrue(result["truncated"])
+        self.assertTrue(all(item["kind"] == "email" for item in result["items"]))
+
+    def test_english_email_prefetch_preserves_quoted_query(self):
+        result = self.prefetch('Search historical email "100%"')
+        self.assertEqual(1, result["count"])
+        self.assertEqual("email", result["items"][0]["kind"])
+
+    def test_old_assignment_requirement_prefetch_uses_body(self):
+        course = {"id": 2, "name": "往期课程"}
+        persist_canvas_data(self.engine, raw_courses=[course], announcements_by_course={},
+            assignments_by_course={"2": [{"id": 20, "name": "报告", "description": "<p>排版要求</p>"}]}, default_scope=False)
+        persist_course_catalog(self.engine, [course])
+        result = self.prefetch("历史作业「排版要求」")
+        self.assertEqual(1, result["count"])
+        self.assertEqual("assignment", result["items"][0]["kind"])
 
 
 class IMAPHistoryTests(unittest.TestCase):

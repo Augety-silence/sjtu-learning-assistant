@@ -58,16 +58,23 @@ def requests():
 
 
 def main():
+    global STATE, BACKUP, STAGED, DATA_BACKUP
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("pause", "status", "install", "resume"))
     parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--revision", choices=("initial", "prefetch"), default="initial")
     args = parser.parse_args()
+    if args.revision == "prefetch":
+        STATE = Path("/tmp/sjtu-message-center-prefetch-deploy-20261125.json")
+        BACKUP = Path.home() / "Applications/SJTU App Backups/SJTU Learning Assistant before message prefetch 20261125.app"
+        STAGED = Path("/Applications/SJTU Learning Assistant message prefetch 20261125 staging.app")
+        DATA_BACKUP = BACKUP.parent / "message prefetch data before 20261125"
     store = SettingsStore()
     if args.action == "pause":
         if STATE.exists():
             raise RuntimeError("已有部署状态，请先核对，不覆盖")
         settings = store.load()
-        STATE.write_text(json.dumps(dict(ai_enabled=settings.ai_enabled, paused_at=time.time())))
+        STATE.write_text(json.dumps(dict(ai_enabled=settings.ai_enabled, recording_asr_paused=settings.recording_asr_paused, paused_at=time.time())))
         os.chmod(STATE, 0o600)
         store.save(replace(settings, ai_enabled=False))
         print(json.dumps(dict(paused=True, **requests())))
@@ -114,7 +121,8 @@ def main():
         print(json.dumps(dict(installed=version, old_app_preserved=True)))
     else:
         state = json.loads(STATE.read_text())
-        store.save(replace(store.load(), ai_enabled=bool(state["ai_enabled"])))
+        current = store.load()
+        store.save(replace(current, ai_enabled=bool(state["ai_enabled"]), recording_asr_paused=bool(state.get("recording_asr_paused", current.recording_asr_paused))))
         subprocess.run(("open", "-a", str(APP)), check=True)
         print(json.dumps(dict(resumed=True, ai_enabled=store.load().ai_enabled)))
 

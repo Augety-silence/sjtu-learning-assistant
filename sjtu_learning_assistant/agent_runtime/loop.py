@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -149,9 +150,26 @@ class AgentLoop:
             plans.append(("get_material_tree", {"limit": 200}))
         if any(word in lowered for word in ("截止日期", "截止", "ddl", "作业", "due")):
             plans.append(("get_deadlines", {"hours": 24 * 90, "limit": 30}))
-        if any(word in lowered for word in ("消息", "邮件", "公告", "通知")):
-            # 先提供最近消息；支持 tools 的模型可继续用精确关键词搜索。
-            plans.append(("search_messages", {"query": "", "kind": "all", "limit": 20}))
+        if any(word in lowered for word in ("消息", "邮件", "邮箱", "公告", "通知", "作业", "email", "message", "announcement", "assignment")):
+            # 不支持模型工具调用时也按用户指定的来源和关键词读全库。
+            # 引号内的原文优先，常见学习主题仅取用户实际写出的词。
+            kinds = [kind for kind, markers in (
+                ("email", ("邮件", "邮箱", "email")),
+                ("announcement", ("公告", "announcement")),
+                ("assignment", ("作业", "assignment")),
+            ) if any(marker in lowered for marker in markers)]
+            kind = kinds[0] if len(kinds) == 1 else "all"
+            quoted = re.findall(r'「([^」\n]{1,160})」|“([^”\n]{1,160})”|"([^"\n]{1,160})"', text)
+            query = " ".join(next(part for part in match if part) for match in quoted)
+            if not query:
+                for word in ("考试", "期末", "期中", "排版", "提交", "要求"):
+                    if word in text:
+                        query = word
+                        break
+            if not query:
+                match = re.search(r"\b(?:exam|deadline)\b", text, re.I)
+                query = match.group(0) if match else ""
+            plans.append(("search_messages", {"query": query[:160], "kind": kind, "limit": 20}))
         if "课程" in lowered:
             plans.append(("list_courses", {"limit": 50}))
         messages: list[dict[str, Any]] = []
