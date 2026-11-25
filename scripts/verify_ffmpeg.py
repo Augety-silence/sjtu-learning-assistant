@@ -28,7 +28,7 @@ REQUIRED_FLAGS = {
     "--enable-protocol=file,pipe", "--pkg-config=false",
 }
 SYSTEM_DLLS = {
-    "advapi32.dll", "avrt.dll", "bcrypt.dll", "comdlg32.dll", "crypt32.dll",
+    "advapi32.dll", "avicap32.dll", "avrt.dll", "bcrypt.dll", "comdlg32.dll", "crypt32.dll",
     "dwmapi.dll", "gdi32.dll", "imm32.dll", "kernel32.dll", "kernelbase.dll",
     "mf.dll", "mfplat.dll", "mfreadwrite.dll", "mfuuid.dll", "msvcrt.dll",
     "ntdll.dll", "ole32.dll", "oleaut32.dll", "psapi.dll", "rpcrt4.dll",

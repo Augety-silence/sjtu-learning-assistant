@@ -1,3 +1,3 @@
 """Core package for SJTU Learning Assistant."""
 
-__version__ = "1.8.22"
+__version__ = "1.8.23"

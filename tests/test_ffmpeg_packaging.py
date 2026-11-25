@@ -159,3 +159,9 @@ class RealLicenseOutputTests(unittest.TestCase):
         output = "GNU Lesser General Public\nLicense version 2.1 or later\nffmpeg version 7.1.3\nconfiguration: --disable-nonfree"
         configuration = "configuration: " + " ".join(sorted(verifier.REQUIRED_FLAGS))
         self.assertTrue(verifier.verify_license_and_flags(output, configuration, "ffmpeg version 7.1.3\n"))
+
+class WindowsSystemDllInventoryTests(unittest.TestCase):
+    def test_avicap_is_a_system_dependency_not_a_vendor_runtime(self):
+        self.assertIn("avicap32.dll", verifier.SYSTEM_DLLS)
+        self.assertNotIn("libgcc_s_seh-1.dll", verifier.SYSTEM_DLLS)
+        self.assertNotIn("libwinpthread-1.dll", verifier.SYSTEM_DLLS)
