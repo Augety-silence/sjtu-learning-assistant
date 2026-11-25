@@ -1024,10 +1024,12 @@ async function localInvoke<T>(
   };
 }
 
-window.pywebview = { api: { invoke: localInvoke } };
-window.addEventListener("pywebviewready", () => {
-  window.pywebview = { api: { invoke: localInvoke } };
-});
+function installFixtureBridge() {
+  window.pywebview ??= {};
+  window.pywebview.api = { invoke: localInvoke };
+}
+installFixtureBridge();
+window.addEventListener("pywebviewready", installFixtureBridge);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("本地视觉验收入口缺少 #root 容器。");
