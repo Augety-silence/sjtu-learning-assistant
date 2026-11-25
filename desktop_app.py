@@ -471,6 +471,8 @@ class DesktopBridge:
             ),
             "deadlines": self._deadlines,
             "messages": self._messages,
+            "message_archive": self._message_archive,
+            "message_reference": self._message_reference,
             "message_detail": self._message_detail,
             "message_resource": self._message_resource,
             "mail_attachment_open": self._mail_attachment_open,
@@ -1223,6 +1225,15 @@ class DesktopBridge:
         _only_keys(payload, {"kind"})
         return {"items": self._service.messages(_message_kind(payload))}
 
+    def _message_reference(self, payload):
+        _only_keys(payload, {"kind", "ref"})
+        return self._service.message_reference(_message_kind(payload, allow_all=False), payload.get("ref"))
+
+    def _message_archive(self, payload):
+        _only_keys(payload, {"kind", "query", "offset", "limit"})
+        return self._service.message_archive(_message_kind(payload), query=payload.get("query", ""),
+                    offset=payload.get("offset", 0), limit=payload.get("limit", 60))
+
     def _message_detail(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "source_id"})
         if "kind" not in payload or "source_id" not in payload:
@@ -1263,7 +1274,7 @@ class DesktopBridge:
         return self._service.reveal_mail_attachment(source_id, attachment_id)
 
     def _message_mark_read(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"kind", "ids", "all"})
+        _only_keys(payload, {"kind", "ids", "all", "query"})
         kind = _message_kind(payload)
         mark_all = payload.get("all", False)
         if type(mark_all) is not bool:
@@ -1274,6 +1285,10 @@ class DesktopBridge:
         if "all" in payload and not mark_all and not has_ids:
             raise DashboardError("全部已读参数不正确。")
         ids = _source_ids(payload["ids"]) if has_ids else None
+        if "query" in payload:
+            if not mark_all or has_ids:
+                raise DashboardError("搜索范围已读参数不正确。")
+            return self._service.message_archive_mark_read(kind, payload["query"])
         return self._service.message_mark_read(kind, ids)
 
     def _learning(self) -> DesktopLearningService:

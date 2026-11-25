@@ -1661,6 +1661,57 @@ class DashboardService:
         rows.sort(key=lambda row: row["occurred_at"] or "", reverse=True)
         return rows[:limit]
 
+    def message_archive(self, kind="all", *, query="", offset=0, limit=60):
+        from .message_archive import search_archive
+        kind = self._validate_message_kind(kind)
+        if type(query) is not str or len(query) > 160 or type(offset) is not int or not 0 <= offset <= 10_000_000 or type(limit) is not int or not 1 <= limit <= 200:
+            raise DashboardError("消息搜索参数无效。")
+        result = search_archive(self.engine, kind=kind, query=query.strip(), offset=offset, limit=limit,
+                                account=self._effective_settings().mail_account)
+        for item in result["items"]:
+            import json
+            raw = item.pop("raw")
+            if item["kind"] != "email":
+                item["attachment_count"] = len(self._safe_canvas_attachments(json.loads(raw or "{}")))
+            item.pop("item_id")
+            item.pop("record_id")
+            item["source_label"] = _sender_name(item["source_label"]) if item["kind"] == "email" else _course_name(item["source_label"])
+            item["occurred_at"] = to_shanghai(item["occurred_at"])
+        return result
+
+    def message_reference(self, kind, ref):
+        from .message_archive import archive_statement, canvas_archive_ids
+        self._validate_message_kind(kind, allow_all=False)
+        if type(ref) is not str or not re.fullmatch(re.escape(kind) + r":[0-9]{1,18}", ref):
+            raise DashboardError("消息引用无效。")
+        source = archive_statement(kind, account=self._effective_settings().mail_account, course_ids=canvas_archive_ids(self.engine))
+        with Session(self.engine) as session:
+            row = session.execute(select(source).where(source.c.record_id == int(ref.split(":")[1]))).mappings().one_or_none()
+        if row is None:
+            raise NotFoundError("未找到此账户的引用消息。")
+        detail = self.message_detail(kind, row["source_id"])
+        return {"item": {"kind": kind, "source_id": row["source_id"], "title": detail["title"],
+                         "source_label": detail["source_label"], "occurred_at": detail["occurred_at"],
+                         "is_unread": detail["is_unread"], "url": detail["url"]}}
+
+    def message_archive_mark_read(self, kind, query):
+        from .message_archive import archive_statement, canvas_archive_ids
+        self._validate_message_kind(kind)
+        if type(query) is not str or len(query) > 160:
+            raise DashboardError("消息搜索参数无效。")
+        source = archive_statement(kind, query.strip(), self._effective_settings().mail_account, canvas_archive_ids(self.engine))
+        with Session(self.engine) as session:
+            ids = session.scalars(select(source.c.item_id).where(source.c.is_read.is_(False))).all()
+            rows = session.scalars(select(UnifiedItem).where(UnifiedItem.id.in_(ids))).all()
+            for item in rows:
+                item.is_read = True
+                if item.email_id is not None:
+                    email = session.get(Email, item.email_id)
+                    if email is not None:
+                        email.is_unread = False
+            session.commit()
+        return {"updated": len(rows)}
+
     @staticmethod
     def _assignment_html(raw_data: object) -> str | None:
         if not isinstance(raw_data, Mapping):
@@ -1882,6 +1933,9 @@ class DashboardService:
         kind = self._validate_message_kind(kind, allow_all=False)
         if type(source_id) is not str or not source_id:
             raise DashboardError("消息标识不正确。")
+        account = self._effective_settings().mail_account
+        if kind == "email" and account and not source_id.startswith(account + ":INBOX:"):
+            raise NotFoundError("未找到此账户的消息。")
         with Session(self.engine) as session:
             if kind == "email":
                 row = session.execute(
@@ -3453,6 +3507,7 @@ class DashboardService:
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
                     compiled_knowledge=self._compiled_knowledge_service(),
+                    mail_account=settings.mail_account,
                 )
             if steering_control is not None:
                 steering_control.attach_registry(registry)

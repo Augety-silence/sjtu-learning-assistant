@@ -3,10 +3,12 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { remarkExecutionStrong } from "@/lib/executionMarkdown";
+import { parseMessageLink } from "@/lib/messageLink";
 import { rehypeStreamFade, type useStreamFade } from "@/lib/streamReveal";
 
 function safeMarkdownUrl(url: string, key: string) {
   const value = url.trim();
+  if (key === "href" && parseMessageLink(value)) return value;
   if (key === "href" && /^(https?:\/\/|mailto:)/i.test(value)) return value;
   if (key !== "href" && /^https?:\/\//i.test(value)) return value;
   return null;
@@ -67,9 +69,20 @@ export const MessageMarkdown = memo(function MessageMarkdown({
       }
       urlTransform={safeMarkdownUrl}
       components={{
-        a: ({ node: _node, ...props }) => (
-          <a {...props} target="_blank" rel="noreferrer" />
-        ),
+        a: ({ node: _node, ...props }) =>
+          parseMessageLink(props.href ?? "") ? (
+            <a
+              {...props}
+              onClick={(event) => {
+                event.preventDefault();
+                window.dispatchEvent(
+                  new CustomEvent("sjtu-open-message", { detail: props.href }),
+                );
+              }}
+            />
+          ) : (
+            <a {...props} target="_blank" rel="noreferrer" />
+          ),
         // 不自动请求模型输出中的图片地址，避免资料通过 URL 外泄。
         img: ({ src, alt }) => (
           <span title={typeof src === "string" ? src : undefined}>

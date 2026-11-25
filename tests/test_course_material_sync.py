@@ -55,7 +55,7 @@ class HistoricalMaterialSyncTests(unittest.TestCase):
         archive.assert_not_called()
         notify.assert_not_called()
         self.assertTrue(all(request.method == "GET" for request in requests))
-        self.assertFalse(any("/courses/2/assignments" in str(request.url) or "context_codes[]=course_2" in str(request.url) for request in requests))
+        self.assertTrue(any("/courses/2/assignments" in str(request.url) for request in requests))
         with Session(self.engine) as session:
             self.assertEqual({session.scalar(select(Course.id).where(Course.source_id == "1"))}, current_course_ids(session))
             self.assertIsNotNone(session.scalar(select(CourseFile).where(CourseFile.source_id == "22")))

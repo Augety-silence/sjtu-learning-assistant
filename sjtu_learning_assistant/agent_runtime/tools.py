@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import quote
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, case, func, or_, select
+from sqlalchemy import Engine, case, func, literal, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -203,8 +204,10 @@ class ReadOnlyToolRegistry:
         course_file_resolver: Callable[[str], Path] | None = None,
         workspace: AIWorkspace | None = None,
         compiled_knowledge: CompiledKnowledge | None = None,
+        mail_account: str | None = None,
     ) -> None:
         self.engine = engine
+        self.mail_account = mail_account
         # 用户指定的 AI 工作区；未配置时不注册任何文件工具。
         self.workspace = workspace
         self.compiled_knowledge = compiled_knowledge
@@ -258,7 +261,7 @@ class ReadOnlyToolRegistry:
             "list_course_files": ("列举课程文件元数据", {"type": "object", "properties": {"course_id": {"type": "string", "maxLength": 128}, "category": {"type": "string", "enum": sorted(FILE_CATEGORIES)}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["course_id"], "additionalProperties": False}),
             "get_deadlines": ("查询未完成截止事项", {"type": "object", "properties": {"hours": {"type": "integer", "minimum": 1, "maximum": 8760}, "course_id": {"type": "string", "maxLength": 128}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
             "search_messages": ("搜索或列出最近的邮件、公告与作业消息", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "kind": {"type": "string", "enum": ["all", "email", "announcement", "assignment"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
-            "get_message_detail": ("读取一条消息的截断详情", {"type": "object", "properties": {"kind": {"type": "string", "enum": sorted(MESSAGE_KINDS)}, "ref": {"type": "string", "maxLength": 80}}, "required": ["kind", "ref"], "additionalProperties": False}),
+            "get_message_detail": ("读取消息正文，可按 next_offset 继续读取", {"type": "object", "properties": {"kind": {"type": "string", "enum": sorted(MESSAGE_KINDS)}, "ref": {"type": "string", "maxLength": 80}, "offset": {"type": "integer", "minimum": 0, "maximum": 10000000}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 10000}}, "required": ["kind", "ref"], "additionalProperties": False}),
             "get_material_tree": ("读取截断后的资料树", {"type": "object", "properties": {"course_id": {"type": "string", "maxLength": 128}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "additionalProperties": False}),
             "search_ai_attachments": ("只搜索 AI 附件的名称、摘要和标签，先用它定位附件 ID", {"type": "object", "properties": {"query": {"type": "string", "maxLength": 160}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}),
             "read_course_file_text": ("按课程文件 source_id 分页读取已下载到本机的课件/文档正文（PPTX、DOCX、XLSX、PDF 与文本），返回带页码标记的文字、表格、图片替代文本和演讲者备注；不接受路径", {"type": "object", "properties": {"source_id": {"type": "string", "maxLength": 128}, "start_page": {"type": "integer", "minimum": 1, "maximum": MAX_DOCUMENT_UNIT}, "max_chars": {"type": "integer", "minimum": 500, "maximum": COURSE_FILE_TEXT_MAX_CHARS}}, "required": ["source_id"], "additionalProperties": False}),
@@ -489,153 +492,45 @@ class ReadOnlyToolRegistry:
         if type(kind) is not str or kind not in MESSAGE_KINDS | {"all"}:
             raise AgentToolError("kind 无效。")
         limit = _bounded_limit(args.get("limit"))
-        pattern = _like_pattern(query)
-        results: list[dict[str, Any]] = []
-        with Session(self.engine) as session:
-            if kind in {"all", "email"}:
-                statement = (
-                    select(Email, UnifiedItem)
-                    .join(UnifiedItem, UnifiedItem.email_id == Email.id)
-                    .where(UnifiedItem.is_active.is_(True))
-                )
-                if query:
-                    statement = statement.where(
-                        or_(
-                            func.lower(Email.subject).like(pattern, escape="\\"),
-                            func.lower(Email.body_preview).like(pattern, escape="\\"),
-                            func.lower(Email.sender_name).like(pattern, escape="\\"),
-                        )
-                    )
-                rows = session.execute(
-                    statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
-                ).all()
-                results.extend(
-                    {
-                        "ref": f"email:{item.id}",
-                        "kind": "email",
-                        "title": _clip(item.subject, 240),
-                        "source_label": "邮件发件人"
-                        if "@" in (item.sender_name or "")
-                        else _clip(item.sender_name or "邮件", 80),
-                        "occurred_at": _iso(unified.occurred_at),
-                        "preview": _clip(
-                            _hide_cut_url_tail(item.body_preview)
-                            if len(item.body_preview or "") >= 300
-                            else item.body_preview,
-                            320,
-                        ),
-                    }
-                    for item, unified in rows
-                )
-            if kind in {"all", "announcement"}:
-                statement = (
-                    select(Announcement, Course, UnifiedItem)
-                    .join(Course, Course.id == Announcement.course_id)
-                    .join(UnifiedItem, UnifiedItem.announcement_id == Announcement.id)
-                    .where(
-                        Announcement.is_active.is_(True),
-                        UnifiedItem.is_active.is_(True),
-                        *default_conditions(session, Announcement.course_id),
-                    )
-                )
-                if query:
-                    statement = statement.where(
-                        or_(
-                            func.lower(Announcement.title).like(pattern, escape="\\"),
-                            func.lower(Announcement.body).like(pattern, escape="\\"),
-                            func.lower(Course.name).like(pattern, escape="\\"),
-                        )
-                    )
-                rows = session.execute(
-                    statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
-                ).all()
-                results.extend(
-                    {
-                        "ref": f"announcement:{item.id}",
-                        "kind": "announcement",
-                        "title": _clip(item.title, 240),
-                        "source_label": _clip(course.name, 180),
-                        "occurred_at": _iso(unified.occurred_at),
-                        "preview": _clip(content_to_plain_text(item.body), 320),
-                    }
-                    for item, course, unified in rows
-                )
-            if kind in {"all", "assignment"}:
-                statement = (
-                    select(Assignment, Course, UnifiedItem)
-                    .join(Course, Course.id == Assignment.course_id)
-                    .join(UnifiedItem, UnifiedItem.assignment_id == Assignment.id)
-                    .where(
-                        Assignment.is_active.is_(True),
-                        UnifiedItem.is_active.is_(True),
-                        *default_conditions(session, Assignment.course_id),
-                    )
-                )
-                if query:
-                    statement = statement.where(
-                        or_(
-                            func.lower(Assignment.name).like(pattern, escape="\\"),
-                            func.lower(Course.name).like(pattern, escape="\\"),
-                        )
-                    )
-                rows = session.execute(
-                    statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
-                ).all()
-                results.extend(
-                    {
-                        "ref": f"assignment:{item.id}",
-                        "kind": "assignment",
-                        "title": _clip(item.name, 240),
-                        "source_label": _clip(course.name, 180),
-                        "occurred_at": _iso(unified.occurred_at),
-                        "preview": "",
-                    }
-                    for item, course, unified in rows
-                )
-        results.sort(key=lambda item: item["occurred_at"] or "", reverse=True)
-        results = results[:limit]
-        return {"items": results, "count": len(results)}, {
-            "has_query": bool(query),
-            "query_length": len(query),
-            "kind": kind,
-            "limit": limit,
+        from sjtu_learning_assistant.message_archive import search_archive
+        page = search_archive(self.engine, kind=kind, query=query, limit=limit, account=self.mail_account)
+        results = [{"ref": f"{item['kind']}:{item['record_id']}",                     "kind": item["kind"], "citation": f"#/messages?kind={item['kind']}&ref={item['kind']}:{item['record_id']}", "title": _clip(item["title"], 240),
+                    "source_label": "邮件发件人" if item["kind"] == "email" and "@" in (item["source_label"] or "") else _clip(item["source_label"], 180),
+                    "occurred_at": _iso(item["occurred_at"]), "preview": _clip(item["preview"], 320)} for item in page["items"]]
+        return {"items": results, "count": len(results), "truncated": page["next_offset"] is not None}, {
+            "has_query": bool(query), "query_length": len(query), "kind": kind, "limit": limit,
         }
 
     def _get_message_detail(self, raw: object):
-        args = _only(raw, {"kind", "ref"})
+        from sjtu_learning_assistant.message_archive import archive_statement, canvas_archive_ids
+        args = _only(raw, {"kind", "ref", "offset", "max_chars"})
         kind = _bounded_text(args.get("kind"), "kind", limit=16)
-        if kind not in MESSAGE_KINDS:
-            raise AgentToolError("kind 无效。")
         ref = _bounded_text(args.get("ref"), "ref", limit=80)
-        prefix = kind + ":"
-        digits = ref[len(prefix):]
-        if not ref.startswith(prefix) or not digits.isascii() or not digits.isdigit() or len(digits) > 18:
+        if kind not in MESSAGE_KINDS or re.fullmatch(re.escape(kind) + r":[0-9]{1,18}", ref) is None:
             raise AgentToolError("消息 ref 无效。")
-        item_id = int(ref[len(prefix):])
+        offset = args.get("offset", 0)
+        max_chars = args.get("max_chars", 3000)
+        if type(offset) is not int or not 0 <= offset <= 10_000_000 or type(max_chars) is not int or not 1 <= max_chars <= 10000:
+            raise AgentToolError("正文续读参数无效。")
+        source = archive_statement(kind, account=self.mail_account, course_ids=canvas_archive_ids(self.engine))
         with Session(self.engine) as session:
+            row = session.execute(select(source).where(source.c.record_id == int(ref.split(":")[1]))).mappings().one_or_none()
+            if row is None:
+                raise AgentToolError("消息不存在。")
+            body = row["body"] or ""
+            attachments = []
             if kind == "email":
-                row = session.execute(
-                    select(Email, UnifiedItem)
-                    .join(UnifiedItem, UnifiedItem.email_id == Email.id)
-                    .where(Email.id == item_id, UnifiedItem.is_active.is_(True))
-                ).one_or_none()
-                if row is None:
-                    raise AgentToolError("消息不存在。")
-                item, unified = row
-                result = {"ref": ref, "kind": kind, "title": _clip(item.subject, 240), "source_label": "邮件发件人" if "@" in (item.sender_name or "") else _clip(item.sender_name or "邮件", 80), "occurred_at": _iso(unified.occurred_at), "body": _clip(item.body_text or (_hide_cut_url_tail(item.body_preview) if len(item.body_preview or "") >= 300 else item.body_preview), 3000), "attachments": [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]}
-            elif kind == "announcement":
-                row = session.execute(select(Announcement, Course).join(Course, Course.id == Announcement.course_id).where(Announcement.id == item_id, Announcement.is_active.is_(True))).one_or_none()
-                if row is None:
-                    raise AgentToolError("消息不存在。")
-                item, course = row
-                result = {"ref": ref, "kind": kind, "title": _clip(item.title, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.posted_at), "body": _clip(content_to_plain_text(item.body), 3000), "attachments": []}
-            else:
-                row = session.execute(select(Assignment, Course).join(Course, Course.id == Assignment.course_id).where(Assignment.id == item_id, Assignment.is_active.is_(True))).one_or_none()
-                if row is None:
-                    raise AgentToolError("消息不存在。")
-                item, course = row
-                description = item.raw_data.get("description", "") if isinstance(item.raw_data, Mapping) else ""
-                result = {"ref": ref, "kind": kind, "title": _clip(item.name, 240), "source_label": _clip(course.name, 180), "occurred_at": _iso(item.due_at), "body": _clip(content_to_plain_text(description), 3000), "attachments": []}
+                item = session.get(Email, row["record_id"])
+                # 历史摘要的末尾 URL 可能截断；沿用既有脱敏规则。
+                if not item.body_text and not item.body_html and len(body) >= 300:
+                    body = _hide_cut_url_tail(body)
+                attachments = [{"name": _clip(a.filename, 255), "type": _clip(a.content_type, 100), "size": a.size} for a in item.attachments[:20]]
+            body = content_to_plain_text(body) or ""
+            result = {"ref": ref, "kind": kind, "title": _clip(row["title"], 240),
+                      "source_label": "邮件发件人" if kind == "email" and "@" in (row["source_label"] or "") else _clip(row["source_label"], 180),
+                      "occurred_at": _iso(row["occurred_at"]), "body": _clip(body[offset:offset + max_chars], max_chars),
+                      "attachments": attachments, "next_offset": offset + max_chars if offset + max_chars < len(body) else None,
+                      "citation": "#/messages?kind=" + kind + "&ref=" + ref}
         return result, {"kind": kind, "ref_type": "opaque_local"}
 
     def _get_material_tree(self, raw: object):

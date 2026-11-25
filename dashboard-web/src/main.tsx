@@ -56,3 +56,5 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </RootErrorBoundary>
   </React.StrictMode>,
 );
+
+import "./message-center.css";

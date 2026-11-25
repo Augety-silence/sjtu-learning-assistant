@@ -199,8 +199,18 @@ function invokeWithSignal<T>(
   });
 }
 
-export function getMessages(kind: MessageFilter) {
-  return invoke<{ items: MessageItem[] }>("messages", { kind });
+export function getMessages(
+  kind: MessageFilter,
+  options?: { query?: string; offset?: number; limit?: number },
+) {
+  return invoke<import("@/lib/types").MessagePage>(
+    options ? "message_archive" : "messages",
+    { kind, ...options },
+  );
+}
+
+export function getMessageReference(kind: MessageKind, ref: string) {
+  return invoke<{ item: MessageItem }>("message_reference", { kind, ref });
 }
 
 export function getMessageDetail(kind: MessageKind, sourceId: string) {

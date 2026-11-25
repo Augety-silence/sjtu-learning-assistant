@@ -4,6 +4,8 @@ from __future__ import annotations
 from sjtu_learning_assistant.canvas_sync import (
     CanvasCheckError,
     fetch_all_courses,
+    fetch_course_announcements_incremental,
+    fetch_course_assignments_incremental,
     fetch_course_files_incremental,
     fetch_course_folders,
     fetch_course_module_items,
@@ -60,8 +62,25 @@ def sync_historical_materials(engine, client, current_ids: set[str], *, progress
         else:
             modules[source] = course_modules
             items[source] = course_items
+        announcements, assignments, announcement_cursors, assignment_cursors = {}, {}, {}, {}
+        for resource, fetcher, records, checkpoints in (
+            ("announcements", fetch_course_announcements_incremental, announcements, announcement_cursors),
+            ("assignments", fetch_course_assignments_incremental, assignments, assignment_cursors),
+        ):
+            saved = get_sync_state(engine, "canvas", f"course:{source}:{resource}")
+            try:
+                result = fetcher(client, source, etag=saved.cursor if saved else None)
+            except CanvasCheckError as exc:
+                if exc.status_code not in (403, 404):
+                    raise
+                issues.append({"course_id": source, "resource": resource, "http": exc.status_code})
+            else:
+                if not result.not_modified:
+                    records[source] = result.records
+                checkpoints[source] = result.etag
         persist_canvas_data(
-            engine, raw_courses=[course], announcements_by_course={}, assignments_by_course={},
+            engine, raw_courses=[course], announcements_by_course=announcements, assignments_by_course=assignments,
+            announcement_cursors=announcement_cursors, assignment_cursors=assignment_cursors,
             folders_by_course=folders, files_by_course=files, modules_by_course=modules,
             module_items_by_course=items, file_cursors=cursors, default_scope=False,
         )

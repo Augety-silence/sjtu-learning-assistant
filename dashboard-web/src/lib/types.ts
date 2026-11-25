@@ -312,7 +312,16 @@ export interface Deadline {
 export type MessageKind = "email" | "announcement" | "assignment";
 export type MessageFilter = "all" | MessageKind;
 
+export interface MessagePage {
+  items: MessageItem[];
+  total?: number;
+  unread?: number;
+  next_offset?: number | null;
+}
+
 export interface MessageItem {
+  preview?: string;
+  attachment_count?: number;
   source_id: string;
   kind: MessageKind;
   title: string;
@@ -369,6 +378,7 @@ export interface MessageMarkReadPayload extends Record<string, unknown> {
   kind: MessageFilter;
   ids?: string[];
   all?: boolean;
+  query?: string;
 }
 
 export interface MaterialNode {
