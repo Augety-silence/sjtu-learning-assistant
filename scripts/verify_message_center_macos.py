@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("html", type=Path)
     args = parser.parse_args()
-    window = webview.create_window("消息中心隔离验收", args.html.resolve().as_uri() + "#/messages", width=1280, height=820, text_select=True)
+    window = webview.create_window("消息中心隔离验收", args.html.resolve().as_uri(), width=1280, height=820, text_select=True)
     result = {"ok": False, "cases": []}
     def wait(expression):
         deadline = time.monotonic() + 20
@@ -20,6 +20,8 @@ def main():
             time.sleep(.1)
     def check():
         try:
+            wait("document.readyState === 'complete' && !!document.querySelector('.sidebar')")
+            window.evaluate_js("window.location.hash = '/messages'")
             wait("document.querySelectorAll('.message-open').length === 3 && !!document.querySelector('.message-reader [role=document]')")
             result["cases"].append("初始消息与完整正文")
             window.evaluate_js("document.querySelectorAll('.message-open')[1].click()")
@@ -34,6 +36,7 @@ def main():
             result["ok"] = True
         except Exception as exc:
             result["error"] = type(exc).__name__ + ': ' + str(exc)
+            result["diagnostic"] = window.evaluate_js("({hash: location.hash, messageCount: document.querySelectorAll('.message-open').length, text: document.body.innerText.slice(0, 500)})")
         finally:
             print(json.dumps(result, ensure_ascii=False), flush=True)
             window.destroy()
