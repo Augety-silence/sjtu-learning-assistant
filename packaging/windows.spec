@@ -1,15 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import subprocess
+import sys
 from pathlib import Path
+
+# Fail closed before importing application code or running PyInstaller analysis.
+ROOT = Path(SPECPATH).parent
+FFMPEG_STAGE = Path(os.environ.get("SJTU_FFMPEG_STAGE", str(ROOT / "dist" / "ffmpeg"))).resolve()
+subprocess.run(
+    (sys.executable, str(ROOT / "scripts" / "verify_ffmpeg.py"), "--stage", str(FFMPEG_STAGE)),
+    check=True,
+)
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 from sjtu_learning_assistant import __version__
 
-ROOT = Path(SPECPATH).parent
 APP_NAME = "SJTU Learning Assistant"
 ICON = ROOT / "packaging" / "app.ico"
 
 datas = [
+    (str(FFMPEG_STAGE / "licenses"), "ffmpeg/licenses"),
+    (str(FFMPEG_STAGE / "source"), "ffmpeg/source"),
+    (str(FFMPEG_STAGE / "build-manifest.json"), "ffmpeg"),
     (str(ROOT / "dashboard-web" / "dist"), "dashboard-web/dist"),
     (str(ROOT / "resources" / "seed_glossary"), "resources/seed_glossary"),
     (str(ROOT / "migrations"), "migrations"),
@@ -18,10 +31,6 @@ datas = [
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "licenses"),
     (str(ROOT / "AGENT.md"), "."),
     (str(ROOT / "agent_presets"), "agent_presets"),
-    # Keep Windows parity with packaging/desktop.spec: imageio_ffmpeg ships the
-    # ffmpeg binary as package data, otherwise video_screenshot_pdf silently
-    # degrades on machines without a system ffmpeg on PATH.
-    *collect_data_files("imageio_ffmpeg"),
     *collect_data_files("pypdfium2"),
     *copy_metadata("pypdfium2"),
 ]
@@ -29,7 +38,6 @@ datas = [
 hiddenimports = [
     "logging.config",
     "imageio_ffmpeg",
-    "imageio_ffmpeg.binaries",
     "keyring.backends.chainer",
     "keyring.backends.fail",
     "keyring.backends.Windows",
@@ -70,12 +78,12 @@ excludes = [
 analysis = Analysis(
     [str(ROOT / "desktop_app.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=[(str(FFMPEG_STAGE / "bin" / "ffmpeg.exe"), "ffmpeg/bin")],
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[str(ROOT / "packaging" / "windows-hooks")],
+    hookspath=[str(ROOT / "packaging" / "common-hooks"), str(ROOT / "packaging" / "windows-hooks")],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(ROOT / "packaging" / "runtime_hooks" / "ffmpeg.py")],
     excludes=excludes,
     noarchive=False,
     optimize=1,

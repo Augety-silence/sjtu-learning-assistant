@@ -1,6 +1,17 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag (for example v1.8.21)
+        required: true
+        type: string
+      use_local_macos:
+        description: Use native Mac DMG/proof uploaded by the dispatch/tag actor; do not queue hosted Mac
+        required: true
+        type: boolean
+        default: true
   push:
     tags:
       - "v*.*.*"
@@ -9,14 +20,60 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  macos-release:
-    runs-on: macos-15
+  initialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+      use_local_macos: ${{ steps.identity.outputs.use_local_macos }}
+      eligible: ${{ steps.draft.outputs.eligible }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve and validate exact immutable tag commit
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          USE_LOCAL_MACOS: ${{ github.event_name != 'workflow_dispatch' || inputs.use_local_macos }}
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git checkout --detach "$COMMIT"
+          python scripts/verify_release_assets.py identity --tag "$RELEASE_TAG" --release-commit "$COMMIT"
+          printf 'tag=%s\ncommit=%s\nuse_local_macos=%s\n' "$RELEASE_TAG" "$COMMIT" "$USE_LOCAL_MACOS" >> "$GITHUB_OUTPUT"
+      - name: Initialize draft only; leave an existing published release untouched
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          python scripts/verify_release_assets.py initialize \
+            --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --github-output "$GITHUB_OUTPUT"
+
+  release-checks:
+    needs: initialize
+    if: needs.initialize.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -26,42 +83,51 @@ jobs:
           node-version: "22.22.0"
           cache: npm
           cache-dependency-path: dashboard-web/package-lock.json
-      - name: 校验版本与依赖工具链
+      - name: Verify pinned Node/npm and official registry
         run: |
           test "$(node --version)" = "v22.22.0"
           test "$(npm --version)" = "10.9.4"
-          VERSION="$(python -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
-          # macOS 自带 Bash 3.2 中失败的 [[ ]] 不受 set -e 约束，需显式 exit；
-          # 同时拒绝 "v1.2.3-" 这种空预发布后缀。
-          case "$GITHUB_REF_NAME" in
-            "v$VERSION" | "v$VERSION"-?*) ;;
-            *) echo "Tag 与项目版本不匹配" >&2; exit 1 ;;
-          esac
-          if grep -n '"resolved": "https://' dashboard-web/package-lock.json | grep -v 'https://registry.npmjs.org/'; then
-            echo "package-lock.json 包含非官方 registry 地址" >&2
-            exit 1
-          fi
-      - name: 构建并验证 macOS 应用
-        run: scripts/build_macos_app.sh
-      - name: 构建并验证 DMG
-        run: |
-          scripts/build_macos_dmg.sh
-          hdiutil verify dist/*.dmg
-          (cd dist && shasum -a 256 -c *.dmg.sha256)
-      - name: 上传 macOS 构建产物
-        uses: actions/upload-artifact@v4
-        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
-        with:
-          name: SJTU-Learning-Assistant-${{ github.ref_name }}-macOS-arm64
-          path: |
-            dist/*.dmg
-            dist/*.dmg.sha256
-          if-no-files-found: error
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('dashboard-web/package-lock.json').read_text())
+          for package in lock['packages'].values():
+              resolved = package.get('resolved', '')
+              if resolved and not resolved.startswith('https://registry.npmjs.org/'):
+                  raise SystemExit('Non-official registry in package-lock.json')
+          PY
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Full Python suite (no skipped subset)
+        run: python -m unittest discover -s tests -v
+      - run: npm --prefix dashboard-web ci --no-audit --no-fund
+      - run: npm --prefix dashboard-web run test
+      - run: npm --prefix dashboard-web run lint
+      - run: npm --prefix dashboard-web run build
+      - run: python scripts/check_licenses.py
+      - run: node scripts/check_licenses.mjs
+      - run: python scripts/scan_secrets.py
+      - name: Redacted history secrets gate
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 detect --source=/repo --redact --no-banner
 
   windows-release:
+    needs: initialize
+    if: needs.initialize.outputs.eligible == 'true'
     runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.initialize.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.initialize.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Preserve exact recipe bytes across Windows and Mac checkouts
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -71,66 +137,131 @@ jobs:
           node-version: "22.22.0"
           cache: npm
           cache-dependency-path: dashboard-web/package-lock.json
-      - name: 校验版本与依赖工具链
+      - name: Verify version and toolchain
         shell: pwsh
         run: |
-          if ((node --version) -ne "v22.22.0") { throw "Node 版本不匹配" }
-          if ((npm --version) -ne "10.9.4") { throw "npm 版本不匹配" }
-          $Version = (& python -c "from sjtu_learning_assistant import __version__; print(__version__)").Trim()
-          $PrereleasePrefix = "v$Version-"
-          if ($env:GITHUB_REF_NAME -ne "v$Version" -and (-not $env:GITHUB_REF_NAME.StartsWith($PrereleasePrefix) -or $env:GITHUB_REF_NAME.Length -eq $PrereleasePrefix.Length)) {
-            throw "Tag 与项目版本不匹配"
-          }
-      - name: 安装 Inno Setup
-        run: choco install innosetup --yes --no-progress
-      - name: 构建 Windows portable 与安装器
-        shell: pwsh
-        run: scripts/build_windows_app.ps1
-      - name: 验证 Windows SHA-256
-        shell: pwsh
-        run: |
-          Get-ChildItem dist/*.sha256 | ForEach-Object {
-            $Parts = (Get-Content $_.FullName).Trim() -split "\s+", 2
-            $Artifact = Join-Path $_.DirectoryName $Parts[1]
-            $Actual = (Get-FileHash $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($Actual -ne $Parts[0]) { throw "SHA-256 校验失败：$Artifact" }
-          }
-      - name: 上传 Windows 构建产物
-        uses: actions/upload-artifact@v4
-        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ((node --version) -ne "v22.22.0") { throw "Node version mismatch" }
+          if ((npm --version) -ne "10.9.4") { throw "npm version mismatch" }
+          python scripts/verify_release_assets.py identity --tag $env:RELEASE_TAG --release-commit $env:RELEASE_COMMIT
+      - uses: msys2/setup-msys2@v2
         with:
-          name: SJTU-Learning-Assistant-${{ github.ref_name }}-Windows-x64
-          path: |
-            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip
-            dist/SJTU-Learning-Assistant-*-Windows-x64-portable.zip.sha256
-            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe
-            dist/SJTU-Learning-Assistant-*-Windows-x64-Setup.exe.sha256
-          if-no-files-found: error
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make
+      - name: Export the actual setup-msys2 Bash path to the native builder
+        shell: msys2 {0}
+        run: |
+          printf 'SJTU_MSYS2_BASH=%s\n' "$(cygpath -w /usr/bin/bash.exe)" >> "$GITHUB_ENV"
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: Build self-contained Windows app, portable ZIP and installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (-not (Test-Path -LiteralPath $env:SJTU_MSYS2_BASH)) { throw "setup-msys2 Bash not found" }
+          ./scripts/build_windows_app.ps1
+      - name: Full Windows tests (no subset or silent timeout skips)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & .venv/Scripts/python.exe -m pytest -vv -o faulthandler_timeout=120 tests
+      - name: Execute native evidence gates and produce all checksum sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & .venv/Scripts/python.exe scripts/prepare_release_evidence.py --platform windows `
+            --tag $env:RELEASE_TAG --release-commit $env:RELEASE_COMMIT `
+            --bundle "dist/SJTU Learning Assistant" --stage dist/ffmpeg `
+            --artifacts-dir dist --output-dir dist/release-evidence
+      - name: Upload Windows binaries, proof and verbatim source to DRAFT only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & .venv/Scripts/python.exe scripts/verify_release_assets.py upload `
+            --repo $env:GITHUB_REPOSITORY --tag $env:RELEASE_TAG --release-commit $env:RELEASE_COMMIT `
+            --assets-dir dist/release-evidence
+
+  macos-release:
+    needs: initialize
+    # Local mode never queues a macos-15 runner. Windows/publisher are independent.
+    if: needs.initialize.outputs.eligible == 'true' && needs.initialize.outputs.use_local_macos == 'false'
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.initialize.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.initialize.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: dashboard-web/package-lock.json
+      - name: Validate exact tag and Node/npm
+        run: |
+          test "$(node --version)" = "v22.22.0"
+          test "$(npm --version)" = "10.9.4"
+          python scripts/verify_release_assets.py identity --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT"
+      - name: Build and natively verify app and DMG
+        run: |
+          scripts/build_macos_app.sh
+          scripts/build_macos_dmg.sh
+          .venv/bin/python scripts/prepare_release_evidence.py --platform macos \
+            --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --bundle "dist/SJTU Learning Assistant.app" --stage dist/ffmpeg \
+            --artifacts-dir dist --output-dir dist/release-evidence
+      - name: Upload native Mac assets to DRAFT only
+        run: |
+          .venv/bin/python scripts/verify_release_assets.py upload \
+            --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --assets-dir dist/release-evidence
 
   publish-release:
+    needs: [initialize, release-checks, windows-release, macos-release]
+    # always() permits the intentionally skipped Mac job, never a failed Windows/checks job.
+    if: >-
+      always() &&
+      needs.initialize.result == 'success' && needs.initialize.outputs.eligible == 'true' &&
+      needs.release-checks.result == 'success' && needs.windows-release.result == 'success' &&
+      (needs.initialize.outputs.use_local_macos == 'true' || needs.macos-release.result == 'success')
     runs-on: ubuntu-latest
-    needs: [macos-release, windows-release]
-    if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          path: dist
-          merge-multiple: true
-      - name: 创建 GitHub 正式 Release
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wait boundedly for local Mac, validate EVERY binary/proof, then promote
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.initialize.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.initialize.outputs.commit }}
+          USE_LOCAL_MACOS: ${{ needs.initialize.outputs.use_local_macos }}
+          # Authenticated GitHub uploader identity, not a field inside native JSON.
+          AUTHORIZED_MAC_UPLOADER: ${{ github.actor }}
         run: |
-          # Stable tags become Latest; prerelease tags containing a hyphen do not.
-          release_flags=(--latest)
-          if [[ "$GITHUB_REF_NAME" =~ - ]]; then
-            release_flags=(--prerelease --latest=false)
-          fi
-          gh release create "$GITHUB_REF_NAME" \
-            dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            "${release_flags[@]}" \
-            --title "SJTU Learning Assistant $GITHUB_REF_NAME"
+          python scripts/verify_release_assets.py publish \
+            --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
+            --use-local-macos "$USE_LOCAL_MACOS" --mac-uploader "$AUTHORIZED_MAC_UPLOADER" \
+            --wait-seconds 600 --assets-dir dist/release-download

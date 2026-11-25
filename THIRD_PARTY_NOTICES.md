@@ -21,7 +21,7 @@
 | PyObjC（core、Cocoa、Quartz、Security、WebKit） | MIT | https://github.com/ronaldoussoren/pyobjc |
 
 | imageio-ffmpeg（Python 包装库） | BSD-2-Clause | https://github.com/imageio/imageio-ffmpeg；不等于执行文件许可证。 |
-| FFmpeg（独立执行文件） | 所检查供应商构建声明 GPL-2.0-or-later | https://github.com/imageio/imageio-binaries；完整 GPL 文本及分发限制见 licenses/FFmpeg.txt，须核验精确对应源码。 |
+| FFmpeg（自编译独立执行文件） | LGPL-2.1-or-later；同源码另含兼容许可证 | 官方 n7.1.3 固定源码构建，禁用 GPL/nonfree 和外部自动探测；完整源码、许可、构建配方及平台清单随包发布，详见 licenses/FFmpeg.txt。 |
 | pypdf | BSD-3-Clause | https://github.com/py-pdf/pypdf |
 | Pillow（运行时及构建） | MIT-CMU；另附第三方声明 | https://github.com/python-pillow/Pillow；完整声明随分发包元数据保留。 |
 
@@ -91,6 +91,9 @@ SOFTWARE.
 
 `packaging/icon-source.svg` 为本项目原创的中性字母/书本图形，Copyright 2026 周济睿，按本项目 MIT License 发布；不使用上海交通大学校徽或其他学校商标。
 
-## FFmpeg 二进制分发限制
 
-Python 包许可证检查不验证 FFmpeg 链接库及构建脚本；检查通过不代表允许分发执行文件。精确对应源码未核验前，不上传安装包或二进制 CI 产物。源码 PR 的测试和构建保留，二进制上传由仓库变量 FFMPEG_BINARY_REDISTRIBUTION_CLEARED 显式控制。
+## FFmpeg 来源与构建验证
+
+发布构建不得收集 imageio-ffmpeg 供应商执行文件。应用使用专用 ffmpeg/bin 执行文件，由官方固定源码自编译；源码与 LGPLv2.1 全文放在 ffmpeg/source 和 ffmpeg/licenses，构建与校验脚本、平台清单随发布附带。校验实际许可证输出、编译开关、依赖、编解码和截图/音轨转换能力，缺少证据即拒绝发布。
+
+独立调用不免除许可证义务；用户可替换或按附带配方重建 FFmpeg。Windows 编译工具链的 GCC runtime linking exception 和系统依赖按实际构建清单记录；不把系统依赖误称为项目源码。

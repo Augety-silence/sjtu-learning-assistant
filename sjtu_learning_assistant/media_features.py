@@ -18,6 +18,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import unicodedata
 import zipfile
@@ -1108,6 +1109,17 @@ def merge_pdfs(
 
 
 def _ffmpeg_executable() -> str | None:
+    if getattr(sys, "frozen", False):
+        root = getattr(sys, "_MEIPASS", None)
+        if root:
+            path = Path(root) / "ffmpeg" / "bin" / (
+                "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+            )
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+        raise MediaFeatureError(
+            "Packaged FFmpeg is missing or not executable; reinstall the application."
+        )
     system = shutil.which("ffmpeg")
     if system:
         return system
