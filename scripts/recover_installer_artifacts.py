@@ -58,7 +58,7 @@ def run(args):
     else:
         command((sys.executable, str(verifier), "publish", "--repo", args.repo, "--tag", args.tag,
                  "--release-commit", sha, "--mac-uploader", args.mac_uploader,
-                 "--local-macos", "--wait-seconds", "600"), cwd=root)
+                 "--use-local-macos", "true", "--wait-seconds", "600"), cwd=root)
 
 
 if __name__ == "__main__":
