@@ -1,0 +1,91 @@
+name: Publish verified installer artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag
+        required: true
+        default: v1.8.23
+        type: string
+      ci_run:
+        description: Successful CI run for the same immutable tag commit
+        required: true
+        default: "45525733929"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Preserve exact source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - name: Checkout recovery controller
+        uses: actions/checkout@v4
+        with:
+          path: controller
+      - name: Checkout immutable release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: release-source
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: SJTU-Learning-Assistant-Windows-x64
+          path: artifacts
+          run-id: ${{ inputs.ci_run }}
+          github-token: ${{ github.token }}
+      - run: python -m pip install -r release-source/requirements-dev.txt
+      - name: Reexecute immutable native gates and upload only to draft
+        shell: pwsh
+        run: >-
+          python controller/scripts/recover_installer_artifacts.py windows
+          --release-root release-source --repo "${{ github.repository }}"
+          --tag "${{ inputs.tag }}" --ci-run "${{ inputs.ci_run }}" --artifacts artifacts
+
+  promote:
+    needs: recover-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: controller
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: release-source
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Recheck CI, all binaries, source and native evidence before promotion
+        run: >-
+          python controller/scripts/recover_installer_artifacts.py promote
+          --release-root release-source --repo "${{ github.repository }}"
+          --tag "${{ inputs.tag }}" --ci-run "${{ inputs.ci_run }}"
+          --mac-uploader "${{ github.actor }}"

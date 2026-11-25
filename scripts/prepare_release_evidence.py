@@ -82,11 +82,42 @@ def artifact_names(version):
     }
 
 
+def failure_diagnostic(text, limit=1200):
+    """Bounded ASCII-safe logs, never stored in release evidence."""
+    text = text or ""
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----.*?-----END (?:[A-Z ]+)?PRIVATE KEY-----",
+                  "<redacted-private-key>", text, flags=re.DOTALL)
+    text = re.sub(r"(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]+)",
+                  "<redacted-token>", text)
+    text = re.sub(r"(?i)(\b[A-Za-z0-9_-]*(?:token|password|passwd|secret|api[_-]?key|authorization)[A-Za-z0-9_-]*\b[\"']?\s*[:=]\s*)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\r\n,;]+)",
+                  r"\1<redacted>", text)
+    text = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@", r"\1<redacted>@", text)
+    text = re.sub(r"(?:/Users/|/home/)[^\s\"']+|[A-Za-z]:[\\/]Users[\\/][^\s\"']+", "<private-path>", text)
+    # Windows parent stderr may itself use a legacy code page; escaped Unicode
+    # keeps failure reporting from raising a second UnicodeEncodeError.
+    text = text.encode("ascii", errors="backslashreplace").decode("ascii")
+    return text[-limit:]
+
+
 def execute(check, tool, *args):
-    result = subprocess.run([str(tool), *map(str, args)], capture_output=True, text=True, timeout=300)
-    # Never copy tool output/private paths into public evidence.
-    require(result.returncode == 0, f"Native gate failed: {check} (exit {result.returncode})")
+    env = os.environ.copy()
+    # The build step's process-local PowerShell variables do not survive into
+    # this workflow step. Python verifier success messages include Chinese and
+    # must remain encodable when stdout/stderr are pipes on Windows.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    result = subprocess.run([str(tool), *map(str, args)], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=300, env=env)
+    if result.returncode != 0:
+        diagnostics = "\n".join(f"{name}: {failure_diagnostic(output)}"
+                                for name, output in (("stdout", result.stdout), ("stderr", result.stderr))
+                                if output)
+        raise ValueError(f"Native gate failed: {check} (exit {result.returncode}; tool {Path(tool).name})"
+                         + ("\n" + diagnostics if diagnostics else ""))
+    # Tool output/private paths never enter public proof JSON, even on success.
     return {"check": check, "tool": Path(tool).name, "returncode": result.returncode}
+
 
 
 def tree_digest(bundle):

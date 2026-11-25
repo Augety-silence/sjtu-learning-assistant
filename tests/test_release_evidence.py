@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import plistlib
 import shutil
 import struct
@@ -62,6 +63,60 @@ class NativePreparationTests(unittest.TestCase):
         failed = subprocess.CompletedProcess([], 7, "private output", "private error")
         with patch.object(prepare.subprocess, "run", return_value=failed), self.assertRaisesRegex(ValueError, "Native gate failed"):
             prepare.execute("ffmpeg_bundle", sys.executable, "verify_ffmpeg.py", "--bundle", self.root)
+
+    def test_execute_utf8_handles_chinese_success_under_legacy_child_encoding(self):
+        command = "print('Windows 清单校验通过')"
+        with patch.dict(os.environ, {"PYTHONUTF8": "0", "PYTHONIOENCODING": "ascii"}):
+            # Reproduce the original helper's inherited-pipe encoding failure.
+            baseline = subprocess.run([sys.executable, "-c", command], capture_output=True,
+                                      text=True, encoding="utf-8", errors="replace", timeout=30)
+            self.assertNotEqual(0, baseline.returncode)
+            self.assertIn("UnicodeEncodeError", baseline.stderr)
+            result = prepare.execute("windows_manifest", sys.executable, "-c", command)
+        self.assertEqual(0, result["returncode"])
+        self.assertEqual({"check", "tool", "returncode"}, set(result))
+
+    def test_execute_failure_reports_bounded_redacted_ascii_output(self):
+        token = "ghp_" + "A" * 35
+        output = ("x" * 2000 + "\nUnicodeEncodeError: 清单\nGH_TOKEN=" + token
+                  + "\napi_key=synthetic-api-secret\n/home/example/private.py\n"
+                  + "https://user:synthetic-password@example.invalid/path")
+        failed = subprocess.CompletedProcess([], 1, output, "manifest check failed: synthetic detail")
+        with patch.object(prepare.subprocess, "run", return_value=failed), self.assertRaises(ValueError) as caught:
+            prepare.execute("windows_manifest", sys.executable, "verify_windows_manifest.py", self.root)
+        message = str(caught.exception)
+        self.assertIn("windows_manifest", message)
+        self.assertIn("UnicodeEncodeError", message)
+        self.assertIn("synthetic detail", message)
+        self.assertIn("<redacted>", message)
+        self.assertNotIn(token, message)
+        self.assertNotIn("synthetic-api-secret", message)
+        self.assertNotIn("synthetic-password", message)
+        self.assertNotIn("/home/example/", message)
+        self.assertTrue(message.isascii())
+        self.assertLess(len(message), 2600)
+
+    def test_execute_passes_utf8_env_without_mutating_parent_environment(self):
+        success = subprocess.CompletedProcess([], 0, "private success output", "")
+        with patch.dict(os.environ, {"PYTHONUTF8": "0", "PYTHONIOENCODING": "ascii"}), patch.object(prepare.subprocess, "run", return_value=success) as run:
+            proof = prepare.execute("windows_manifest", sys.executable, "verifier.py")
+            self.assertEqual("0", os.environ["PYTHONUTF8"])
+            self.assertEqual("ascii", os.environ["PYTHONIOENCODING"])
+        options = run.call_args.kwargs
+        self.assertEqual("1", options["env"]["PYTHONUTF8"])
+        self.assertEqual("utf-8", options["env"]["PYTHONIOENCODING"])
+        self.assertEqual("utf-8", options["encoding"])
+        self.assertEqual("replace", options["errors"])
+        self.assertNotIn("private success output", str(proof))
+
+    def test_failure_diagnostic_redacts_multiline_keys_and_ansi_before_bounding(self):
+        text = ("\x1b[31mUnicodeEncodeError\x1b[0m\n-----BEGIN "
+                + "PRIVATE KEY-----\nsynthetic-key-material\n-----END " + "PRIVATE KEY-----\n")
+        diagnostic = prepare.failure_diagnostic(text)
+        self.assertIn("UnicodeEncodeError", diagnostic)
+        self.assertNotIn("synthetic-key-material", diagnostic)
+        self.assertNotIn("\x1b", diagnostic)
+        self.assertLessEqual(len(diagnostic), 1200)
 
     def test_mac_gate_runs_hdiutil_verify_mount_and_native_ffmpeg(self):
         app = self.root / "local.app"
