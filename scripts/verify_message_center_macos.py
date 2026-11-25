@@ -21,7 +21,7 @@ def main():
     def check():
         try:
             wait("document.readyState === 'complete' && !!document.querySelector('.sidebar')")
-            window.evaluate_js("window.location.hash = '/messages'")
+            window.evaluate_js("Array.from(document.querySelectorAll('.sidebar nav button')).find(b => b.textContent.trim() === '消息').click()")
             wait("document.querySelectorAll('.message-open').length === 3 && !!document.querySelector('.message-reader [role=document]')")
             result["cases"].append("初始消息与完整正文")
             window.evaluate_js("document.querySelectorAll('.message-open')[1].click()")

@@ -111,7 +111,7 @@ def main():
                 def native_check():
                     try:
                         wait("!!document.querySelector('.sidebar')")
-                        window.evaluate_js("location.hash = '/messages'")
+                        window.evaluate_js("Array.from(document.querySelectorAll('.sidebar nav button')).find(b => b.textContent.trim() === '消息').click()")
                         wait("document.querySelectorAll('.message-open').length > 0")
                         window.evaluate_js("window.dispatchEvent(new CustomEvent('sjtu-open-message',{detail:"+json.dumps(cited['citation'])+"}))")
                         wait("document.querySelector('.message-reader h3')?.textContent === "+json.dumps(item['title']))

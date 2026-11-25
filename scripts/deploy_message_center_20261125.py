@@ -27,6 +27,11 @@ DATA_BACKUP = BACKUP.parent / "message center data before 20261125"
 
 
 def backup_data(store):
+    manifest = DATA_BACKUP / "backup.json"
+    if DATA_BACKUP.exists():
+        if manifest.is_file() and json.loads(manifest.read_text()).get("complete") is True:
+            return
+        raise RuntimeError("已有未完成的数据备份，不覆盖")
     DATA_BACKUP.mkdir(mode=0o700, exist_ok=False)
     for source in (DEFAULT_SQLITE_PATH, APP_SUPPORT_DIR / "ai-runtime.sqlite3"):
         if source.is_file():
@@ -39,6 +44,8 @@ def backup_data(store):
         target = DATA_BACKUP / "settings.json"
         shutil.copy2(store.path, target)
         os.chmod(target, 0o600)
+    manifest.write_text(json.dumps({"complete": True, "created_at": time.time()}))
+    os.chmod(manifest, 0o600)
 
 
 def requests():
@@ -83,7 +90,13 @@ def main():
         # 从而又触发启动同步，部署会误以为旧 App 一直不退出。
         main_running = subprocess.run(("pgrep", "-f", "^/Applications/SJTU Learning Assistant.app/Contents/MacOS/SJTU Learning Assistant$"), capture_output=True).returncode == 0
         if main_running:
-            subprocess.run(("osascript", "-e", 'tell application "SJTU Learning Assistant" to quit'), check=True)
+            # 精确定位运行的旧包，避免同名构建副本干扰 Launch Services。
+            from AppKit import NSRunningApplication
+            processes = subprocess.check_output(("pgrep", "-f", "^/Applications/SJTU Learning Assistant.app/Contents/MacOS/SJTU Learning Assistant$"), text=True)
+            for pid in processes.split():
+                running = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(pid))
+                if running is not None:
+                    running.terminate()
         deadline = time.monotonic() + 30
         while subprocess.run(("pgrep", "-f", "^/Applications/SJTU Learning Assistant.app/Contents/MacOS/"), capture_output=True).returncode == 0:
             if time.monotonic() > deadline:

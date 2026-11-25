@@ -1,0 +1,111 @@
+{
+  "mail_sync": {
+    "data": "actual local account",
+    "model_calls": 0,
+    "mail_before": 139,
+    "sync": "success",
+    "mail_after": 1169,
+    "older_than_100_visible": true,
+    "history_complete": true,
+    "cursor_account_matches": true,
+    "all_messages": 1203,
+    "kinds": {
+      "email": 1169,
+      "announcement": 18,
+      "assignment": 16
+    },
+    "reference_opens_same_message": true,
+    "old_message_has_body": true,
+    "body_only_keyword_matches": true,
+    "ai_search_has_citations": true,
+    "keyword_counts": {
+      "考试": 34,
+      "作业": 382,
+      "通知": 689
+    },
+    "reopen_preserves_count": true
+  },
+  "mail_repeat_and_installed_native": {
+    "data": "actual local account",
+    "model_calls": 0,
+    "mail_before": 1169,
+    "sync": "success",
+    "mail_after": 1169,
+    "older_than_100_visible": true,
+    "history_complete": true,
+    "cursor_account_matches": true,
+    "all_messages": 1203,
+    "kinds": {
+      "email": 1169,
+      "announcement": 18,
+      "assignment": 16
+    },
+    "reference_opens_same_message": true,
+    "old_message_has_body": true,
+    "body_only_keyword_matches": true,
+    "ai_search_has_citations": true,
+    "keyword_counts": {
+      "考试": 34,
+      "作业": 382,
+      "通知": 689
+    },
+    "reopen_preserves_count": true,
+    "native_real_reference": true,
+    "native_no_extra_labels": true,
+    "native_narrow_no_horizontal_overflow": true
+  },
+  "mail_source_inventory": {
+    "source": "actual INBOX UID inventory",
+    "source_read_only": true,
+    "server_messages": 1169,
+    "stored_current_uidvalidity": 1169,
+    "missing_source_uids": 0,
+    "all_source_uids_saved": true,
+    "parsed_full_content": 1169,
+    "parse_failed": 0,
+    "attachment_mappings": 261,
+    "available_attachment_files": 261
+  },
+  "historical_canvas": {
+    "data": "actual Canvas account",
+    "model_calls": 0,
+    "file_downloads": 0,
+    "sync": "success",
+    "historical_courses": 46,
+    "restricted_resources": 4,
+    "current_scope_preserved": true,
+    "before": {
+      "announcement": 18,
+      "assignment": 16
+    },
+    "after": {
+      "announcement": 169,
+      "assignment": 279
+    }
+  },
+  "real_embedded_assistant": {
+    "kind": "actual embedded assistant conversation",
+    "ok": true,
+    "conversation_created": true,
+    "citation_count": 1,
+    "valid_local_references": 1,
+    "trace_count": 1,
+    "private_content_exported": false
+  },
+  "installed_binary_mcp": {
+    "packaged_mcp": true,
+    "matching_messages": 34,
+    "citations": true
+  },
+  "installation": {
+    "version": "1.8.23",
+    "old_version": "1.8.18",
+    "old_bundle_preserved": true,
+    "data_backup_saved": true,
+    "ai_enabled_restored": true,
+    "signing": "ad-hoc",
+    "strict_codesign_verified": true,
+    "production_source_commit": "102b8b7",
+    "total_messages_after_history_sync": 1617
+  }
+}
