@@ -15,7 +15,8 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-APP_PATH="$ROOT_DIR/dist/SJTU Learning Assistant.app"
+DIST_DIR="${SJTU_DIST_DIR:-$ROOT_DIR/dist}"
+APP_PATH="$DIST_DIR/SJTU Learning Assistant.app"
 if [[ ! -d "$APP_PATH" ]]; then
   printf '%s\n' "错误：未找到应用包，请先运行 scripts/build_macos_app.sh。" >&2
   exit 1
@@ -23,7 +24,7 @@ fi
 
 VERSION="$("$PYTHON_BIN" -c 'from sjtu_learning_assistant import __version__; print(__version__)')"
 ARCH="$(uname -m)"
-DMG_PATH="$ROOT_DIR/dist/SJTU-Learning-Assistant-${VERSION}-macOS-${ARCH}.dmg"
+DMG_PATH="$DIST_DIR/SJTU-Learning-Assistant-${VERSION}-macOS-${ARCH}.dmg"
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sjtu-learning-assistant-dmg.XXXXXX")"
 
 cleanup() {
@@ -42,7 +43,7 @@ rm -f "$DMG_PATH"
   "$DMG_PATH"
 
 (
-  cd "$ROOT_DIR/dist"
+  cd "$DIST_DIR"
   /usr/bin/shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
 )
 printf '%s\n' "已生成 DMG：$DMG_PATH"

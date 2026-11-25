@@ -124,7 +124,6 @@ jobs:
       - name: 打包 artifact（不签名、不公证）
         run: ditto -c -k --sequesterRsrc --keepParent "dist/SJTU Learning Assistant.app" "dist/SJTU-Learning-Assistant-macOS-unsigned.zip"
       - uses: actions/upload-artifact@v4
-        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
         with:
           name: SJTU-Learning-Assistant-macOS-unsigned
           path: dist/SJTU-Learning-Assistant-macOS-unsigned.zip
@@ -135,6 +134,9 @@ jobs:
     runs-on: windows-latest
     needs: [python-tests, frontend, licenses, secret-scan]
     steps:
+      - name: Preserve source and recipe bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -150,13 +152,21 @@ jobs:
         run: |
           test "$(node --version)" = "v22.22.0"
           test "$(npm --version)" = "10.9.4"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make
+      - name: Set source-build MSYS2 Bash path
+        shell: msys2 {0}
+        run: |
+          printf 'SJTU_MSYS2_BASH=%s\n' "$(cygpath -w /usr/bin/bash.exe)" >> "$GITHUB_ENV"
       - name: 安装 Inno Setup
         run: choco install innosetup --yes --no-progress
       - name: 构建 Windows portable 与安装器
         shell: pwsh
         run: scripts/build_windows_app.ps1
       - uses: actions/upload-artifact@v4
-        if: vars.FFMPEG_BINARY_REDISTRIBUTION_CLEARED == 'true'
         with:
           name: SJTU-Learning-Assistant-Windows-x64
           path: |

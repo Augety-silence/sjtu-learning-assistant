@@ -18,6 +18,8 @@ fi
 DIST_DIR="${SJTU_DIST_DIR:-$ROOT_DIR/dist}"
 BUILD_DIR="${SJTU_BUILD_DIR:-$ROOT_DIR/build}"
 APP_PATH="$DIST_DIR/SJTU Learning Assistant.app"
+export SJTU_FFMPEG_STAGE="${SJTU_FFMPEG_STAGE:-$DIST_DIR/ffmpeg}"
+export PYTHON_BIN
 LOCAL_CODESIGN_IDENTITY="SJTU Learning Assistant Local Development"
 CODESIGN_IDENTITY="${SJTU_CODESIGN_IDENTITY:-}"
 if [[ -z "$CODESIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "$LOCAL_CODESIGN_IDENTITY"; then
@@ -84,8 +86,22 @@ sign_bundle() {
 }
 
 clean_packaging_xattrs
+# Preserve a requested verified stage even when it lives inside dist/build.
+FFMPEG_REUSE_DIR=""
+if [[ "${SJTU_FFMPEG_SKIP_BUILD:-0}" == 1 ]] && [[ -d "$SJTU_FFMPEG_STAGE" ]]; then
+  "$PYTHON_BIN" scripts/verify_ffmpeg.py --stage "$SJTU_FFMPEG_STAGE"
+  FFMPEG_REUSE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sjtu-ffmpeg-reuse.XXXXXXXX")"
+  mv "$SJTU_FFMPEG_STAGE" "$FFMPEG_REUSE_DIR/ffmpeg"
+fi
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
+if [[ -n "$FFMPEG_REUSE_DIR" ]]; then
+  mkdir -p "$(dirname "$SJTU_FFMPEG_STAGE")"
+  mv "$FFMPEG_REUSE_DIR/ffmpeg" "$SJTU_FFMPEG_STAGE"
+  rmdir "$FFMPEG_REUSE_DIR"
+fi
+# Build after cleaning; never let PyInstaller collect a wheel's FFmpeg.
+bash scripts/build_ffmpeg.sh
 PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR=1 \
   "$PYTHON_BIN" -m PyInstaller --noconfirm --clean \
     --workpath "$BUILD_DIR" --distpath "$DIST_DIR" packaging/desktop.spec
@@ -120,6 +136,7 @@ else
 fi
 
 "$PYTHON_BIN" scripts/verify_macos_bundle.py "$APP_PATH"
+"$PYTHON_BIN" scripts/verify_ffmpeg.py --bundle "$APP_PATH"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 
 printf '已生成并验证应用：%s\n' "$APP_PATH"
