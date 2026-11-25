@@ -231,15 +231,40 @@ def verify_directory(directory, tag, commit, metadata, mac_uploader, local_mac=T
 
 def gh(repo, *args, missing_ok=False):
     result = subprocess.run(["gh", *args, "--repo", repo] if args[0] == "release" else ["gh", *args], capture_output=True, text=True, timeout=60 if args[0] == "api" else 600)
-    if missing_ok and result.returncode and "HTTP 404" in result.stderr:
+    if missing_ok and result.returncode and re.search(r"\bHTTP 404\b", result.stderr):
         return None
     require(result.returncode == 0, "GitHub command failed (no promotion): " + result.stderr[-500:])
     return result.stdout
 
 
 def release_metadata(repo, tag, missing_ok=False):
-    text = gh(repo, "api", f"repos/{repo}/releases/tags/{tag}", missing_ok=missing_ok)
-    return None if text is None else json.loads(text)
+    # Some GitHub setups omit drafts from release-by-tag even with a write
+    # token. Only a genuine 404 permits this authenticated REST-list fallback;
+    # all permission, network and malformed-response failures remain fatal.
+    text = gh(repo, "api", f"repos/{repo}/releases/tags/{tag}", missing_ok=True)
+    if text is not None:
+        metadata = json.loads(text)
+        require(isinstance(metadata, dict) and metadata.get("tag_name") == tag,
+                "Release-by-tag metadata mismatch")
+        return metadata
+    # Never use `gh release view --json`: it drops asset uploader/state facts
+    # required by the publisher's native-proof authorization checks.
+    for page in range(1, 11):
+        releases = json.loads(gh(repo, "api", f"repos/{repo}/releases?per_page=100&page={page}"))
+        require(isinstance(releases, list) and len(releases) <= 100
+                and all(isinstance(item, dict) and isinstance(item.get("tag_name"), str)
+                        for item in releases), "Invalid authenticated release listing")
+        matches = [item for item in releases if item["tag_name"] == tag]
+        require(len(matches) <= 1, "Ambiguous exact-tag release listing")
+        if matches:
+            return matches[0]
+        if len(releases) < 100:
+            if missing_ok:
+                return None
+            raise ValueError("Exact-tag release absent from authenticated listing")
+    # Reaching the bound is not evidence of absence: never create a duplicate.
+    raise ValueError("Authenticated release listing exceeded 10-page lookup bound")
+
 
 
 def remote_commit(repo, tag):

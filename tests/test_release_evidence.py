@@ -335,6 +335,74 @@ class ReleaseAssetTests(unittest.TestCase):
             assets.verify_windows_zip(source, self.evidence["windows"])
 
 
+class ReleaseMetadataTests(unittest.TestCase):
+    def draft(self):
+        return {"id": 42, "tag_name": "v1.8.21", "draft": True,
+                "html_url": "https://github.com/owner/repo/releases/tag/untagged-draft",
+                "assets": [{"id": 7, "name": "mac-evidence.json", "state": "uploaded",
+                            "size": 123, "uploader": {"login": "native-mac-owner"},
+                            "digest": "sha256:" + "a" * 64}]}
+
+    def test_tag_404_finds_paginated_exact_draft_preserving_rest_asset_facts(self):
+        draft = self.draft()
+        first_page = [{"tag_name": f"v0.0.{index}"} for index in range(100)]
+        with patch.object(assets, "gh", side_effect=[None, json.dumps(first_page),
+                json.dumps([{"tag_name": "v1.8.210", "draft": True}, draft])]) as gh:
+            self.assertEqual(draft, assets.release_metadata("owner/repo", "v1.8.21"))
+        self.assertEqual({"missing_ok": True}, gh.call_args_list[0].kwargs)
+        self.assertEqual("repos/owner/repo/releases?per_page=100&page=2", gh.call_args.args[2])
+        self.assertTrue(all("missing_ok" not in call.kwargs for call in gh.call_args_list[1:]))
+
+    def test_initialize_reuses_draft_hidden_from_tag_endpoint_without_creating(self):
+        draft = self.draft()
+        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "gh", side_effect=[None, json.dumps([draft]), None, json.dumps([draft])]) as gh:
+            self.assertTrue(assets.initialize("owner/repo", "v1.8.21", "a" * 40))
+        self.assertEqual(4, gh.call_count)
+        self.assertTrue(all(call.args[1] == "api" for call in gh.call_args_list))
+
+    def test_tag_permission_error_is_not_absence_and_never_lists_or_creates(self):
+        denied = subprocess.CompletedProcess([], 1, "", "gh: Resource not accessible (HTTP 403)")
+        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets.subprocess, "run", return_value=denied) as run, self.assertRaisesRegex(ValueError, "HTTP 403"):
+            assets.initialize("owner/repo", "v1.8.21", "a" * 40)
+        self.assertEqual(1, run.call_count)
+        self.assertIn("repos/owner/repo/releases/tags/v1.8.21", run.call_args.args[0])
+
+    def test_fallback_list_failures_are_fatal_not_missing_or_duplicate_creation(self):
+        not_found = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+        for error in ("Resource not accessible (HTTP 403)", "Not Found (HTTP 404)", "connection timed out"):
+            failed = subprocess.CompletedProcess([], 1, "", error)
+            with self.subTest(error=error), patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets.subprocess, "run", side_effect=[not_found, failed]) as run, self.assertRaisesRegex(ValueError, "GitHub command failed"):
+                assets.initialize("owner/repo", "v1.8.21", "a" * 40)
+            self.assertEqual(2, run.call_count)
+            self.assertTrue(all(call.args[0][1] == "api" for call in run.call_args_list))
+
+    def test_complete_empty_listing_distinguishes_optional_from_required_lookup(self):
+        for optional in (True, False):
+            with self.subTest(optional=optional), patch.object(assets, "gh", side_effect=[None, "[]"]):
+                if optional:
+                    self.assertIsNone(assets.release_metadata("owner/repo", "v1.8.21", missing_ok=True))
+                else:
+                    with self.assertRaisesRegex(ValueError, "absent"):
+                        assets.release_metadata("owner/repo", "v1.8.21")
+
+    def test_listing_bound_is_failure_not_proof_of_absence(self):
+        full_page = json.dumps([{"tag_name": f"v0.0.{index}"} for index in range(100)])
+        with patch.object(assets, "gh", side_effect=[None] + [full_page] * 10) as gh, self.assertRaisesRegex(ValueError, "10-page lookup bound"):
+            assets.release_metadata("owner/repo", "v1.8.21", missing_ok=True)
+        self.assertEqual(11, gh.call_count)
+
+    def test_direct_tag_success_does_not_list(self):
+        draft = self.draft()
+        with patch.object(assets, "gh", return_value=json.dumps(draft)) as gh:
+            self.assertEqual(draft, assets.release_metadata("owner/repo", "v1.8.21"))
+        self.assertEqual(1, gh.call_count)
+
+    def test_invalid_or_ambiguous_listing_is_fatal_even_for_optional_lookup(self):
+        for listing in ({"message": "denied"}, [self.draft(), self.draft()], [{"draft": True}]):
+            with self.subTest(listing=listing), patch.object(assets, "gh", side_effect=[None, json.dumps(listing)]), self.assertRaises(ValueError):
+                assets.release_metadata("owner/repo", "v1.8.21", missing_ok=True)
+
+
 class DraftLifecycleTests(unittest.TestCase):
     def test_initialize_published_is_noop(self):
         with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value={"draft": False}), patch.object(assets, "gh") as gh:
