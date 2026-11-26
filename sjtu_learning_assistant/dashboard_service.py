@@ -31,7 +31,7 @@ try:
 except ImportError:
     fcntl = None
 
-from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -1577,89 +1577,144 @@ class DashboardService:
             raise DashboardError("消息筛选条件无效。")
         return kind
 
-    def messages(self, kind: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def message_page(
+        self,
+        kind: str,
+        *,
+        query: str = "",
+        offset: int = 0,
+        limit: int = 60,
+    ) -> dict[str, Any]:
         kind = self._validate_message_kind(kind)
+        if type(query) is not str or len(query) > 160 or "\x00" in query:
+            raise DashboardError("消息搜索词不正确。")
+        if type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise DashboardError("消息分页位置无效。")
         if type(limit) is not int or not 1 <= limit <= 500:
-            raise DashboardError("消息数量限制无效。")
-        rows: list[dict[str, Any]] = []
+            raise DashboardError("消息分页数量无效。")
+
+        terms = [term for term in query.split() if term]
+        statement = (
+            select(UnifiedItem, Email, Announcement, Assignment, Course)
+            .outerjoin(Email, Email.id == UnifiedItem.email_id)
+            .outerjoin(Announcement, Announcement.id == UnifiedItem.announcement_id)
+            .outerjoin(Assignment, Assignment.id == UnifiedItem.assignment_id)
+            .outerjoin(
+                Course,
+                Course.id == func.coalesce(
+                    UnifiedItem.course_id,
+                    Announcement.course_id,
+                    Assignment.course_id,
+                ),
+            )
+            .where(UnifiedItem.is_active.is_(True))
+        )
+        if kind != "all":
+            statement = statement.where(UnifiedItem.item_type == kind)
+        statement = statement.where(
+            or_(
+                and_(UnifiedItem.item_type == "email", Email.id.is_not(None)),
+                and_(
+                    UnifiedItem.item_type == "announcement",
+                    Announcement.id.is_not(None),
+                    Announcement.is_active.is_(True),
+                ),
+                and_(
+                    UnifiedItem.item_type == "assignment",
+                    Assignment.id.is_not(None),
+                    Assignment.is_active.is_(True),
+                ),
+            )
+        )
+
+        searchable = (
+            UnifiedItem.title,
+            Email.subject,
+            Email.body_text,
+            Email.body_preview,
+            Email.sender_name,
+            Email.sender_address,
+            UnifiedItem.sender,
+            Announcement.body,
+            Assignment.raw_data["description"].as_string(),
+            Course.name,
+        )
+        for term in terms:
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            statement = statement.where(
+                or_(*(column.ilike(pattern, escape="\\") for column in searchable))
+            )
+
+        order_key = func.coalesce(
+            UnifiedItem.occurred_at, UnifiedItem.updated_at, UnifiedItem.created_at
+        )
+        statement = statement.order_by(
+            order_key.desc().nulls_last(), UnifiedItem.id.desc()
+        )
         with Session(self.engine) as session:
-            if kind in {"all", "announcement"}:
-                announcement_rows = session.execute(
-                    select(UnifiedItem, Announcement, Course)
-                    .join(Announcement, Announcement.id == UnifiedItem.announcement_id)
-                    .join(Course, Course.id == Announcement.course_id)
-                    .where(
-                        UnifiedItem.item_type == "announcement",
-                        UnifiedItem.is_active.is_(True),
-                        Announcement.is_active.is_(True),
-                        *default_conditions(session, Announcement.course_id),
-                    )
-                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
-                    .limit(limit)
-                ).all()
-                rows.extend(
-                    {
-                        "source_id": unified.source_id,
-                        "kind": "announcement",
-                        "title": item.title,
-                        "source_label": _course_name(course.name),
-                        "occurred_at": to_shanghai(unified.occurred_at),
-                        "is_unread": not bool(unified.is_read),
-                        "url": item.url,
-                    }
-                    for unified, item, course in announcement_rows
+            mail_state = session.scalar(
+                select(SyncState).where(
+                    SyncState.source == "email", SyncState.resource == "inbox"
                 )
-            if kind in {"all", "assignment"}:
-                assignment_rows = session.execute(
-                    select(UnifiedItem, Assignment, Course)
-                    .join(Assignment, Assignment.id == UnifiedItem.assignment_id)
-                    .join(Course, Course.id == Assignment.course_id)
-                    .where(
-                        UnifiedItem.item_type == "assignment",
-                        UnifiedItem.is_active.is_(True),
-                        Assignment.is_active.is_(True),
-                        *default_conditions(session, Assignment.course_id),
+            )
+            account = None
+            if mail_state and mail_state.cursor:
+                try:
+                    cursor_payload = json.loads(mail_state.cursor)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    cursor_payload = {}
+                candidate = cursor_payload.get("account")
+                if isinstance(candidate, str) and 0 < len(candidate) <= 254:
+                    account = candidate
+            if account:
+                statement = statement.where(
+                    or_(
+                        UnifiedItem.item_type != "email",
+                        Email.source_id.startswith(
+                            f"{account}:INBOX:", autoescape=True
+                        ),
                     )
-                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
-                    .limit(limit)
-                ).all()
-                rows.extend(
-                    {
-                        "source_id": unified.source_id,
-                        "kind": "assignment",
-                        "title": item.name,
-                        "source_label": _course_name(course.name),
-                        "occurred_at": to_shanghai(unified.occurred_at),
-                        "is_unread": not bool(unified.is_read),
-                        "url": item.url,
-                    }
-                    for unified, item, course in assignment_rows
                 )
-            if kind in {"all", "email"}:
-                email_rows = session.execute(
-                    select(UnifiedItem, Email)
-                    .join(Email, Email.id == UnifiedItem.email_id)
-                    .where(
-                        UnifiedItem.item_type == "email",
-                        UnifiedItem.is_active.is_(True),
-                    )
-                    .order_by(UnifiedItem.occurred_at.desc().nulls_last())
-                    .limit(limit)
-                ).all()
-                rows.extend(
-                    {
-                        "source_id": unified.source_id,
-                        "kind": "email",
-                        "title": item.subject,
-                        "source_label": _sender_name(item.sender_name),
-                        "occurred_at": to_shanghai(unified.occurred_at),
-                        "is_unread": not bool(unified.is_read),
-                        "url": unified.url,
-                    }
-                    for unified, item in email_rows
-                )
-        rows.sort(key=lambda row: row["occurred_at"] or "", reverse=True)
-        return rows[:limit]
+            total_count = session.scalar(
+                select(func.count()).select_from(statement.order_by(None).subquery())
+            ) or 0
+            rows = session.execute(statement.offset(offset).limit(limit + 1)).all()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items: list[dict[str, Any]] = []
+        for unified, email, announcement, assignment, course in rows:
+            item_kind = unified.item_type
+            if item_kind == "email":
+                title = email.subject
+                source_label = _sender_name(email.sender_name)
+            elif item_kind == "announcement":
+                title = announcement.title
+                source_label = _course_name(course.name if course else "")
+            else:
+                title = assignment.name
+                source_label = _course_name(course.name if course else "")
+            items.append(
+                {
+                    "source_id": unified.source_id,
+                    "kind": item_kind,
+                    "title": title,
+                    "source_label": source_label,
+                    "occurred_at": to_shanghai(unified.occurred_at),
+                    "is_unread": not bool(unified.is_read),
+                    "url": unified.url,
+                }
+            )
+        return {
+            "items": items,
+            "total_count": total_count,
+            "has_more": has_more,
+            "next_offset": offset + len(items) if has_more else None,
+        }
+
+    def messages(self, kind: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        return self.message_page(kind, limit=limit)["items"]
 
     @staticmethod
     def _assignment_html(raw_data: object) -> str | None:

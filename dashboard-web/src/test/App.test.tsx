@@ -335,7 +335,12 @@ beforeEach(() => {
     status: "processing",
     segments: [],
   });
-  vi.mocked(getMessages).mockResolvedValue({ items: [] });
+  vi.mocked(getMessages).mockResolvedValue({
+    items: [],
+    total_count: 0,
+    has_more: false,
+    next_offset: null,
+  });
   vi.mocked(getRoster).mockResolvedValue({ items: [] } as never);
   vi.mocked(getMessageDetail).mockResolvedValue(detail);
   vi.mocked(getDriveSpace).mockResolvedValue({

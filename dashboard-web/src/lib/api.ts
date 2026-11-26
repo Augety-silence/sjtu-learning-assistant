@@ -6,9 +6,9 @@ import type {
   MaterialMoveResult,
   MessageDetail,
   MessageFilter,
-  MessageItem,
   MessageKind,
   MessageMarkReadPayload,
+  MessagePage,
 } from "@/lib/types";
 
 export interface BridgeError {
@@ -199,8 +199,11 @@ function invokeWithSignal<T>(
   });
 }
 
-export function getMessages(kind: MessageFilter) {
-  return invoke<{ items: MessageItem[] }>("messages", { kind });
+export function getMessages(
+  kind: MessageFilter,
+  options: { query?: string; offset?: number; limit?: number } = {},
+) {
+  return invoke<MessagePage>("messages", { kind, ...options });
 }
 
 export function getMessageDetail(kind: MessageKind, sourceId: string) {

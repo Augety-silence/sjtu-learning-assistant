@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 import imaplib
 import unittest
 from types import SimpleNamespace
@@ -31,6 +31,109 @@ class MailCursorTests(unittest.TestCase):
                     else:
                         with self.assertRaises(MailCheckError):
                             fetch_incremental_mail("student@example.com", "fake", None)
+
+    def test_initial_sync_keeps_checkpoint_for_older_uids(self) -> None:
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.select.return_value = ("OK", [])
+        client.response.return_value = ("UIDVALIDITY", [b"12345"])
+
+        fetched_uids = []
+        all_uids = b" ".join(str(uid).encode() for uid in range(1, 251))
+
+        def fake_uid(command, *args):
+            if command == "search":
+                return "OK", [all_uids]
+            if command == "fetch":
+                fetched_uids.append(int(args[0]))
+                return "OK", [(b"fake metadata", b"fake message")]
+            raise AssertionError(f"Unexpected IMAP command: {command}")
+
+        client.uid.side_effect = fake_uid
+
+        with (
+            patch(
+                "sjtu_learning_assistant.mail_client.imaplib.IMAP4_SSL",
+                return_value=client,
+            ),
+            patch(
+                "sjtu_learning_assistant.mail_client._extract_fetch_parts",
+                return_value=(b"FLAGS ()", b"fake message"),
+            ),
+            patch(
+                "sjtu_learning_assistant.mail_client._parse_message",
+                side_effect=lambda **kwargs: kwargs["uid"],
+            ),
+        ):
+            result = fetch_incremental_mail(
+                "student@example.com",
+                "fake",
+                None,
+                initial_limit=100,
+            )
+
+        self.assertEqual(list(range(151, 251)), fetched_uids)
+        cursor = json.loads(result.cursor)
+        self.assertEqual(250, cursor["last_uid"])
+        self.assertEqual(151, cursor["history_before"])
+        self.assertFalse(cursor["history_complete"])
+
+    def test_history_backfill_resumes_and_keeps_new_mail_incremental(self) -> None:
+        cursor = None
+        fetched_overall: list[int] = []
+        batches: list[list[int]] = []
+
+        # A new message arrives after the first sync while older history is pending.
+        mailbox_versions = [range(1, 251), range(1, 252), range(1, 252)]
+        for mailbox_uids in mailbox_versions:
+            client = MagicMock()
+            client.__enter__.return_value = client
+            client.select.return_value = ("OK", [])
+            client.response.return_value = ("UIDVALIDITY", [b"12345"])
+            fetched_this_batch: list[int] = []
+            uid_list = b" ".join(str(uid).encode() for uid in mailbox_uids)
+
+            def fake_uid(command, *args):
+                if command == "search":
+                    return "OK", [uid_list]
+                if command == "fetch":
+                    uid = int(args[0])
+                    fetched_this_batch.append(uid)
+                    return "OK", [(b"fake metadata", b"fake message")]
+                raise AssertionError(f"Unexpected IMAP command: {command}")
+
+            client.uid.side_effect = fake_uid
+            with (
+                patch(
+                    "sjtu_learning_assistant.mail_client.imaplib.IMAP4_SSL",
+                    return_value=client,
+                ),
+                patch(
+                    "sjtu_learning_assistant.mail_client._extract_fetch_parts",
+                    return_value=(b"FLAGS ()", b"fake message"),
+                ),
+                patch(
+                    "sjtu_learning_assistant.mail_client._parse_message",
+                    side_effect=lambda **kwargs: kwargs["uid"],
+                ),
+            ):
+                result = fetch_incremental_mail(
+                    "student@example.com", "fake", cursor, initial_limit=100
+                )
+
+            cursor = result.cursor
+            batches.append(fetched_this_batch)
+            fetched_overall.extend(fetched_this_batch)
+
+        self.assertEqual(list(range(151, 251)), batches[0])
+        self.assertEqual([*range(51, 151), 251], batches[1])
+        self.assertEqual(list(range(1, 51)), batches[2])
+        self.assertEqual(list(range(1, 252)), sorted(fetched_overall))
+        self.assertEqual(len(fetched_overall), len(set(fetched_overall)))
+        final_cursor = json.loads(cursor)
+        self.assertTrue(final_cursor["history_complete"])
+        self.assertIsNone(final_cursor["history_before"])
+
 
     def test_cursor_round_trip(self) -> None:
         cursor = make_cursor("12345", 678)

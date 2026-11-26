@@ -121,6 +121,46 @@ class MessageServiceTests(unittest.TestCase):
         self.assertEqual({"mail:1", "11", "12"}, {row["source_id"] for row in rows})
         self.assertTrue(all(row["is_unread"] for row in rows))
 
+    def test_message_search_pages_full_body_with_keyword_intersection(self) -> None:
+        records = [
+            EmailRecord(
+                source_id=f"mail:page:{index}",
+                subject=f"历史邮件 {index}",
+                sender_name="发件人甲",
+                sender_address="sender@example.edu",
+                sent_at=datetime(2026, 9, 23, tzinfo=timezone.utc),
+                received_at=None,
+                body_preview="普通摘要",
+                is_unread=True,
+                raw_data={"uid": index + 1},
+                body_text=f"正文专属词 {index}",
+            )
+            for index in range(121)
+        ]
+        persist_emails(self.engine, records, cursor="cursor")
+
+        first = self.service.message_page(
+            "email", query="专属词 发件人甲", offset=0, limit=60
+        )
+        second = self.service.message_page(
+            "email", query="专属词 发件人甲", offset=60, limit=60
+        )
+        third = self.service.message_page(
+            "email", query="专属词 发件人甲", offset=120, limit=60
+        )
+        self.assertEqual(121, first["total_count"])
+        self.assertTrue(first["has_more"])
+        self.assertEqual(60, len(first["items"]))
+        self.assertEqual(60, len(second["items"]))
+        self.assertFalse(third["has_more"])
+        self.assertEqual(1, len(third["items"]))
+        all_ids = [
+            item["source_id"]
+            for page in (first, second, third)
+            for item in page["items"]
+        ]
+        self.assertEqual(121, len(set(all_ids)))
+
     def test_details_are_safe_plain_text_and_do_not_mark_read(self) -> None:
         self.assertEqual("邮件正文", self.service.message_detail("email", "mail:1")["body"])
         self.assertEqual("公告正文", self.service.message_detail("announcement", "11")["body"])
@@ -147,6 +187,8 @@ class MessageServiceTests(unittest.TestCase):
 class BridgeMessageValidationTests(unittest.TestCase):
     class Service:
         def messages(self, kind): return [{"kind": kind}]
+        def message_page(self, kind, **kwargs):
+            return {"items": [{"kind": kind}], **kwargs}
         def message_detail(self, kind, source_id): return {"kind": kind, "source_id": source_id}
         def message_mark_read(self, kind, ids): return {"kind": kind, "ids": ids}
 
@@ -154,6 +196,13 @@ class BridgeMessageValidationTests(unittest.TestCase):
         self.bridge = DesktopBridge(self.Service())
 
     def test_new_actions_are_allowlisted_and_strictly_validated(self) -> None:
+        page = self.bridge.invoke(
+            "messages",
+            {"kind": "email", "query": "关键词", "offset": 60, "limit": 30},
+        )
+        self.assertTrue(page["ok"])
+        self.assertEqual("关键词", page["data"]["query"])
+        self.assertEqual(60, page["data"]["offset"])
         detail = self.bridge.invoke("message_detail", {"kind": "assignment", "source_id": "12"})
         self.assertTrue(detail["ok"])
         marked = self.bridge.invoke("message_mark_read", {"kind": "email", "ids": ["a", "a"]})

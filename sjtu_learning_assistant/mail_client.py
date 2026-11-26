@@ -113,12 +113,56 @@ def parse_cursor(cursor: str | None) -> tuple[str | None, int]:
     return uid_validity, max(last_uid, 0)
 
 
-def make_cursor(uid_validity: str, last_uid: int) -> str:
-    return json.dumps(
-        {"uid_validity": uid_validity, "last_uid": last_uid},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+def _parse_sync_cursor(
+    cursor: str | None, email_address: str
+) -> tuple[str | None, int, int | None, bool]:
+    """Read account-scoped incremental and history checkpoints.
+
+    Legacy cursors did not record an account or history checkpoint. They are
+    deliberately treated as a fresh bootstrap so switching accounts cannot
+    reuse another account's UID progress.
+    """
+    if not cursor:
+        return None, 0, None, False
+    try:
+        payload = json.loads(cursor)
+        uid_validity = str(payload["uid_validity"])
+        last_uid = max(int(payload["last_uid"]), 0)
+        account = payload.get("account")
+        if (
+            not isinstance(account, str)
+            or account.strip().casefold() != email_address.strip().casefold()
+        ):
+            return None, 0, None, False
+        history_complete = payload.get("history_complete")
+        if type(history_complete) is not bool:
+            return None, 0, None, False
+        raw_history_before = payload.get("history_before")
+        history_before = None if raw_history_before is None else int(raw_history_before)
+        if history_before is not None and history_before < 1:
+            return None, 0, None, False
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None, 0, None, False
+    return uid_validity, last_uid, history_before, history_complete
+
+
+def make_cursor(
+    uid_validity: str,
+    last_uid: int,
+    *,
+    account: str | None = None,
+    history_before: int | None = None,
+    history_complete: bool = True,
+) -> str:
+    payload: dict[str, Any] = {
+        "uid_validity": uid_validity,
+        "last_uid": last_uid,
+        "history_before": history_before,
+        "history_complete": history_complete,
+    }
+    if account is not None:
+        payload["account"] = account.strip().casefold()
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
 def _uid_validity(client: imaplib.IMAP4_SSL) -> str:
@@ -540,13 +584,15 @@ def fetch_incremental_mail(
 
             with diagnostic_stage("email", "imap_uidvalidity"):
                 uid_validity = _uid_validity(client)
-            previous_validity, previous_uid = parse_cursor(cursor)
-            is_incremental = previous_validity == uid_validity and previous_uid > 0
-            search_start = previous_uid + 1 if is_incremental else 1
+            previous_validity, previous_uid, history_before, history_complete = (
+                _parse_sync_cursor(cursor, email_address)
+            )
+            same_uid_space = previous_validity == uid_validity
+            is_incremental = same_uid_space and previous_uid > 0
 
             with diagnostic_stage("email", "imap_search"):
                 status, search_data = client.uid(
-                    "search", None, "UID", f"{search_start}:4294967295"
+                    "search", None, "UID", "1:4294967295"
                 )
                 if status != "OK" or not search_data:
                     raise MailCheckError("无法读取 INBOX UID 列表。")
@@ -554,13 +600,52 @@ def fetch_incremental_mail(
             all_uids = sorted(
                 int(value)
                 for value in search_data[0].split()
-                if value.isdigit() and int(value) >= search_start
+                if value.isdigit() and int(value) > 0
             )
-            # A UID from an old UIDVALIDITY must never seed the new cursor.
-            highest_uid = all_uids[-1] if all_uids else (previous_uid if is_incremental else 0)
-            bootstrap_truncated = not is_incremental and len(all_uids) > initial_limit
-            selected_uids = all_uids if is_incremental else all_uids[-initial_limit:]
-            record_event("email", "imap_search", "counts", selected=len(selected_uids), incremental=int(is_incremental), bootstrap_truncated=int(bootstrap_truncated))
+            # UIDVALIDITY and account changes invalidate both checkpoints.
+            if not same_uid_space:
+                previous_uid = 0
+                history_before = None
+                history_complete = False
+
+            highest_uid = max(previous_uid, max(all_uids, default=0))
+            if history_before is None and not history_complete:
+                # First sync: import the newest batch, then walk backwards.
+                selected_uids = all_uids[-initial_limit:]
+                older_uids_remain = bool(
+                    selected_uids and any(uid < selected_uids[0] for uid in all_uids)
+                )
+                history_before = selected_uids[0] if older_uids_remain else None
+                history_complete = not older_uids_remain
+            else:
+                # Fetch every new UID and one bounded batch of older UIDs.
+                new_uids = [uid for uid in all_uids if uid > previous_uid]
+                history_candidates = (
+                    [uid for uid in all_uids if uid < history_before]
+                    if not history_complete and history_before is not None
+                    else []
+                )
+                history_batch = history_candidates[-initial_limit:]
+                selected_uids = sorted(set(new_uids) | set(history_batch))
+                if history_batch:
+                    older_uids_remain = any(
+                        uid < history_batch[0] for uid in history_candidates
+                    )
+                    history_before = history_batch[0] if older_uids_remain else None
+                    history_complete = not older_uids_remain
+                elif not history_complete:
+                    history_before = None
+                    history_complete = True
+
+            bootstrap_truncated = not history_complete
+            record_event(
+                "email",
+                "imap_search",
+                "counts",
+                selected=len(selected_uids),
+                incremental=int(is_incremental),
+                bootstrap_truncated=int(bootstrap_truncated),
+            )
 
             messages: list[EmailRecord] = []
             for uid in selected_uids:
@@ -615,7 +700,13 @@ def fetch_incremental_mail(
 
             return MailFetchResult(
                 messages=messages,
-                cursor=make_cursor(uid_validity, highest_uid),
+                cursor=make_cursor(
+                    uid_validity,
+                    highest_uid,
+                    account=email_address,
+                    history_before=history_before,
+                    history_complete=history_complete,
+                ),
                 uid_validity=uid_validity,
                 highest_uid=highest_uid,
                 bootstrap_truncated=bootstrap_truncated,

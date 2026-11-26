@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Engine, case, func, or_, select
+from sqlalchemy import Engine, and_, case, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from sjtu_learning_assistant.models import (
     CourseFile,
     CourseFolder,
     Email,
+    SyncState,
     UnifiedItem,
 )
 
@@ -81,6 +82,24 @@ def _hide_cut_url_tail(text: str) -> str:
     if match is None:
         return text
     return text[: match.start()] + "[已隐藏]"
+
+
+def _current_mail_account(session: Session) -> str | None:
+    state = session.scalar(
+        select(SyncState).where(
+            SyncState.source == "email", SyncState.resource == "inbox"
+        )
+    )
+    if not state or not state.cursor:
+        return None
+    try:
+        payload = json.loads(state.cursor)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    account = payload.get("account")
+    if not isinstance(account, str) or not account.strip() or len(account) > 254:
+        return None
+    return account.strip().casefold()
 
 
 class AgentToolError(RuntimeError):
@@ -489,23 +508,44 @@ class ReadOnlyToolRegistry:
         if type(kind) is not str or kind not in MESSAGE_KINDS | {"all"}:
             raise AgentToolError("kind 无效。")
         limit = _bounded_limit(args.get("limit"))
-        pattern = _like_pattern(query)
+        terms = [term for term in re.split(r"[\s,，]+", query) if term]
+
+        def match_terms(columns):
+            return and_(
+                *(
+                    or_(
+                        *(
+                            func.lower(column).like(_like_pattern(term), escape="\\")
+                            for column in columns
+                        )
+                    )
+                    for term in terms
+                )
+            )
+
         results: list[dict[str, Any]] = []
         with Session(self.engine) as session:
             if kind in {"all", "email"}:
+                account = _current_mail_account(session)
                 statement = (
                     select(Email, UnifiedItem)
                     .join(UnifiedItem, UnifiedItem.email_id == Email.id)
                     .where(UnifiedItem.is_active.is_(True))
                 )
-                if query:
+                if account:
                     statement = statement.where(
-                        or_(
-                            func.lower(Email.subject).like(pattern, escape="\\"),
-                            func.lower(Email.body_preview).like(pattern, escape="\\"),
-                            func.lower(Email.sender_name).like(pattern, escape="\\"),
+                        func.lower(Email.source_id).startswith(
+                            f"{account}:inbox:", autoescape=True
                         )
                     )
+                if query:
+                    statement = statement.where(match_terms((
+                        Email.subject,
+                        Email.body_text,
+                        Email.body_preview,
+                        Email.sender_name,
+                        Email.sender_address,
+                    )))
                 rows = session.execute(
                     statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
                 ).all()
@@ -535,17 +575,14 @@ class ReadOnlyToolRegistry:
                     .where(
                         Announcement.is_active.is_(True),
                         UnifiedItem.is_active.is_(True),
-                        *default_conditions(session, Announcement.course_id),
                     )
                 )
                 if query:
-                    statement = statement.where(
-                        or_(
-                            func.lower(Announcement.title).like(pattern, escape="\\"),
-                            func.lower(Announcement.body).like(pattern, escape="\\"),
-                            func.lower(Course.name).like(pattern, escape="\\"),
-                        )
-                    )
+                    statement = statement.where(match_terms((
+                        Announcement.title,
+                        Announcement.body,
+                        Course.name,
+                    )))
                 rows = session.execute(
                     statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
                 ).all()
@@ -568,16 +605,14 @@ class ReadOnlyToolRegistry:
                     .where(
                         Assignment.is_active.is_(True),
                         UnifiedItem.is_active.is_(True),
-                        *default_conditions(session, Assignment.course_id),
                     )
                 )
                 if query:
-                    statement = statement.where(
-                        or_(
-                            func.lower(Assignment.name).like(pattern, escape="\\"),
-                            func.lower(Course.name).like(pattern, escape="\\"),
-                        )
-                    )
+                    statement = statement.where(match_terms((
+                        Assignment.name,
+                        Course.name,
+                        Assignment.raw_data["description"].as_string(),
+                    )))
                 rows = session.execute(
                     statement.order_by(UnifiedItem.occurred_at.desc()).limit(limit)
                 ).all()
@@ -614,10 +649,19 @@ class ReadOnlyToolRegistry:
         item_id = int(ref[len(prefix):])
         with Session(self.engine) as session:
             if kind == "email":
+                account = _current_mail_account(session)
                 row = session.execute(
                     select(Email, UnifiedItem)
                     .join(UnifiedItem, UnifiedItem.email_id == Email.id)
-                    .where(Email.id == item_id, UnifiedItem.is_active.is_(True))
+                    .where(
+                        Email.id == item_id,
+                        UnifiedItem.is_active.is_(True),
+                        *(
+                            [func.lower(Email.source_id).startswith(f"{account}:inbox:", autoescape=True)]
+                            if account
+                            else []
+                        ),
+                    )
                 ).one_or_none()
                 if row is None:
                     raise AgentToolError("消息不存在。")

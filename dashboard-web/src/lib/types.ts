@@ -322,6 +322,13 @@ export interface MessageItem {
   url: string | null;
 }
 
+export interface MessagePage {
+  items: MessageItem[];
+  total_count: number;
+  has_more: boolean;
+  next_offset: number | null;
+}
+
 export interface MessageResource {
   requires_consent?: boolean;
   id: string;

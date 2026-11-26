@@ -1220,8 +1220,22 @@ class DesktopBridge:
         return {"items": self._service.deadlines(hours)}
 
     def _messages(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"kind"})
-        return {"items": self._service.messages(_message_kind(payload))}
+        _only_keys(payload, {"kind", "query", "offset", "limit"})
+        query = _bounded_text(
+            payload.get("query", ""),
+            limit=160,
+            label="消息搜索词",
+            allow_empty=True,
+        )
+        offset = payload.get("offset", 0)
+        limit = payload.get("limit", 60)
+        if type(offset) is not int or not 0 <= offset <= 1_000_000:
+            raise DashboardError("消息分页位置无效。")
+        if type(limit) is not int or not 1 <= limit <= 120:
+            raise DashboardError("消息分页数量无效。")
+        return self._service.message_page(
+            _message_kind(payload), query=query, offset=offset, limit=limit
+        )
 
     def _message_detail(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "source_id"})

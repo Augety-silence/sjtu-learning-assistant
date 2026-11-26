@@ -33,11 +33,13 @@ export function MessageDetailDialog({
   onClose,
   onMarkedRead,
   triggerRef,
+  presentation = "dialog",
 }: {
   item: MessageItem;
   onClose: () => void;
   onMarkedRead?: (item: MessageItem) => void;
   triggerRef?: RefObject<HTMLElement | null>;
+  presentation?: "dialog" | "pane";
 }) {
   const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailError, setDetailError] = useState("");
@@ -55,7 +57,7 @@ export function MessageDetailDialog({
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: closeButtonRef,
     triggerRef,
-    active: isPresent,
+    active: isPresent && presentation === "dialog",
   });
 
   useEffect(() => {
@@ -79,6 +81,7 @@ export function MessageDetailDialog({
   // The focused "标为已读" / "重试" button is disabled or unmounted by its own
   // action; keep keyboard focus inside the dialog instead of dropping to body.
   useEffect(() => {
+    if (presentation === "pane") return;
     const reason = restoreFocusRef.current;
     if (!reason || markingRead || (detail === null && !detailError)) return;
     restoreFocusRef.current = null;
@@ -96,7 +99,7 @@ export function MessageDetailDialog({
     const target =
       reason === "mark" ? markReadButtonRef.current : retryButtonRef.current;
     (target ?? closeButtonRef.current)?.focus();
-  }, [detail, detailError, isPresent, markingRead]);
+  }, [detail, detailError, isPresent, markingRead, presentation]);
 
   const markRead = useCallback(async () => {
     if (markingRead) return;
@@ -146,6 +149,119 @@ export function MessageDetailDialog({
     [showToast],
   );
 
+  const detailSurface = (
+    <motion.section
+      ref={dialogRef}
+      className={
+        presentation === "pane" ? "message-reading-pane" : "message-dialog"
+      }
+      role={presentation === "pane" ? "region" : "dialog"}
+      aria-modal={presentation === "dialog" ? true : undefined}
+      aria-labelledby="message-detail-title"
+      aria-hidden={isPresent ? undefined : true}
+      data-motion-surface={presentation === "dialog" ? "modal" : undefined}
+      tabIndex={-1}
+      initial={reduceMotion ? false : { opacity: 0.55 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{
+        type: "tween",
+        duration: reduceMotion
+          ? 0
+          : isPresent
+            ? motionDuration.overlayEnter
+            : motionDuration.fast,
+        ease: motionEase.out,
+      }}
+    >
+      <header className="message-dialog-header">
+        <div className="min-w-0">
+          <span className="status-tag">{kindLabels[item.kind]}</span>
+          <h3 id="message-detail-title">{item.title}</h3>
+        </div>
+        <Button
+          ref={closeButtonRef}
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={presentation === "pane" ? "返回消息列表" : "关闭消息详情"}
+          onClick={onClose}
+        >
+          {presentation === "pane" ? "返回列表" : "关闭"}
+        </Button>
+      </header>
+      {detailError ? (
+        <div className="message-detail-state" role="alert">
+          <p>{detailError}</p>
+          <Button
+            ref={retryButtonRef}
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label="重试加载消息详情"
+            onClick={() => {
+              restoreFocusRef.current = "load";
+              setRequestVersion((value) => value + 1);
+            }}
+          >
+            重试
+          </Button>
+        </div>
+      ) : detail === null ? (
+        <LoadingState label="正在加载消息详情…" />
+      ) : (
+        <ContentReveal
+          className="message-dialog-content"
+          variant="detail"
+          afterLoad
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+            gap: 16,
+          }}
+        >
+          <div className="message-detail-meta">
+            <span>{detail.source_label}</span>
+            <span>{formatDateTime(detail.occurred_at)}</span>
+          </div>
+          <MessageDetailContent
+            detail={detail}
+            kind={item.kind}
+            sourceId={item.source_id}
+          />
+          <footer className="message-dialog-actions">
+            {detail.is_unread && (
+              <Button
+                ref={markReadButtonRef}
+                type="button"
+                variant="outline"
+                aria-label={`将“${detail.title}”标记为已读`}
+                disabled={markingRead}
+                onClick={() => void markRead()}
+              >
+                {markingRead ? "处理中…" : "标为已读"}
+              </Button>
+            )}
+            {detail.url && (
+              <Button
+                type="button"
+                aria-label={`在 Canvas 打开“${detail.title}”`}
+                onClick={() => void openCanvas(detail.url as string)}
+              >
+                在 Canvas 打开
+              </Button>
+            )}
+          </footer>
+        </ContentReveal>
+      )}
+    </motion.section>
+  );
+
+  if (presentation === "pane") {
+    return <div className="message-reading-pane-shell">{detailSurface}</div>;
+  }
+
   return createPortal(
     <div
       className="message-dialog-layer"
@@ -171,110 +287,7 @@ export function MessageDetailDialog({
         disabled={!isPresent}
         onClick={onClose}
       />
-      <motion.section
-        ref={dialogRef}
-        className="message-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="message-detail-title"
-        aria-hidden={isPresent ? undefined : true}
-        data-motion-surface="modal"
-        tabIndex={-1}
-        initial={reduceMotion ? false : { opacity: 0.55 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{
-          type: "tween",
-          duration: reduceMotion
-            ? 0
-            : isPresent
-              ? motionDuration.overlayEnter
-              : motionDuration.fast,
-          ease: motionEase.out,
-        }}
-      >
-        <header className="message-dialog-header">
-          <div className="min-w-0">
-            <span className="status-tag">{kindLabels[item.kind]}</span>
-            <h3 id="message-detail-title">{item.title}</h3>
-          </div>
-          <Button
-            ref={closeButtonRef}
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label="关闭消息详情"
-            onClick={onClose}
-          >
-            关闭
-          </Button>
-        </header>
-        {detailError ? (
-          <div className="message-detail-state" role="alert">
-            <p>{detailError}</p>
-            <Button
-              ref={retryButtonRef}
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-label="重试加载消息详情"
-              onClick={() => {
-                restoreFocusRef.current = "load";
-                setRequestVersion((value) => value + 1);
-              }}
-            >
-              重试
-            </Button>
-          </div>
-        ) : detail === null ? (
-          <LoadingState label="正在加载消息详情…" />
-        ) : (
-          <ContentReveal
-            className="message-dialog-content"
-            variant="detail"
-            afterLoad
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 0,
-              gap: 16,
-            }}
-          >
-            <div className="message-detail-meta">
-              <span>{detail.source_label}</span>
-              <span>{formatDateTime(detail.occurred_at)}</span>
-            </div>
-            <MessageDetailContent
-              detail={detail}
-              kind={item.kind}
-              sourceId={item.source_id}
-            />
-            <footer className="message-dialog-actions">
-              {detail.is_unread && (
-                <Button
-                  ref={markReadButtonRef}
-                  type="button"
-                  variant="outline"
-                  aria-label={`将“${detail.title}”标记为已读`}
-                  disabled={markingRead}
-                  onClick={() => void markRead()}
-                >
-                  {markingRead ? "处理中…" : "标为已读"}
-                </Button>
-              )}
-              {detail.url && (
-                <Button
-                  type="button"
-                  aria-label={`在 Canvas 打开“${detail.title}”`}
-                  onClick={() => void openCanvas(detail.url as string)}
-                >
-                  在 Canvas 打开
-                </Button>
-              )}
-            </footer>
-          </ContentReveal>
-        )}
-      </motion.section>
+      {detailSurface}
     </div>,
     document.body,
   );

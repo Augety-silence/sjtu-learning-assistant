@@ -41,7 +41,12 @@ const messages: MessageItem[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getMessages).mockResolvedValue({ items: messages });
+  vi.mocked(getMessages).mockResolvedValue({
+    items: messages,
+    total_count: messages.length,
+    has_more: false,
+    next_offset: null,
+  });
   vi.mocked(getMessageDetail).mockImplementation(async (kind) => ({
     title: kind === "email" ? "邮件一" : "作业一",
     source_label: kind === "email" ? "老师" : "程序设计",
@@ -70,6 +75,40 @@ describe("MessagesView", () => {
     render(<MessagesView />);
     const list = await screen.findByRole("list", { name: "消息列表" });
     expect(list.querySelectorAll('[role="listitem"]').length).toBe(2);
+  });
+
+  it("continues loading older pages without repeating visible messages", async () => {
+    const older: MessageItem = {
+      source_id: "mail-older",
+      kind: "email",
+      title: "更早的邮件",
+      source_label: "老师",
+      occurred_at: "2026-09-20T08:00:00+08:00",
+      is_unread: false,
+      url: null,
+    };
+    vi.mocked(getMessages)
+      .mockResolvedValueOnce({
+        items: messages,
+        total_count: 3,
+        has_more: true,
+        next_offset: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [older],
+        total_count: 3,
+        has_more: false,
+        next_offset: null,
+      });
+    render(<MessagesView />);
+    await screen.findByText("邮件一");
+    fireEvent.click(screen.getByRole("button", { name: /继续加载/ }));
+    expect(await screen.findByText("更早的邮件")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("list", { name: "消息列表" })
+        .querySelectorAll('[role="listitem"]').length,
+    ).toBe(3);
   });
 
   it("消息框先出现，异步正文准备后才进入详情显现", async () => {
@@ -289,13 +328,18 @@ describe("MessagesView", () => {
   );
 
   it("区分系统空态与筛选无结果，并提供真实恢复动作", async () => {
-    vi.mocked(getMessages).mockResolvedValue({ items: [] });
+    vi.mocked(getMessages).mockResolvedValue({
+      items: [],
+      total_count: 0,
+      has_more: false,
+      next_offset: null,
+    });
     render(<MessagesView />);
 
     expect(await screen.findByText("暂无消息")).toBeTruthy();
-    expect(screen.getByText("共 0 条消息").getAttribute("aria-live")).toBe(
-      "polite",
-    );
+    const count = document.querySelector(".message-count");
+    expect(count?.textContent?.replace(/\s+/g, "")).toBe("共0条");
+    expect(count?.getAttribute("aria-live")).toBe("polite");
     fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
     await waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2));
 

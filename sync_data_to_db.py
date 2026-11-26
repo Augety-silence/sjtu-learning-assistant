@@ -450,8 +450,8 @@ def sync_mail(
 
     if result.bootstrap_truncated:
         print(
-            f"提示：首次同步仅导入最近 {initial_limit} 封邮件；"
-            "后续新邮件将通过 UID 游标完整增量同步。"
+            f"提示：邮箱历史仍有未回填邮件；本轮历史回填最多 {initial_limit} 封，"
+            "已保存进度，后续同步会继续处理。"
         )
 
 

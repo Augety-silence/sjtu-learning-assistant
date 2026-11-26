@@ -133,7 +133,7 @@ class HistoryPersistenceTests(unittest.TestCase):
         service = DashboardService(self.engine, archive_root=self.root / "archive", now_provider=lambda: self.now)
         try:
             self.assertEqual([], service.deadlines(None))
-            self.assertEqual([], service.messages("assignment"))
+            self.assertEqual(["历史未交"],[item["title"] for item in service.messages("assignment")],)
             self.assertEqual([], service.calendar(self.now.year, self.now.month)["month_events"])
         finally:
             service.close()

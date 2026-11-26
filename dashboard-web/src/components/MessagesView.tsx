@@ -1,3 +1,4 @@
+import { Search } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContentReveal } from "@/components/ContentReveal";
@@ -50,8 +51,14 @@ function messageShortcutHint() {
 
 export function MessagesView() {
   const [kind, setKind] = useState<MessageFilter>("all");
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
   const [items, setItems] = useState<MessageItem[] | null>(null);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [compactReading, setCompactReading] = useState(false);
   const [error, setError] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
@@ -63,20 +70,60 @@ export function MessagesView() {
 
   const closeDetail = useCallback(() => {
     setDetailItem(null);
+    setCompactReading(false);
   }, []);
 
   const loadRequestRef = useRef(0);
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
     setItems(null);
+    setTotalCount(0);
+    setHasMore(false);
     setError("");
     try {
-      const data = await getMessages(kind);
-      if (requestId === loadRequestRef.current) setItems(data.items);
+      const data = await getMessages(kind, { query, offset: 0, limit: 60 });
+      if (requestId === loadRequestRef.current) {
+        setItems(data.items);
+        setTotalCount(data.total_count);
+        setHasMore(data.has_more);
+      }
     } catch (reason) {
       if (requestId === loadRequestRef.current) setError(messageError(reason));
     }
-  }, [kind]);
+  }, [kind, query]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore || !items) return;
+    const requestId = loadRequestRef.current;
+    setLoadingMore(true);
+    try {
+      const data = await getMessages(kind, {
+        query,
+        offset: items.length,
+        limit: 60,
+      });
+      if (requestId === loadRequestRef.current) {
+        setItems((current) => {
+          const existing = new Set((current ?? []).map(messageKey));
+          return [
+            ...(current ?? []),
+            ...data.items.filter((item) => !existing.has(messageKey(item))),
+          ];
+        });
+        setTotalCount(data.total_count);
+        setHasMore(data.has_more);
+      }
+    } catch (reason) {
+      if (requestId === loadRequestRef.current) setError(messageError(reason));
+    } finally {
+      if (requestId === loadRequestRef.current) setLoadingMore(false);
+    }
+  }, [hasMore, items, kind, loadingMore, query]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(queryInput.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [queryInput]);
 
   useEffect(() => {
     void load();
@@ -94,12 +141,29 @@ export function MessagesView() {
     );
   }, [items]);
 
+  useEffect(() => {
+    if (
+      items &&
+      detailItem &&
+      !items.some(
+        (candidate) => messageKey(candidate) === messageKey(detailItem),
+      )
+    ) {
+      setDetailItem(null);
+      setCompactReading(false);
+    }
+  }, [detailItem, items]);
+
   const openDetail = useCallback(
     (item: MessageItem, trigger?: HTMLElement | null) => {
       const key = messageKey(item);
       setSelectedKey(key);
       detailTriggerRef.current = trigger ?? rowRefs.current.get(key) ?? null;
       setDetailItem(item);
+      setCompactReading(
+        typeof window.matchMedia !== "function" ||
+          window.matchMedia("(max-width: 900px)").matches,
+      );
     },
     [],
   );
@@ -314,6 +378,20 @@ export function MessagesView() {
           <h2>消息收件箱</h2>
           <InfoTooltip label="消息快捷键">{messageShortcutHint()}</InfoTooltip>
         </div>
+        <div className="message-search-row">
+          <label className="search-control" role="search">
+            <Search aria-hidden="true" />
+            <input
+              value={queryInput}
+              onChange={(event) => setQueryInput(event.target.value)}
+              placeholder="搜索标题、正文、发件人或课程"
+              aria-label="搜索消息"
+            />
+          </label>
+          <span className="message-count" aria-live="polite">
+            共 {totalCount} 条{unreadCount ? ` · ${unreadCount} 条未读` : ""}
+          </span>
+        </div>
         <div className="message-toolbar">
           <Tabs
             value={kind}
@@ -346,7 +424,7 @@ export function MessagesView() {
 
       <p className="sr-only" aria-live="polite">
         {items
-          ? `共 ${items.length} 条消息${unreadCount ? `，${unreadCount} 条未读` : ""}`
+          ? `已加载 ${items.length} 条，共 ${totalCount} 条消息${unreadCount ? `，当前页 ${unreadCount} 条未读` : ""}`
           : ""}
       </p>
       {error ? (
@@ -355,11 +433,19 @@ export function MessagesView() {
         <LoadingState />
       ) : items.length === 0 ? (
         <EmptyState
-          title={kind === "all" ? "暂无消息" : "当前筛选没有结果"}
+          title={
+            query
+              ? "没有找到匹配消息"
+              : kind === "all"
+                ? "暂无消息"
+                : "当前筛选没有结果"
+          }
           description={
-            kind === "all"
-              ? "完成同步后，邮件、公告与作业消息会显示在这里。"
-              : "可以清除筛选查看全部消息。"
+            query
+              ? "试试缩短关键词，或切换消息类型。"
+              : kind === "all"
+                ? "完成同步后，邮件、公告与作业消息会显示在这里。"
+                : "可以清除筛选查看全部消息。"
           }
           action={
             kind !== "all" ? (
@@ -381,74 +467,101 @@ export function MessagesView() {
           }
         />
       ) : (
-        <div className="list-surface" role="list" aria-label="消息列表">
-          {items.map((item) => {
-            const key = messageKey(item);
-            const selected = selectedKey === key;
-            return (
-              <div
-                role="listitem"
-                className={`list-row message-row${selected ? " message-row-selected" : ""}${item.is_unread ? " message-row-unread" : ""}`}
-                key={key}
-              >
-                <button
-                  type="button"
-                  className="message-open"
-                  aria-label={`打开消息详情：${item.title}`}
-                  aria-current={selected ? "true" : undefined}
-                  ref={(node) => {
-                    if (node) rowRefs.current.set(key, node);
-                    else rowRefs.current.delete(key);
-                  }}
-                  onFocus={() => setSelectedKey(key)}
-                  onClick={(event) => openDetail(item, event.currentTarget)}
-                >
-                  <div className="min-w-0">
-                    <div className="message-title">
-                      {item.is_unread && (
-                        <span className="unread-dot" aria-hidden="true" />
-                      )}
-                      <p className="truncate">{item.title}</p>
-                      {item.is_unread && (
-                        <span className="unread-label">未读</span>
-                      )}
-                    </div>
-                    <span>
-                      {item.source_label} · {kindLabels[item.kind]}
-                    </span>
-                  </div>
-                  <span className="row-time">
-                    {formatDateTime(item.occurred_at)}
-                  </span>
-                </button>
-                {item.is_unread && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`将“${item.title}”标记为已读`}
-                    disabled={busyKey !== null}
-                    onClick={() => void markOneRead(item)}
+        <div
+          className={`message-layout${compactReading ? " message-layout-reading" : ""}`}
+        >
+          <div className="message-list-column">
+            <div className="list-surface" role="list" aria-label="消息列表">
+              {items.map((item) => {
+                const key = messageKey(item);
+                const selected = selectedKey === key;
+                return (
+                  <div
+                    role="listitem"
+                    className={`list-row message-row${selected ? " message-row-selected" : ""}${item.is_unread ? " message-row-unread" : ""}`}
+                    key={key}
                   >
-                    {busyKey === key ? "处理中…" : "标为已读"}
-                  </Button>
-                )}
+                    <button
+                      type="button"
+                      className="message-open"
+                      aria-label={`打开消息详情：${item.title}`}
+                      aria-current={selected ? "true" : undefined}
+                      ref={(node) => {
+                        if (node) rowRefs.current.set(key, node);
+                        else rowRefs.current.delete(key);
+                      }}
+                      onFocus={() => setSelectedKey(key)}
+                      onClick={(event) => openDetail(item, event.currentTarget)}
+                    >
+                      <div className="min-w-0">
+                        <div className="message-title">
+                          {item.is_unread && (
+                            <span className="unread-dot" aria-hidden="true" />
+                          )}
+                          <p className="truncate">{item.title}</p>
+                          {item.is_unread && (
+                            <span className="unread-label">未读</span>
+                          )}
+                        </div>
+                        <span>
+                          {item.source_label} · {kindLabels[item.kind]}
+                        </span>
+                      </div>
+                      <span className="row-time">
+                        {formatDateTime(item.occurred_at)}
+                      </span>
+                    </button>
+                    {item.is_unread && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`将“${item.title}”标记为已读`}
+                        disabled={busyKey !== null}
+                        onClick={() => void markOneRead(item)}
+                      >
+                        {busyKey === key ? "处理中…" : "标为已读"}
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {hasMore ? (
+              <div className="message-load-more">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={loadingMore}
+                  onClick={() => void loadMore()}
+                >
+                  {loadingMore
+                    ? "正在加载…"
+                    : `继续加载（已显示 ${items.length} / ${totalCount}）`}
+                </Button>
               </div>
-            );
-          })}
+            ) : null}
+          </div>
+          <section className="message-detail-column" aria-label="消息正文">
+            <AnimatePresence initial={false}>
+              {detailItem ? (
+                <MessageDetailDialog
+                  item={detailItem}
+                  presentation={compactReading ? "dialog" : "pane"}
+                  onClose={closeDetail}
+                  onMarkedRead={applyRead}
+                  triggerRef={detailTriggerRef}
+                />
+              ) : (
+                <div className="message-detail-empty">
+                  选择一条消息查看正文、来源和附件。
+                </div>
+              )}
+            </AnimatePresence>
+          </section>
         </div>
       )}
-
-      <AnimatePresence initial={false}>
-        {detailItem && (
-          <MessageDetailDialog
-            item={detailItem}
-            onClose={closeDetail}
-            onMarkedRead={applyRead}
-            triggerRef={detailTriggerRef}
-          />
-        )}
-      </AnimatePresence>
     </ContentReveal>
   );
 }

@@ -108,6 +108,15 @@ class FakeService:
     def messages(self, kind):
         return [{"kind": kind}]
 
+    def message_page(self, kind, *, query="", offset=0, limit=60):
+        items = self.messages(kind)
+        return {
+            "items": items[offset : offset + limit],
+            "total_count": len(items),
+            "has_more": False,
+            "next_offset": None,
+                }
+
     def material_tree(self):
         return {"root": {"id": "root", "children": []}}
 
