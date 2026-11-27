@@ -411,20 +411,23 @@ def sync_mail(
     with diagnostic_stage("email", "credentials"):
         password, _ = get_password(email_address, use_keychain=True, interactive=False)
     state = get_sync_state(engine, "email", "inbox")
-    result = fetch_incremental_mail(
-        email_address,
-        password,
-        state.cursor if state else None,
-        initial_limit=initial_limit,
-    )
-    with diagnostic_stage("email", "persist"):
-        persisted = persist_emails(engine, result.messages, cursor=result.cursor)
-    record_event("email", "persist", "counts", fetched=persisted.fetched, inserted=persisted.inserted, updated=persisted.updated)
-    print(
-        "邮箱同步成功："
-        f"获取 {persisted.fetched}，新增 {persisted.inserted}，"
-        f"更新 {persisted.updated}；最高 UID {result.highest_uid}。"
-    )
+    counts = {"fetched": 0, "inserted": 0, "updated": 0}
+    batch_count = 0
+    def save_batch(batch):
+        nonlocal batch_count
+        batch_count += 1
+        with diagnostic_stage("email", "persist"):
+            persisted = persist_emails(engine, batch.messages, cursor=batch.cursor)
+        for name in counts:
+            counts[name] += getattr(persisted, name)
+        print(f"邮箱归档：本轮已保存 {counts['fetched']} 封。", flush=True)
+    result = fetch_incremental_mail(email_address, password, state.cursor if state else None,
+                                    initial_limit=initial_limit, on_batch=save_batch)
+    # 兼容第三方/测试同步器没有调用批次回调的情况。
+    if batch_count == 0:
+        save_batch(result)
+    record_event("email", "persist", "counts", **counts)
+    print(f"邮箱同步成功：获取 {counts['fetched']}，新增 {counts['inserted']}，更新 {counts['updated']}；最高 UID {result.highest_uid}。")
 
     try:
         targets = get_email_body_backfill_targets(
@@ -450,8 +453,7 @@ def sync_mail(
 
     if result.bootstrap_truncated:
         print(
-            f"提示：首次同步仅导入最近 {initial_limit} 封邮件；"
-            "后续新邮件将通过 UID 游标完整增量同步。"
+            "提示：历史邮件回填尚未完成，下次同步将从已保存游标继续。"
         )
 
 
@@ -513,6 +515,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
             ai_client = None
             if (
                 settings.auto_download_current_term
+                and not settings.current_term_md_enabled
                 and settings.ai_enabled
                 and settings.ai_key_saved
             ):
@@ -539,7 +542,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
                     sync_canvas(
                         engine,
                         notify=not args.no_notify and not (args.term_id or args.course_id),
-                        download=settings.auto_download_current_term,
+                        download=settings.auto_download_current_term and not settings.current_term_md_enabled,
                         archive_root=Path(settings.archive_root),
                         current_term=args.current_term,
                         **sync_options,

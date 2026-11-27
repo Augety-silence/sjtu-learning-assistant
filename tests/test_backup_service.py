@@ -47,6 +47,12 @@ class FakeProvider:
         self.fail_paths: set[tuple[str, ...]] = set()
         self.info_requests: list[tuple[str, ...]] = []
         self.closed = False
+        self.identity = None
+        self.exists_requests = []
+        self.download_requests = []
+
+    def backup_identity(self):
+        return self.identity
 
     def ensure_directory(self, path):
         self.directories.append(tuple(path))
@@ -55,6 +61,7 @@ class FakeProvider:
         self.directories.append(tuple(path))
 
     def exists(self, path):
+        self.exists_requests.append(tuple(path))
         return tuple(path) in self.remote
 
     def get_info(self, path):
@@ -87,6 +94,7 @@ class FakeProvider:
     @contextmanager
     def download_temp(self, path):
         normalized = tuple(path)
+        self.download_requests.append(normalized)
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "download"
             target.write_bytes(self.payloads[normalized])
@@ -549,6 +557,7 @@ class BackupServiceTests(unittest.TestCase):
         )
         provider = FakeProvider()
         provider.remote[candidates[0].remote_path] = CloudItem("same.bin", candidates[0].remote_path, False, 4)
+        provider.payloads[candidates[0].remote_path] = b"same"
         provider.remote[candidates[1].remote_path] = CloudItem("overwrite.bin", candidates[1].remote_path, False, 1)
 
         result = self._service(provider, threshold=8).backup(candidates)
@@ -644,6 +653,7 @@ class BackupServiceTests(unittest.TestCase):
             candidate.remote_path[-1], candidate.remote_path, False, 6
         )
 
+        provider.payloads[candidate.remote_path] = b"canvas"
         result = service.backup((candidate,), remove_local=True)
 
         self.assertEqual(1, result["skipped_existing"])
@@ -944,7 +954,7 @@ class BackupServiceTests(unittest.TestCase):
             {"canvas", "mail", "ready", "cloud_only", "missing_local", "total"},
             count_fields,
         )
-        self.assertEqual({"done", "total", "current_name"}, progress_fields)
+        self.assertEqual({"done", "total", "current_name", "files"}, progress_fields)
         self.assertEqual(
             {
                 "started_at",

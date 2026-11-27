@@ -80,6 +80,67 @@ def endpoint():
     thread.join(2)
 
 
+def test_interrupt_observer_only_shutdowns_and_request_owner_closes():
+    from sjtu_learning_assistant.ai_classifier import _DeltaCallbackAbort, _RequestWatch
+    from socket import SHUT_RDWR
+
+    cancel, ready, read_woken = threading.Event(), threading.Event(), threading.Event()
+    operations, errors, owner_ids = list(), list(), list()
+
+    def check():
+        if cancel.is_set():
+            raise ChatSteeringInterrupt('synthetic cancellation')
+
+    def shutdown(how):
+        operations.append(('shutdown', threading.get_ident(), how))
+        read_woken.set()
+
+    def close(kind):
+        operations.append((kind, threading.get_ident(), None))
+
+    stream = SimpleNamespace(
+        get_extra_info=lambda name: SimpleNamespace(shutdown=shutdown) if name == 'socket' else None,
+        close=lambda: close('stream_close'),
+    )
+    response = SimpleNamespace(close=lambda: close('response_close'))
+
+    def request_owner():
+        owner_ids.append(threading.get_ident())
+        try:
+            with _RequestWatch(check) as watch:
+                watch.trace('connection.connect_tcp.complete', dict(return_value=stream))
+                watch.response(response, check=False)
+                ready.set()
+                assert read_woken.wait(2)
+                watch.check()
+        except _DeltaCallbackAbort as abort:
+            errors.append(abort.original)
+        finally:
+            # Represents the existing request-owned httpx/httpcore cleanup.
+            response.close()
+            stream.close()
+
+    worker = threading.Thread(target=request_owner)
+    worker.start()
+    try:
+        assert ready.wait(2)
+        cancel.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert len(errors) == 1 and isinstance(next(iter(errors)), ChatSteeringInterrupt)
+        owner = next(iter(owner_ids))
+        shutdowns = tuple(item for item in operations if item[0] == 'shutdown')
+        closes = tuple(item for item in operations if item[0] != 'shutdown')
+        assert len(shutdowns) == 1 and shutdowns[0][1] != owner
+        assert shutdowns[0][2] == SHUT_RDWR
+        assert len(closes) == 2 and all(item[1] == owner for item in closes)
+        assert set(item[0] for item in closes) == set(('stream_close', 'response_close'))
+    finally:
+        cancel.set()
+        read_woken.set()
+        worker.join(2)
+
+
 @pytest.mark.parametrize('mode,text', [('stream', '等响应头'), ('stream', '等首 token'), ('post', '等响应头')])
 def test_interrupt_silent_request_leaves_shared_client_and_other_session_usable(endpoint, mode, text):
     client, state = endpoint
@@ -141,6 +202,290 @@ def test_cancel_keeps_received_paid_content_and_usage(endpoint):
     assert isinstance(errors[0], AITaskCancelled)
     assert errors[0].partial_response['content'] == '已付费片段'
     assert errors[0].partial_response['usage']['total_tokens'] == 14
+
+
+@pytest.mark.parametrize('mode,text', (
+    ('stream', '等响应头'), ('stream', '等首 token'),
+    ('post', '等响应头'), ('stream', '部分响应'),
+))
+def test_interrupt_when_shutdown_does_not_wake_timed_read(endpoint, monkeypatch, mode, text):
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    # Model Windows select/recv remaining asleep after the observer's shutdown.
+    # Keep the real HTTP transport, existing budgets and 1.5-second assertions.
+    monkeypatch.setattr(_RequestWatch, '_interrupt_stream', lambda self: None)
+    if text == '部分响应':
+        test_cancel_keeps_received_paid_content_and_usage(endpoint)
+    else:
+        test_interrupt_silent_request_leaves_shared_client_and_other_session_usable(endpoint, mode, text)
+
+
+@pytest.mark.parametrize('event', ('connection.connect_tcp.complete', 'connection.start_tls.complete'))
+def test_interruptible_read_retains_original_timeout_deadline(monkeypatch, event):
+    import httpcore
+    import sjtu_learning_assistant.ai_classifier as classifier
+
+    clock, timeouts = SimpleNamespace(now=0.0), list()
+    monkeypatch.setattr(classifier, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+
+    def read(max_bytes, timeout=None):
+        assert max_bytes == 64
+        timeouts.append(timeout)
+        clock.now += timeout
+        raise httpcore.ReadTimeout('synthetic idle read')
+
+    stream = SimpleNamespace(read=read)
+    with classifier._RequestWatch(lambda: None) as watch:
+        watch.trace(event, dict(return_value=stream))
+        with pytest.raises(httpcore.ReadTimeout):
+            stream.read(64, timeout=0.35)
+    assert len(timeouts) == 4
+    assert all(0 < value <= 0.1 for value in timeouts)
+    assert sum(timeouts) == pytest.approx(0.35)
+    assert clock.now == pytest.approx(0.35)
+
+
+@pytest.mark.parametrize('timeout', (None, 1.0))
+def test_interruptible_read_resumes_same_read_without_retrying_request(monkeypatch, timeout):
+    import httpcore
+    import sjtu_learning_assistant.ai_classifier as classifier
+
+    clock, timeouts = SimpleNamespace(now=0.0), list()
+    monkeypatch.setattr(classifier, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+
+    def read(max_bytes, timeout=None):
+        timeouts.append(timeout)
+        clock.now += timeout
+        if len(timeouts) < 4:
+            raise httpcore.ReadTimeout('synthetic poll')
+        return b'paid bytes'
+
+    stream = SimpleNamespace(read=read)
+    with classifier._RequestWatch(lambda: None) as watch:
+        watch.trace('connection.start_tls.complete', dict(return_value=stream))
+        assert stream.read(64, timeout=timeout) == b'paid bytes'
+    assert len(timeouts) == 4 and tuple(timeouts) == (0.1, 0.1, 0.1, 0.1)
+
+
+def test_requests_without_interrupt_callback_leave_backend_read_unchanged():
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    def read(max_bytes, timeout=None):
+        return b'normal bytes'
+
+    stream = SimpleNamespace(read=read)
+    with _RequestWatch(None) as watch:
+        watch.trace('connection.connect_tcp.complete', dict(return_value=stream))
+        assert stream.read is read
+
+
+@pytest.mark.parametrize('terminal', ('normal', 'cancelled'))
+def test_keepalive_reuse_never_calls_previous_request_callback(endpoint, monkeypatch, terminal):
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    client, state = endpoint
+    # Exercise real HTTP/1.1 pooling. Production clients still disable idle reuse
+    # to capture their own sockets before waiting for response headers.
+    monkeypatch.setattr(client._client._transport._pool, '_max_keepalive_connections', 10)
+    callbacks, streams, errors = list(), list(), list()
+    retired, cancel = threading.Event(), threading.Event()
+    trace = _RequestWatch.trace
+
+    def capture(watch, event, info):
+        if event in ('connection.connect_tcp.complete', 'connection.start_tls.complete'):
+            stream = info.get('return_value')
+            streams.append((stream, stream.read))
+        return trace(watch, event, info)
+
+    monkeypatch.setattr(_RequestWatch, 'trace', capture)
+
+    def check():
+        callbacks.append(threading.get_ident())
+        assert not retired.is_set(), 'previous request callback was retained'
+        if cancel.is_set():
+            raise AITaskCancelled('synthetic cancel')
+
+    messages = list((dict(role='user', content='normal A'),))
+    if terminal == 'normal':
+        assert client.chat_completion(messages, request_check=check).get('content') == '独立回复'
+    else:
+        state.started.clear()
+        def run():
+            try:
+                client.chat_completion_stream(list((dict(role='user', content='等首 token'),)), request_check=check)
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=run)
+        worker.start()
+        try:
+            assert state.started.wait(2)
+            cancel.set()
+            worker.join(1.5)
+            assert not worker.is_alive()
+            assert len(errors) == 1 and isinstance(next(iter(errors)), AITaskCancelled)
+        finally:
+            state.release.set()
+            worker.join(2)
+    retired.set()
+    callback_count = len(callbacks)
+    assert all(stream.read == original for stream, original in streams)
+    for text in ('next B', 'next C'):
+        assert client.chat_completion(list((dict(role='user', content=text),))).get('content') == '独立回复'
+    assert len(callbacks) == callback_count
+    # B/C share the same accepted socket. Cancelled A is discarded; normal A
+    # also shares that socket, rather than simply opening a replacement.
+    a_connection, b_connection, c_connection = state.connections
+    assert b_connection == c_connection
+    assert len(set(state.connections)) == (1 if terminal == 'normal' else 2)
+    assert all(stream.read == original for stream, original in streams)
+
+
+def test_cancel_reused_keepalive_stream_uses_only_current_callback(endpoint, monkeypatch):
+    client, state = endpoint
+    monkeypatch.setattr(client._client._transport._pool, '_max_keepalive_connections', 10)
+    old_calls, current_calls, errors = list(), list(), list()
+    retired, cancel = threading.Event(), threading.Event()
+
+    def old_check():
+        old_calls.append(threading.get_ident())
+        assert not retired.is_set(), 'reused stream retained old callback'
+
+    assert client.chat_completion(list((dict(role='user', content='warmup'),)), request_check=old_check).get('content') == '独立回复'
+    retired.set()
+    old_count = len(old_calls)
+
+    def current_check():
+        current_calls.append(threading.get_ident())
+        if cancel.is_set():
+            raise AITaskCancelled('current request only')
+
+    def run():
+        try:
+            client.chat_completion_stream(list((dict(role='user', content='等首 token'),)), request_check=current_check)
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert state.started.wait(2)
+        assert len(state.connections) == 2 and len(set(state.connections)) == 1
+        cancel.set()
+        worker.join(1.5)
+        assert not worker.is_alive()
+        assert len(errors) == 1 and isinstance(next(iter(errors)), AITaskCancelled)
+        assert len(old_calls) == old_count and current_calls
+        assert client.chat_completion(list((dict(role='user', content='after cancellation'),))).get('content') == '独立回复'
+        assert len(old_calls) == old_count
+    finally:
+        state.release.set()
+        worker.join(2)
+
+
+def test_pool_handoff_restores_before_owner_exit_and_cannot_shutdown_next_request(endpoint, monkeypatch):
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    client, state = endpoint
+    monkeypatch.setattr(client._client._transport._pool, '_max_keepalive_connections', 10)
+    cleanup_ready, cleanup_release = threading.Event(), threading.Event()
+    next_done, cancel_previous, observed_cancel = threading.Event(), threading.Event(), threading.Event()
+    errors, stale_reader_calls, next_results = list(), list(), list()
+    next_owner = SimpleNamespace(ident=None)
+    exit_watch = _RequestWatch.__exit__
+
+    def old_check():
+        if threading.get_ident() == next_owner.ident:
+            stale_reader_calls.append(threading.get_ident())
+        if cancel_previous.is_set():
+            observed_cancel.set()
+            raise ChatSteeringInterrupt('late previous-request supplement')
+
+    def delayed_exit(watch, kind, error, traceback):
+        if watch.callback is old_check:
+            cleanup_ready.set()
+            assert cleanup_release.wait(2)
+        return exit_watch(watch, kind, error, traceback)
+
+    monkeypatch.setattr(_RequestWatch, '__exit__', delayed_exit)
+
+    def first():
+        try:
+            client.chat_completion(list((dict(role='user', content='normal A'),)), request_check=old_check)
+        except Exception as exc:
+            errors.append(exc)
+
+    def second():
+        next_owner.ident = threading.get_ident()
+        try:
+            next_results.append(client.chat_completion(list((dict(role='user', content='等响应头'),))))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            next_done.set()
+
+    a, b = threading.Thread(target=first), threading.Thread(target=second)
+    a.start()
+    try:
+        assert cleanup_ready.wait(2)
+        b.start()
+        assert state.started.wait(2)
+        assert len(state.connections) == 2 and len(set(state.connections)) == 1
+        cancel_previous.set()
+        assert observed_cancel.wait(1.5)
+        cleanup_release.set()
+        a.join(1.5)
+        assert not a.is_alive()
+        assert not next_done.is_set(), 'previous observer shut down the next pooled request'
+        state.release.set()
+        b.join(1.5)
+        assert not b.is_alive()
+        assert not stale_reader_calls
+        assert len(next_results) == 1 and next(iter(next_results)).get('content') == '独立回复'
+        assert len(errors) == 1 and isinstance(next(iter(errors)), ChatSteeringInterrupt)
+    finally:
+        cleanup_release.set()
+        state.release.set()
+        a.join(2)
+        if b.ident is not None:
+            b.join(2)
+
+
+@pytest.mark.parametrize('same_stream', (False, True))
+def test_tls_trace_does_not_double_wrap_and_owner_restores_reads(same_stream):
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    calls, checks = list(), list()
+    def read(max_bytes, timeout=None):
+        calls.append(timeout)
+        return b'bytes'
+
+    tcp = SimpleNamespace(read=read)
+    tls = tcp if same_stream else SimpleNamespace(read=read)
+    with _RequestWatch(lambda: checks.append(threading.get_ident())) as watch:
+        watch.trace('connection.connect_tcp.complete', dict(return_value=tcp))
+        watch.trace('connection.start_tls.complete', dict(return_value=tls))
+        if not same_stream:
+            assert tcp.read is read
+        before = len(checks)
+        assert tls.read(64, timeout=1.0) == b'bytes'
+        assert len(checks) == before + 1 and tuple(calls) == (0.1,)
+        watch.trace('http11.response_closed.started', dict())
+        assert tcp.read is read and tls.read is read
+        assert watch._stream is None
+    assert tcp.read is read and tls.read is read
+
+
+def test_owner_exit_restores_read_when_no_response_close_trace():
+    from sjtu_learning_assistant.ai_classifier import _RequestWatch
+
+    def read(max_bytes, timeout=None):
+        return b'bytes'
+
+    stream = SimpleNamespace(read=read)
+    with _RequestWatch(lambda: None) as watch:
+        watch.trace('connection.connect_tcp.complete', dict(return_value=stream))
+        assert stream.read is not read
+    assert stream.read is read
 
 
 def test_network_timeout_keeps_paid_partial_and_actual_usage():

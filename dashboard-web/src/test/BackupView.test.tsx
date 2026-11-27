@@ -79,6 +79,8 @@ describe("BackupView", () => {
         .hasAttribute("disabled"),
     ).toBe(false);
     expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.queryByText("云盘档案")).toBeNull();
+    expect(screen.queryByText("交大云盘连接")).toBeNull();
   });
 
   it("默认保留本地副本并显式传递安全选项", async () => {
@@ -209,8 +211,8 @@ describe("BackupView", () => {
 
     expect(await screen.findByText("请先登录 SJTU Pan。")).toBeTruthy();
     expect(
-      screen.getByText(/已统一移至“系统设置 → 交大云盘”管理/),
-    ).toBeTruthy();
+      screen.queryByText(/已统一移至“系统设置 → 交大云盘”管理/),
+    ).toBeNull();
     expect(
       screen
         .getByRole("button", { name: "归档至云端" })

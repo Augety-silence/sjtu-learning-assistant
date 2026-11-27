@@ -8,10 +8,10 @@ on:
         required: true
         type: string
       use_local_macos:
-        description: Use native Mac DMG/proof uploaded by the dispatch/tag actor; do not queue hosted Mac
+        description: Legacy input; must be false. Both native CI builds are required.
         required: true
         type: boolean
-        default: true
+        default: false
   push:
     tags:
       - "v*.*.*"
@@ -46,10 +46,12 @@ jobs:
         id: identity
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          USE_LOCAL_MACOS: ${{ github.event_name != 'workflow_dispatch' || inputs.use_local_macos }}
+          USE_LOCAL_MACOS: ${{ github.event_name == 'workflow_dispatch' && inputs.use_local_macos }}
         run: |
           set -euo pipefail
+          test "$USE_LOCAL_MACOS" = "false" || { printf '%s\n' 'Local proof bypass is disabled; native Mac CI is required.' >&2; exit 1; }
           COMMIT="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$(git rev-parse "$GITHUB_SHA^{commit}")" = "$COMMIT" || { printf '%s\n' 'Dispatch --ref must resolve to the release tag commit.' >&2; exit 1; }
           git checkout --detach "$COMMIT"
           python scripts/verify_release_assets.py identity --tag "$RELEASE_TAG" --release-commit "$COMMIT"
           printf 'tag=%s\ncommit=%s\nuse_local_macos=%s\n' "$RELEASE_TAG" "$COMMIT" "$USE_LOCAL_MACOS" >> "$GITHUB_OUTPUT"
@@ -97,8 +99,8 @@ jobs:
                   raise SystemExit('Non-official registry in package-lock.json')
           PY
       - run: python -m pip install -r requirements-dev.txt
-      - name: Full Python suite (no skipped subset)
-        run: python -m unittest discover -s tests -v
+      - name: Full Python suite (pytest and unittest cases)
+        run: python -m pytest -vv -o faulthandler_timeout=120 tests
       - run: npm --prefix dashboard-web ci --no-audit --no-fund
       - run: npm --prefix dashboard-web run test
       - run: npm --prefix dashboard-web run lint
@@ -109,8 +111,48 @@ jobs:
       - name: Redacted history secrets gate
         run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 detect --source=/repo --redact --no-banner
 
-  windows-release:
+  windows-preflight:
+    # Fast, packaging-free Windows signal so encoding, locking or read-only
+    # fixture regressions fail in minutes instead of after a full build.
     needs: initialize
+    if: needs.initialize.outputs.eligible == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Preserve exact recipe bytes across Windows and Mac checkouts
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-windows.txt
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-windows.txt
+      - name: Full Windows tests without packaging
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pytest -vv -o faulthandler_timeout=120 tests
+
+  windows-release:
+    needs: [initialize, windows-preflight]
     if: needs.initialize.outputs.eligible == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
@@ -163,12 +205,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           if (-not (Test-Path -LiteralPath $env:SJTU_MSYS2_BASH)) { throw "setup-msys2 Bash not found" }
           ./scripts/build_windows_app.ps1
-      - name: Full Windows tests (no subset or silent timeout skips)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          & .venv/Scripts/python.exe -m pytest -vv -o faulthandler_timeout=120 tests
+      # The identical full suite already ran on this same immutable commit in
+      # windows-preflight; do not duplicate a ~10 minute run after packaging.
       - name: Execute native evidence gates and produce all checksum sidecars
         shell: pwsh
         run: |
@@ -178,7 +216,14 @@ jobs:
             --tag $env:RELEASE_TAG --release-commit $env:RELEASE_COMMIT `
             --bundle "dist/SJTU Learning Assistant" --stage dist/ffmpeg `
             --artifacts-dir dist --output-dir dist/release-evidence
-      - name: Upload Windows binaries, proof and verbatim source to DRAFT only
+      - name: Preserve native Windows proof internally in this Release run
+        uses: actions/upload-artifact@v4
+        with:
+          name: SJTU-release-evidence-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/release-evidence/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload only Setup EXE and portable ZIP to DRAFT
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -189,8 +234,8 @@ jobs:
 
   macos-release:
     needs: initialize
-    # Local mode never queues a macos-15 runner. Windows/publisher are independent.
-    if: needs.initialize.outputs.eligible == 'true' && needs.initialize.outputs.use_local_macos == 'false'
+    # Both native jobs build the exact resolved tag commit; local proofs cannot substitute.
+    if: needs.initialize.outputs.eligible == 'true'
     runs-on: macos-15
     timeout-minutes: 90
     permissions:
@@ -221,12 +266,20 @@ jobs:
       - name: Build and natively verify app and DMG
         run: |
           scripts/build_macos_app.sh
+          .venv/bin/python -m pytest -vv -o faulthandler_timeout=120 tests
           scripts/build_macos_dmg.sh
           .venv/bin/python scripts/prepare_release_evidence.py --platform macos \
             --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
             --bundle "dist/SJTU Learning Assistant.app" --stage dist/ffmpeg \
             --artifacts-dir dist --output-dir dist/release-evidence
-      - name: Upload native Mac assets to DRAFT only
+      - name: Preserve native Mac proof internally in this Release run
+        uses: actions/upload-artifact@v4
+        with:
+          name: SJTU-release-evidence-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/release-evidence/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload only the native DMG to DRAFT
         run: |
           .venv/bin/python scripts/verify_release_assets.py upload \
             --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
@@ -234,16 +287,17 @@ jobs:
 
   publish-release:
     needs: [initialize, release-checks, windows-release, macos-release]
-    # always() permits the intentionally skipped Mac job, never a failed Windows/checks job.
+    # No skipped, failed or local-only native build is eligible for promotion.
     if: >-
       always() &&
       needs.initialize.result == 'success' && needs.initialize.outputs.eligible == 'true' &&
       needs.release-checks.result == 'success' && needs.windows-release.result == 'success' &&
-      (needs.initialize.outputs.use_local_macos == 'true' || needs.macos-release.result == 'success')
+      needs.macos-release.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -252,16 +306,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Wait boundedly for local Mac, validate EVERY binary/proof, then promote
+      - name: Authenticate same-run native proof, verify all three downloaded binaries, then promote
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.initialize.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.initialize.outputs.commit }}
-          USE_LOCAL_MACOS: ${{ needs.initialize.outputs.use_local_macos }}
-          # Authenticated GitHub uploader identity, not a field inside native JSON.
-          AUTHORIZED_MAC_UPLOADER: ${{ github.actor }}
+          # Pin authenticated workflow context; never trust an actor claimed by proof JSON.
+          RELEASE_ACTOR: ${{ github.actor }}
         run: |
           python scripts/verify_release_assets.py publish \
             --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \
-            --use-local-macos "$USE_LOCAL_MACOS" --mac-uploader "$AUTHORIZED_MAC_UPLOADER" \
-            --wait-seconds 600 --assets-dir dist/release-download
+            --release-run "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --actor "$RELEASE_ACTOR" \
+            --assets-dir dist/release-download

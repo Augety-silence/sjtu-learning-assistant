@@ -141,6 +141,7 @@ class CompiledKnowledge:
                  projects_path: Path = APP_SUPPORT_DIR / "local-projects.json", metadata: Callable | None = None, engine=None,
                  transcript_root: Path | None = None, transcript_metadata: Callable | None = None, recording_asr_root: Path | None = None):
         self.settings = settings
+        self.engine = engine
         self.projects_path = projects_path
         if metadata is None and engine is not None:
             from sjtu_learning_assistant.course_scope import knowledge_metadata
@@ -159,6 +160,20 @@ class CompiledKnowledge:
         archive = Path(self.settings().archive_root)
         metadata = self.metadata()
         automatic = archive / "Knowledge Markdown"
+        if self.engine is not None:
+            from .current_term_markdown import ready_records, OUTPUT
+            temporary_md = ready_records(self.engine, archive)
+            if temporary_md:
+                source = dict(id="current-term-md", name="本学期临时下载 Markdown", kind="automatic",
+                              root=str(archive / OUTPUT / "Documents"))
+                sources.append(source)
+                for item in temporary_md[:MAX_ENTRIES]:
+                    relative = Path(item["md_path"]).relative_to(Path(OUTPUT) / "Documents").as_posix()
+                    entry = self._entry(source, relative, "compiled")
+                    entry.update({key: item[key] for key in ("course_id", "course_name", "term_id", "term_name", "course_file_source_id")})
+                    entry.update(title=item["name"], contract="local-foundation-md-v1")
+                    documents.append(entry)
+                truncated = len(temporary_md) > MAX_ENTRIES
         try:
             marker = _safe(automatic, "99_System/Course-Sync.json")
             if marker.is_file():
@@ -210,11 +225,12 @@ class CompiledKnowledge:
                         visited = 0
                         course_documents: dict[str, tuple[tuple[bool, float], dict]] = {}
                         for folder, directories, files in os.walk(root, followlinks=False):
+                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments", "pages", "learning", "Previous", "history", "summary"} and not (Path(folder) / name).is_symlink())
+                            files = [name for name in files if not name.startswith(".") and Path(name).suffix.casefold() == ".md"]
                             visited += 1 + len(directories) + len(files)
                             if visited > MAX_ENTRIES or len(documents) >= MAX_ENTRIES:
                                 truncated = True
                                 break
-                            directories[:] = sorted(name for name in directories if not name.startswith(".") and name not in {"99_System", "assets", "attachments", "pages", "learning", "Previous", "history"} and not (Path(folder) / name).is_symlink())
                             for name in sorted(files):
                                 if name.startswith(".") or Path(name).suffix.casefold() != ".md":
                                     continue
@@ -251,6 +267,8 @@ class CompiledKnowledge:
         try:
             root = _safe(self.transcript_root, "videos")
             if root.is_dir():
+                from .markdown_progress import _source_states
+                source_states = _source_states(self.transcript_root)
                 course_metadata = self.transcript_metadata()
                 source = {"id": "automatic-transcripts", "name": "课堂字幕与总结", "kind": "automatic", "root": str(root)}
                 for directory in sorted(root.iterdir())[:MAX_ENTRIES]:
@@ -260,7 +278,10 @@ class CompiledKnowledge:
                     if not re.fullmatch(r"[0-9a-f]{32}", directory.name) or directory.is_symlink() or not directory.is_dir():
                         continue
                     try:
-                        manifest = _json(_safe(root, directory.name + "/manifest.json"))
+                        marker = _safe(root, directory.name + "/manifest.json")
+                        if not marker.exists() and source_states.get(directory.name) == "empty":
+                            continue  # 学校暂无字幕，不是损坏知识索引。
+                        manifest = _json(marker)
                         identity = manifest.get("source", {}).get("source_id")
                         course_id, _ = parse_remote_source_id(identity)
                         if hashlib.sha256(identity.encode()).hexdigest()[:32] != directory.name:
@@ -480,6 +501,7 @@ class CompiledKnowledge:
                   "sources": len(sources), "issues": sorted(set(issues)), "truncated": truncated,
                   "course_files": None,
                   "classroom_documents": sum(doc["source_id"] == "automatic-transcripts" for doc in documents)}
+        result["current_term_markdown"] = sum(doc["source_id"] == "current-term-md" for doc in documents)
         try:
             archive = Path(self.settings().archive_root)
             state = _json(_safe(archive / "Knowledge Markdown", "99_System/Course-Sync.json"))
@@ -499,6 +521,24 @@ class CompiledKnowledge:
         except CompiledKnowledgeError:
             result["catalog_complete"] = False
             result["issues"] = sorted(set([*result["issues"], "课件进度清单不可用，未将未知进度记作零。"]))
+        from .markdown_progress import course_progress
+        archive = Path(self.settings().archive_root)
+        candidates = []
+        if self.engine is not None:
+            from sqlalchemy import select
+            from sqlalchemy.orm import Session
+            from .models import CourseFile
+            with Session(self.engine) as session:
+                files = list(session.scalars(select(CourseFile).where(CourseFile.is_active.is_(True))))
+                candidates = [Path(file.local_path) for file in files if file.download_status == "downloaded" and file.local_path]
+                md_ids = {doc["course_file_source_id"] for doc in documents if doc["source_id"] == "current-term-md"}
+                missing = [file for file in files if file.download_status != "downloaded" or not file.local_path]
+                markdown_only = sum(file.source_id in md_ids for file in missing)
+                result["database_files"] = dict(total=len(files), not_downloaded=len(missing)-markdown_only,
+                                                markdown_only=markdown_only)
+        progress = course_progress(archive, candidates)
+        result["local_course_files"] = progress
+        result["counting_note"] = "course_files 为编译清单登记数；local_course_files 为本地原件盘点。未下载与不支持自动编译的资料单独计数，发现原件不会触发编译。"
         return result
 
     def read(self, document_id: object, offset: object = 0, max_chars: object = 12000) -> dict:

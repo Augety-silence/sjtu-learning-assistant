@@ -1,106 +1,10 @@
-import {
-  CheckCircle2,
-  ChevronRight,
-  CircleSlash2,
-  LoaderCircle,
-  Search,
-  X,
-} from "lucide-react";
+import { LoaderCircle, Search, X } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import aiAgentLogo from "@/assets/ai-agent-logo.png";
-import {
-  ExecutionNote,
-  TraceRun,
-  toolLabel,
-  traceFailed,
-  traceHitCount,
-  traceRejectedCount,
-} from "@/components/AIExecutionCard";
+import { ActivityTraceStep } from "@/components/AIExecutionTraceStep";
 import { Button } from "@/components/ui/Button";
 import type { AIAgentPreset, AIAgentTrace } from "@/lib/types";
-
-const traceStatusLabels: Record<string, string> = {
-  completed: "已完成",
-  complete: "已完成",
-  ok: "已完成",
-  max_steps: "本轮生成已达到上限",
-  timeout: "已超时",
-  failed: "未完成",
-  running: "进行中",
-};
-
-function traceTitle(trace: AIAgentTrace) {
-  const run = trace.tool_runs[0];
-  return run ? toolLabel(run.tool_name) : "整理回答";
-}
-
-function ActivityTraceStep({
-  trace,
-  index,
-}: {
-  trace: AIAgentTrace;
-  index: number;
-}) {
-  const [open, setOpen] = useState(false);
-  const hits = traceHitCount(trace.tool_runs);
-  const rejected = traceRejectedCount(trace.tool_runs);
-  // 流式过程中 AIChatView 会先插入 status="running" 的临时轨迹；它不是失败轮次。
-  const live = trace.status === "running";
-  const failed = !live && traceFailed(trace);
-
-  return (
-    <details
-      className={failed ? "ai-trace-step is-failed" : "ai-trace-step"}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        <span className="ai-trace-node" aria-hidden="true">
-          {live ? (
-            <LoaderCircle className="animate-spin" />
-          ) : failed ? (
-            <CircleSlash2 />
-          ) : (
-            <CheckCircle2 />
-          )}
-        </span>
-        <span className="ai-trace-summary-copy">
-          <strong>
-            第 {index + 1} 轮　{traceTitle(trace)}
-          </strong>
-          <small>
-            {traceStatusLabels[trace.status] ?? trace.status} · 调用{" "}
-            {trace.tool_runs.length} 次 · 命中 {hits} 项
-            {rejected > 0 && ` · ${rejected} 项未执行`}
-          </small>
-        </span>
-        <ChevronRight className="ai-trace-caret" aria-hidden="true" />
-      </summary>
-      <div className="ai-trace-content">
-        {trace.tool_runs.length > 0 ? (
-          <div className="ai-tool-runs">
-            {trace.tool_runs.map((run, runIndex) => (
-              <TraceRun
-                key={`${trace.id}-${run.tool_name}-${runIndex}`}
-                run={run}
-              />
-            ))}
-            <ExecutionNote
-              key={`pending-${trace.tool_runs.length}`}
-              text={trace.pending_text}
-              streaming={live && open}
-            />
-          </div>
-        ) : trace.pending_text ? (
-          <ExecutionNote text={trace.pending_text} streaming={live && open} />
-        ) : (
-          <p className="ai-trace-no-tools">本轮未调用工具。</p>
-        )}
-      </div>
-    </details>
-  );
-}
 
 export function AIChatTracePanel({
   open,
@@ -215,7 +119,12 @@ export function AIChatTracePanel({
 
         <div className="ai-trace-list">
           {traces.map((trace, index) => (
-            <ActivityTraceStep key={trace.id} trace={trace} index={index} />
+            <ActivityTraceStep
+              key={trace.id}
+              trace={trace}
+              index={index}
+              defaultOpen={index === traces.length - 1}
+            />
           ))}
 
           {pending && (

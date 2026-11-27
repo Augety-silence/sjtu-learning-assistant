@@ -40,6 +40,7 @@ from sjtu_learning_assistant.models import (
     CourseFolder,
     Email,
     EmailAttachment,
+    SyncState,
 )
 from sjtu_learning_assistant.transcript_service import (
     ARTIFACT_FILES as TRANSCRIPT_V1_ARTIFACT_FILES,
@@ -920,12 +921,21 @@ class BackupService:
         remove_local: bool = False,
         cancel_event: threading.Event | None = None,
         progress_callback: ProgressCallback | None = None,
+        full_verify: bool = False,
     ) -> dict[str, Any]:
         if type(remove_local) is not bool:
             raise BackupError("释放本地空间选项无效。")
+        if type(full_verify) is not bool:
+            raise BackupError("完整校验选项无效。")
         if self.provider is None:
             raise BackupError("交大云盘备份服务未配置。")
         selected = candidates if candidates is not None else self.scan()
+        from .backup_checkpoint import BackupCheckpoint
+        identity_loader = getattr(self.provider, "backup_identity", None)
+        identity = identity_loader() if callable(identity_loader) else None
+        checkpoint = BackupCheckpoint(self.engine, identity) if type(identity) is str and identity else None
+        if checkpoint is not None:
+            checkpoint.load(selected)
         started_at = datetime.now(timezone.utc).isoformat()
         result: dict[str, Any] = {
             "started_at": started_at,
@@ -946,205 +956,231 @@ class BackupService:
         def report(current_name: str | None) -> None:
             if progress_callback is None:
                 return
-            progress_callback({"done": done, "total": total, "current_name": current_name})
+            progress_callback({"done": done, "total": total, "current_name": current_name,
+                               **({"files": checkpoint.counts(selected)} if checkpoint else {})})
 
-        report(None)
-        for candidate in selected:
-            if cancel_event is not None and cancel_event.is_set():
-                break
-            current_name = safe_path_component(
-                candidate.remote_path[-1] if candidate.remote_path else "文件",
-                fallback="文件",
-                limit=MAX_FILENAME_LENGTH,
-            )
-            report(current_name)
-            removing_local = False
-            try:
-                if (
-                    candidate.transcript_manifest
-                    and candidate.transcript_group in failed_transcript_groups
-                ):
-                    continue
-                if not candidate.ready:
-                    if candidate.cloud_only:
-                        continue
-                    result["skipped_missing_local"] += 1
-                    continue
+        try:
+            report(None)
+            for candidate in selected:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                current_name = safe_path_component(
+                    candidate.remote_path[-1] if candidate.remote_path else "文件",
+                    fallback="文件",
+                    limit=MAX_FILENAME_LENGTH,
+                )
+                report(current_name)
+                removing_local = False
                 try:
-                    with open_controlled_file(
-                        candidate.local_root, candidate.local_path
-                    ) as (source, size):
-                        source_info = os.fstat(source.fileno())
-                        source_identity = (
-                            source_info.st_dev,
-                            source_info.st_ino,
-                            source_info.st_mtime_ns,
-                        )
-                        if candidate.source == "transcript":
-                            if (
-                                candidate.sha256 is None
-                                or candidate.expected_size is None
-                                or size != candidate.expected_size
-                            ):
-                                raise BackupError("字幕工件在扫描后发生变化，已跳过。")
+                    if (
+                        candidate.transcript_manifest
+                        and candidate.transcript_group in failed_transcript_groups
+                    ):
+                        continue
+                    if not candidate.ready:
+                        if candidate.cloud_only:
+                            continue
+                        result["skipped_missing_local"] += 1
+                        continue
+                    try:
+                        with open_controlled_file(
+                            candidate.local_root, candidate.local_path
+                        ) as (source, size):
+                            source_info = os.fstat(source.fileno())
+                            source_identity = (
+                                source_info.st_dev,
+                                source_info.st_ino,
+                                source_info.st_mtime_ns,
+                            )
                             local_digest = hashlib.sha256()
                             while chunk := source.read(1024 * 1024):
                                 local_digest.update(chunk)
-                            if local_digest.hexdigest() != candidate.sha256:
-                                raise BackupError("字幕工件在扫描后发生变化，已跳过。")
                             source.seek(0)
-                        directory = candidate.remote_path[:-1]
-                        if directory not in ensured:
-                            self._ensure_directory(directory)
-                            ensured.add(directory)
-                        exists = self.provider.exists(candidate.remote_path)
-                        overwrite = False
-                        uploaded = False
-                        if exists:
-                            remote = self.provider.get_info(candidate.remote_path)
-                            if not remote.is_directory and remote.size == size:
-                                if candidate.source == "transcript":
-                                    remote_sha256, remote_size = self._remote_digest(candidate)
-                                    if (
-                                        remote_size == size
-                                        and remote_sha256 == candidate.sha256
-                                    ):
-                                        result["skipped_existing"] += 1
-                                    else:
-                                        overwrite = True
-                                elif (
-                                    remove_local
-                                    and candidate.source in ("canvas", "mail")
-                                    and _valid_sha256(candidate.sha256)
+                            local_sha256 = local_digest.hexdigest()
+                            fingerprint = dict(size=size, mtime_ns=source_info.st_mtime_ns,
+                                               ctime_ns=source_info.st_ctime_ns, sha256=local_sha256,
+                                               local_path=candidate.local_path, local_root=str(candidate.local_root))
+                            after_hash = os.fstat(source.fileno())
+                            if (after_hash.st_size, after_hash.st_mtime_ns, after_hash.st_ctime_ns) != (size, source_info.st_mtime_ns, source_info.st_ctime_ns):
+                                raise BackupError("文件在读取后发生变化，已跳过。")
+                            if checkpoint and checkpoint.completed(candidate, fingerprint, full_verify=full_verify) and not remove_local:
+                                result["skipped_existing"] += 1
+                                continue
+                            if checkpoint and not checkpoint.claim(candidate, fingerprint):
+                                # 同一文件另有活动任务；保留原断点，不抢占或重复上传。
+                                continue
+                            if candidate.source == "transcript":
+                                if (
+                                    candidate.sha256 is None
+                                    or candidate.expected_size is None
+                                    or size != candidate.expected_size
                                 ):
-                                    # Same size is not proof of same content. Before a
-                                    # skip may lead to unlinking the local copy, compare
-                                    # the actual local bytes with the remote bytes.
-                                    local_digest = hashlib.sha256()
-                                    while chunk := source.read(1024 * 1024):
-                                        local_digest.update(chunk)
-                                    source.seek(0)
-                                    remote_sha256, remote_size = self._remote_digest(candidate)
-                                    if (
-                                        remote_size == size
-                                        and remote_sha256 == local_digest.hexdigest()
-                                    ):
-                                        result["skipped_existing"] += 1
+                                    raise BackupError("字幕工件在扫描后发生变化，已跳过。")
+                                if local_sha256 != candidate.sha256:
+                                    raise BackupError("字幕工件在扫描后发生变化，已跳过。")
+                                source.seek(0)
+                            directory = candidate.remote_path[:-1]
+                            if directory not in ensured:
+                                self._ensure_directory(directory)
+                                ensured.add(directory)
+                            exists = self.provider.exists(candidate.remote_path)
+                            overwrite = False
+                            uploaded = False
+                            if exists:
+                                remote = self.provider.get_info(candidate.remote_path)
+                                if not remote.is_directory and remote.size == size:
+                                    if candidate.source == "transcript":
+                                        remote_sha256, remote_size = self._remote_digest(candidate)
+                                        if (
+                                            remote_size == size
+                                            and remote_sha256 == candidate.sha256
+                                        ):
+                                            result["skipped_existing"] += 1
+                                        else:
+                                            overwrite = True
+                                    elif candidate.source in ("canvas", "mail", "ai"):
+                                        # Same size is not proof of same content. Before a
+                                        # skip may lead to unlinking the local copy, compare
+                                        # the actual local bytes with the remote bytes.
+                                        remote_sha256, remote_size = self._remote_digest(candidate)
+                                        if (
+                                            remote_size == size
+                                            and remote_sha256 == local_sha256
+                                        ):
+                                            result["skipped_existing"] += 1
+                                        else:
+                                            overwrite = True
                                     else:
-                                        overwrite = True
+                                        result["skipped_existing"] += 1
                                 else:
-                                    result["skipped_existing"] += 1
-                            else:
-                                overwrite = True
-                        if not exists or overwrite:
-                            if size >= self.multipart_threshold:
-                                self.provider.multipart_upload(
-                                    candidate.remote_path,
-                                    source,
-                                    overwrite=overwrite,
-                                )
-                            else:
-                                self.provider.simple_upload(
-                                    candidate.remote_path,
-                                    source,
-                                    overwrite=overwrite,
-                                )
-                            uploaded = True
-                except BackupError as exc:
+                                    overwrite = True
+                            if not exists or overwrite:
+                                if size >= self.multipart_threshold:
+                                    self.provider.multipart_upload(
+                                        candidate.remote_path,
+                                        source,
+                                        overwrite=overwrite,
+                                    )
+                                else:
+                                    self.provider.simple_upload(
+                                        candidate.remote_path,
+                                        source,
+                                        overwrite=overwrite,
+                                    )
+                                uploaded = True
+                            after_upload = os.fstat(source.fileno())
+                            if (after_upload.st_size, after_upload.st_mtime_ns, after_upload.st_ctime_ns) != (size, source_info.st_mtime_ns, source_info.st_ctime_ns):
+                                raise BackupError("文件在上传期间发生变化，已保留。")
+                    except BackupError as exc:
+                        if candidate.transcript_group is not None:
+                            failed_transcript_groups.add(candidate.transcript_group)
+                        if "发生变化" in str(exc):
+                            if checkpoint:
+                                checkpoint.finish(candidate, "outdated", error="本地文件版本变化，待重新扫描。")
+                            result.update(
+                                skipped_changed=result.get("skipped_changed", 0) + 1
+                            )
+                        else:
+                            if checkpoint:
+                                checkpoint.finish(candidate, "failed", error="本地文件不可用或校验失败。")
+                            result.update(
+                                skipped_missing_local=result.get("skipped_missing_local", 0) + 1
+                            )
+                        continue
+
+                    # Never trust only an upload response or a previous exists check.
+                    # Re-read authoritative metadata before committing or unlinking.
+                    verified = self.provider.get_info(candidate.remote_path)
+                    if verified.is_directory or verified.size != size:
+                        raise BackupError("云端文件校验失败，已保留本地文件。")
+                    if candidate.source == "transcript":
+                        if candidate.sha256 is None:
+                            raise BackupError("字幕工件备份记录无效，已保留本地文件。")
+                        self._verify_remote_sha256(
+                            candidate,
+                            expected_sha256=candidate.sha256,
+                            expected_size=size,
+                        )
+                        persisted = False
+                    elif candidate.source == "ai":
+                        if candidate.record_id is None or candidate.sha256 is None:
+                            raise BackupError("AI 附件备份记录无效，已保留受控副本。")
+                        self._verify_remote_sha256(
+                            candidate,
+                            expected_sha256=candidate.sha256,
+                            expected_size=size,
+                        )
+                        self.ai_file_service.record_cloud_backup(
+                            candidate.record_id,
+                            cloud_path="/".join(candidate.remote_path),
+                            cloud_size=size,
+                            cloud_sha256=candidate.sha256,
+                            cloud_remote_id=getattr(verified, "etag", None),
+                            remove_local=remove_local,
+                        )
+                        persisted = False
+                        if remove_local:
+                            result["local_removed"] += 1
+                    else:
+                        persisted = self._persist_cloud_metadata(
+                            candidate, size=size, backed_up_at=datetime.now(timezone.utc)
+                        )
+                    if checkpoint:
+                        checkpoint.finish(candidate, "completed", remote_id=getattr(verified, "etag", None))
+                    if uploaded:
+                        result["uploaded"] += 1
+                    if persisted and remove_local:
+                        removing_local = True
+                        remove_controlled_file(
+                            candidate.local_root,
+                            candidate.local_path,
+                            size,
+                            expected_identity=source_identity,
+                        )
+                        result["local_removed"] += 1
+                        self._clear_local_reference(candidate)
+                except Exception:
+                    if checkpoint:
+                        try:
+                            checkpoint.finish(candidate, "failed", error="同步未确认完成，重试前核对云端。")
+                        except Exception:
+                            pass  # 原 uploading 状态仍可在下次运行对齐，不能伪造 completed。
+                    # Provider exceptions may contain credentials or signed URLs. Never
+                    # copy their text into a bridge DTO.
                     if candidate.transcript_group is not None:
                         failed_transcript_groups.add(candidate.transcript_group)
-                    if "发生变化" in str(exc):
-                        result.update(
-                            skipped_changed=result.get("skipped_changed", 0) + 1
+                    result["failed"] += 1
+                    if len(result["failures"]) < MAX_FAILURE_DETAILS:
+                        safe_source = safe_path_component(
+                            candidate.source,
+                            fallback="unknown",
+                            limit=32,
                         )
-                    else:
-                        result.update(
-                            skipped_missing_local=result.get("skipped_missing_local", 0) + 1
+                        safe_remote_path = "/".join(
+                            safe_path_component(part, fallback="未命名")
+                            for part in candidate.remote_path
                         )
-                    continue
+                        result["failures"].append(
+                            {
+                                "source": safe_source,
+                                "name": current_name,
+                                "remote_path": safe_remote_path,
+                                "error": (
+                                    "已备份到云盘，但本地文件被占用或无法安全删除，已保留。"
+                                    if removing_local
+                                    else "上传失败，请检查云盘凭据或网络连接。"
+                                ),
+                            }
+                        )
+                finally:
+                    done += 1
+                    report(current_name)
+            result["finished_at"] = datetime.now(timezone.utc).isoformat()
+            return result
+        finally:
+            if checkpoint is not None:
+                checkpoint.close()
 
-                # Never trust only an upload response or a previous exists check.
-                # Re-read authoritative metadata before committing or unlinking.
-                verified = self.provider.get_info(candidate.remote_path)
-                if verified.is_directory or verified.size != size:
-                    raise BackupError("云端文件校验失败，已保留本地文件。")
-                if candidate.source == "transcript":
-                    if candidate.sha256 is None:
-                        raise BackupError("字幕工件备份记录无效，已保留本地文件。")
-                    self._verify_remote_sha256(
-                        candidate,
-                        expected_sha256=candidate.sha256,
-                        expected_size=size,
-                    )
-                    persisted = False
-                elif candidate.source == "ai":
-                    if candidate.record_id is None or candidate.sha256 is None:
-                        raise BackupError("AI 附件备份记录无效，已保留受控副本。")
-                    self._verify_remote_sha256(
-                        candidate,
-                        expected_sha256=candidate.sha256,
-                        expected_size=size,
-                    )
-                    self.ai_file_service.record_cloud_backup(
-                        candidate.record_id,
-                        cloud_path="/".join(candidate.remote_path),
-                        cloud_size=size,
-                        cloud_sha256=candidate.sha256,
-                        cloud_remote_id=getattr(verified, "etag", None),
-                        remove_local=remove_local,
-                    )
-                    persisted = False
-                    if remove_local:
-                        result["local_removed"] += 1
-                else:
-                    persisted = self._persist_cloud_metadata(
-                        candidate, size=size, backed_up_at=datetime.now(timezone.utc)
-                    )
-                if uploaded:
-                    result["uploaded"] += 1
-                if persisted and remove_local:
-                    removing_local = True
-                    remove_controlled_file(
-                        candidate.local_root,
-                        candidate.local_path,
-                        size,
-                        expected_identity=source_identity,
-                    )
-                    result["local_removed"] += 1
-                    self._clear_local_reference(candidate)
-            except Exception:
-                # Provider exceptions may contain credentials or signed URLs. Never
-                # copy their text into a bridge DTO.
-                if candidate.transcript_group is not None:
-                    failed_transcript_groups.add(candidate.transcript_group)
-                result["failed"] += 1
-                if len(result["failures"]) < MAX_FAILURE_DETAILS:
-                    safe_source = safe_path_component(
-                        candidate.source,
-                        fallback="unknown",
-                        limit=32,
-                    )
-                    safe_remote_path = "/".join(
-                        safe_path_component(part, fallback="未命名")
-                        for part in candidate.remote_path
-                    )
-                    result["failures"].append(
-                        {
-                            "source": safe_source,
-                            "name": current_name,
-                            "remote_path": safe_remote_path,
-                            "error": (
-                                "已备份到云盘，但本地文件被占用或无法安全删除，已保留。"
-                                if removing_local
-                                else "上传失败，请检查云盘凭据或网络连接。"
-                            ),
-                        }
-                    )
-            finally:
-                done += 1
-                report(current_name)
-        result["finished_at"] = datetime.now(timezone.utc).isoformat()
-        return result
 
 
 class BackupManager:
@@ -1189,6 +1225,27 @@ class BackupManager:
         }
         self._progress: dict[str, Any] | None = None
         self._last_result: dict[str, Any] | None = None
+        try:
+            with Session(engine) as session:
+                saved = session.scalar(select(SyncState).where(SyncState.source == "cloud-backup-run-v1", SyncState.resource == "last"))
+                if saved and saved.cursor:
+                    value = json.loads(saved.cursor)
+                    if value.get("version") == 1:
+                        self._progress = value.get("progress")
+                        self._last_result = value.get("last_result")
+        except (ValueError, TypeError):
+            pass
+
+    def _save_progress(self) -> None:
+        # 仅展示上次运行；恢复和跳过始终由独立文件断点决定。
+        with self._lock:
+            value = json.dumps(dict(version=1, progress=self._progress, last_result=self._last_result))
+        with Session(self._engine) as session, session.begin():
+            if self._engine.dialect.name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert
+            else:
+                from sqlalchemy.dialects.postgresql import insert
+            session.execute(insert(SyncState).values(source="cloud-backup-run-v1", resource="last", status="idle", cursor=value).on_conflict_do_update(index_elements=["source", "resource"], set_=dict(cursor=value)))
 
     def _service(self, provider: CloudStorageProvider | None = None) -> BackupService:
         return BackupService(
@@ -1271,6 +1328,9 @@ class BackupManager:
                 "total": max(0, int(progress.get("total", 0))),
                 "current_name": safe_name,
             }
+            if type(progress.get("files")) is dict:
+                self._progress["files"] = {key: max(0, int(progress["files"].get(key, 0))) for key in ("completed", "pending", "failed")}
+        self._save_progress()
 
     def _fatal_result(self, started_at: str) -> dict[str, Any]:
         with self._lock:
@@ -1328,6 +1388,7 @@ class BackupManager:
                     self._last_result = result
                 self._state = "finished"
                 self._thread = None
+            self._save_progress()
 
     def close(self, timeout: float = 10.0) -> None:
         with self._lock:

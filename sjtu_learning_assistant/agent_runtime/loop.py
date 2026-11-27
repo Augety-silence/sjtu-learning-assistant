@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -125,6 +126,8 @@ class AgentLoop:
         if "browse_knowledge_wiki" in preset.allowed_tools and "browse_knowledge_wiki" in tools.names:
             self.system_prompt += "\n课程知识优先浏览 browse_knowledge_wiki 的课程知识地图与概念页，按语义选择主题；无须把整句问题当关键词。再按 source_ids 调 read_compiled_knowledge 阅读原 MD 核实断言。Wiki 未生成时仍可按目录的文档ID读取MD，不能把无精确关键词命中当作无知识。文件目录不是正文；未实际读取正文不得声称已查证资料。"
             self.system_prompt += "\nWiki page_id 只使用返回的 page_id 或 topics[].id（32位标识），不可传 Markdown 链接路径。完成相关 Wiki 和 MD 读取后及时作答，不重复搜索已核实内容；coverage=partial 时明确仅覆盖已完成资料，不能声称整门课程已编译。"
+        if "search_messages" in preset.allowed_tools:
+            self.system_prompt += "\n邮件、公告、作业搜索默认涵盖本地历史归档。回答引用已读取消息的标题、来源和时间，并使用工具返回的 citation 作为 Markdown 链接打开本地详情；不编造引用，不自动外发整个邮箱。"
         self.system_prompt += "\n工具调用时的 content 只写简短执行说明；没有工具调用的 content 必须是面向用户的最终结果，不写自言自语的规划。局部索引异常不代表全库不可读，使用返回的有效文档ID读取MD，不能重复调用相同失败请求。进度问题优先 get_knowledge_status，不以课程数或目录数量猜编译进度。"
 
     def _prefetch(
@@ -147,9 +150,26 @@ class AgentLoop:
             plans.append(("get_material_tree", {"limit": 200}))
         if any(word in lowered for word in ("截止日期", "截止", "ddl", "作业", "due")):
             plans.append(("get_deadlines", {"hours": 24 * 90, "limit": 30}))
-        if any(word in lowered for word in ("消息", "邮件", "公告", "通知")):
-            # 先提供最近消息；支持 tools 的模型可继续用精确关键词搜索。
-            plans.append(("search_messages", {"query": "", "kind": "all", "limit": 20}))
+        if any(word in lowered for word in ("消息", "邮件", "邮箱", "公告", "通知", "作业", "email", "message", "announcement", "assignment")):
+            # 不支持模型工具调用时也按用户指定的来源和关键词读全库。
+            # 引号内的原文优先，常见学习主题仅取用户实际写出的词。
+            kinds = [kind for kind, markers in (
+                ("email", ("邮件", "邮箱", "email")),
+                ("announcement", ("公告", "announcement")),
+                ("assignment", ("作业", "assignment")),
+            ) if any(marker in lowered for marker in markers)]
+            kind = kinds[0] if len(kinds) == 1 else "all"
+            quoted = re.findall(r'「([^」\n]{1,160})」|“([^”\n]{1,160})”|"([^"\n]{1,160})"', text)
+            query = " ".join(next(part for part in match if part) for match in quoted)
+            if not query:
+                for word in ("考试", "期末", "期中", "排版", "提交", "要求"):
+                    if word in text:
+                        query = word
+                        break
+            if not query:
+                match = re.search(r"\b(?:exam|deadline)\b", text, re.I)
+                query = match.group(0) if match else ""
+            plans.append(("search_messages", {"query": query[:160], "kind": kind, "limit": 20}))
         if "课程" in lowered:
             plans.append(("list_courses", {"limit": 50}))
         messages: list[dict[str, Any]] = []

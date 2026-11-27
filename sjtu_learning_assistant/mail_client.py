@@ -14,7 +14,7 @@ from email.header import decode_header, make_header
 from email.message import Message
 from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from sjtu_learning_assistant.text_content import (
     html_to_plain_text,
@@ -516,6 +516,7 @@ def fetch_incremental_mail(
     cursor: str | None,
     *,
     initial_limit: int = DEFAULT_INITIAL_LIMIT,
+    on_batch: Callable[[MailFetchResult], None] | None = None,
 ) -> MailFetchResult:
     if initial_limit < 1:
         raise MailCheckError("首次同步邮件数量必须大于 0。")
@@ -562,56 +563,106 @@ def fetch_incremental_mail(
             selected_uids = all_uids if is_incremental else all_uids[-initial_limit:]
             record_event("email", "imap_search", "counts", selected=len(selected_uids), incremental=int(is_incremental), bootstrap_truncated=int(bootstrap_truncated))
 
-            messages: list[EmailRecord] = []
-            for uid in selected_uids:
-                with diagnostic_stage("email", "imap_fetch"):
-                    status, fetch_data = client.uid(
-                        "fetch",
-                        str(uid),
-                        "(BODY.PEEK[] FLAGS INTERNALDATE)",
-                    )
-                    if status not in ("OK",):
-                        raise MailCheckError("邮件读取失败，请稍后重试。")
-                if status == "OK" and not any(fetch_data or ()):
-                    # 其他客户端在 SEARCH 之后 EXPUNGE 了该邮件（RFC 3501：OK 但无数据），跳过即可。
-                    continue
-                # 完整邮件元数据尚无回填契约；NO/BAD 时不推进游标，避免永久占位。
-                metadata = b""
+            def read_batch(uids):
+                messages: list[EmailRecord] = []
+                for uid in uids:
+                    with diagnostic_stage("email", "imap_fetch"):
+                        status, fetch_data = client.uid(
+                            "fetch",
+                            str(uid),
+                            "(BODY.PEEK[] FLAGS INTERNALDATE)",
+                        )
+                        if status not in ("OK",):
+                            raise MailCheckError("邮件读取失败，请稍后重试。")
+                    if status == "OK" and not any(fetch_data or ()):
+                        # 其他客户端在 SEARCH 之后 EXPUNGE 了该邮件（RFC 3501：OK 但无数据），跳过即可。
+                        continue
+                    # 完整邮件元数据尚无回填契约；NO/BAD 时不推进游标，避免永久占位。
+                    metadata = b""
+                    try:
+                        metadata, message_bytes = _extract_fetch_parts(fetch_data)
+                        record = _parse_message(
+                            email_address=email_address,
+                            uid_validity=uid_validity,
+                            uid=uid,
+                            metadata=metadata,
+                            headers=message_bytes,
+                        )
+                    except imaplib.IMAP4.abort:
+                        # 连接中断不得降级为单封占位，否则会在已断开的连接上继续 FETCH；整批失败。
+                        raise
+                    except Exception:
+                        # A single malformed or unavailable message must not pin the UID cursor forever.
+                        flags_match = re.search(rb"FLAGS \(([^)]*)\)", metadata)
+                        flags = flags_match.group(1).split() if flags_match else []
+                        record = EmailRecord(
+                            source_id=f"{email_address}:INBOX:{uid_validity}:{uid}",
+                            subject="（邮件格式异常，无法解析）",
+                            sender_name=None,
+                            sender_address=None,
+                            sent_at=None,
+                            received_at=_parse_internal_date(metadata),
+                            body_preview=None,
+                            is_unread=b"\\Seen" not in flags,
+                            raw_data={
+                                "folder": "INBOX",
+                                "uid": uid,
+                                "uid_validity": uid_validity,
+                                "message_id": None,
+                                "rich_content_fetched": True,
+                                "parse_failed": True,
+                            },
+                        )
+                    messages.append(record)
+                return messages
+
+            if on_batch is not None:
                 try:
-                    metadata, message_bytes = _extract_fetch_parts(fetch_data)
-                    record = _parse_message(
-                        email_address=email_address,
-                        uid_validity=uid_validity,
-                        uid=uid,
-                        metadata=metadata,
-                        headers=message_bytes,
-                    )
-                except imaplib.IMAP4.abort:
-                    # 连接中断不得降级为单封占位，否则会在已断开的连接上继续 FETCH；整批失败。
-                    raise
-                except Exception:
-                    # A single malformed or unavailable message must not pin the UID cursor forever.
-                    flags_match = re.search(rb"FLAGS \(([^)]*)\)", metadata)
-                    flags = flags_match.group(1).split() if flags_match else []
-                    record = EmailRecord(
-                        source_id=f"{email_address}:INBOX:{uid_validity}:{uid}",
-                        subject="（邮件格式异常，无法解析）",
-                        sender_name=None,
-                        sender_address=None,
-                        sent_at=None,
-                        received_at=_parse_internal_date(metadata),
-                        body_preview=None,
-                        is_unread=b"\\Seen" not in flags,
-                        raw_data={
-                            "folder": "INBOX",
-                            "uid": uid,
-                            "uid_validity": uid_validity,
-                            "message_id": None,
-                            "rich_content_fetched": True,
-                            "parse_failed": True,
-                        },
-                    )
-                messages.append(record)
+                    saved = json.loads(cursor or "{}")
+                except (ValueError, TypeError):
+                    saved = {}
+                # 旧游标没有账户身份：重新枚举且按源 ID 去重，避免切换账户误复用 UID。
+                trusted = isinstance(saved, dict) and saved.get("account") == email_address and previous_validity == uid_validity
+                if not trusted and is_incremental:
+                    status, data = client.uid("search", None, "UID", "1:4294967295")
+                    if status != "OK" or not data:
+                        raise MailCheckError("无法读取历史邮件列表。")
+                    all_uids = sorted({int(x) for x in data[0].split() if x.isdigit()})
+                    highest_uid = all_uids[-1] if all_uids else 0
+                before = saved.get("history_before", previous_uid + 1) if trusted else highest_uid + 1
+                if type(before) is not int or before < 1:
+                    before = highest_uid + 1
+                complete = trusted and saved.get("history_complete") is True
+                def commit_batch(uids, history_before, done):
+                    batch = MailFetchResult(messages=read_batch(uids), uid_validity=uid_validity,
+                        highest_uid=highest_uid, bootstrap_truncated=not done,
+                        cursor=json.dumps({"account": email_address, "uid_validity": uid_validity,
+                            "last_uid": highest_uid, "history_before": history_before, "history_complete": done}, separators=(",", ":")))
+                    on_batch(batch)
+                # 新消息先可见。每页正文与游标由调用方在同一数据库事务落盘。
+                if trusted:
+                    for i in range(0, len(all_uids), initial_limit):
+                        chunk = all_uids[i:i + initial_limit]
+                        # 新游标只能跨越已落盘的 UID，不能提前跳到最终最高 UID。
+                        final_highest = highest_uid
+                        highest_uid = chunk[-1]
+                        commit_batch(chunk, before, complete)
+                        highest_uid = final_highest
+                while not complete:
+                    status, data = client.uid("search", None, "UID", f"1:{max(1, before - 1)}")
+                    if status != "OK" or not data:
+                        raise MailCheckError("历史邮件回填失败，可稍后续传。")
+                    candidates = sorted({int(x) for x in data[0].split() if x.isdigit() and int(x) < before})
+                    chunk = candidates[-initial_limit:]
+                    next_before = chunk[0] if chunk else 1
+                    complete = len(candidates) <= initial_limit
+                    commit_batch(chunk, next_before, complete)
+                    before = next_before
+                return MailFetchResult(messages=[], cursor=json.dumps({"account": email_address,
+                    "uid_validity": uid_validity, "last_uid": highest_uid, "history_before": before,
+                    "history_complete": True}, separators=(",", ":")), uid_validity=uid_validity,
+                    highest_uid=highest_uid, bootstrap_truncated=False)
+            messages = read_batch(selected_uids)
 
             return MailFetchResult(
                 messages=messages,

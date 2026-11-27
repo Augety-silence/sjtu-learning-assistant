@@ -13,7 +13,7 @@ _ALLOWED_TAGS = frozenset(
     {
         "p", "br", "div", "ul", "ol", "li", "table", "thead", "tbody",
         "tr", "th", "td", "b", "strong", "i", "em", "u", "pre", "code",
-        "blockquote", "a", "img",
+        "blockquote", "a", "img", "h1", "h2", "h3", "h4", "h5", "h6",
     }
 )
 _VOID_TAGS = frozenset({"br", "img"})

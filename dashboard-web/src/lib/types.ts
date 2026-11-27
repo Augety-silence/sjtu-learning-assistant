@@ -77,7 +77,7 @@ export type AIThinkingDepth = "quick" | "standard" | "deep";
 export type AIChatSendShortcut = "enter" | "cmd_enter";
 export type AIReplyLanguage = "auto" | "zh" | "en";
 export type AIAttachmentContextBudget = "economy" | "balanced" | "deep";
-export type ThemeMode = "light" | "dark" | "system";
+export type ThemeMode = "light" | "dark" | "system" | "aime";
 
 export interface AIChatPreferences {
   ai_chat_send_shortcut: AIChatSendShortcut;
@@ -312,7 +312,16 @@ export interface Deadline {
 export type MessageKind = "email" | "announcement" | "assignment";
 export type MessageFilter = "all" | MessageKind;
 
+export interface MessagePage {
+  items: MessageItem[];
+  total?: number;
+  unread?: number;
+  next_offset?: number | null;
+}
+
 export interface MessageItem {
+  preview?: string;
+  attachment_count?: number;
   source_id: string;
   kind: MessageKind;
   title: string;
@@ -369,6 +378,7 @@ export interface MessageMarkReadPayload extends Record<string, unknown> {
   kind: MessageFilter;
   ids?: string[];
   all?: boolean;
+  query?: string;
 }
 
 export interface MaterialNode {
@@ -383,6 +393,7 @@ export interface MaterialNode {
   size?: number | null;
   updated_at?: string | null;
   download_status?: "pending" | "downloaded" | "failed" | "cloud_only";
+  markdown_ready?: boolean;
   can_open?: boolean;
   can_preview?: boolean;
   local_path?: string | null;
@@ -426,6 +437,7 @@ export interface SettingsStatus {
   recording_asr_paused?: boolean;
   recording_asr_scope?: "all_unfinished";
   course_markdown_enabled: boolean;
+  current_term_md_enabled?: boolean;
   course_markdown_daily_calls: number;
   archive_root_ready: boolean;
   archive_root: string;
@@ -473,9 +485,34 @@ export interface MarkdownProgressGroup {
   ai_failed: number;
   issues: { name: string; code: string }[];
   truncated: boolean;
+  inventory?: {
+    downloaded_records: number;
+    local_originals: number;
+    supported: number;
+    unsupported_local: number;
+    untracked_local: number;
+    untracked_supported: number;
+    missing_local: number;
+    registered: number;
+    unregistered: number;
+    truncated: boolean;
+    database_total?: number;
+    not_downloaded?: number;
+    markdown_only?: number;
+  };
 }
 
 export interface MarkdownSyncProgressState {
+  current_term_md?: {
+    enabled: boolean;
+    status: string;
+    total: number;
+    existing: number;
+    completed: number;
+    pending: number;
+    failed: number;
+    current_file?: string | null;
+  } | null;
   courses: MarkdownProgressGroup;
   transcripts: MarkdownProgressGroup;
   automatic: boolean;
@@ -778,6 +815,7 @@ export interface BackupProgress {
   done: number;
   total: number;
   current_name: string | null;
+  files?: { completed: number; pending: number; failed: number };
 }
 
 export interface BackupFailure {

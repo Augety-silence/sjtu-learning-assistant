@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import sync_data_to_db
@@ -167,13 +167,32 @@ class DesktopLifecycleTests(unittest.TestCase):
         with (
             patch.dict("sys.modules", {"webview": webview}),
             patch("desktop_app.STATIC_INDEX", static_index),
+            # This unit verifies shutdown ordering, not native frontend startup.
+            # Keep logging and platform hooks away from real application data/UI.
+            patch("desktop_app._configure_desktop_logging"),
+            patch("desktop_app._install_macos_native_file_drop_hook"),
+            patch("desktop_app._install_macos_background_lifecycle"),
+            patch("desktop_app._install_recording_asr_quit_guard"),
+            patch("desktop_app.WindowsFrontendLoader", return_value=Mock()) as loader,
             patch("desktop_app.create_database_engine", return_value=engine),
             patch("desktop_app.DashboardService", return_value=service),
             patch("desktop_app.DesktopScheduler", return_value=scheduler),
         ):
             self.assertEqual(0, run_desktop_app())
+        if __import__("desktop_app").sys.platform == "win32":
+            loader.assert_called_once()
+            self.assertIs(static_index, loader.call_args.args.__getitem__(0))
+            loader.return_value.attach.assert_called_once_with(None)
+        else:
+            loader.assert_not_called()
         self.assertLess(events.index("stop"), events.index("close"))
         self.assertLess(events.index("close"), events.index("dispose"))
+
+
+    def test_windows_scheduler_stops_before_service_close(self) -> None:
+        # Exercise Windows control flow on every host without starting a GUI.
+        with patch("desktop_app.sys", SimpleNamespace(platform="win32", frozen=False)):
+            self.test_scheduler_stops_before_service_close()
 
 
 class SyncCredentialLifecycleTests(unittest.TestCase):

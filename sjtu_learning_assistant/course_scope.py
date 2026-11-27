@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sjtu_learning_assistant.models import Course, SyncState
@@ -82,6 +83,60 @@ def scoped_database_ids(session: Session, term_id: object = "", course_ids: obje
 def default_conditions(session: Session, column) -> tuple:
     ids = current_course_ids(session)
     return () if ids is None else (column.in_(ids),)
+
+
+def latest_term_courses(rows: list[dict]) -> list[dict]:
+    """按学期起始日期或学年/季节选最新一学期，不按远端 ID 排序。
+
+    无可排序学期的旧数据保持调用者提供的默认课程范围。
+    """
+    ranked = []
+    for row in rows:
+        term = row.get("term") if isinstance(row.get("term"), dict) else {}
+        identity, label = term_identity(row, row.get("term_name"))
+        if identity == "unknown" or label.strip() == "未识别学期":
+            continue
+        start = None
+        value = term.get("start_at")
+        if isinstance(value, str):
+            try:
+                start = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start
+            except ValueError:
+                pass
+        if start is None:
+            years = re.search(r"((?:19|20)\d{2})(?:\s*[-–—/]\s*((?:19|20)\d{2}))?", label)
+            if not years:
+                continue
+            year = int(years[1])
+            name = label.casefold()
+            if re.search(r"spring|春|第二|第\s*2|(?:学期|semester)\s*2", name):
+                year += bool(years[2])
+                month = 2
+            elif re.search(r"summer|夏|短学期", name):
+                year += bool(years[2])
+                month = 7
+            elif re.search(r"fall|autumn|秋|第一|第\s*1|(?:学期|semester)\s*1", name):
+                month = 9
+            else:
+                continue
+            start = datetime(year, month, 1, tzinfo=timezone.utc)
+        ranked.append((start.timestamp(), identity, row))
+    if not ranked:
+        return rows
+    # 同一学期的多个课程可能有不完整日期，使用该学期最可信的起始值。
+    latest = max(ranked, key=lambda item: (item[0], item[1]))[1]
+    return [row for row in rows if term_identity(row, row.get("term_name"))[0] == latest]
+
+
+def latest_assignment_course_ids(session: Session) -> set[int]:
+    courses = list(session.scalars(select(Course)))
+    rows = [dict(course.raw_data or {}, id=course.id, term_name=course.term_name) for course in courses]
+    selected = latest_term_courses(rows)
+    if selected is rows:
+        defaults = current_course_ids(session)
+        return {course.id for course in courses} if defaults is None else defaults
+    return {row["id"] for row in selected}
 
 
 def knowledge_metadata(engine, archive_root) -> dict[str, dict]:

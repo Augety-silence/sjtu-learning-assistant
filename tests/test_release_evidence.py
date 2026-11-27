@@ -18,10 +18,22 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import prepare_release_evidence as prepare
 import verify_release_assets as assets
 import verify_ffmpeg as ffmpeg
+
+
+def startup_report(platform_name, index_bytes=b"synthetic frontend index; never a release app"):
+    index_hash = assets.sha_bytes(index_bytes)
+    report = {"schema_version": 1, "result": "passed", "reason": "ok",
+              "renderer": "wkwebview" if platform_name == "macos" else "edgechromium",
+              "frontend": {"path": "dashboard-web/dist/index.html", "sha256": index_hash, "fingerprint": index_hash[:16]},
+              "app_shell": True, "bridge_ready": True, "data_isolated": True, "network_blocked": True,
+              "backend": "reject-only"}
+    report["report_sha256"] = assets.sha_bytes(json.dumps(report, sort_keys=True).encode())
+    return report
 
 
 def pe_bytes():
@@ -185,13 +197,111 @@ class NativePreparationTests(unittest.TestCase):
         self.assertFalse((self.root / "output").exists())
 
 
+class NativeFrontendGateTests(unittest.TestCase):
+    def test_native_gate_runs_real_executable_and_rejects_bad_reports(self):
+        for platform_name in ("macos", "windows"):
+            for case in ("passed", "nonzero", "missing", "wrong_hash", "placeholder", "unready", "network", "extra_path", "timeout"):
+                with self.subTest(platform_name=platform_name, case=case), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory).resolve()
+                    bundle = root / "bundle"
+                    app_exe = bundle / ("Contents/MacOS/" + prepare.APP if platform_name == "macos" else prepare.APP + ".exe")
+                    app_exe.parent.mkdir(parents=True)
+                    app_exe.write_bytes(b"synthetic executable unit fixture, not native proof")
+                    index = bundle / ("Contents/Resources/dashboard-web/dist/index.html" if platform_name == "macos" else "_internal/dashboard-web/dist/index.html")
+                    index.parent.mkdir(parents=True)
+                    index.write_bytes(b"synthetic frontend unit fixture, not native proof")
+                    sha = prepare.digest(index)
+                    good = dict(schema_version=1, result="passed", reason="ok",
+                        renderer="wkwebview" if platform_name == "macos" else "edgechromium",
+                        frontend=dict(path="dashboard-web/dist/index.html", sha256=sha, fingerprint=sha[:16]),
+                        app_shell=True, bridge_ready=True, data_isolated=True, network_blocked=True, backend="reject-only")
+                    def run(command, **options):
+                        self.assertEqual((str(app_exe), "--startup-self-test"), tuple(command[:2]))
+                        report = Path(command[2])
+                        self.assertTrue(report.is_relative_to(root / "runner"))
+                        self.assertFalse(report.is_relative_to(bundle))
+                        self.assertLessEqual(options.get("timeout"), 90)
+                        self.assertNotIn("OPENAI_API_KEY", options.get("env"))
+                        self.assertNotIn("SJTU_DATABASE_URL", options.get("env"))
+                        self.assertEqual("keyring.backends.fail.Keyring", options.get("env").get("PYTHON_KEYRING_BACKEND"))
+                        if case == "timeout":
+                            raise subprocess.TimeoutExpired(command, 90)
+                        value = copy.deepcopy(good)
+                        if case == "wrong_hash": value.get("frontend").update(sha256="b".ljust(64, "b"))
+                        if case == "placeholder": value.update(app_shell=False)
+                        if case == "unready": value.update(bridge_ready=False)
+                        if case == "network": value.update(network_blocked=False)
+                        if case == "extra_path": value.update(private_path="synthetic private path")
+                        if case != "missing": report.write_text(json.dumps(value))
+                        return subprocess.CompletedProcess(command, 1 if case == "nonzero" else 0, "ignored stdout", "")
+                    with patch.object(sys, "platform", "darwin" if platform_name == "macos" else "win32"), patch.object(prepare.platform, "machine", return_value="arm64"), patch.dict(os.environ, dict(RUNNER_TEMP=str(root / "runner"), OPENAI_API_KEY="fake", SJTU_DATABASE_URL="fake")), patch.object(prepare.subprocess, "run", side_effect=run):
+                        if case == "passed":
+                            check, proof = prepare.frontend_startup_gate(app_exe, bundle, platform_name)
+                            self.assertEqual("frontend_startup", check.get("check"))
+                            self.assertEqual(app_exe.name, check.get("tool"))
+                            self.assertEqual(sha, proof.get("frontend").get("sha256"))
+                            self.assertEqual(64, len(proof.get("report_sha256")))
+                            self.assertNotIn(str(root), str(proof))
+                            self.assertNotIn("stdout", proof)
+                        else:
+                            with self.assertRaises(ValueError):
+                                prepare.frontend_startup_gate(app_exe, bundle, platform_name)
+                    self.assertEqual(list(), list((root / "runner").iterdir()))
+
+    def test_native_gate_refuses_wrong_os_before_execution(self):
+        with patch.object(sys, "platform", "linux"), patch.object(prepare.subprocess, "run") as run, self.assertRaises(ValueError):
+            prepare.frontend_startup_gate(Path("unused.exe"), Path("unused"), "windows")
+        run.assert_not_called()
+
+
 class ReleaseAssetTests(unittest.TestCase):
+    def test_windows_prepare_writes_native_evidence_and_checksum_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / prepare.APP
+            bundle.mkdir()
+            with zipfile.ZipFile(self.base / prepare.artifact_names(self.version)["windows"][1]) as archive:
+                archive.extractall(bundle)  # Only the trusted synthetic fixture, never release input.
+            output = root / "evidence"
+            def execute(check, tool, *args):
+                return {"check": check, "tool": "python.exe", "returncode": 0}
+            with patch.object(sys, "platform", "win32"), patch.object(prepare, "execute", side_effect=execute), patch.object(prepare, "frontend_startup_gate", return_value=(
+                dict(check="frontend_startup", tool=prepare.APP + ".exe", returncode=0),
+                copy.deepcopy(self.evidence.get("windows").get("application").get("frontend_startup")))):
+                evidence = prepare.prepare(self.tag, self.commit, "windows", bundle,
+                                           bundle / "_internal/ffmpeg", self.base, output)
+            self.assertEqual("passed", evidence["native_verification"]["result"])
+            self.assertEqual(self.code, evidence["code_sha256"])
+            self.assertEqual(self.commit, evidence["release_commit"])
+            self.assertTrue((output / "windows-evidence.json").is_file())
+            for path in output.iterdir():
+                if not path.name.endswith(".sha256"):
+                    assets.checksum(path)
+            assets.validate_evidence(evidence, "windows", self.tag, self.commit, self.version, self.code, output)
+
+    def test_failed_packaged_frontend_startup_writes_no_native_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / prepare.APP
+            bundle.mkdir()
+            with zipfile.ZipFile(self.base / prepare.artifact_names(self.version).get("windows").__getitem__(1)) as archive:
+                archive.extractall(bundle)  # Trusted unit fixture only.
+            output = root / "evidence"
+            def execute(check, tool, *args):
+                return dict(check=check, tool="python.exe", returncode=0)
+            with patch.object(sys, "platform", "win32"), patch.object(prepare, "execute", side_effect=execute), patch.object(prepare, "frontend_startup_gate", side_effect=ValueError("startup failed")), self.assertRaisesRegex(ValueError, "startup failed"):
+                prepare.prepare(self.tag, self.commit, "windows", bundle, bundle / "_internal/ffmpeg", self.base, output)
+            self.assertFalse((output / "windows-evidence.json").exists())
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.base = Path(cls.temp.name)
         cls.version, cls.tag, cls.commit = "1.8.21", "v1.8.21", "a" * 40
-        cls.code = {name: "c" * 64 for name in prepare.CODE_PATHS}
+        cls.provenance = {"repository": "owner/repo", "run_id": "123", "run_attempt": "1",
+                          "actor": "native-owner", "source_commit": cls.commit}
+        cls.code = {name: "c" * 64 for name in (*prepare.CODE_PATHS, "desktop_app.py",
+                    "sjtu_learning_assistant/frontend_startup.py", "sjtu_learning_assistant/frontend_self_test.py")}
         cls.license = b"Synthetic LGPL license fixture; not a real release"
         archive = cls.base / prepare.SOURCE_NAME
         with tarfile.open(archive, "w:gz") as source:
@@ -222,7 +332,9 @@ class ReleaseAssetTests(unittest.TestCase):
             }
             raw_manifest = json.dumps(manifest, sort_keys=True).encode()
             checks = ["ffmpeg_stage", "ffmpeg_bundle", "windows_manifest"] if windows else ["ffmpeg_stage", "ffmpeg_bundle", "macos_bundle", "dmg_integrity", "dmg_attach_readonly", "dmg_bundle", "dmg_ffmpeg", "dmg_detach"]
-            app = {"path": prepare.APP + ".exe" if windows else "Contents/MacOS/" + prepare.APP, "sha256": assets.sha_bytes(binary)}
+            checks.append("frontend_startup")
+            app = {"path": prepare.APP + ".exe" if windows else "Contents/MacOS/" + prepare.APP,
+                   "sha256": assets.sha_bytes(binary), "frontend_startup": startup_report(platform_name)}
             if windows:
                 app.update({"version_scope": "exact-commit-build", "manifest_verified": True})
             else:
@@ -232,11 +344,15 @@ class ReleaseAssetTests(unittest.TestCase):
             evidence = {
                 "schema_version": 1, "platform": platform_name, "architecture": "x64" if windows else "arm64",
                 "tag": cls.tag, "app_version": cls.version, "release_commit": cls.commit, "code_sha256": cls.code,
+                "workflow_provenance": cls.provenance,
                 "ffmpeg": {"stage_manifest": manifest, "stage_binary_sha256": manifest["binary_sha256"],
                            "packaged_binary_sha256": manifest["binary_sha256"], "packaged_manifest_sha256": assets.sha_bytes(raw_manifest),
                            "packaged_path": "_internal/ffmpeg/bin/ffmpeg.exe" if windows else "Contents/Frameworks/ffmpeg/bin/ffmpeg"},
                 "application": app, "native_verification": {"result": "passed", "host_os": "win32" if windows else "darwin",
-                    "checks": [{"check": check, "tool": "hdiutil" if check in {"dmg_integrity", "dmg_attach_readonly", "dmg_detach"} else "python.exe" if windows else "python", "returncode": 0} for check in checks]}, "assets": [],
+                    "checks": [{"check": check,
+                                "tool": (prepare.APP + ".exe" if windows else prepare.APP) if check == "frontend_startup"
+                                else "hdiutil" if check in {"dmg_integrity", "dmg_attach_readonly", "dmg_detach"}
+                                else "python.exe" if windows else "python", "returncode": 0} for check in checks]}, "assets": [],
             }
             for name in prepare.artifact_names(cls.version)[platform_name]:
                 (cls.base / name).write_bytes(binary if name.endswith(".exe") else b"synthetic artifact fixture")
@@ -244,6 +360,7 @@ class ReleaseAssetTests(unittest.TestCase):
                 zip_path = cls.base / prepare.artifact_names(cls.version)["windows"][1]
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
                     archive.writestr(prepare.APP + ".exe", binary)
+                    archive.writestr("_internal/dashboard-web/dist/index.html", b"synthetic frontend index; never a release app")
                     archive.writestr("_internal/ffmpeg/bin/ffmpeg.exe", binary)
                     archive.writestr("_internal/ffmpeg/build-manifest.json", raw_manifest)
                     for name in prepare.SHARED_NAMES:
@@ -257,10 +374,10 @@ class ReleaseAssetTests(unittest.TestCase):
             prepare.write_checksum(path)
         cls.metadata = {"draft": True, "tag_name": cls.tag, "id": 42, "assets": []}
         for path in cls.base.iterdir():
-            mac_asset = "macOS" in path.name or path.name.startswith("mac-evidence")
-            cls.metadata["assets"].append({"name": path.name, "id": len(cls.metadata["assets"]) + 1, "state": "uploaded",
-                                          "uploader": {"login": "native-mac-owner" if mac_asset else assets.BOT},
-                                          "size": path.stat().st_size, "digest": "sha256:" + prepare.digest(path)})
+            if path.name in assets.public_names(cls.version):
+                cls.metadata["assets"].append({"name": path.name, "id": len(cls.metadata["assets"]) + 1, "state": "uploaded",
+                                              "uploader": {"login": assets.BOT},
+                                              "size": path.stat().st_size, "digest": "sha256:" + prepare.digest(path)})
 
     @classmethod
     def tearDownClass(cls):
@@ -275,33 +392,30 @@ class ReleaseAssetTests(unittest.TestCase):
         self.addCleanup(self.identity.stop)
 
     def verify(self, metadata=None):
-        return assets.verify_directory(self.base, self.tag, self.commit, metadata or self.metadata, "native-mac-owner", True)
+        return assets.verify_directory(self.base, self.tag, self.commit, metadata or self.metadata, self.provenance)
 
     def test_complete_two_platform_release_validates_without_native_execution(self):
         with patch.object(subprocess, "run", side_effect=AssertionError("No native execution on publisher")):
-            self.assertEqual(assets.required_names(self.version), self.verify())
+            self.assertEqual(assets.public_names(self.version), self.verify())
+        self.assertEqual(3, len(self.metadata["assets"]))
+        self.assertEqual(18, len(assets.required_names(self.version)))
 
-    def test_windows_prepare_writes_native_evidence_and_checksum_sidecars(self):
+    def test_windows_internal_stage_retains_native_proof_and_checksum_sidecars(self):
+        # Producer startup execution has separate native self-test tests. This
+        # transport test uses explicitly synthetic evidence, never runs/repackages an app.
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            bundle = root / prepare.APP
-            bundle.mkdir()
-            with zipfile.ZipFile(self.base / prepare.artifact_names(self.version)["windows"][1]) as archive:
-                archive.extractall(bundle)  # Only the trusted synthetic fixture, never release input.
-            output = root / "evidence"
-            def execute(check, tool, *args):
-                return {"check": check, "tool": "python.exe", "returncode": 0}
-            with patch.object(sys, "platform", "win32"), patch.object(prepare, "execute", side_effect=execute):
-                evidence = prepare.prepare(self.tag, self.commit, "windows", bundle,
-                                           bundle / "_internal/ffmpeg", self.base, output)
+            output = Path(directory)
+            for name in assets.platform_names(self.version, "windows"):
+                shutil.copyfile(self.base / name, output / name)
+            evidence = assets.read_json(output / "windows-evidence.json")
             self.assertEqual("passed", evidence["native_verification"]["result"])
             self.assertEqual(self.code, evidence["code_sha256"])
             self.assertEqual(self.commit, evidence["release_commit"])
-            self.assertTrue((output / "windows-evidence.json").is_file())
             for path in output.iterdir():
                 if not path.name.endswith(".sha256"):
                     assets.checksum(path)
-            assets.validate_evidence(evidence, "windows", self.tag, self.commit, self.version, self.code, output)
+            assets.validate_evidence(evidence, "windows", self.tag, self.commit, self.version, self.code, output, self.provenance)
+            assets.verify_windows_zip(output / prepare.artifact_names(self.version)["windows"][1], evidence)
 
     def test_prepare_failed_native_gate_writes_no_proof(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -315,25 +429,102 @@ class ReleaseAssetTests(unittest.TestCase):
         for change in ("missing", "published"):
             metadata = copy.deepcopy(self.metadata)
             if change == "missing":
-                metadata["assets"] = [item for item in metadata["assets"] if item["name"] != "mac-evidence.json"]
+                metadata["assets"] = [item for item in metadata["assets"] if item["name"] != prepare.artifact_names(self.version)["macos"][0]]
             else:
                 metadata["draft"] = False
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.verify(metadata)
 
     def test_unauthorized_native_mac_or_windows_uploader_fails(self):
-        for name in ("mac-evidence.json", "windows-evidence.json", prepare.artifact_names(self.version)["macos"][0]):
+        for name in assets.public_names(self.version):
             metadata = copy.deepcopy(self.metadata)
             next(item for item in metadata["assets"] if item["name"] == name)["uploader"]["login"] = "untrusted"
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Unauthorized"):
                 self.verify(metadata)
 
     def test_stale_remote_asset_size_or_digest_fails(self):
-        for key, value in (("size", 1), ("digest", "sha256:" + "0" * 64), ("state", "new")):
+        for key, value in (("size", 1), ("digest", "sha256:" + "0" * 64), ("digest", None), ("state", "new")):
             metadata = copy.deepcopy(self.metadata)
             metadata["assets"][0][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.verify(metadata)
+
+    def test_missing_internal_proof_fails_even_with_three_public_assets(self):
+        for name in ("mac-evidence.json", "windows-evidence.json", prepare.SOURCE_NAME):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / "verification"
+                shutil.copytree(self.base, directory)
+                (directory / name).unlink()
+                with self.assertRaisesRegex(ValueError, "internal evidence"):
+                    assets.verify_directory(directory, self.tag, self.commit, self.metadata, self.provenance)
+
+    def test_native_json_cannot_self_authorize_actor_run_or_source(self):
+        for key, value in (("actor", "forged"), ("run_id", "124"), ("run_attempt", "2"), ("source_commit", "b" * 40)):
+            evidence = copy.deepcopy(self.evidence["macos"])
+            evidence["workflow_provenance"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "provenance mismatch"):
+                assets.validate_evidence(evidence, "macos", self.tag, self.commit, self.version, self.code, self.base, self.provenance)
+        evidence = copy.deepcopy(self.evidence["macos"])
+        evidence.pop("workflow_provenance")
+        with self.assertRaisesRegex(ValueError, "provenance mismatch"):
+            assets.validate_evidence(evidence, "macos", self.tag, self.commit, self.version, self.code, self.base, self.provenance)
+
+    def test_public_sidecar_or_extra_proof_asset_rejects(self):
+        for name in ("mac-evidence.json", "SHA256SUMS", "artifact.dmg.sha256"):
+            metadata = copy.deepcopy(self.metadata)
+            metadata["assets"].append({"name": name, "state": "uploaded"})
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "draft assets"):
+                self.verify(metadata)
+
+    def test_frontend_startup_source_files_must_be_commit_hashed(self):
+        for name in ("desktop_app.py", "sjtu_learning_assistant/frontend_startup.py", "sjtu_learning_assistant/frontend_self_test.py"):
+            code = dict(self.code)
+            code.pop(name)
+            evidence = copy.deepcopy(self.evidence["macos"])
+            evidence["code_sha256"] = code
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "source hashes missing"):
+                assets.validate_evidence(evidence, "macos", self.tag, self.commit, self.version, code, self.base, self.provenance)
+
+    def test_frontend_startup_report_is_strict_typed_sanitized_and_platform_bound(self):
+        for platform_name in ("macos", "windows"):
+            valid = startup_report(platform_name)
+            assets.validate_frontend_startup(valid, platform_name)
+            mutations = (
+                ("schema_version", True), ("schema_version", 1.0), ("result", "failed"), ("reason", "/private/path"),
+                ("renderer", "chromium"), ("backend", "real-service"), ("report_sha256", None),
+                ("report_sha256", "A" * 64), ("frontend.sha256", "Z" * 64), ("frontend.sha256", 123),
+                ("frontend.fingerprint", "wrong"), ("frontend.path", "/Users/private/index.html"),
+                ("frontend.private_path", "/private/path"), ("private_path", "/private/path"),
+                *((key, value) for key in ("app_shell", "bridge_ready", "data_isolated", "network_blocked")
+                  for value in (False, 1, "true", None)),
+            )
+            for field, value in mutations:
+                report = copy.deepcopy(valid)
+                target, key = (report["frontend"], field.split(".", 1)[1]) if field.startswith("frontend.") else (report, field)
+                target[key] = value
+                with self.subTest(platform=platform_name, field=field, value=value), self.assertRaises(ValueError):
+                    assets.validate_frontend_startup(report, platform_name)
+            for field in valid:
+                report = copy.deepcopy(valid)
+                report.pop(field)
+                with self.subTest(platform=platform_name, missing=field), self.assertRaises(ValueError):
+                    assets.validate_frontend_startup(report, platform_name)
+
+    def test_frontend_startup_requires_exact_native_executable_gate(self):
+        for platform_name in ("macos", "windows"):
+            for mutation in ("missing", "duplicate", "python-tool", "wrong-exe-tool", "failed", "bool-returncode", "private-field"):
+                evidence = copy.deepcopy(self.evidence[platform_name])
+                checks = evidence["native_verification"]["checks"]
+                startup = next(item for item in checks if item["check"] == "frontend_startup")
+                if mutation == "missing": checks.remove(startup)
+                elif mutation == "duplicate": checks.append(copy.deepcopy(startup))
+                elif mutation == "python-tool": startup["tool"] = "python.exe"
+                elif mutation == "wrong-exe-tool": startup["tool"] = prepare.APP if platform_name == "windows" else prepare.APP + ".exe"
+                elif mutation == "failed": startup["returncode"] = 1
+                elif mutation == "private-field": startup["private_path"] = "/private/path"
+                else: startup["returncode"] = False
+                with self.subTest(platform=platform_name, mutation=mutation), self.assertRaises(ValueError):
+                    assets.validate_evidence(evidence, platform_name, self.tag, self.commit, self.version, self.code, self.base, self.provenance)
 
     def test_identity_source_recipe_native_command_and_plist_tampering_fails(self):
         for mutation in ("commit", "version", "code", "source", "recipe", "license", "gpl", "dependency", "missing-command", "failed-command", "fake-tool", "plist", "dmg"):
@@ -365,7 +556,7 @@ class ReleaseAssetTests(unittest.TestCase):
 
     def test_zip_app_ffmpeg_manifest_vendor_and_traversal_tampering_fails(self):
         source = self.base / prepare.artifact_names(self.version)["windows"][1]
-        for name, payload in ((prepare.APP + ".exe", b"changed app"), ("_internal/ffmpeg/bin/ffmpeg.exe", b"changed ffmpeg"), ("_internal/ffmpeg/build-manifest.json", b"{}"), ("_internal/imageio_ffmpeg/binaries/ffmpeg.exe", b"vendor"), ("../escape", b"unsafe")):
+        for name, payload in ((prepare.APP + ".exe", b"changed app"), ("_internal/dashboard-web/dist/index.html", b"changed frontend"), ("_internal/ffmpeg/bin/ffmpeg.exe", b"changed ffmpeg"), ("_internal/ffmpeg/build-manifest.json", b"{}"), ("_internal/imageio_ffmpeg/binaries/ffmpeg.exe", b"vendor"), ("../escape", b"unsafe")):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 target = Path(directory) / "portable.zip"
                 with zipfile.ZipFile(source) as old, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as new:
@@ -465,71 +656,304 @@ class DraftLifecycleTests(unittest.TestCase):
         gh.assert_not_called()
 
     def test_initialize_absent_creates_only_draft(self):
-        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "assert_draft"), patch.object(assets, "gh") as gh:
+        created = json.dumps({"id": 7, "tag_name": "v1.8.21", "draft": True})
+        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "gh", return_value=created) as gh:
             self.assertTrue(assets.initialize("owner/repo", "v1.8.21", "a" * 40))
-        self.assertIn("--draft", gh.call_args.args)
-        self.assertIn("--verify-tag", gh.call_args.args)
-        self.assertNotIn("--latest", gh.call_args.args)
+        self.assertEqual(1, gh.call_count)
+        args = gh.call_args.args
+        self.assertEqual(("api", "--method", "POST", "repos/owner/repo/releases"), args[1:5])
+        self.assertIn("tag_name=v1.8.21", args)
+        self.assertIn("name=SJTU Learning Assistant v1.8.21", args)
+        self.assertIn("draft=true", args)
+        self.assertNotIn("--latest", args)
+
+    def test_initialize_rejects_non_draft_or_malformed_create_response(self):
+        for payload in ({"id": 7, "tag_name": "v1.8.21", "draft": False},
+                        {"id": 0, "tag_name": "v1.8.21", "draft": True},
+                        {"id": 7, "tag_name": "v1.8.99", "draft": True}):
+            with self.subTest(payload=payload), patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "gh", return_value=json.dumps(payload)), self.assertRaisesRegex(ValueError, "Draft creation response"):
+                assets.initialize("owner/repo", "v1.8.21", "a" * 40)
+
+    def test_gh_decodes_utf8_stdout_and_stderr_under_non_utf8_locale(self):
+        completed = subprocess.CompletedProcess([], 0, "已".encode("utf-8"), b"")
+        with patch.object(assets.subprocess, "run", return_value=completed):
+            self.assertEqual("已", assets.gh("owner/repo", "api", "repos/owner/repo/releases"))
+        failed = subprocess.CompletedProcess([], 1, b"", "错误".encode("utf-8"))
+        with patch.object(assets.subprocess, "run", return_value=failed), self.assertRaisesRegex(ValueError, "错误"):
+            assets.gh("owner/repo", "api", "repos/owner/repo/releases")
 
     def test_remote_moved_tag_blocks_mutation(self):
         with patch.object(assets, "remote_commit", return_value="b" * 40), patch.object(assets, "release_metadata") as metadata, self.assertRaisesRegex(ValueError, "Remote tag changed"):
             assets.assert_draft("owner/repo", "v1.8.21", "a" * 40)
         metadata.assert_not_called()
 
-    def test_bounded_missing_mac_timeout_never_promotes(self):
-        with patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", return_value={"assets": []}), patch.object(assets.time, "monotonic", side_effect=[0, 601]), patch.object(assets, "gh") as gh, self.assertRaisesRegex(ValueError, "remains DRAFT"):
-            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path("unused"), "native-mac-owner", True, 600)
-        gh.assert_not_called()
+    def publisher_fixture(self):
+        names = assets.public_names("1.8.21")
+        return {"id": 42, "assets": [{"id": index, "name": name, "state": "uploaded", "size": 1,
+                "digest": "sha256:" + "d" * 64} for index, name in enumerate(sorted(names))]}
 
-    def test_unbounded_wait_rejected(self):
-        for seconds in (0, 299, 901):
-            with self.subTest(seconds=seconds), self.assertRaisesRegex(ValueError, "bounded"):
-                assets.publish("owner/repo", "v1.8.21", "a" * 40, Path("unused"), "native-mac-owner", True, seconds)
+    def fake_download(self, directory, order):
+        def gh(*args, **kwargs):
+            order.append(args)
+            if args[1:3] == ("release", "download"):
+                for name in assets.public_names("1.8.21"):
+                    (Path(directory) / name).write_bytes(b"fixture")
+        return gh
+
+    def test_missing_or_extra_assets_never_promote(self):
+        for change in ("missing", "extra", "duplicate", "incomplete"):
+            metadata = self.publisher_fixture()
+            if change == "missing": metadata["assets"].pop()
+            elif change == "extra": metadata["assets"].append({"name": "mac-evidence.json", "state": "uploaded"})
+            elif change == "duplicate": metadata["assets"][-1] = metadata["assets"][0]
+            else: metadata["assets"][0]["state"] = "new"
+            with self.subTest(change=change), patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", return_value=({}, {})), patch.object(assets, "assert_draft", return_value=metadata), patch.object(assets, "gh") as gh, self.assertRaisesRegex(ValueError, "remains DRAFT"):
+                assets.publish("owner/repo", "v1.8.21", "a" * 40, Path("unused"), "native-owner", "123", "1")
+            gh.assert_not_called()
 
     def test_failed_validation_never_edits_release(self):
-        names = assets.required_names("1.8.21")
-        metadata = {"id": 42, "assets": [{"name": name, "state": "uploaded"} for name in names]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", return_value=metadata), patch.object(assets, "gh") as gh, patch.object(assets, "verify_directory", side_effect=ValueError("Invalid native proof")), self.assertRaises(ValueError):
-            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-mac-owner", True, 600)
-        self.assertTrue(all("edit" not in call.args for call in gh.call_args_list))
+        order = []
+        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", return_value=({}, {})), patch.object(assets, "assert_draft", return_value=self.publisher_fixture()), patch.object(assets, "gh", side_effect=self.fake_download(directory, order)), patch.object(assets, "merge_native_evidence"), patch.object(assets, "verify_directory", side_effect=ValueError("Invalid native proof")), self.assertRaises(ValueError):
+            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-owner", "123", "1")
+        self.assertTrue(all("edit" not in call for call in order))
+
+    def test_missing_native_evidence_never_edits_release(self):
+        with patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", side_effect=ValueError("Missing native evidence")), patch.object(assets, "gh") as gh, self.assertRaises(ValueError):
+            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path("unused"), "native-owner", "123", "1")
+        gh.assert_not_called()
 
     def test_success_promotes_only_after_both_platforms_validate(self):
-        names = assets.required_names("1.8.21")
-        metadata = {"id": 42, "assets": [{"name": name, "state": "uploaded"} for name in names]}
         order = []
-        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", return_value=metadata), patch.object(assets, "gh", side_effect=lambda *args, **kwargs: order.append(args)), patch.object(assets, "verify_directory", side_effect=lambda *args: order.append("validated")):
-            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-mac-owner", True, 600)
+        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", return_value=({}, {})), patch.object(assets, "assert_draft", return_value=self.publisher_fixture()), patch.object(assets, "gh", side_effect=self.fake_download(directory, order)), patch.object(assets, "merge_native_evidence"), patch.object(assets, "verify_directory", side_effect=lambda *args: order.append("validated")):
+            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-owner", "123", "1")
         self.assertEqual("validated", order[-2])
         self.assertIn("--draft=false", order[-1])
+        self.assertIn("--notes-file", order[-1])
         self.assertIn("--latest", order[-1])
 
     def test_asset_replaced_during_validation_does_not_promote(self):
-        names = assets.required_names("1.8.21")
-        metadata = {"id": 42, "assets": [{"name": name, "state": "uploaded"} for name in names]}
+        metadata = self.publisher_fixture()
         replaced = copy.deepcopy(metadata)
         replaced["assets"][0]["id"] = 999
-        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", side_effect=[metadata, replaced]), patch.object(assets, "gh") as gh, patch.object(assets, "verify_directory"), self.assertRaisesRegex(ValueError, "changed during"):
-            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-mac-owner", True, 600)
-        self.assertTrue(all("edit" not in call.args for call in gh.call_args_list))
+        order = []
+        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", return_value=({}, {})), patch.object(assets, "assert_draft", side_effect=[metadata, replaced]), patch.object(assets, "gh", side_effect=self.fake_download(directory, order)), patch.object(assets, "merge_native_evidence"), patch.object(assets, "verify_directory"), self.assertRaisesRegex(ValueError, "changed during"):
+            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-owner", "123", "1")
+        self.assertTrue(all("edit" not in call for call in order))
+
+    def test_native_artifact_changed_during_validation_does_not_promote(self):
+        order = []
+        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "authenticate_native_run", side_effect=[({}, {}), ({}, {"macos": "replaced"})]), patch.object(assets, "assert_draft", return_value=self.publisher_fixture()), patch.object(assets, "gh", side_effect=self.fake_download(directory, order)), patch.object(assets, "merge_native_evidence"), patch.object(assets, "verify_directory"), self.assertRaisesRegex(ValueError, "changed during"):
+            assets.publish("owner/repo", "v1.8.21", "a" * 40, Path(directory), "native-owner", "123", "1")
+        self.assertTrue(all("edit" not in call for call in order))
+
+
+class NativeArtifactTransportTests(unittest.TestCase):
+    def responses(self):
+        run = {"id": 123, "run_attempt": 1, "head_sha": "a" * 40, "path": ".github/workflows/release.yml",
+               "event": "push", "status": "in_progress", "repository": {"full_name": "owner/repo", "id": 7},
+               "head_repository": {"full_name": "owner/repo", "id": 7}, "actor": {"login": "native-owner"}}
+        jobs = {"total_count": 5, "jobs": [
+            {"name": name, "status": "completed", "conclusion": "success", "run_attempt": 1}
+            for name in ("initialize", "release-checks", "windows-release", "macos-release")
+        ] + [{"name": "publish-release", "status": "in_progress", "run_attempt": 1}]}
+        listing = {"total_count": 2, "artifacts": [
+            {"id": index + 10, "name": assets.native_artifact_name(platform_name, "123", "1"),
+             "expired": False, "size_in_bytes": 100, "digest": "sha256:" + "d" * 64,
+             "workflow_run": {"id": 123, "head_sha": "a" * 40, "repository_id": 7, "head_repository_id": 7}}
+            for index, platform_name in enumerate(("macos", "windows"))]}
+        return run, jobs, listing
+
+    def authenticate(self, responses):
+        with patch.object(assets, "gh", side_effect=[json.dumps(item) for item in responses]):
+            return assets.authenticate_native_run("owner/repo", "a" * 40, "123", "1", "native-owner")
+
+    def test_same_release_run_and_native_jobs_authenticate(self):
+        provenance, artifacts = self.authenticate(self.responses())
+        self.assertEqual("native-owner", provenance["actor"])
+        self.assertEqual("a" * 40, provenance["source_commit"])
+        self.assertEqual({"macos", "windows"}, set(artifacts))
+
+    def test_run_source_actor_workflow_and_attempt_mismatch_reject(self):
+        for key, value in (("id", 124), ("run_attempt", 2), ("head_sha", "b" * 40), ("path", ".github/workflows/ci.yml"),
+                           ("event", "pull_request"), ("status", "queued"), ("actor", {"login": "forged"}),
+                           ("repository", {"full_name": "fork/repo"}), ("head_repository", {"full_name": "fork/repo"})):
+            responses = self.responses()
+            responses[0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.authenticate(responses)
+
+    def test_both_native_and_check_jobs_must_succeed_this_attempt(self):
+        for name in ("initialize", "release-checks", "windows-release", "macos-release"):
+            for key, value in (("conclusion", "failure"), ("conclusion", "skipped"), ("status", "in_progress"), ("run_attempt", 0)):
+                responses = self.responses()
+                next(job for job in responses[1]["jobs"] if job["name"] == name)[key] = value
+                with self.subTest(name=name, key=key, value=value), self.assertRaises(ValueError):
+                    self.authenticate(responses)
+        responses = self.responses()
+        responses[1]["jobs"].pop(3)
+        responses[1]["total_count"] -= 1
+        with self.assertRaises(ValueError): self.authenticate(responses)
+
+    def test_missing_duplicate_expired_wrong_digest_or_source_artifact_rejects(self):
+        for mutation in ("missing", "duplicate", "expired", "digest", "source", "run", "repository", "name"):
+            responses = self.responses()
+            listing = responses[2]
+            item = listing["artifacts"][0]
+            if mutation == "missing": listing["artifacts"].pop()
+            elif mutation == "duplicate": listing["artifacts"].append(copy.deepcopy(item))
+            elif mutation == "expired": item["expired"] = True
+            elif mutation == "digest": item["digest"] = None
+            elif mutation == "source": item["workflow_run"]["head_sha"] = "b" * 40
+            elif mutation == "run": item["workflow_run"]["id"] = 124
+            elif mutation == "repository": item["workflow_run"]["head_repository_id"] = 8
+            else: item["name"] = assets.native_artifact_name("macos", "123", "2")
+            listing["total_count"] = len(listing["artifacts"])
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.authenticate(responses)
+
+    def test_absent_pinned_run_or_actor_rejects_before_rest(self):
+        for run_id, attempt, actor in ((None, "1", "owner"), ("123", None, "owner"), ("123", "1", None), ("123/x", "1", "owner")):
+            with self.subTest(run_id=run_id, attempt=attempt, actor=actor), patch.object(assets, "gh") as gh, self.assertRaises(ValueError):
+                assets.authenticate_native_run("owner/repo", "a" * 40, run_id, attempt, actor)
+            gh.assert_not_called()
+
+    def archive_bytes(self, names):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in names: archive.writestr(name, b"fixture")
+        return stream.getvalue()
+
+    def test_actions_archive_digest_and_exact_flat_file_set_are_mandatory(self):
+        expected = assets.platform_names("1.8.21", "macos")
+        for mutation in ("valid", "digest", "missing", "extra", "traversal", "duplicate"):
+            names = sorted(expected)
+            if mutation == "missing": names.pop()
+            elif mutation == "extra": names.append("unrequested.txt")
+            elif mutation == "traversal": names[-1] = "../outside"
+            elif mutation == "duplicate": names.append(names[0])
+            payload = self.archive_bytes(names)
+            item = {"id": 10, "digest": "sha256:" + ("0" * 64 if mutation == "digest" else assets.sha_bytes(payload))}
+            def run(*args, **kwargs):
+                kwargs["stdout"].write(payload)
+                return subprocess.CompletedProcess(args, 0, b"", b"")
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary, patch.object(assets.subprocess, "run", side_effect=run):
+                destination = Path(temporary) / "proof"
+                if mutation == "valid":
+                    assets.download_native_artifact("owner/repo", item, destination, expected)
+                    self.assertEqual(expected, {path.name for path in destination.iterdir()})
+                else:
+                    with self.assertRaises(ValueError): assets.download_native_artifact("owner/repo", item, destination, expected)
+                    self.assertFalse(destination.exists())
+
+    def test_shared_sources_must_be_byte_identical_between_native_artifacts(self):
+        for changed in (False, True):
+            def download(repo, item, destination, names):
+                destination.mkdir()
+                for name in names:
+                    payload = b"changed" if changed and item == "windows" and name == prepare.SOURCE_NAME else b"fixture"
+                    (destination / name).write_bytes(payload)
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary, patch.object(assets, "download_native_artifact", side_effect=download):
+                directory = Path(temporary)
+                if changed:
+                    with self.assertRaisesRegex(ValueError, "shared evidence differs"):
+                        assets.merge_native_evidence("owner/repo", "1.8.21", directory, {"macos": "macos", "windows": "windows"})
+                else:
+                    assets.merge_native_evidence("owner/repo", "1.8.21", directory, {"macos": "macos", "windows": "windows"})
+                    self.assertEqual(assets.required_names("1.8.21"), {path.name for path in directory.iterdir()})
+
+    def test_downloaded_release_bytes_cannot_be_overwritten_by_native_copies(self):
+        def download(repo, item, destination, names):
+            destination.mkdir()
+            for name in names: (destination / name).write_bytes(b"native")
+        with tempfile.TemporaryDirectory() as temporary, patch.object(assets, "download_native_artifact", side_effect=download):
+            directory = Path(temporary)
+            binary = directory / prepare.artifact_names("1.8.21")["macos"][0]
+            binary.write_bytes(b"tampered remote")
+            with self.assertRaisesRegex(ValueError, "differs from native bytes"):
+                assets.merge_native_evidence("owner/repo", "1.8.21", directory, {"macos": "macos", "windows": "windows"})
+            self.assertEqual(b"tampered remote", binary.read_bytes())
+
+    def test_upload_rejects_extra_staging_or_existing_release_files(self):
+        for mutation in ("staging-extra", "release-extra", "release-duplicate"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                for name in assets.platform_names("1.8.21", "macos"): (directory / name).write_bytes(b"fixture")
+                metadata = {"assets": []}
+                if mutation == "staging-extra": (directory / "evidence-not-requested.txt").write_bytes(b"fixture")
+                elif mutation == "release-extra": metadata["assets"] = [{"name": "mac-evidence.json"}]
+                else:
+                    name = prepare.artifact_names("1.8.21")["macos"][0]
+                    metadata["assets"] = [{"name": name}, {"name": name}]
+                with patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", return_value=metadata), patch.object(assets, "gh") as gh, self.assertRaises(ValueError):
+                    assets.upload("owner/repo", "v1.8.21", "a" * 40, directory)
+                gh.assert_not_called()
+
+    def test_upload_whitelist_is_only_dmg_setup_and_portable(self):
+        uploaded = []
+        for platform_name in ("macos", "windows"):
+            with tempfile.TemporaryDirectory() as temporary, patch.object(prepare, "validate_identity", return_value=("1.8.21", {})), patch.object(assets, "assert_draft", return_value={"assets": []}), patch.object(assets, "gh", side_effect=lambda *args, **kwargs: uploaded.append(Path(args[-1]).name)):
+                directory = Path(temporary)
+                for name in assets.platform_names("1.8.21", platform_name): (directory / name).write_bytes(b"fixture")
+                assets.upload("owner/repo", "v1.8.21", "a" * 40, directory)
+        self.assertEqual(3, len(uploaded))
+        self.assertEqual(assets.public_names("1.8.21"), set(uploaded))
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
-    def test_local_mac_default_draft_gate_and_windows_independence(self):
+    def test_three_digest_only_assets_work_without_public_sidecar_requests(self):
+        import httpx
+        from sjtu_learning_assistant.update_service import UpdateService
+        prefix = "https://github.com/Augety-silence/sjtu-learning-assistant/releases/"
+        names = assets.public_names("1.8.24")
+        payload = {"tag_name": "v1.8.24", "draft": False, "prerelease": False,
+                   "html_url": prefix + "tag/v1.8.24", "body": "verified native build", "assets": [
+                       {"name": name, "size": 1, "digest": "sha256:" + "d" * 64,
+                        "browser_download_url": prefix + "download/v1.8.24/" + name} for name in sorted(names)]}
+        for system, machine, requested, expected in (
+            ("Windows", "x64", None, prepare.artifact_names("1.8.24")["windows"][0]),
+            ("Darwin", "arm64", None, prepare.artifact_names("1.8.24")["macos"][0]),
+            ("Windows", "x64", prepare.artifact_names("1.8.24")["windows"][1], prepare.artifact_names("1.8.24")["windows"][1]),
+        ):
+            seen = []
+            def handler(request):
+                seen.append(str(request.url))
+                self.assertEqual("api.github.com", request.url.host)
+                return httpx.Response(200, json=payload)
+            with self.subTest(system=system, requested=requested):
+                check = UpdateService("1.8.23", transport=httpx.MockTransport(handler)).check(
+                    system=system, machine=machine, asset_name=requested)
+                self.assertEqual(expected, check.download_plan.asset_name)
+                self.assertEqual("d" * 64, check.download_plan.sha256)
+                self.assertIsNone(check.download_plan.checksum_url)
+                self.assertEqual(1, len(seen))
+
+    def test_native_mac_default_draft_gate_and_windows_independence(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
-        self.assertIn("default: true", text)
+        self.assertIn("default: false", text)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.use_local_macos", text)
+        self.assertIn('test "$USE_LOCAL_MACOS" = "false"', text)
         self.assertNotIn("FFMPEG_BINARY_REDISTRIBUTION_CLEARED", text)
         self.assertIn("msys2/setup-msys2@v2", text)
         self.assertIn("msystem: MINGW64", text)
         self.assertIn("mingw-w64-x86_64-gcc make", text)
         self.assertIn("SJTU_MSYS2_BASH", text)
+        preflight = text.split("  windows-preflight:\n", 1)[1].split("  windows-release:\n", 1)[0]
+        self.assertIn("python -m pytest", preflight)
+        self.assertIn("requirements-windows.txt", preflight)
         windows = text.split("  windows-release:\n", 1)[1].split("  macos-release:\n", 1)[0]
+        self.assertIn("needs: [initialize, windows-preflight]", windows)
         self.assertNotIn("needs: macos-release", windows)
-        self.assertIn("python.exe -m pytest", windows)
-        self.assertIn("needs.initialize.outputs.use_local_macos == 'false'", text)
+        # The full suite runs once on this same immutable commit, before packaging.
+        self.assertNotIn("-m pytest", windows)
+        self.assertNotIn("needs.initialize.outputs.use_local_macos == 'false'", text)
         self.assertIn("always() &&", text)
         self.assertIn("needs.windows-release.result == 'success'", text)
-        self.assertIn("--wait-seconds 600", text)
+        self.assertIn("needs.macos-release.result == 'success'", text)
+        self.assertNotIn("use_local_macos == 'true' ||", text)
+        self.assertEqual(2, text.count("uses: actions/upload-artifact@v4"))
+        self.assertIn('--release-run "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --actor "$RELEASE_ACTOR"', text)
+        self.assertIn("actions: read", text)
         self.assertIn("22.22.0", text)
         self.assertIn("10.9.4", text)
         self.assertIn("check_licenses.py", text)
