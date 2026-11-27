@@ -245,6 +245,8 @@ class AgentRuntimeTests(unittest.TestCase):
         result = AgentLoop(client, registry, preset("search_compiled_knowledge", "read_compiled_knowledge", "read_course_file_text")).run([{ "role":"user", "content":"评分"}],user_text="评分",max_tokens=500,temperature=0)
         original_run = next(run for run in result.tool_runs if run["tool_name"] == "read_course_file_text")
         self.assertEqual("ready", original_run["result_summary"]["content_status"])
+        self.assertEqual(1, original_run["result_summary"]["preview"]["version"])
+        self.assertTrue(original_run["result_summary"]["preview"]["text"])
         self.assertEqual(1, original_run["result_summary"]["start_page"])
         read_run = next(run for run in result.tool_runs if run["tool_name"] == "read_compiled_knowledge")
         self.assertEqual("ok", read_run["result_summary"]["status"])

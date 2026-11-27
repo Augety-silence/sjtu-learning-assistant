@@ -20,6 +20,7 @@ from sjtu_learning_assistant.dashboard_service import (
 from sjtu_learning_assistant.canvas_sync import CanvasCheckError
 from sjtu_learning_assistant.desktop_database import bootstrap_sqlite
 from sjtu_learning_assistant.models import Assignment, Course, SyncState
+from sjtu_learning_assistant.local_settings import LocalSettings
 
 
 class DashboardOverviewTests(unittest.TestCase):
@@ -246,7 +247,10 @@ class DashboardSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "archive"
             root.mkdir()
-            service = DashboardService(SimpleNamespace(), archive_root=root)
+            settings = LocalSettings(archive_root=str(root))
+            store = SimpleNamespace(path=Path(directory) / "settings.json",
+                load=lambda: settings, resolve=lambda **_overrides: settings)
+            service = DashboardService(SimpleNamespace(), archive_root=root, settings_store=store)
             with (
                 patch("sjtu_learning_assistant.canvas_sync.load_keyring_module") as canvas_keyring,
                 patch("sjtu_learning_assistant.mail_sync.load_keyring_module") as mail_keyring,
@@ -254,6 +258,7 @@ class DashboardSettingsTests(unittest.TestCase):
                 status = service.settings_status()
         canvas_keyring.assert_not_called()
         mail_keyring.assert_not_called()
+        self.assertFalse(status.get("current_term_md_enabled"))
         self.assertEqual(str(root), status["archive_root"])
         self.assertEqual(
             {
@@ -267,6 +272,7 @@ class DashboardSettingsTests(unittest.TestCase):
                 "credential_status_error",
                 "auto_download_current_term",
                 "course_markdown_enabled",
+                "current_term_md_enabled",
                 "course_markdown_daily_calls",
                 "organize_by_category",
                 "ai_enabled",
@@ -373,6 +379,7 @@ class DashboardActionTests(unittest.TestCase):
             resolve=lambda **_overrides: SimpleNamespace(
                 archive_root="/tmp/archive",
                 auto_download_current_term=True,
+                current_term_md_enabled=False,
                 organize_by_category=True,
                 mail_account="",
             )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import itertools
+import json
 import os
 import re
 import stat
@@ -615,6 +616,37 @@ class ArchiveService:
         return self._download_with_terminal_status(
             target_context, planned[target_context.source_id]
         )
+
+    def download_temporary(self, source_id: str, directory: Path,
+                           expected_size: int | None, cancelled=lambda: False) -> tuple[Path, int, str]:
+        """独立 MD 队列的临时下载；不更改原件路径、下载状态或 AI 队列。"""
+        _ensure_safe_directory(self.archive_root, directory)
+        if expected_size is not None and expected_size > MAX_DOWNLOAD_BYTES:
+            raise ArchiveError("文件超过 500 MiB 安全上限。")
+        path, size, digest = self._stream_to_temporary(
+            self._fetch_download_url(source_id), directory,
+            checkpoint=lambda: self._temporary_checkpoint(cancelled))
+        if expected_size is not None and size != expected_size:
+            path.unlink(missing_ok=True)
+            raise ArchiveError("临时下载大小与来源记录不一致，等待下次同步。")
+        try:
+            receipt = directory / 'download.json'
+            with receipt.open('x', encoding='utf-8') as output:
+                json.dump(dict(source_id=source_id, size=size, sha256=digest), output)
+                output.flush()
+                os.fsync(output.fileno())
+            target = directory / 'source.bin'
+            os.link(path, target)  # 不覆盖任何既有对象；收据先落盘，支持中断恢复。
+            path.unlink()
+            return target, size, digest
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _temporary_checkpoint(cancelled):
+        if cancelled():
+            raise InterruptedError()
 
     def _load_contexts(
         self,
@@ -1527,11 +1559,15 @@ class ArchiveService:
     ) -> list[DownloadResult]:
         values = list(contexts)
         planned = self._planned_paths(values)
+        # 只对已验证、来源版本仍匹配的临时转换成果跳过批量重下载。
+        # 用户显式下载仍走 download_file_by_source_id。
+        from .current_term_markdown import ready_records
+        markdown_only = {item["source_id"] for item in ready_records(self.engine, self.archive_root)}
         results: list[DownloadResult] = []
         for context in values:
             if self.checkpoint is not None:
                 self.checkpoint()
-            if context.download_status == "cloud_only":
+            if context.download_status == "cloud_only" or context.source_id in markdown_only:
                 # 用户已通过云端归档释放本地副本；批量归档不得悄悄重新下载，
                 # 仅显式 download_file_by_source_id 才恢复本地文件。
                 results.append(DownloadResult(context.source_id, "unchanged"))
@@ -1749,7 +1785,7 @@ class ArchiveService:
         return download_url
 
     def _stream_to_temporary(
-        self, download_url: str, directory: Path
+        self, download_url: str, directory: Path, *, checkpoint=None
     ) -> tuple[Path, int, str]:
         fd, temporary_name = tempfile.mkstemp(prefix=".sjtu-download-", dir=directory)
         temporary_path = Path(temporary_name)
@@ -1790,6 +1826,8 @@ class ArchiveService:
                             if announced_size > MAX_DOWNLOAD_BYTES:
                                 raise ArchiveError("文件超过 500 MiB 安全上限。")
                         for chunk in response.iter_bytes(chunk_size=65536):
+                            if checkpoint is not None:
+                                checkpoint()
                             size += len(chunk)
                             if size > MAX_DOWNLOAD_BYTES:
                                 raise ArchiveError("文件超过 500 MiB 安全上限。")

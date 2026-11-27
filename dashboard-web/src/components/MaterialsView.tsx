@@ -73,6 +73,8 @@ function materialAvailability(file: MaterialNode) {
 }
 
 function materialAvailabilityLabel(file: MaterialNode) {
+  if (file.markdown_ready && file.download_status !== "downloaded")
+    return "基础 MD 已就绪";
   const availability = materialAvailability(file);
   if (availability === "downloaded") return "已下载";
   if (availability === "failed") return "失败";
@@ -483,15 +485,16 @@ export function MaterialsView({
     });
     try {
       const extension = file.name.split(".").pop()?.toLocaleLowerCase() ?? "";
-      const nextPreview = structuredPreviewExtensions.has(extension)
-        ? await getMediaPreview(file.source_id).then(
-            (result): MaterialPreview => ({
-              kind: "text",
-              name: result.name ?? file.name,
-              text: structuredPreviewText(result),
-            }),
-          )
-        : await previewMaterial(file.source_id);
+      const nextPreview =
+        !file.markdown_ready && structuredPreviewExtensions.has(extension)
+          ? await getMediaPreview(file.source_id).then(
+              (result): MaterialPreview => ({
+                kind: "text",
+                name: result.name ?? file.name,
+                text: structuredPreviewText(result),
+              }),
+            )
+          : await previewMaterial(file.source_id);
       previewReturnRef.current = returnRow;
       opened = true;
       setPreview(nextPreview);
@@ -1083,7 +1086,9 @@ export function MaterialsView({
                             在{fileManagerName()}中显示
                           </Button>
                         )}
-                        {!file.can_open && (
+                        {(!file.can_open ||
+                          (file.markdown_ready &&
+                            file.download_status !== "downloaded")) && (
                           <Button
                             variant="link"
                             tabIndex={selectedContentId === file.id ? 0 : -1}

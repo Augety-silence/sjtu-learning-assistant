@@ -1,6 +1,6 @@
 import type { ThemeMode } from "@/lib/types";
 
-export type ResolvedTheme = Exclude<ThemeMode, "system">;
+export type ResolvedTheme = "light" | "dark";
 
 const DARK_THEME_QUERY = "(prefers-color-scheme: dark)";
 
@@ -8,6 +8,7 @@ function resolveTheme(
   mode: ThemeMode,
   mediaQuery?: MediaQueryList,
 ): ResolvedTheme {
+  if (mode === "aime") return "light";
   if (mode !== "system") return mode;
   return mediaQuery?.matches ? "dark" : "light";
 }

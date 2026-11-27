@@ -48,6 +48,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("同步进度小窗口", () => {
+  it("本学期临时转 MD 单独统计，保留旧总结计数", async () => {
+    vi.mocked(getMarkdownSyncProgress).mockResolvedValue({
+      ...state,
+      current_term_md: {
+        enabled: true,
+        status: "idle",
+        total: 190,
+        existing: 189,
+        completed: 1,
+        pending: 0,
+        failed: 0,
+      },
+    });
+    render(<MarkdownSyncProgress onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "同步进度" }));
+    expect(await screen.findByText("本学期后台补齐")).toBeTruthy();
+    expect(screen.getByText("后台扫描已开启")).toBeTruthy();
+    expect(screen.getByText(/本学期资料 190/)).toBeTruthy();
+    expect(screen.getByText("10 / 99")).toBeTruthy();
+  });
   it("学校暂无字幕单列展示，不计入失败", async () => {
     vi.mocked(getMarkdownSyncProgress).mockResolvedValue({
       ...state,
@@ -84,6 +104,33 @@ describe("同步进度小窗口", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "同步进度" }),
     );
+  });
+  it("展示原件、未登记与未下载的统计差额", async () => {
+    vi.mocked(getMarkdownSyncProgress).mockResolvedValue({
+      ...state,
+      courses: {
+        ...state.courses,
+        inventory: {
+          downloaded_records: 190,
+          local_originals: 195,
+          supported: 91,
+          unsupported_local: 104,
+          untracked_local: 5,
+          untracked_supported: 5,
+          missing_local: 0,
+          registered: 86,
+          unregistered: 5,
+          truncated: false,
+          database_total: 1168,
+          not_downloaded: 978,
+        },
+      },
+    });
+    render(<MarkdownSyncProgress onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "同步进度" }));
+    await screen.findByText("原件统计 · 未登记 5");
+    expect(screen.getByText(/课程资料记录 1168 · 未下载 978/)).toBeTruthy();
+    expect(screen.getByText(/未纳入下载记录的可编译原件 5/)).toBeTruthy();
   });
   it("读取失败可重试，设置及知识库入口可导航", async () => {
     const navigate = vi.fn();

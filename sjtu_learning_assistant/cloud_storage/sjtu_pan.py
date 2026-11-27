@@ -423,6 +423,11 @@ class SJTUCloudPanProvider(CloudStorageProvider):
     def refresh_credentials(self) -> SpaceCredential:
         return self.get_space_credentials(force_refresh=True)
 
+    def backup_identity(self) -> str:
+        credential = self.get_space_credentials()
+        import hashlib
+        return hashlib.sha256((self._base_url + "\0" + credential.library_id + "\0" + credential.space_id).encode()).hexdigest()
+
     def _get_organization_id(self, credential: SpaceCredential) -> str:
         with self._credential_lock:
             if (

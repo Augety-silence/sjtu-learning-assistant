@@ -335,7 +335,8 @@ def main() -> int:
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
-        run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine)))
+        from sjtu_learning_assistant.local_settings import SettingsStore
+        run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine), mail_account=SettingsStore().load().mail_account))
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

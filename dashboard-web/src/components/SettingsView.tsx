@@ -81,6 +81,12 @@ const themeOptions = [
   },
   { mode: "light", label: "浅色", description: "始终使用浅色外观", icon: Sun },
   { mode: "dark", label: "深色", description: "始终使用深色外观", icon: Moon },
+  {
+    mode: "aime",
+    label: "Aime 风格",
+    description: "绿色点缀与简洁面板",
+    icon: Sun,
+  },
 ] as const;
 
 const configMeta = {

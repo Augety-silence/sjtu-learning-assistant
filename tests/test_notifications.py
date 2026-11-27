@@ -408,6 +408,7 @@ class NotificationCliTests(unittest.TestCase):
         settings = SimpleNamespace(
             archive_root=str(Path.home() / "Documents" / "SJTU Study"),
             auto_download_current_term=True,
+            current_term_md_enabled=False,
             organize_by_category=True,
             ai_enabled=False,
             ai_key_saved=False,
@@ -440,6 +441,7 @@ class NotificationCliTests(unittest.TestCase):
         settings = SimpleNamespace(
             archive_root="/tmp/SJTU Archive",
             auto_download_current_term=False,
+            current_term_md_enabled=False,
             organize_by_category=True,
             ai_enabled=False,
             ai_key_saved=False,

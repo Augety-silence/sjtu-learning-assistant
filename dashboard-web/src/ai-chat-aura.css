@@ -1428,7 +1428,7 @@
   border-color: color-mix(in srgb, var(--status-danger) 26%, var(--aura-border));
 }
 
-.ai-turn-trace .ai-tool-run summary {
+.ai-turn-trace .ai-tool-run > summary {
   min-height: 34px;
   padding: 6px 10px;
   display: grid;
@@ -1438,7 +1438,7 @@
   border-radius: 9px;
 }
 
-.ai-turn-trace .ai-tool-run summary:hover {
+.ai-turn-trace .ai-tool-run > summary:hover {
   background: var(--ai-control-hover);
 }
 
@@ -1500,7 +1500,7 @@
   color: inherit;
 }
 
-.ai-turn-trace .ai-tool-run summary > .ai-tool-caret {
+.ai-turn-trace .ai-tool-run > summary > .ai-tool-caret {
   grid-column: 4;
 }
 
@@ -1665,7 +1665,7 @@
   .ai-turn-trace .ai-tool-phase {
     display: none;
   }
-  .ai-turn-trace .ai-tool-run summary {
+  .ai-turn-trace .ai-tool-run > summary {
     grid-template-columns: 18px minmax(0, 1fr) 0 12px;
   }
 }

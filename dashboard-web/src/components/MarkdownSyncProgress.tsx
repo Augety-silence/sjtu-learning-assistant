@@ -62,6 +62,30 @@ function ProgressRow({
           </dd>
         </div>
       </dl>
+      {group.inventory && (
+        <details>
+          <summary>原件统计 · 未登记 {group.inventory.unregistered}</summary>
+          <p>
+            本地原件 {group.inventory.local_originals} · 可自动编译{" "}
+            {group.inventory.supported} · 其他格式{" "}
+            {group.inventory.unsupported_local}
+          </p>
+          <p>
+            已登记 {group.inventory.registered} · 未登记{" "}
+            {group.inventory.unregistered} · 未纳入下载记录的可编译原件{" "}
+            {group.inventory.untracked_supported}
+          </p>
+          {group.inventory.database_total !== undefined && (
+            <p>
+              课程资料记录 {group.inventory.database_total} · 未下载{" "}
+              {group.inventory.not_downloaded}
+              {(group.inventory.markdown_only ?? 0) > 0 &&
+                ` · 仅保留 MD ${group.inventory.markdown_only}`}
+            </p>
+          )}
+          <p>统计包含未登记原件；自动编译仍按现有下载记录和设置执行。</p>
+        </details>
+      )}
       {(group.unavailable ?? 0) > 0 && (
         <div className="heading-with-info">
           <span>暂无字幕 {group.unavailable}</span>
@@ -195,9 +219,10 @@ export function MarkdownSyncProgress({
             <div className="heading-with-info">
               <h2>基础 MD 转换</h2>
               <InfoTooltip label="转换进度说明" align="end">
-                统计本机已下载课件和已保存字幕。基础 MD 可直接阅读与检索，不消耗
-                Token；AI 精炼总结单独计数。 自动任务在窗口关闭后继续；此窗口每
-                5 秒更新，不启动转换或调用模型。
+                统计本机可自动编译的课件原件和已保存字幕，未登记原件也计入待转换。基础
+                MD 可直接阅读与检索，不消耗 Token；AI 精炼总结单独计数。
+                自动任务在窗口关闭后继续；此窗口每 5
+                秒更新，不启动转换或调用模型。
               </InfoTooltip>
             </div>
             <Button
@@ -225,6 +250,46 @@ export function MarkdownSyncProgress({
           {data && (
             <>
               <ProgressRow name="课件" group={data.courses} />
+              {data.current_term_md && (
+                <section
+                  className="markdown-progress-row"
+                  aria-label="本学期后台补齐"
+                >
+                  <div className="markdown-progress-heading">
+                    <h3>本学期后台补齐</h3>
+                    <span>
+                      {data.current_term_md.enabled
+                        ? "后台扫描已开启"
+                        : "已暂停"}
+                    </span>
+                  </div>
+                  <p>
+                    本学期资料 {data.current_term_md.total} · 原有下载{" "}
+                    {data.current_term_md.existing}
+                  </p>
+                  <dl>
+                    <div>
+                      <dt>补齐 MD</dt>
+                      <dd>{data.current_term_md.completed}</dd>
+                    </div>
+                    <div>
+                      <dt>待处理</dt>
+                      <dd>{data.current_term_md.pending}</dd>
+                    </div>
+                    <div>
+                      <dt>异常</dt>
+                      <dd>{data.current_term_md.failed}</dd>
+                    </div>
+                  </dl>
+                  <p>临时下载转为可读 MD 并校验后清理原件，原有下载保留。</p>
+                  {data.current_term_md.current_file && (
+                    <p>正在处理：{data.current_term_md.current_file}</p>
+                  )}
+                  {data.current_term_md.status === "blocked" && (
+                    <p role="status">后台补齐暂不可用，等待下次扫描</p>
+                  )}
+                </section>
+              )}
               <ProgressRow name="字幕" group={data.transcripts} />
               {!fresh && (
                 <p role="status" className="markdown-progress-current">

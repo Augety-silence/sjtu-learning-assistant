@@ -128,7 +128,7 @@ def validate_summary(result: dict, pages: list[int], topic_ids: list[str] | None
 class SummaryCompiler(StudyCompiler):
     def __init__(self, request: Callable, cached: Callable, commit: Callable, verify_sources: Callable | None = None,
                  *, review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
-                 content_recovery: bool = False):
+                 content_recovery: bool = False, authorized_recovery=None):
         super().__init__(request, cached, commit, SUMMARY_VERSION)
         self.prefix = 'summary/' + hashlib.sha256(SUMMARY_VERSION.encode()).hexdigest()[:12] + '/'
         self.verify_sources = verify_sources
@@ -142,6 +142,9 @@ class SummaryCompiler(StudyCompiler):
         self.auto_recovery = auto_recovery
         # 只由显式选择失败资料的恢复工具开启；日常轮询不追加内容修复额度。
         self.content_recovery = content_recovery
+        self.authorized_recovery = authorized_recovery
+        if authorized_recovery is not None:
+            self.request = authorized_recovery.wrap_request(self, self.request)
 
     def _needs_review(self, data: dict, *, always: bool) -> bool:
         """合并稿始终审校；分段稿按输入哈希确定性抽样。"""
@@ -226,6 +229,18 @@ class SummaryCompiler(StudyCompiler):
                 return result
             except ValueError:
                 pass
+        # Explicit recovery does not re-enter or reset any legacy automatic/content stage.
+        # Revalidate all saved drafts first; a registered genuine failure uses its stable
+        # source/node authorization, never a prompt/date/error-derived new allowance.
+        if (self.authorized_recovery is not None and is_summary and not is_compression
+                and not structure_repair and not automatic_repair
+                and self.authorized_recovery.registered(name) and state.get('draft')):
+            from .segment_recovery import RecoveryBlocked
+            try:
+                retained_draft = _json(state['draft'])
+            except ValueError:
+                raise RecoveryBlocked('No complete failed summary JSON; saved responses retained.') from None
+            return self.authorized_recovery.recover(self, name, prompt, data, validator, retained_draft, base)
         while state['step'] < limit:
             step = state['step']
             payload = data
@@ -329,6 +344,10 @@ class SummaryCompiler(StudyCompiler):
 
     def _recover_patch(self, name, prompt, data, validator, state, base):
         """独立的两次修复预算；只修改失败字段，其他付费正文本地合并。"""
+        if (self.authorized_recovery is not None and prompt.startswith(SUMMARY_PROMPT)
+                and self.authorized_recovery.registered(name)):
+            return self.authorized_recovery.recover(self, name, prompt, data, validator,
+                                                   _json(state['draft']), base)
         try:
             draft = _json(state.get('draft'))
         except ValueError:
@@ -381,6 +400,8 @@ class SummaryCompiler(StudyCompiler):
 
     def _recover_content(self, name, prompt, data, validator, draft, base, *, candidates=()):
         """显式目标资料的完整内容修复；稳定输入账本与终身两次预约，不递归追加。"""
+        if self.authorized_recovery is not None and self.authorized_recovery.registered(name):
+            return self.authorized_recovery.recover(self, name, prompt, data, validator, draft, base)
         if not self.content_recovery or not prompt.startswith(SUMMARY_PROMPT) or not any(
                 key in data for key in ('pages', 'input_summaries')):
             raise ValueError('未开启指定来源的内容修复；检查点保留。')
@@ -457,6 +478,12 @@ class SummaryCompiler(StudyCompiler):
                 if type(draft.get('markdown')) is str and len(draft['markdown']) > MAX_MARKDOWN_CHARS:
                     return draft
             return None
+        if self.authorized_recovery is not None and self.authorized_recovery.registered(name):
+            # Full original node input is frozen; no legacy compact/patch fallback billing.
+            retained = overlong_draft()
+            if retained is not None:
+                return self.authorized_recovery.recover(self, name, prompt, data, validator, retained, base)
+            return self._saved(name, prompt, data, validator)
         retained = overlong_draft()
         if retained is None:
             try:
@@ -484,6 +511,15 @@ class SummaryCompiler(StudyCompiler):
 
     def _summary(self, name: str, data: dict, pages: list[int], topic_ids: list[str],
                  *, always_review: bool = True, fragment: bool = False) -> tuple[dict, dict]:
+        if self.authorized_recovery is None:
+            return self._summary_in_scope(name, data, pages, topic_ids,
+                                          always_review=always_review, fragment=fragment)
+        with self.authorized_recovery.node_scope(name):
+            return self._summary_in_scope(name, data, pages, topic_ids,
+                always_review=always_review or self.authorized_recovery.registered(name), fragment=fragment)
+
+    def _summary_in_scope(self, name: str, data: dict, pages: list[int], topic_ids: list[str],
+                          *, always_review: bool = True, fragment: bool = False) -> tuple[dict, dict]:
         prompt = SUMMARY_PROMPT + '\n数学记号、符号方向和适用条件须遵循这份原文；只概括已有内容，不自行补证明或改用其他教材约定。' + CHECKPOINT_LENGTH_GUIDANCE
         draft = self._save_summary(name + '.json', prompt, data, pages, topic_ids, fragment=fragment)
         # 无教学内容的封底分段无需凑字数或虚构主题。只有多段输入可用此兼容，
@@ -497,6 +533,16 @@ class SummaryCompiler(StudyCompiler):
         with self._stats_lock:
             self.reviewed_parts += 1
         review = self._review(name + '-review.json', {**data, 'draft': draft})
+        if (not review['approved'] and self.authorized_recovery is not None
+                and self.authorized_recovery.registered(name)):
+            self.authorized_recovery.reject(self, name, draft, review['issues'])
+            validator = lambda value: validate_summary(value, pages, topic_ids, fragment=fragment)
+            draft = self.authorized_recovery.recover(self, name + '.json', prompt, data,
+                                                     validator, draft, self.prefix + name + '.json')
+            review = self._review(name + '-review.json', {**data, 'draft': draft})
+            if not review['approved']:
+                self.authorized_recovery.reject(self, name, draft, review['issues'])
+                raise ValueError('精炼总结来源审校未通过；草稿与旧正式稿均保留。')
         if not review['approved']:
             repair_data = {**data, 'draft': draft, 'corrections': review['issues']}
             identity = hashlib.sha256(json.dumps(repair_data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
@@ -505,7 +551,7 @@ class SummaryCompiler(StudyCompiler):
                                 repair_data, pages, topic_ids, fragment=fragment)
             review = self._review(name + '-repair-' + identity + '-review.json', {**data, 'draft': draft})
         if not review['approved']:
-            if self.verify_sources and 'pages' in data:
+            if self.verify_sources and 'pages' in data and self.authorized_recovery is None:
                 references = set()
                 for issue in review['issues']:
                     for first, last in re.findall(r'(?:第\s*|p\.\s*)(\d+)\s*(?:[–—\-至]\s*(\d+))?', issue):
@@ -529,7 +575,7 @@ class SummaryCompiler(StudyCompiler):
         if not review['approved']:
             raise ValueError('精炼总结来源审校未通过；草稿与旧正式稿均保留。')
         # 只缓存真实审校过的同内容结果；恢复仍重新校验长度与覆盖。
-        self.commit({self.prefix + name + '.json': json.dumps(draft, ensure_ascii=False, indent=2),
+        self._commit_approved({self.prefix + name + '.json': json.dumps(draft, ensure_ascii=False, indent=2),
                      self.prefix + self._review_key(name + '-review.json', {**data, 'draft': draft}): json.dumps(review)})
         if name.startswith('part-') and 'pages' in data and review.get('mode') != 'sampled-out':
             # 原图复核在本次调用内改变输入；同时登记新证据身份，重启无需再生成。
@@ -537,9 +583,26 @@ class SummaryCompiler(StudyCompiler):
             identity = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             updated = re.sub(r'-[a-f0-9]{12}$', '-' + identity, name)
             if updated != name:
-                self.commit({self.prefix + updated + '.json': json.dumps(draft, ensure_ascii=False, indent=2),
+                self._commit_approved({self.prefix + updated + '.json': json.dumps(draft, ensure_ascii=False, indent=2),
                              self.prefix + self._review_key(updated + '-review.json', {**data, 'draft': draft}): json.dumps(review)})
         return draft, review
+
+    def _commit_approved(self, contents):
+        # Identical already-accepted sibling results keep their exact stored bytes.
+        # This never transfers approval to changed text; equality covers the full JSON.
+        if self.authorized_recovery is not None:
+            changed = dict()
+            for key, raw in contents.items():
+                previous = self.cached(key)
+                try:
+                    equal = previous is not None and _json(previous) == _json(raw)
+                except ValueError:
+                    equal = False
+                if not equal:
+                    changed.update(((key, raw),))
+            contents = changed
+        if contents:
+            self.commit(contents)
 
     def compile(self, entries: list[dict]) -> tuple[str, dict, dict]:
         pages = [entry['page'] for entry in entries]

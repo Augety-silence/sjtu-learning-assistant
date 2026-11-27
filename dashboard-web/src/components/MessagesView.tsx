@@ -1,15 +1,25 @@
-import { AnimatePresence } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ContentReveal } from "@/components/ContentReveal";
-import { MessageDetailDialog } from "@/components/MessageDetailDialog";
+import {
+  isEditableTarget,
+  MessageInbox,
+  MessageToolbar,
+  messageShortcutHint,
+} from "@/components/MessageInbox";
+import { MessageReader } from "@/components/MessageReader";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
-import { getMessages, markMessagesRead } from "@/lib/api";
+import {
+  getMessageDetail,
+  getMessageReference,
+  getMessages,
+  markMessagesRead,
+} from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { MessageFilter, MessageItem, MessageKind } from "@/lib/types";
+import { parseMessageLink } from "@/lib/messageLink";
+import type { MessageFilter, MessageItem } from "@/lib/types";
 
 const kinds: Array<{ value: MessageFilter; label: string }> = [
   { value: "all", label: "全部" },
@@ -18,34 +28,10 @@ const kinds: Array<{ value: MessageFilter; label: string }> = [
   { value: "assignment", label: "作业" },
 ];
 
-const kindLabels: Record<MessageKind, string> = {
-  email: "邮件",
-  announcement: "公告",
-  assignment: "作业",
-};
-
 const messageKey = (item: MessageItem) => `${item.kind}:${item.source_id}`;
 
 function messageError(reason: unknown, fallback = "未知错误") {
   return reason instanceof Error ? reason.message : fallback;
-}
-
-function isEditableTarget(target: EventTarget | null) {
-  return (
-    target instanceof Element &&
-    Boolean(
-      target.closest(
-        'input, textarea, select, [contenteditable="true"], [role="textbox"]',
-      ),
-    )
-  );
-}
-
-function messageShortcutHint() {
-  const platform = navigator.platform || navigator.userAgent;
-  return /Mac|iPhone|iPad/i.test(platform)
-    ? "J/K 选择 · ↩ 打开 · R 已读 · ⇧R 全部已读"
-    : "J/K 选择 · Enter 打开 · R 已读 · Shift+R 全部已读";
 }
 
 export function MessagesView() {
@@ -55,8 +41,18 @@ export function MessagesView() {
   const [error, setError] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<MessageItem | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [total, setTotal] = useState(0);
+  const [totalUnread, setTotalUnread] = useState(0);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(query.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const detailTriggerRef = useRef<HTMLElement | null>(null);
   const allTabRef = useRef<HTMLButtonElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
   const { showToast } = useToast();
@@ -71,12 +67,20 @@ export function MessagesView() {
     setItems(null);
     setError("");
     try {
-      const data = await getMessages(kind);
-      if (requestId === loadRequestRef.current) setItems(data.items);
+      const data = await getMessages(kind, { query: searchQuery, limit: 60 });
+      if (requestId === loadRequestRef.current) {
+        setItems(data.items);
+        setTotal(data.total ?? data.items.length);
+        setTotalUnread(
+          data.unread ?? data.items.filter((item) => item.is_unread).length,
+        );
+        setNextOffset(data.next_offset ?? null);
+        setDetailItem(null);
+      }
     } catch (reason) {
       if (requestId === loadRequestRef.current) setError(messageError(reason));
     }
-  }, [kind]);
+  }, [kind, searchQuery]);
 
   useEffect(() => {
     void load();
@@ -94,15 +98,11 @@ export function MessagesView() {
     );
   }, [items]);
 
-  const openDetail = useCallback(
-    (item: MessageItem, trigger?: HTMLElement | null) => {
-      const key = messageKey(item);
-      setSelectedKey(key);
-      detailTriggerRef.current = trigger ?? rowRefs.current.get(key) ?? null;
-      setDetailItem(item);
-    },
-    [],
-  );
+  const openDetail = useCallback((item: MessageItem) => {
+    const key = messageKey(item);
+    setSelectedKey(key);
+    setDetailItem(item);
+  }, []);
 
   const scheduleRowFocus = useCallback(
     (key: string, onlyIfFocusLost = false) => {
@@ -139,6 +139,7 @@ export function MessagesView() {
 
   const applyRead = useCallback((item: MessageItem) => {
     const key = messageKey(item);
+    setTotalUnread((count) => Math.max(0, count - 1));
     setItems(
       (current) =>
         current?.map((candidate) =>
@@ -201,9 +202,14 @@ export function MessagesView() {
     });
     const listRequest = loadRequestRef.current;
     try {
-      const result = await markMessagesRead({ kind, all: true });
+      const result = await markMessagesRead({
+        kind,
+        all: true,
+        query: searchQuery,
+      });
       // Only the list loaded for this filter may be cleared; a tab switch mid-request loads another filter.
       if (listRequest === loadRequestRef.current) {
+        setTotalUnread(0);
         setItems(
           (current) =>
             current?.map((item) => ({ ...item, is_unread: false })) ?? null,
@@ -230,14 +236,26 @@ export function MessagesView() {
       // "全部已读" becomes disabled once nothing is unread; keep keyboard focus in the list.
       if (selectedKey) scheduleRowFocus(selectedKey, true);
     }
-  }, [busyKey, detailItem, kind, scheduleRowFocus, selectedKey, showToast]);
+  }, [
+    busyKey,
+    detailItem,
+    kind,
+    searchQuery,
+    scheduleRowFocus,
+    selectedKey,
+    showToast,
+  ]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        event.key === "Escape" &&
+        !document.querySelector("[data-modal-layer]")
+      )
+        closeDetail();
+      if (
         event.defaultPrevented ||
         event.isComposing ||
-        detailItem ||
         document.querySelector(
           '[data-modal-layer]:not([aria-hidden="true"])',
         ) ||
@@ -293,6 +311,7 @@ export function MessagesView() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
+    closeDetail,
     detailItem,
     items,
     markCurrentFilterRead,
@@ -302,47 +321,99 @@ export function MessagesView() {
     selectedKey,
   ]);
 
-  const unreadCount = items?.filter((item) => item.is_unread).length ?? 0;
+  useEffect(() => {
+    if (items === null) return;
+    let cancelled = false;
+    const openCitation = () => {
+      const href = window.sessionStorage.getItem("sjtu-message-citation");
+      const route = href && parseMessageLink(href);
+      if (!route) return;
+      window.sessionStorage.removeItem("sjtu-message-citation");
+      const request = route.ref
+        ? getMessageReference(route.kind, route.ref).then((value) => value.item)
+        : getMessageDetail(route.kind, route.sourceId as string).then(
+            (detail) => ({
+              ...detail,
+              kind: route.kind,
+              source_id: route.sourceId as string,
+            }),
+          );
+      void request
+        .then((item) => {
+          if (!cancelled) setDetailItem(item);
+        })
+        .catch((reason) => {
+          if (!cancelled)
+            showToast({
+              kind: "error",
+              message: messageError(reason, "引用消息不存在"),
+            });
+        });
+    };
+    openCitation();
+    window.addEventListener("sjtu-message-citation-ready", openCitation);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("sjtu-message-citation-ready", openCitation);
+    };
+  }, [items, showToast]);
+
+  const unreadCount = totalUnread;
+  const selectedItem =
+    detailItem ??
+    items?.find((item) => messageKey(item) === selectedKey) ??
+    items?.[0];
+  const loadMore = async () => {
+    if (nextOffset === null || loadingMore) return;
+    const request = loadRequestRef.current;
+    setLoadingMore(true);
+    try {
+      const data = await getMessages(kind, {
+        query: searchQuery,
+        offset: nextOffset,
+        limit: 60,
+      });
+      if (request === loadRequestRef.current) {
+        setItems((current) => [
+          ...(current ?? []),
+          ...data.items.filter(
+            (item) =>
+              !current?.some((old) => messageKey(old) === messageKey(item)),
+          ),
+        ]);
+        setNextOffset(data.next_offset ?? null);
+      }
+    } catch (reason) {
+      showToast({
+        kind: "error",
+        message: messageError(reason, "加载更多消息失败"),
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <ContentReveal
       className="section-stack messages-page"
       ready={items !== null || Boolean(error)}
     >
-      <div className="view-intro">
-        <div className="heading-with-info">
-          <h2>消息收件箱</h2>
+      <h2 className="sr-only">消息中心</h2>
+      <MessageToolbar
+        info={
           <InfoTooltip label="消息快捷键">{messageShortcutHint()}</InfoTooltip>
-        </div>
-        <div className="message-toolbar">
-          <Tabs
-            value={kind}
-            onValueChange={(value) => setKind(value as MessageFilter)}
-          >
-            <TabsList indicator aria-label="消息类型">
-              {kinds.map((item) => (
-                <TabsTrigger
-                  key={item.value}
-                  value={item.value}
-                  ref={item.value === "all" ? allTabRef : undefined}
-                >
-                  {item.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            aria-label="将当前筛选中的消息全部标记为已读"
-            disabled={!unreadCount || busyKey !== null}
-            onClick={() => void markCurrentFilterRead()}
-          >
-            {busyKey === "all" ? "处理中…" : "当前筛选全部已读"}
-          </Button>
-        </div>
-      </div>
+        }
+        kinds={kinds}
+        kind={kind}
+        setKind={setKind}
+        query={query}
+        setQuery={setQuery}
+        searchRef={searchRef}
+        allTabRef={allTabRef}
+        busyKey={busyKey}
+        unreadCount={unreadCount}
+        markCurrentFilterRead={markCurrentFilterRead}
+      />
 
       <p className="sr-only" aria-live="polite">
         {items
@@ -355,18 +426,25 @@ export function MessagesView() {
         <LoadingState />
       ) : items.length === 0 ? (
         <EmptyState
-          title={kind === "all" ? "暂无消息" : "当前筛选没有结果"}
+          title={
+            searchQuery
+              ? "没有找到相关消息"
+              : kind === "all"
+                ? "暂无消息"
+                : "当前筛选没有结果"
+          }
           description={
             kind === "all"
               ? "完成同步后，邮件、公告与作业消息会显示在这里。"
               : "可以清除筛选查看全部消息。"
           }
           action={
-            kind !== "all" ? (
+            kind !== "all" || searchQuery ? (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
+                  setQuery("");
                   setKind("all");
                   window.setTimeout(() => allTabRef.current?.focus(), 0);
                 }}
@@ -381,74 +459,37 @@ export function MessagesView() {
           }
         />
       ) : (
-        <div className="list-surface" role="list" aria-label="消息列表">
-          {items.map((item) => {
-            const key = messageKey(item);
-            const selected = selectedKey === key;
-            return (
-              <div
-                role="listitem"
-                className={`list-row message-row${selected ? " message-row-selected" : ""}${item.is_unread ? " message-row-unread" : ""}`}
-                key={key}
-              >
-                <button
-                  type="button"
-                  className="message-open"
-                  aria-label={`打开消息详情：${item.title}`}
-                  aria-current={selected ? "true" : undefined}
-                  ref={(node) => {
-                    if (node) rowRefs.current.set(key, node);
-                    else rowRefs.current.delete(key);
-                  }}
-                  onFocus={() => setSelectedKey(key)}
-                  onClick={(event) => openDetail(item, event.currentTarget)}
-                >
-                  <div className="min-w-0">
-                    <div className="message-title">
-                      {item.is_unread && (
-                        <span className="unread-dot" aria-hidden="true" />
-                      )}
-                      <p className="truncate">{item.title}</p>
-                      {item.is_unread && (
-                        <span className="unread-label">未读</span>
-                      )}
-                    </div>
-                    <span>
-                      {item.source_label} · {kindLabels[item.kind]}
-                    </span>
-                  </div>
-                  <span className="row-time">
-                    {formatDateTime(item.occurred_at)}
-                  </span>
-                </button>
-                {item.is_unread && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`将“${item.title}”标记为已读`}
-                    disabled={busyKey !== null}
-                    onClick={() => void markOneRead(item)}
-                  >
-                    {busyKey === key ? "处理中…" : "标为已读"}
-                  </Button>
-                )}
-              </div>
-            );
-          })}
+        <div
+          className={`message-workspace${detailItem ? " message-workspace-reading" : ""}`}
+        >
+          <MessageInbox
+            items={items}
+            query={query}
+            total={total}
+            unreadCount={unreadCount}
+            selectedKey={selectedKey}
+            detailItem={detailItem}
+            rowRefs={rowRefs.current}
+            onSelect={(key) => {
+              setSelectedKey(key);
+              setDetailItem(null);
+            }}
+            onOpen={openDetail}
+            nextOffset={nextOffset}
+            loadingMore={loadingMore}
+            loadMore={loadMore}
+          />
+          {selectedItem && (
+            <MessageReader
+              key={messageKey(selectedItem)}
+              item={selectedItem}
+              onBack={closeDetail}
+              onRead={(item) => void markOneRead(item)}
+              busy={busyKey !== null}
+            />
+          )}
         </div>
       )}
-
-      <AnimatePresence initial={false}>
-        {detailItem && (
-          <MessageDetailDialog
-            item={detailItem}
-            onClose={closeDetail}
-            onMarkedRead={applyRead}
-            triggerRef={detailTriggerRef}
-          />
-        )}
-      </AnimatePresence>
     </ContentReveal>
   );
 }

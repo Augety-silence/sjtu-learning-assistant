@@ -890,6 +890,97 @@ class DesktopStartupLifecycleTests(unittest.TestCase):
         self.assertIn("addEventListener('drop',h,{capture:true})", script)
         self.assertIn('p._eventHandlers["handler123"]', script)
 
+    def _run_windows_frontend_fixture(self, invalid_resources=False):
+        from sjtu_learning_assistant.frontend_startup import FrontendResourceError
+
+        order = list()
+        engine = Mock()
+        engine.dialect.name = "postgresql"
+        dashboard, learning, scheduler, backup_manager = Mock(), Mock(), Mock(), Mock()
+        dashboard.settings_store.load.return_value = SimpleNamespace(mail_account="synthetic")
+        loader = Mock()
+        window = SimpleNamespace()
+        loader.attach.side_effect = lambda value: order.append("attach")
+        scheduler.start.side_effect = lambda: order.append("scheduler")
+        dashboard.start_current_term_markdown.side_effect = lambda: order.append("current_term")
+        dashboard.start_course_markdown_sync.side_effect = lambda: order.append("course_md")
+        dashboard.start_transcript_markdown_sync.side_effect = lambda: order.append("transcript_md")
+        dashboard.start_recording_asr_sync.side_effect = lambda: order.append("asr")
+        webview = SimpleNamespace(
+            create_window=Mock(return_value=window),
+            start=Mock(side_effect=lambda *args, **kwargs: order.append("webview")),
+        )
+        with (
+            patch("desktop_app.sys.platform", "win32"),
+            patch.dict("sys.modules", dict(webview=webview)),
+            patch("desktop_app.STATIC_INDEX", SimpleNamespace(is_file=lambda: True)),
+            patch("desktop_app._configure_desktop_logging"),
+            patch("desktop_app._install_macos_native_file_drop_hook"),
+            patch("desktop_app._install_macos_background_lifecycle"),
+            patch("desktop_app._install_recording_asr_quit_guard", side_effect=lambda *args: order.append("quit_guard")),
+            patch("desktop_app._static_index_url", side_effect=AssertionError("Windows must not use file URLs")),
+            patch("desktop_app.create_database_engine", return_value=engine),
+            patch("desktop_app.DashboardService", return_value=dashboard),
+            patch("desktop_app.DesktopLearningService", return_value=learning),
+            patch("desktop_app.BackupManager", return_value=backup_manager),
+            patch("desktop_app.DiagnosticBundleService"),
+            patch("desktop_app.DesktopBridge"),
+            patch("desktop_app.TimetableService"),
+            patch("desktop_app.DesktopScheduler", return_value=scheduler),
+            patch("desktop_app.WindowsFrontendLoader", return_value=loader) as loader_factory,
+            patch("desktop_app._report_startup_error") as report,
+        ):
+            if invalid_resources:
+                loader_factory.side_effect = FrontendResourceError("synthetic missing resource")
+            code = run_desktop_app()
+        return SimpleNamespace(
+            code=code, order=order, engine=engine, dashboard=dashboard, learning=learning,
+            scheduler=scheduler, backup=backup_manager, loader=loader,
+            loader_factory=loader_factory, webview=webview, window=window, report=report,
+        )
+
+    def test_windows_loader_precedes_latest_background_startup_and_preserves_cleanup(self):
+        from sjtu_learning_assistant.frontend_startup import BOOTSTRAP_HTML
+
+        fixture = self._run_windows_frontend_fixture()
+        self.assertEqual(0, fixture.code)
+        self.assertEqual(
+            ("attach", "quit_guard", "scheduler", "current_term", "course_md", "transcript_md", "asr", "webview"),
+            tuple(fixture.order),
+        )
+        fixture.loader_factory.assert_called_once()
+        fixture.loader.attach.assert_called_once_with(fixture.window)
+        self.assertEqual(("SJTU 学习助手", None), fixture.webview.create_window.call_args.args)
+        self.assertEqual(BOOTSTRAP_HTML, fixture.webview.create_window.call_args.kwargs.get("html"))
+        self.assertFalse(fixture.webview.create_window.call_args.kwargs.get("transparent"))
+        self.assertFalse(fixture.webview.create_window.call_args.kwargs.get("vibrancy"))
+        self.assertEqual(_initialize_desktop_window, next(iter(fixture.webview.start.call_args.args)))
+        fixture.report.assert_not_called()
+        fixture.scheduler.stop.assert_called_once_with()
+        fixture.backup.close.assert_called_once_with()
+        fixture.dashboard.close.assert_called_once_with()
+        fixture.learning.close.assert_called_once_with()
+        fixture.engine.dispose.assert_called_once_with()
+
+    def test_windows_missing_resources_start_no_background_and_close_all_services(self):
+        fixture = self._run_windows_frontend_fixture(invalid_resources=True)
+        self.assertEqual(2, fixture.code)
+        self.assertEqual(tuple(), tuple(fixture.order))
+        fixture.loader.attach.assert_not_called()
+        fixture.webview.create_window.assert_not_called()
+        fixture.webview.start.assert_not_called()
+        fixture.scheduler.start.assert_not_called()
+        fixture.dashboard.start_current_term_markdown.assert_not_called()
+        fixture.dashboard.start_course_markdown_sync.assert_not_called()
+        fixture.dashboard.start_transcript_markdown_sync.assert_not_called()
+        fixture.dashboard.start_recording_asr_sync.assert_not_called()
+        fixture.report.assert_called_once_with("synthetic missing resource")
+        fixture.scheduler.stop.assert_called_once_with()
+        fixture.backup.close.assert_called_once_with()
+        fixture.dashboard.close.assert_called_once_with()
+        fixture.learning.close.assert_called_once_with()
+        fixture.engine.dispose.assert_called_once_with()
+
     def test_startup_does_not_require_credentials_and_closes_services(self):
         engine = Mock()
         engine.dialect.name = "postgresql"

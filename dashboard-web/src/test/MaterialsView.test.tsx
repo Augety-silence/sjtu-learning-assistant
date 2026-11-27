@@ -206,6 +206,38 @@ afterEach(() => {
 });
 
 describe("MaterialsView manual filing", () => {
+  it("临时原件清理后可以预览 MD 并主动下载原件", async () => {
+    const nextTree = structuredClone(tree);
+    Object.assign(findMaterial(nextTree.root, "file-3")!, {
+      name: "概览.pptx",
+      markdown_ready: true,
+      can_open: true,
+      can_preview: true,
+      local_path: null,
+      download_status: "pending",
+    });
+    vi.mocked(invoke).mockResolvedValue(nextTree);
+    vi.mocked(previewMaterial).mockResolvedValue({
+      kind: "text",
+      name: "概览.pptx · MD",
+      text: "已转换的课程正文",
+    });
+    render(<MaterialsView />);
+    fireEvent.click(
+      await screen.findByRole("treeitem", { name: "自然语言处理" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("treeitem", {
+        name: "课件，可接收同课程资料拖放",
+      }),
+    );
+    const row = await screen.findByRole("listitem", { name: "概览.pptx" });
+    expect(within(row).getByText("基础 MD 已就绪")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "下载" })).toBeTruthy();
+    fireEvent.doubleClick(row);
+    await waitFor(() => expect(previewMaterial).toHaveBeenCalledWith("file-3"));
+    expect(await screen.findByText("已转换的课程正文")).toBeTruthy();
+  });
   it("顶部只保留搜索，默认展示所有学期文件夹且搜索覆盖历史课件", async () => {
     const allTerms = structuredClone(tree);
     const historicalTerm = structuredClone(allTerms.root.children?.[0]);

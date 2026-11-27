@@ -1661,6 +1661,57 @@ class DashboardService:
         rows.sort(key=lambda row: row["occurred_at"] or "", reverse=True)
         return rows[:limit]
 
+    def message_archive(self, kind="all", *, query="", offset=0, limit=60):
+        from .message_archive import search_archive
+        kind = self._validate_message_kind(kind)
+        if type(query) is not str or len(query) > 160 or type(offset) is not int or not 0 <= offset <= 10_000_000 or type(limit) is not int or not 1 <= limit <= 200:
+            raise DashboardError("消息搜索参数无效。")
+        result = search_archive(self.engine, kind=kind, query=query.strip(), offset=offset, limit=limit,
+                                account=self._effective_settings().mail_account)
+        for item in result["items"]:
+            import json
+            raw = item.pop("raw")
+            if item["kind"] != "email":
+                item["attachment_count"] = len(self._safe_canvas_attachments(json.loads(raw or "{}")))
+            item.pop("item_id")
+            item.pop("record_id")
+            item["source_label"] = _sender_name(item["source_label"]) if item["kind"] == "email" else _course_name(item["source_label"])
+            item["occurred_at"] = to_shanghai(item["occurred_at"])
+        return result
+
+    def message_reference(self, kind, ref):
+        from .message_archive import archive_statement, canvas_archive_ids
+        self._validate_message_kind(kind, allow_all=False)
+        if type(ref) is not str or not re.fullmatch(re.escape(kind) + r":[0-9]{1,18}", ref):
+            raise DashboardError("消息引用无效。")
+        source = archive_statement(kind, account=self._effective_settings().mail_account, course_ids=canvas_archive_ids(self.engine))
+        with Session(self.engine) as session:
+            row = session.execute(select(source).where(source.c.record_id == int(ref.split(":")[1]))).mappings().one_or_none()
+        if row is None:
+            raise NotFoundError("未找到此账户的引用消息。")
+        detail = self.message_detail(kind, row["source_id"])
+        return {"item": {"kind": kind, "source_id": row["source_id"], "title": detail["title"],
+                         "source_label": detail["source_label"], "occurred_at": detail["occurred_at"],
+                         "is_unread": detail["is_unread"], "url": detail["url"]}}
+
+    def message_archive_mark_read(self, kind, query):
+        from .message_archive import archive_statement, canvas_archive_ids
+        self._validate_message_kind(kind)
+        if type(query) is not str or len(query) > 160:
+            raise DashboardError("消息搜索参数无效。")
+        source = archive_statement(kind, query.strip(), self._effective_settings().mail_account, canvas_archive_ids(self.engine))
+        with Session(self.engine) as session:
+            ids = session.scalars(select(source.c.item_id).where(source.c.is_read.is_(False))).all()
+            rows = session.scalars(select(UnifiedItem).where(UnifiedItem.id.in_(ids))).all()
+            for item in rows:
+                item.is_read = True
+                if item.email_id is not None:
+                    email = session.get(Email, item.email_id)
+                    if email is not None:
+                        email.is_unread = False
+            session.commit()
+        return {"updated": len(rows)}
+
     @staticmethod
     def _assignment_html(raw_data: object) -> str | None:
         if not isinstance(raw_data, Mapping):
@@ -1882,6 +1933,9 @@ class DashboardService:
         kind = self._validate_message_kind(kind, allow_all=False)
         if type(source_id) is not str or not source_id:
             raise DashboardError("消息标识不正确。")
+        account = self._effective_settings().mail_account
+        if kind == "email" and account and not source_id.startswith(account + ":INBOX:"):
+            raise NotFoundError("未找到此账户的消息。")
         with Session(self.engine) as session:
             if kind == "email":
                 row = session.execute(
@@ -2356,7 +2410,19 @@ class DashboardService:
                 ids = scoped_database_ids(session, term_id, course_ids)
             except ValueError as exc:
                 raise DashboardError(str(exc)) from None
-            return build_material_tree(session, ids)
+            tree = build_material_tree(session, ids)
+        from .current_term_markdown import ready_records
+        ready = {item["source_id"] for item in ready_records(self.engine, Path(self._effective_settings().archive_root))}
+        def update(node):
+            if node.get("kind") == "file" and node.get("source_id") in ready:
+                try:
+                    self._resolve_local_file(node["source_id"])
+                except NotFoundError:
+                    node.update(markdown_ready=True, local_path=None, can_preview=True, can_open=True)
+            for child in node.get("children", []):
+                update(child)
+        update(tree["root"])
+        return tree
 
     def _history_service(self):
         with self._client_lock:
@@ -2669,6 +2735,12 @@ class DashboardService:
 
     def material_preview(self, source_id: str) -> dict[str, str]:
         record = self._material_record(source_id)
+        markdown = self._temporary_markdown_path(source_id)
+        if markdown is not None:
+            try:
+                self._resolve_local_file(source_id)
+            except NotFoundError:
+                return {"kind": "text", "name": record.display_name + " · MD", "text": markdown.read_text(encoding="utf-8")}
         name = record.display_name or record.filename or "文件"
         kind = material_preview_kind(name, record.content_type)
         if kind is None or kind not in MATERIAL_PREVIEW_LIMITS:
@@ -2757,6 +2829,12 @@ class DashboardService:
         try:
             path = self._resolve_local_file(source_id)
         except NotFoundError:
+            markdown = self._temporary_markdown_path(source_id)
+            if markdown is not None:
+                completed = self.command_runner(_desktop_open_command(markdown), check=False)
+                if sys.platform != "win32" and getattr(completed, "returncode", 0) != 0:
+                    raise DashboardError("无法打开基础 MD。")
+                return {"status": "opened"}
             record = self._material_record(source_id)
             if (
                 not record.cloud_path
@@ -3453,6 +3531,7 @@ class DashboardService:
                     course_file_resolver=self._resolve_local_file,
                     workspace=workspace,
                     compiled_knowledge=self._compiled_knowledge_service(),
+                    mail_account=settings.mail_account,
                 )
             if steering_control is not None:
                 steering_control.attach_registry(registry)
@@ -4027,15 +4106,37 @@ class DashboardService:
                 wiki_rebuilder=self._rebuild_course_wiki,
                 max_documents_per_cycle=10, slice_calls=2, workers=6,
                 review_percent=REVIEW_SAMPLE_PERCENT, parallel_batches=SUMMARY_PARALLEL_BATCHES,
-                auto_recovery=True,
+                auto_recovery=True, static_pptx_policy=True, deterministic_diagnostics=True,
             )
         self._course_markdown_instance.start()
+
+    def _temporary_markdown_path(self, source_id):
+        from .current_term_markdown import ready_records, safe_path
+        root = Path(self._effective_settings().archive_root)
+        item = next((item for item in ready_records(self.engine, root) if item["source_id"] == source_id), None)
+        return safe_path(root, item["md_path"]) if item else None
+
+    def start_current_term_markdown(self) -> None:
+        from .current_term_markdown import CurrentTermMarkdown
+        if getattr(self, "_current_term_md_instance", None) is None:
+            def download(source_id, directory, size, cancelled):
+                service = self._new_archive_service(require_canvas=True)
+                try:
+                    return service.download_temporary(source_id, directory, size, cancelled)
+                finally:
+                    self._close_archive_service(service)
+            self._current_term_md_instance = CurrentTermMarkdown(
+                self.engine, self._effective_settings, download, sync_lock=self._sync_lock)
+        self._current_term_md_instance.start()
 
     def _rebuild_course_wiki(self, runner: Callable, cancelled: Callable) -> dict:
         from sjtu_learning_assistant.knowledge_wiki import CourseWiki
         return CourseWiki(self._compiled_knowledge_service(), runner).refresh(cancelled=cancelled)
 
     def _notify_course_markdown_sync(self, *, settings_changed: bool = False) -> None:
+        temporary_md = getattr(self, "_current_term_md_instance", None)
+        if temporary_md is not None:
+            temporary_md.notify()
         recording = getattr(self, "_recording_asr_instance", None)
         if recording is not None:
             # Ordinary sync completion refreshes discovery; it must not stop the
@@ -4059,13 +4160,44 @@ class DashboardService:
                 "daily_limit": 0,
                 "output_root": str(Path(settings.archive_root) / "Knowledge Markdown")}
 
+    def compilation_diagnostics(self) -> dict[str, Any]:
+        """Strictly read-only, asynchronous local snapshot; no credential or provider lookup."""
+        from .compilation_diagnostics import DiagnosticSnapshotCache, catalog_snapshot, asr_snapshot_counts, ffmpeg_status
+        cache = getattr(self, '_compilation_diagnostic_cache', None)
+        if cache is None:
+            cache = self._compilation_diagnostic_cache = DiagnosticSnapshotCache()
+        def load():
+            settings = self._effective_settings()
+            root = self.local_projects_path.parent
+            return catalog_snapshot(Path(settings.archive_root), self._course_markdown_paths(),
+                root / 'transcripts' / 'v1',
+                runtime=dict(ai_ready=settings.ai_enabled and settings.ai_key_saved, automatic=settings.course_markdown_enabled),
+                asr=asr_snapshot_counts(root / 'recording-asr' / 'v1'), ffmpeg_available=ffmpeg_status())
+        return cache.snapshot(load)
+
     def markdown_sync_progress(self) -> dict[str, Any]:
         from .markdown_progress import course_progress, transcript_progress
         settings = self._effective_settings()
         service = getattr(self, "_course_markdown_instance", None)
         live = service.status() if service is not None else {}
+        courses = course_progress(Path(settings.archive_root), self._course_markdown_paths())
+        if "inventory" in courses and getattr(self, "engine", None) is not None:
+            from sqlalchemy import func
+            from .current_term_markdown import ready_records
+            ready_ids = {item["source_id"] for item in ready_records(self.engine, Path(settings.archive_root))}
+            with Session(self.engine) as session:
+                total = session.scalar(select(func.count(CourseFile.id)).where(CourseFile.is_active.is_(True)))
+                downloaded = session.scalar(select(func.count(CourseFile.id)).where(
+                    CourseFile.is_active.is_(True), CourseFile.download_status == "downloaded", CourseFile.local_path.is_not(None)))
+                markdown_only = session.scalar(select(func.count(CourseFile.id)).where(
+                    CourseFile.is_active.is_(True), CourseFile.source_id.in_(ready_ids),
+                    CourseFile.local_path.is_(None)))
+            courses["inventory"].update(database_total=total, not_downloaded=total-downloaded-markdown_only,
+                                        markdown_only=markdown_only)
         return {
-            "courses": course_progress(Path(settings.archive_root), self._course_markdown_paths()),
+            "current_term_md": getattr(self, "_current_term_md_instance", None).status()
+                if getattr(self, "_current_term_md_instance", None) is not None else None,
+            "courses": courses,
             "transcripts": transcript_progress(self.local_projects_path.parent / "transcripts" / "v1"),
             "automatic": settings.course_markdown_enabled,
             "ai_ready": settings.ai_enabled and settings.ai_key_saved,
@@ -4266,6 +4398,9 @@ class DashboardService:
         subtitles = getattr(self, "_subtitle_sync_instance", None)
         if subtitles is not None:
             subtitles.close()
+        temporary_md = getattr(self, "_current_term_md_instance", None)
+        if temporary_md is not None:
+            temporary_md.close()
         history = getattr(self, "_course_history_instance", None)
         if history is not None:
             history.close()
@@ -4382,7 +4517,7 @@ class DashboardService:
             self._sync_cloud_archive_root()
         if {"ai_enabled", "ai_base_url", "ai_model", "ai_key_saved"} & set(payload):
             self._discard_ai_client()
-        if {"archive_root", "ai_enabled", "ai_base_url", "ai_key_saved", "course_markdown_enabled", "course_markdown_daily_calls"} & set(payload):
+        if {"archive_root", "ai_enabled", "ai_base_url", "ai_key_saved", "course_markdown_enabled", "course_markdown_daily_calls", "current_term_md_enabled"} & set(payload):
             self._notify_course_markdown_sync(settings_changed=True)
         return self.settings_status()
 
@@ -4497,6 +4632,7 @@ class DashboardService:
             "credential_storage_name": storage_name,
             "auto_download_current_term": settings.auto_download_current_term,
             "course_markdown_enabled": settings.course_markdown_enabled,
+            "current_term_md_enabled": settings.current_term_md_enabled,
             "course_markdown_daily_calls": settings.course_markdown_daily_calls,
             "organize_by_category": settings.organize_by_category,
             "mail_account": settings.mail_account,
@@ -4585,7 +4721,7 @@ class DashboardService:
         else:
             command.append("--canvas-only")
         command.extend(("--archive-root", settings.archive_root))
-        if not settings.auto_download_current_term:
+        if not settings.auto_download_current_term or settings.current_term_md_enabled:
             command.append("--no-download")
         if not settings.organize_by_category:
             command.append("--no-organize-by-category")

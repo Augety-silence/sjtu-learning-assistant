@@ -1,0 +1,86 @@
+/* The additional Aime preset keeps the existing light/dark/system palettes. */
+:root[data-theme-mode="aime"] {
+  --aura-canvas: #f5f7f6;
+  --aura-scene-background: none;
+  --aura-panel: #ffffff;
+  --aura-panel-strong: #ffffff;
+  --aura-navigation: #f5f7f6;
+  --aura-header: #ffffff;
+  --aura-stat: #ffffff;
+  --aura-reading: #ffffff;
+  --aura-input: #ffffff;
+  --aura-overlay: #ffffff;
+  --aura-control: #f1f5f3;
+  --aura-control-hover: #e7efeb;
+  --aura-border: #dfe7e2;
+  --aura-border-strong: #c9d7ce;
+  --aura-shadow: none;
+  --aura-shadow-soft: none;
+  --aura-shadow-reading: none;
+  --performance-chrome-filter: none;
+  --action-primary: #16835d;
+  --action-hover: #116b4b;
+  --action-pressed: #0d543b;
+  --action-workspace: #16835d;
+  --action-button-pressed: #0d543b;
+  --focus-ring: #16835d;
+  --surface-accent-soft: #e9f5ee;
+  --border-accent-soft: #bcdcca;
+  --border-focus-soft: #65b18e;
+  --border-ai-preference-selected: #bcdcca;
+  --surface-selected: #e4f1e9;
+  --surface-info: #edf6f0;
+  --surface-workspace-info: #edf6f0;
+  --selection-bg: #c5e6d3;
+  --selection-text: #163e2c;
+  --shadow-action-subtle: #16835d0d;
+  --shadow-focus: 0 0 0 2px #16835d26;
+  --aura-backdrop: #f5f7f6;
+  --aura-backdrop-solid: #f5f7f6;
+  --glass-base-surface: #f5f7f6;
+  --glass-card-surface: #ffffff;
+  --glass-floating-surface: #ffffff;
+  --glass-reading-surface: #ffffff;
+  --glass-clear-surface: #ffffff;
+  --glass-user-surface: #f1f5f3;
+  --glass-optical-edge: none;
+  --glass-base-filter: none;
+  --glass-card-filter: none;
+  --glass-floating-filter: none;
+  --glass-base-shadow: none;
+  --glass-card-shadow: none;
+  --glass-floating-shadow: none;
+  --aura-blur: none;
+  --aura-blur-navigation: none;
+  --aura-blur-header: none;
+  --aura-blur-stat: none;
+  --aura-blur-reading: none;
+  --aura-blur-input: none;
+  --aura-blur-overlay: none;
+}
+:root[data-theme-mode="aime"] .ai-workspace { --ai-content-width: 820px; }
+:root[data-theme-mode="aime"] .ai-message-user .ai-markdown { background: #f1f5f3; border: 1px solid #dfe7e2; }
+:root[data-theme-mode="aime"] .ai-composer-box { border: 1px solid #c9d7ce; box-shadow: 0 3px 14px #163e2c0a; }
+.theme-options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ai-tool-group { border: 1px solid var(--border-subtle); border-radius: 10px; margin: 6px 0; }
+.ai-tool-group > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; font-size: 12px; }
+.ai-tool-group > summary::-webkit-details-marker { display: none; }
+.ai-tool-group > summary > span { color: var(--text-secondary); }
+.ai-tool-group .ai-tool-caret { width: 14px; height: 14px; margin-left: auto; }
+.ai-tool-group[open] > summary > .ai-tool-caret { transform: rotate(90deg); }
+.ai-tool-group-runs { padding: 0 10px 8px; }
+.ai-tool-preview { display: grid; gap: 6px; margin: 0; padding: 12px; font-size: 12px; border-top: 1px solid var(--border-subtle); }
+.ai-tool-preview > div { display: grid; grid-template-columns: minmax(64px, 1fr) minmax(0, 3fr); gap: 12px; }
+.ai-tool-preview dt { color: var(--text-secondary); }
+.ai-tool-preview dd { margin: 0; overflow-wrap: anywhere; }
+.ai-tool-preview-message { margin: 0; padding: 10px 12px; color: var(--text-secondary); font-size: 12px; }
+.ai-tool-technical { border-top: 1px solid var(--border-subtle); }
+.ai-tool-technical > summary { display: block; padding: 8px 12px; color: var(--text-secondary); font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ai-tool-result { min-width: 0; }
+.ai-tool-result-items { list-style: none; margin: 0; padding: 8px 12px; display: grid; gap: 10px; }
+.ai-tool-result-items li { min-width: 0; display: grid; gap: 4px; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.ai-tool-result-items small { color: var(--text-secondary); font-size: 11px; }
+.ai-tool-result-items p, .ai-tool-result-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-tool-result-text { padding: 8px 12px 12px; font-size: 12px; line-height: 1.75; }
+@media (max-width: 900px) { .theme-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .theme-options { grid-template-columns: 1fr; } }
