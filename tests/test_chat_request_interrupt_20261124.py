@@ -80,6 +80,67 @@ def endpoint():
     thread.join(2)
 
 
+def test_interrupt_observer_only_shutdowns_and_request_owner_closes():
+    from sjtu_learning_assistant.ai_classifier import _DeltaCallbackAbort, _RequestWatch
+    from socket import SHUT_RDWR
+
+    cancel, ready, read_woken = threading.Event(), threading.Event(), threading.Event()
+    operations, errors, owner_ids = list(), list(), list()
+
+    def check():
+        if cancel.is_set():
+            raise ChatSteeringInterrupt('synthetic cancellation')
+
+    def shutdown(how):
+        operations.append(('shutdown', threading.get_ident(), how))
+        read_woken.set()
+
+    def close(kind):
+        operations.append((kind, threading.get_ident(), None))
+
+    stream = SimpleNamespace(
+        get_extra_info=lambda name: SimpleNamespace(shutdown=shutdown) if name == 'socket' else None,
+        close=lambda: close('stream_close'),
+    )
+    response = SimpleNamespace(close=lambda: close('response_close'))
+
+    def request_owner():
+        owner_ids.append(threading.get_ident())
+        try:
+            with _RequestWatch(check) as watch:
+                watch.trace('connection.connect_tcp.complete', dict(return_value=stream))
+                watch.response(response, check=False)
+                ready.set()
+                assert read_woken.wait(2)
+                watch.check()
+        except _DeltaCallbackAbort as abort:
+            errors.append(abort.original)
+        finally:
+            # Represents the existing request-owned httpx/httpcore cleanup.
+            response.close()
+            stream.close()
+
+    worker = threading.Thread(target=request_owner)
+    worker.start()
+    try:
+        assert ready.wait(2)
+        cancel.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        assert len(errors) == 1 and isinstance(next(iter(errors)), ChatSteeringInterrupt)
+        owner = next(iter(owner_ids))
+        shutdowns = tuple(item for item in operations if item[0] == 'shutdown')
+        closes = tuple(item for item in operations if item[0] != 'shutdown')
+        assert len(shutdowns) == 1 and shutdowns[0][1] != owner
+        assert shutdowns[0][2] == SHUT_RDWR
+        assert len(closes) == 2 and all(item[1] == owner for item in closes)
+        assert set(item[0] for item in closes) == set(('stream_close', 'response_close'))
+    finally:
+        cancel.set()
+        read_woken.set()
+        worker.join(2)
+
+
 @pytest.mark.parametrize('mode,text', [('stream', '等响应头'), ('stream', '等首 token'), ('post', '等响应头')])
 def test_interrupt_silent_request_leaves_shared_client_and_other_session_usable(endpoint, mode, text):
     client, state = endpoint

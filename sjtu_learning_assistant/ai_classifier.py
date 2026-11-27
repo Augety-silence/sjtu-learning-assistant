@@ -153,7 +153,9 @@ class _RequestWatch:
         self.response_snapshot = None
 
     def _interrupt_stream(self):
-        # httpx 默认使用 HTTP/1.1，每个网络流仅属于本次请求。
+        # Wake this request's blocking read without closing its descriptor from
+        # the observer thread. The request-owning HTTP context performs close;
+        # cross-thread close can race a timed recv/select on macOS.
         stream = self._stream
         if stream is not None:
             try:
@@ -161,15 +163,6 @@ class _RequestWatch:
                 if connection is not None:
                     connection.shutdown(socket.SHUT_RDWR)
             except (OSError, AttributeError):
-                pass
-            try:
-                stream.close()
-            except (OSError, AttributeError):
-                pass
-        if self._response is not None:
-            try:
-                self._response.close()
-            except (OSError, RuntimeError):
                 pass
 
     def check(self):
