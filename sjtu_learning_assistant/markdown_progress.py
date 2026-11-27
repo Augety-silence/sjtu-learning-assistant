@@ -81,10 +81,11 @@ def _issue(group: dict, name: str, code: str) -> None:
 
 
 def course_progress(source: Path, candidates: list[Path]) -> dict:
+    from .course_inventory import local_course_inventory
     group = _group()
     target = source / "Knowledge Markdown"
-    paths = sorted({path for path in candidates if path.suffix.lower() in {".pptx", ".ppt", ".pdf"}}, key=str)
-    group.update(total=len(paths), truncated=len(paths) > MAX_ITEMS)
+    paths, inventory = local_course_inventory(source, candidates)
+    group.update(total=len(paths), truncated=len(paths) > MAX_ITEMS or inventory["truncated"], inventory=inventory)
     items = {}
     marker = target / "99_System" / "Course-Sync.json"
     try:
@@ -95,6 +96,8 @@ def course_progress(source: Path, candidates: list[Path]) -> dict:
             items = state["items"]
     except (OSError, ValueError, TypeError, RecursionError):
         _issue(group, "课件同步记录", "manifest")
+    inventory.update(registered=sum(path.relative_to(source).as_posix() in items for path in paths if path.is_relative_to(source)))
+    inventory["unregistered"] = len(paths) - inventory["registered"]
     for path in paths[:MAX_ITEMS]:
         try:
             if not _safe(source, path) or path.is_relative_to(target) or not path.is_file():

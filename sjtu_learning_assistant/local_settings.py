@@ -28,7 +28,7 @@ SETTINGS_PATH = APP_SUPPORT_DIR / "settings.json"
 AI_CHAT_SEND_SHORTCUTS = frozenset({"enter", "cmd_enter"})
 AI_REPLY_LANGUAGES = frozenset({"auto", "zh", "en"})
 AI_ATTACHMENT_CONTEXT_BUDGETS = frozenset({"economy", "balanced", "deep"})
-THEME_MODES = frozenset({"light", "dark", "system"})
+THEME_MODES = frozenset({"light", "dark", "system", "aime"})
 PRE_PERSONALIZATION_KEYS = frozenset(
     {
         "archive_root",
@@ -66,6 +66,8 @@ ALLOWED_KEYS = ALLOWED_KEYS | ASR_KEYS
 PRE_RECORDING_ASR_KEYS = ALLOWED_KEYS
 RECORDING_ASR_KEYS = frozenset(("recording_asr_enabled", "recording_asr_paused", "recording_asr_scope"))
 ALLOWED_KEYS = ALLOWED_KEYS | RECORDING_ASR_KEYS
+CURRENT_TERM_MD_KEYS = frozenset({"current_term_md_enabled"})
+ALLOWED_KEYS = ALLOWED_KEYS | CURRENT_TERM_MD_KEYS
 SENSITIVE_KEY_PARTS = ("token", "password", "secret", "credential", "api_key")
 # ERROR_ACCESS_DENIED / SHARING_VIOLATION / LOCK_VIOLATION while a reader or
 # scanner holds settings.json open without FILE_SHARE_DELETE.
@@ -102,6 +104,7 @@ class LocalSettings:
     recording_asr_enabled: bool = False
     recording_asr_paused: bool = True
     recording_asr_scope: str = "all_unfinished"
+    current_term_md_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -269,6 +272,7 @@ def _validate_mapping(payload: object, *, partial: bool) -> dict[str, Any]:
         )
     for key in (
         "course_markdown_enabled",
+        "current_term_md_enabled",
         "recording_asr_enabled",
         "recording_asr_paused",
         "auto_download_current_term",
@@ -429,7 +433,7 @@ class SettingsStore:
             defaults = LocalSettings()
             payload = {**payload, **{key: getattr(defaults, key) for key in ASR_KEYS}}
         if isinstance(payload, dict) and not (set(payload) - ALLOWED_KEYS):
-            for key in RECORDING_ASR_KEYS:
+            for key in RECORDING_ASR_KEYS | CURRENT_TERM_MD_KEYS:
                 payload.setdefault(key, getattr(LocalSettings(), key))
         try:
             values = _validate_mapping(payload, partial=False)

@@ -676,6 +676,7 @@ export function AssignmentsView({
       className="section-stack assignments-page"
       ready={items !== null || Boolean(error)}
     >
+      <p className="finder-empty">仅显示最新学期课程的作业</p>
       <motion.div
         layoutScroll
         className="assignment-filters"

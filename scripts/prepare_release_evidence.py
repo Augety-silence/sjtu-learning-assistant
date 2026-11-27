@@ -32,6 +32,8 @@ CODE_PATHS = (
     "packaging/common-hooks/hook-imageio_ffmpeg.py",
     "packaging/runtime_hooks/ffmpeg.py", "sjtu_learning_assistant/__init__.py",
     ".github/workflows/release.yml",
+    "desktop_app.py", "sjtu_learning_assistant/frontend_startup.py",
+    "sjtu_learning_assistant/frontend_self_test.py",
 )
 
 
@@ -72,6 +74,20 @@ def validate_identity(tag, commit):
         git("ls-files", "--error-unmatch", name)
         hashes[name] = digest(ROOT / name)
     return version, hashes
+
+
+def workflow_provenance(commit):
+    """Record CI context; the publisher independently authenticates it via REST."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return None  # Local evidence is useful diagnostically, never publishable.
+    fields = {key: os.environ.get(env, "") for key, env in (
+        ("repository", "GITHUB_REPOSITORY"), ("run_id", "GITHUB_RUN_ID"),
+        ("run_attempt", "GITHUB_RUN_ATTEMPT"), ("actor", "GITHUB_ACTOR"),
+    )}
+    require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", fields["repository"]), "Missing CI repository")
+    require(all(re.fullmatch(r"[1-9][0-9]*", fields[key]) for key in ("run_id", "run_attempt")), "Missing CI run identity")
+    require(re.fullmatch(r"[A-Za-z0-9_.\[\]-]+", fields["actor"]), "Missing CI actor")
+    return {**fields, "source_commit": commit}
 
 
 def artifact_names(version):
@@ -118,6 +134,54 @@ def execute(check, tool, *args):
     # Tool output/private paths never enter public proof JSON, even on success.
     return {"check": check, "tool": Path(tool).name, "returncode": result.returncode}
 
+
+
+def frontend_startup_gate(app_exe, bundle, platform_name):
+    """Execute the actual native packaged app, not a mock or fixture executable."""
+    require(sys.platform == ("darwin" if platform_name == "macos" else "win32"), "Startup gate requires native OS")
+    require(platform_name != "macos" or platform.machine() == "arm64", "Startup gate requires arm64 macOS")
+    app_exe, bundle = Path(app_exe).resolve(), Path(bundle).resolve()
+    require(app_exe.is_file() and app_exe.is_relative_to(bundle), "Missing packaged app executable")
+    candidates = (bundle / "Contents/Resources/dashboard-web/dist/index.html", bundle / "Contents/Frameworks/dashboard-web/dist/index.html") if platform_name == "macos" else (bundle / "_internal/dashboard-web/dist/index.html",)
+    indices = tuple(p for p in candidates if p.is_file())
+    require(bool(indices), "Missing actual packaged frontend")
+    hashes = tuple(digest(p) for p in indices)
+    require(len(set(hashes)) == 1, "Packaged frontend locations disagree")
+    frontend_hash = hashes[0]
+    runner = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).resolve()
+    runner.mkdir(parents=True, exist_ok=True)
+    require(not runner.is_relative_to(bundle) and not runner.is_relative_to(ROOT.resolve()), "Startup report must be outside source/package stage")
+    with tempfile.TemporaryDirectory(prefix="sjtu-native-startup-", dir=runner) as directory:
+        private = Path(directory).resolve()
+        report = private / "startup-report.json"
+        env = os.environ.copy()
+        for key in tuple(env):
+            if key.startswith(("SJTU_", "OPENAI_", "ANTHROPIC_", "AZURE_")) or key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+                env.pop(key, None)
+        for key, name in (("HOME", "home"), ("USERPROFILE", "home"), ("APPDATA", "roaming"), ("LOCALAPPDATA", "local"),
+                          ("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache"), ("XDG_DATA_HOME", "data"),
+                          ("SJTU_APP_SUPPORT_DIR", "support"), ("TEMP", "temp"), ("TMP", "temp"), ("TMPDIR", "temp")):
+            path = private / name
+            path.mkdir(mode=0o700, exist_ok=True)
+            env[key] = str(path)
+        env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHON_KEYRING_BACKEND="keyring.backends.fail.Keyring")
+        try:
+            result = subprocess.run((str(app_exe), "--startup-self-test", str(report)), cwd=private,
+                env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("Native frontend startup timed out") from exc
+        require(result.returncode == 0, "Native frontend startup failed")
+        require(report.is_file() and not report.is_symlink() and 0 < report.stat().st_size <= 8192, "Missing bounded native startup report")
+        raw = report.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+        expected = dict(schema_version=1, result="passed", reason="ok",
+            renderer="wkwebview" if platform_name == "macos" else "edgechromium",
+            frontend=dict(path="dashboard-web/dist/index.html", sha256=frontend_hash, fingerprint=frontend_hash[:16]),
+            app_shell=True, bridge_ready=True, data_isolated=True, network_blocked=True, backend="reject-only")
+        require(value == expected, "Native startup report does not prove full AppShell and bridge readiness")
+        require(all(digest(p) == frontend_hash for p in indices), "Packaged frontend changed during startup gate")
+        value["report_sha256"] = hashlib.sha256(raw).hexdigest()
+        return dict(check="frontend_startup", tool=app_exe.name, returncode=0), value
 
 
 def tree_digest(bundle):
@@ -199,9 +263,13 @@ def prepare(tag, commit, platform_name, bundle, stage, artifacts_dir, output):
         app_path = APP + ".exe"
         checks.append(execute("windows_manifest", sys.executable, ROOT / "scripts/verify_windows_manifest.py", app_exe))
         report = {"version_scope": "exact-commit-build", "manifest_verified": True}
+    startup_check, startup_report = frontend_startup_gate(app_exe, bundle, platform_name)
+    checks.append(startup_check)
+    report["frontend_startup"] = startup_report
     evidence = {
         "schema_version": 1, "platform": platform_name, "architecture": "arm64" if platform_name == "macos" else "x64",
         "tag": tag, "app_version": version, "release_commit": commit, "code_sha256": code_hashes,
+        "workflow_provenance": workflow_provenance(commit),
         "ffmpeg": {"stage_manifest": manifest, "stage_binary_sha256": manifest["binary_sha256"],
                    "packaged_binary_sha256": packaged_hash, "packaged_path": packaged_binary.relative_to(bundle).as_posix(),
                    "packaged_manifest_sha256": digest(packaged_stage / "build-manifest.json")},

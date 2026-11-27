@@ -18,6 +18,7 @@ from sjtu_learning_assistant.knowledge_documents import (
     skipped_active_content, retained_source_markdown,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, validate_archive_root
+from sjtu_learning_assistant.course_inventory import AUTO_COURSE_SUFFIXES
 from sjtu_learning_assistant.summary_policy import retry_delay_seconds, recovery_delay_seconds, AUTO_RECOVERY_VERSION
 
 OUTPUT_FOLDER = "Knowledge Markdown"
@@ -31,6 +32,7 @@ class CourseMarkdownSync:
                  wiki_rebuilder: Callable | None = None,
                  max_documents_per_cycle: int = 0, slice_calls: int = 0, workers: int = 1,
                  review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
+                 static_pptx_policy: bool = False, deterministic_diagnostics: bool = False,
                  today: Callable = lambda: datetime.now().date().isoformat(),
                  now_provider: Callable = lambda: datetime.now(timezone.utc)):
         self.settings, self.paths, self.runner = settings, paths, runner
@@ -42,6 +44,8 @@ class CourseMarkdownSync:
         self.workers = max(1, min(10, int(workers)))
         self.review_percent, self.parallel_batches = review_percent, parallel_batches
         self.auto_recovery = auto_recovery
+        self.static_pptx_policy = static_pptx_policy
+        self.deterministic_diagnostics = deterministic_diagnostics
         self._stop, self._wake, self._cancel = threading.Event(), threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
@@ -192,7 +196,7 @@ class CourseMarkdownSync:
 
         persist()
         candidates = sorted(set(self.paths()), key=lambda path: str(path).casefold())
-        candidates = [path for path in candidates if path.suffix.casefold() in {".pptx", ".pdf", ".ppt", '.pptm', '.docm', '.xlsm', '.ppsm', '.potm'}]
+        candidates = [path for path in candidates if path.suffix.casefold() in AUTO_COURSE_SUFFIXES]
         completed, failed, pending, text_ready = 0, 0, 0, 0
         retained = 0
         issues = []
@@ -216,7 +220,7 @@ class CourseMarkdownSync:
                 source_hash = digest(path.read_bytes())
                 fingerprint = compilation_fingerprint(source_hash)
                 item = state["items"].setdefault(relative, {})
-                if (self.auto_recovery and item.get('status') in ('failed', 'pending')
+                if (not self.deterministic_diagnostics and self.auto_recovery and item.get('status') in ('failed', 'pending')
                         and item.get('auto_recovery_version') != AUTO_RECOVERY_VERSION
                         and any(reason in str(item.get('error', '')) for reason in
                                 ('精炼', '主题讲义页码', '请求超时', 'DashboardError', 'PdfiumError'))):
@@ -226,7 +230,7 @@ class CourseMarkdownSync:
                     item.pop('auto_paused', None)
                     persist()
                 # 仅唤醒本次代码已修复的旧失败；不清空证据、已完成稿或网络退避。
-                if (item.get('status') == 'failed' and item.get('recovery_version') != RECOVERY_VERSION
+                if (not self.deterministic_diagnostics and item.get('status') == 'failed' and item.get('recovery_version') != RECOVERY_VERSION
                         and any(reason in str(item.get('error', '')) for reason in
                                 ('PdfiumError', '缺少有效来源引用', '缺少完整主题结构'))):
                     item.update(recovery_version=RECOVERY_VERSION)
@@ -244,6 +248,27 @@ class CourseMarkdownSync:
                     prepared.append((path, relative, fingerprint, item, mirror))
                     continue
                 skipped = skipped_active_content(path)
+                if self.static_pptx_policy and path.suffix.casefold() == '.pptx' and skipped and set(skipped) <= set(('external_link', 'embedded_object')):
+                    from .pptx_static import extract_static_pptx, STATIC_PPTX_POLICY
+                    static_fingerprint = digest((fingerprint + STATIC_PPTX_POLICY).encode())
+                    same_source = item.get('fingerprint') in (fingerprint, static_fingerprint)
+                    if same_source and (item.get('status') == 'retained' or item.get('static_policy') == STATIC_PPTX_POLICY):
+                        if item.get('static_policy') != STATIC_PPTX_POLICY:
+                            try:
+                                extracted_static = extract_static_pptx(path)
+                                if not extracted_static.complete or digest(path.read_bytes()) != source_hash:
+                                    raise DocumentTextError('Static source identity or page coverage is incomplete.')
+                                item.update(static_policy=STATIC_PPTX_POLICY, static_parser_complete=True,
+                                            fingerprint=static_fingerprint, source_hash=source_hash, status='pending')
+                                persist()
+                            except DocumentTextError as exc:
+                                item.update(static_policy=STATIC_PPTX_POLICY, static_parser_complete=False, static_reason=str(exc))
+                                persist()
+                        if item.get('static_parser_complete'):
+                            fingerprint = static_fingerprint
+                            text_ready += 1
+                            prepared.append((path, relative, fingerprint, item, mirror))
+                            continue
                 if skipped:
                     oversize = any(reason.startswith('oversize_reference_') for reason in skipped)
                     if item.get('fingerprint') != fingerprint or item.get('status') != 'retained':
@@ -318,6 +343,38 @@ class CourseMarkdownSync:
                         raise DocumentTextError("对应 MD 已被人工修改或删除，已保留；自动更新暂停。")
                     completed += 1
                     continue
+                if self.deterministic_diagnostics:
+                    from .compilation_diagnostics import diagnose_source, DIAGNOSTIC_POLICY, _result
+                    check_key = digest((fingerprint + str(item.get('attempts', 0)) + str(item.get('error', ''))).encode())
+                    checks = item.get('diagnostic_checks', 0)
+                    if type(checks) is not int or not 0 <= checks <= 3:
+                        raise DocumentTextError('自动排障预算记录损坏；已有计数保留，不重置。')
+                    diagnosis = item.get('diagnosis')
+                    if type(diagnosis) is not dict:
+                        diagnosis = None
+                    else:
+                        # Saved descriptions/approval flags are not authority.
+                        # Re-derive only controlled reason codes from native rules.
+                        from .compilation_diagnostics import REASONS
+                        code = diagnosis.get('code')
+                        diagnosis = _result(code, item) if code in REASONS else None
+                    if item.get('auto_paused') or item.get('attempts', 0) >= 8:
+                        diagnosis = _result('requires_authorized_segmented_repair', item)
+                    if item.get('diagnostic_identity') != check_key or item.get('diagnostic_policy') != DIAGNOSTIC_POLICY or diagnosis is None:
+                        if item.get('diagnostic_checks', 0) >= 3:
+                            diagnosis = _result('requires_authorized_segmented_repair', item)
+                        else:
+                            diagnosis = diagnose_source(source, path, target, item)
+                            item['diagnostic_checks'] = item.get('diagnostic_checks', 0) + 1
+                        item.update(diagnosis=diagnosis, diagnostic_identity=check_key, diagnostic_policy=DIAGNOSTIC_POLICY)
+                        persist()
+                    if not diagnosis.get('automatic_allowed'):
+                        failed += 1
+                        item['auto_paused'] = True
+                        item['status'] = 'failed'
+                        issues.append(diagnosis['reason'])
+                        persist()
+                        continue
                 # 失败逐步退避，不设每日调用总额，也不因3次失败锁死任务。
                 attempts = item.get("attempts", 0) if item.get("fingerprint") == fingerprint else 0
                 if self.auto_recovery and attempts >= 8:
@@ -374,7 +431,7 @@ class CourseMarkdownSync:
             kwargs = {'max_calls': 0}
             if self.compiler_factory is DocumentCompiler:
                 kwargs.update(review_percent=self.review_percent, parallel_batches=self.parallel_batches,
-                              auto_recovery=self.auto_recovery)
+                              auto_recovery=self.auto_recovery, static_pptx=self.static_pptx_policy)
             if self.slice_calls:
                 kwargs.update(slice_calls=effective_slice_calls, text_first=True)
             local = self.compiler_factory(call, self._cancel, **kwargs)
@@ -393,7 +450,8 @@ class CourseMarkdownSync:
                         if self._stop.is_set() or self._cancel.is_set():
                             raise CompilationDeferred('同步已取消，检查点保留。')
                         self._publish_compiled_note(note, mirror, target, item, publish)
-                        item['attempts'] = 0
+                        if not item.get('static_policy'):
+                            item['attempts'] = 0
                         item.pop('retry_after', None)
                         item.pop('error', None)
                         item.pop('auto_paused', None)
@@ -457,6 +515,11 @@ class CourseMarkdownSync:
         for number in range(1, 501):
             body = body.replace(f"(assets/page-{number:04d}.jpg)", "(" + quote(asset_prefix + f"/page-{number:04d}.jpg", safe="/") + ")")
             body = body.replace(f"(pages/page-{number:04d}.md)", "(" + quote(page_prefix + f"/page-{number:04d}.md", safe="/") + ")")
+        for name in ('source-basis.md', 'static-inventory.json'):
+            prefix = Path(os.path.relpath(note.parent / name, mirror.parent)).as_posix()
+            body = body.replace('(' + name + ')', '(' + quote(prefix, safe='/') + ')')
         publish(item, mirror, body)
+        if 'quality_status: static-source-' in body:
+            item['quality_status'] = 'static-source-sampled' if 'quality_status: static-source-sampled' in body else 'static-source-reviewed'
         from sjtu_learning_assistant.knowledge_summary import SUMMARY_CONTRACT
         item.update(status="completed", contract=SUMMARY_CONTRACT, document=note.relative_to(target).as_posix())

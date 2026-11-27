@@ -216,7 +216,7 @@ def skipped_active_content(path: Path) -> list[str]:
                 reasons.add('macro')
             if any(part in lowered for part in ('/embeddings/', '/activex/', '/customui/')):
                 reasons.add('embedded_object')
-            if lowered.endswith('.rels'):
+            if lowered.endswith('.rels') and not any(part in lowered for part in ('/embeddings/', '/activex/', '/customui/', '/macros/')):
                 for relationship in _xml(archive, name, budget):
                     if relationship.get('TargetMode', '').casefold() == 'external':
                         reasons.add('external_link')
@@ -392,7 +392,7 @@ class DocumentCompiler:
     def __init__(self, runner: Callable[[str, str, Any], str], cancel: threading.Event, *, max_calls: int = 0,
                  slice_calls: int = 0, text_first: bool = False, renderer: Callable = page_images,
                  review_percent: int = 100, parallel_batches: int = 1, auto_recovery: bool = False,
-                 content_recovery: bool = False):
+                 content_recovery: bool = False, authorized_recovery=None, static_pptx: bool = False):
         if type(max_calls) is not int or not 0 <= max_calls <= 10_000:
             raise ValueError("max_calls 必须在 0—10000 内；0 表示不限")
         self.runner, self.cancel, self.renderer = runner, cancel, renderer
@@ -402,6 +402,10 @@ class DocumentCompiler:
         self.review_percent, self.parallel_batches = review_percent, parallel_batches
         self.auto_recovery = auto_recovery
         self.content_recovery = content_recovery
+        if authorized_recovery is not None and not callable(authorized_recovery.runner):
+            raise ValueError("Authorized recovery requires the explicit single-request CLI transport.")
+        self.authorized_recovery = authorized_recovery
+        self.static_pptx = static_pptx
         # 分段并发后调用计数与轮转额度会被多个线程同时判断，必须原子化。
         self._calls_lock = threading.Lock()
         self.model_fallbacks: list[dict[str, str]] = []
@@ -460,7 +464,20 @@ class DocumentCompiler:
     def _compile_snapshot(self, source: Path, original: Path, path: Path, target: Path, source_hash: str) -> Path:
         relative = original.relative_to(source).as_posix()
         source_id = digest(relative.encode())[:16]
+        static = None
+        static_reason = None
+        if self.static_pptx and path.suffix.casefold() == '.pptx':
+            flags = skipped_active_content(path)
+            if flags and set(flags) <= set(('external_link', 'embedded_object')):
+                from .pptx_static import extract_static_pptx
+                try:
+                    static = extract_static_pptx(path)
+                except DocumentTextError as exc:
+                    static_reason = str(exc)
         revision = digest((source_hash + CONTRACT + VISION_MODEL).encode())[:16]
+        if static is not None:
+            from .pptx_static import STATIC_PPTX_POLICY
+            revision = digest((source_hash + STATIC_PPTX_POLICY).encode()).__getitem__(slice(16))
         directory = safe_destination(target, target / "90_Inbox" / "Documents" / source_id / revision)
         manifest_path = directory / "manifest.json"
         state: dict[str, Any] = {"version": 1, "contract": CONTRACT, "model": VISION_MODEL, "source": relative, "source_hash": source_hash, "pages": {}, "outputs": {}}
@@ -577,7 +594,12 @@ class DocumentCompiler:
         # 编译器逐页有 12000 字符输入闸门；总量按 500 页独立限额，
         # 不沿用聊天预览的 400k 上限截断完整教材。
         skipped = skipped_active_content(path)
+        if static is not None:
+            return self._compile_static(static, source_id, source_hash, relative, original, target,
+                                        directory, state, commit, persist)
         if skipped:
+            if static_reason:
+                state['static_reason'] = static_reason
             body = retained_source_markdown(source, original, source_hash, skipped)
             if self.cancel.is_set() or digest(original.read_bytes()) != source_hash:
                 raise DocumentTextError('来源变更或同步取消，未发布。')
@@ -592,6 +614,8 @@ class DocumentCompiler:
         persist()
         notes = []
         all_cached = set(state["pages"]) == {str(n) for n in range(1, document.unit_count + 1)}
+        if self.authorized_recovery is not None and not all_cached:
+            raise DocumentTextError("Authorized segmented repair requires preserved complete page evidence; no implicit rendering or page requests.")
         saved_pdf = directory / "source-render.pdf"
         # 已验哈希的全页证据不再重复转 PDF 或重绘页图。
         rendering = nullcontext(None) if all_cached else nullcontext(saved_pdf) if "source-render.pdf" in state["outputs"] else rendered_pdf(path, self.cancel)
@@ -713,9 +737,12 @@ class DocumentCompiler:
                 verified.append({**entry, 'text': response, 'visual_rechecked': True})
             return verified
         try:
-            study, plan, report = SummaryCompiler(self._request, cached, commit, verify_sources=verify_sources,
+            recovery = self.authorized_recovery.for_source(source_id) if self.authorized_recovery is not None else None
+            study, plan, report = SummaryCompiler(self.runner if recovery is not None else self._request, cached, commit,
+                verify_sources=None if recovery is not None else verify_sources,
                 review_percent=self.review_percent, parallel_batches=self.parallel_batches,
-                auto_recovery=self.auto_recovery, content_recovery=self.content_recovery).compile(entries)
+                auto_recovery=self.auto_recovery, content_recovery=self.content_recovery,
+                authorized_recovery=recovery).compile(entries)
             report['model_fallbacks'] = list(self.model_fallbacks)
         except ValueError as exc:
             raise DocumentTextError(str(exc)) from None
@@ -745,3 +772,60 @@ class DocumentCompiler:
         state["study_prompt_sha256"] = digest(SUMMARY_VERSION.encode())
         persist()
         return directory / "document.md"
+
+    def _compile_static(self, static, source_id, source_hash, relative, original, target,
+                        directory, state, commit, persist):
+        """Separate revision, same summary compiler; no fictitious visual pages."""
+        from .pptx_static import STATIC_PPTX_POLICY
+        if state.get('status') == 'completed' and state.get('quality_status', '').startswith('static-source-'):
+            return directory / 'document.md'
+        def cached(name):
+            return (directory / name).read_text(encoding='utf-8') if name in state.get('outputs') else None
+        def save(name, payload, number=None):
+            commit(dict.fromkeys((name,), payload), number)
+        inventory = dict(static.inventory, source_sha256=source_hash, source_id=source_id)
+        if cached('static-inventory.json') is None:
+            save('static-inventory.json', json.dumps(inventory, ensure_ascii=False, indent=2))
+        for entry in static.pages:
+            number = entry.get('page')
+            name = 'pages/page-%04d.md' % number
+            if cached(name) is None:
+                save(name, entry.get('source_text'), number)
+        if cached('source-basis.md') is None:
+            basis = '# 静态来源证据\n\n原件整页未渲染；外链与嵌入对象未打开。\n\n'
+            basis += '\n\n'.join(entry.get('source_text') for entry in static.pages)
+            save('source-basis.md', basis)
+        for member, payload in static.previews.items():
+            name = 'static-previews/' + digest(member.encode()).__getitem__(slice(16)) + Path(member).suffix.casefold()
+            # Binary previews were hash-validated with all registered outputs.
+            # Resumption must inspect registration, never decode raster bytes as UTF-8.
+            if name not in state.get('outputs', dict()):
+                save(name, payload)
+        recovery = self.authorized_recovery.for_source(source_id) if self.authorized_recovery is not None else None
+        summary, plan, report = SummaryCompiler(self.runner if recovery is not None else self._request,
+            cached, commit, verify_sources=None, review_percent=self.review_percent,
+            parallel_batches=self.parallel_batches, auto_recovery=self.auto_recovery,
+            content_recovery=self.content_recovery, authorized_recovery=recovery).compile(list(static.pages))
+        caveat = ('> 静态来源总结：仅依据本地文字、表格、备注和图表缓存值进行来源审校；'
+                  '不是原件整页视觉复核。外链、嵌入对象、图片含义和版式未核验。'
+                  '全部原件页（含隐藏页与无文字页）的证据缺口见静态清单与来源证据。\n\n')
+        link = lambda title, name: chr(91) + title + chr(93) + '(' + name + ')'
+        summary = caveat + summary + '\n' + link('逐页静态证据', 'source-basis.md') + ' · ' + link('缺口清单', 'static-inventory.json') + '\n'
+        if len(summary) > MAX_SUMMARY_CHARS:
+            raise DocumentTextError('静态精炼总结超过5000字符；保留检查点，不截断。')
+        if self.cancel.is_set() or digest(original.read_bytes()) != source_hash:
+            raise DocumentTextError('来源变更或同步取消，未发布静态总结。')
+        quality = 'static-source-sampled' if report.get('reviews_sampled_out') else 'static-source-reviewed'
+        report.update(evidence_mode='static-extraction-only', static_inventory=inventory, quality_status=quality)
+        body = ('---\ntype: course-document\nsource: %s\nsource_type: pptx\nsource_id: %s\nsource_sha256: %s\n'
+                'converted_by: bounded-static-ooxml\ncontract: %s\nstatic_policy: %s\nquality_status: %s\nsummary_chars: %d\n'
+                'abstract: %s\nauto_tags: %s\nsynonyms: %s\n---\n\n') % (
+            json.dumps(relative, ensure_ascii=False), source_id, source_hash, SUMMARY_CONTRACT, STATIC_PPTX_POLICY,
+            quality, len(summary), json.dumps(plan.get('abstract'), ensure_ascii=False),
+            json.dumps(plan.get('tags'), ensure_ascii=False), json.dumps(plan.get('synonyms'), ensure_ascii=False))
+        save('review.json', json.dumps(report, ensure_ascii=False, indent=2))
+        save('document.md', body + summary)
+        state.update(status='completed', quality_status=quality, static_policy=STATIC_PPTX_POLICY,
+                     page_count=len(static.pages), study_contract=SUMMARY_CONTRACT)
+        persist()
+        return directory / 'document.md'

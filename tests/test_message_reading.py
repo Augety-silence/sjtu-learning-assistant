@@ -4,13 +4,15 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from desktop_app import DesktopBridge
-from sjtu_learning_assistant.dashboard_service import DashboardService
+from sjtu_learning_assistant.dashboard_service import DashboardService, NotFoundError
+from sjtu_learning_assistant.local_settings import LocalSettings
 from sjtu_learning_assistant.database import create_database_engine, default_sqlite_url
 from sjtu_learning_assistant.desktop_database import SCHEMA_VERSION, bootstrap_sqlite, get_schema_version
 from sjtu_learning_assistant.mail_client import EmailRecord, _parse_message, fetch_incremental_mail
@@ -101,7 +103,12 @@ class MessageServiceTests(unittest.TestCase):
             body_preview="邮件正文", is_unread=True, raw_data={"uid": 1}, body_text="邮件正文",
         )
         self.sync()
-        self.service = DashboardService(self.engine)
+        self.settings = LocalSettings(archive_root=str(Path(self.temp.name) / "archive"), mail_account="")
+        self.settings_store = SimpleNamespace(
+            path=Path(self.temp.name) / "settings.json", load=lambda: self.settings,
+            resolve=lambda **_overrides: self.settings,
+        )
+        self.service = DashboardService(self.engine, settings_store=self.settings_store)
 
     def tearDown(self) -> None:
         self.engine.dispose()
@@ -120,6 +127,17 @@ class MessageServiceTests(unittest.TestCase):
         self.assertEqual({"email", "announcement", "assignment"}, {row["kind"] for row in rows})
         self.assertEqual({"mail:1", "11", "12"}, {row["source_id"] for row in rows})
         self.assertTrue(all(row["is_unread"] for row in rows))
+
+    def test_fixture_does_not_inherit_host_mail_account(self) -> None:
+        import os
+        with patch.dict(os.environ, dict(SJTU_EMAIL="unrelated@example.invalid")):
+            self.assertEqual("邮件正文", self.service.message_detail("email", "mail:1").get("body"))
+
+    def test_configured_mail_scope_still_rejects_unscoped_fixture_message(self) -> None:
+        from dataclasses import replace
+        self.settings = replace(self.settings, mail_account="unrelated@example.invalid")
+        with self.assertRaises(NotFoundError):
+            self.service.message_detail("email", "mail:1")
 
     def test_details_are_safe_plain_text_and_do_not_mark_read(self) -> None:
         self.assertEqual("邮件正文", self.service.message_detail("email", "mail:1")["body"])

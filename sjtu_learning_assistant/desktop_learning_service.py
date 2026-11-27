@@ -25,6 +25,7 @@ from sjtu_learning_assistant.cloud_storage import (
 from sjtu_learning_assistant.canvas_sync import CanvasCheckError, get_saved_token
 from sjtu_learning_assistant.credential_store import credential_storage_name
 from sjtu_learning_assistant.models import Assignment, Course
+from sjtu_learning_assistant.course_scope import latest_assignment_course_ids, latest_term_courses
 
 
 class LearningServiceError(RuntimeError):
@@ -244,7 +245,7 @@ class DesktopLearningService:
             rows = session.execute(
                 select(Assignment, Course)
                 .join(Course, Course.id == Assignment.course_id)
-                .where(Assignment.is_active.is_(True))
+                .where(Assignment.is_active.is_(True), Course.id.in_(latest_assignment_course_ids(session)))
             ).all()
             items = [
                 self._local_assignment_data(assignment, course)
@@ -268,7 +269,7 @@ class DesktopLearningService:
         if self._engine is not None:
             return self._local_assignments(category)
         service = self._assignment_service()
-        courses = service.canvas.courses()
+        courses = latest_term_courses(service.canvas.courses())
         items: list[dict[str, Any]] = []
         for course in courses:
             course_id = course.get("id")

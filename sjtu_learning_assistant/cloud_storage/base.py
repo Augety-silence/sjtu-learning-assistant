@@ -15,6 +15,10 @@ RemotePath = str | tuple[str, ...] | list[str]
 
 
 class CloudStorageProvider(ABC):
+    def backup_identity(self) -> str | None:
+        """稳定的账号及目标空间身份；未知 provider 不跨会话信任完成断点。"""
+        return None
+
     @abstractmethod
     def list_directory(self, path: RemotePath = (), *, page: int = 1, page_size: int = 100) -> CloudDirectoryPage:
         raise NotImplementedError

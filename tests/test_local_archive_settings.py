@@ -32,6 +32,17 @@ class LocalSettingsTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_all_four_theme_modes_persist_without_losing_archive_preferences(self) -> None:
+        archive = self.root / "archive"
+        self.store.update({"archive_root": str(archive), "auto_download_current_term": False})
+        for mode in ("system", "light", "dark", "aime"):
+            with self.subTest(mode=mode):
+                self.store.update({"theme_mode": mode})
+                loaded = self.store.load()
+                self.assertEqual(mode, loaded.theme_mode)
+                self.assertEqual(str(archive), loaded.archive_root)
+                self.assertFalse(loaded.auto_download_current_term)
+
     def test_defaults_atomic_round_trip_and_no_temporary_file(self) -> None:
         defaults = self.store.load(environ={})
         self.assertEqual("", defaults.mail_account)
@@ -51,6 +62,7 @@ class LocalSettingsTests(unittest.TestCase):
                 "archive_root",
                 "auto_download_current_term",
                 "course_markdown_enabled",
+                "current_term_md_enabled",
                 "course_markdown_daily_calls",
                 "organize_by_category",
                 "ai_enabled",

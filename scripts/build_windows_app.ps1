@@ -90,6 +90,10 @@ if (-not (Test-Path $Executable)) {
     throw "PyInstaller 未生成预期可执行文件：$Executable"
 }
 & $Python scripts/verify_windows_manifest.py $Executable
+if ($LASTEXITCODE -ne 0) { throw "Windows executable manifest validation failed." }
+$FrontendIndex = Join-Path $AppDir "_internal\dashboard-web\dist\index.html"
+& $Python -c "import sys; from pathlib import Path; from sjtu_learning_assistant.frontend_startup import validate_frontend; validate_frontend(Path(sys.argv[1]))" $FrontendIndex
+if ($LASTEXITCODE -ne 0) { throw "Windows bundle frontend resource validation failed." }
 $SeedGlossaryDir = Join-Path $AppDir "_internal\resources\seed_glossary"
 $ExpectedSeedGlossaries = @(
     "traditional_machine_learning.json",

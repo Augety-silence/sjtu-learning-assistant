@@ -97,6 +97,12 @@ from sjtu_learning_assistant.desktop_learning_service import (
     LearningServiceError,
 )
 
+from sjtu_learning_assistant.frontend_startup import (
+    BOOTSTRAP_HTML,
+    FrontendResourceError,
+    WindowsFrontendLoader,
+)
+
 PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC_INDEX = PROJECT_ROOT / "dashboard-web" / "dist" / "index.html"
 SYNC_INTERVAL_SECONDS = 15 * 60
@@ -471,6 +477,8 @@ class DesktopBridge:
             ),
             "deadlines": self._deadlines,
             "messages": self._messages,
+            "message_archive": self._message_archive,
+            "message_reference": self._message_reference,
             "message_detail": self._message_detail,
             "message_resource": self._message_resource,
             "mail_attachment_open": self._mail_attachment_open,
@@ -528,6 +536,7 @@ class DesktopBridge:
             "knowledge_compiler_cancel": self._knowledge_compiler_cancel,
             "course_markdown_status": lambda payload: self._without_payload(payload, service.course_markdown_status),
             "markdown_sync_progress": lambda payload: self._without_payload(payload, service.markdown_sync_progress),
+            "compilation_diagnostics": lambda payload: self._without_payload(payload, service.compilation_diagnostics),
             "local_projects_list": self._local_projects_list,
             "local_projects_add": self._local_projects_add,
             "local_projects_refresh": self._local_projects_refresh,
@@ -676,6 +685,7 @@ class DesktopBridge:
             {
                 "archive_root",
                 "auto_download_current_term",
+                "current_term_md_enabled",
                 "course_markdown_enabled",
                 "course_markdown_daily_calls",
                 "organize_by_category",
@@ -1223,6 +1233,15 @@ class DesktopBridge:
         _only_keys(payload, {"kind"})
         return {"items": self._service.messages(_message_kind(payload))}
 
+    def _message_reference(self, payload):
+        _only_keys(payload, {"kind", "ref"})
+        return self._service.message_reference(_message_kind(payload, allow_all=False), payload.get("ref"))
+
+    def _message_archive(self, payload):
+        _only_keys(payload, {"kind", "query", "offset", "limit"})
+        return self._service.message_archive(_message_kind(payload), query=payload.get("query", ""),
+                    offset=payload.get("offset", 0), limit=payload.get("limit", 60))
+
     def _message_detail(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"kind", "source_id"})
         if "kind" not in payload or "source_id" not in payload:
@@ -1263,7 +1282,7 @@ class DesktopBridge:
         return self._service.reveal_mail_attachment(source_id, attachment_id)
 
     def _message_mark_read(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"kind", "ids", "all"})
+        _only_keys(payload, {"kind", "ids", "all", "query"})
         kind = _message_kind(payload)
         mark_all = payload.get("all", False)
         if type(mark_all) is not bool:
@@ -1274,6 +1293,10 @@ class DesktopBridge:
         if "all" in payload and not mark_all and not has_ids:
             raise DashboardError("全部已读参数不正确。")
         ids = _source_ids(payload["ids"]) if has_ids else None
+        if "query" in payload:
+            if not mark_all or has_ids:
+                raise DashboardError("搜索范围已读参数不正确。")
+            return self._service.message_archive_mark_read(kind, payload["query"])
         return self._service.message_mark_read(kind, ids)
 
     def _learning(self) -> DesktopLearningService:
@@ -2775,9 +2798,19 @@ def run_desktop_app() -> int:
         )
         scheduler = DesktopScheduler(service.trigger_sync)
         native_vibrancy = sys.platform == "darwin"
+        windows_frontend = None
+        if sys.platform == "win32":
+            try:
+                windows_frontend = WindowsFrontendLoader(
+                    STATIC_INDEX, report=_report_startup_error, log=LOGGER.info
+                )
+            except FrontendResourceError as exc:
+                _report_startup_error(str(exc))
+                return 2
         window = webview.create_window(
             "SJTU 学习助手",
-            _static_index_url(),
+            None if windows_frontend else _static_index_url(),
+            **({"html": BOOTSTRAP_HTML} if windows_frontend else {}),
             js_api=bridge,
             width=1280,
             height=820,
@@ -2787,8 +2820,13 @@ def run_desktop_app() -> int:
             vibrancy=native_vibrancy,
             text_select=True,
         )
+        if windows_frontend:
+            windows_frontend.attach(window)
         _install_recording_asr_quit_guard(window, service)
         scheduler.start()
+        current_term_start = getattr(service, "start_current_term_markdown", None)
+        if callable(current_term_start):
+            current_term_start()
         automatic_start = getattr(service, "start_course_markdown_sync", None)
         if callable(automatic_start):
             automatic_start()
@@ -2845,6 +2883,9 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if tuple(sys.argv[1:2]) == ("--startup-self-test",):
+        from sjtu_learning_assistant.frontend_self_test import main as startup_main
+        return startup_main(sys.argv[2:])
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--asr-self-test"]:
         if len(sys.argv) != 3 or not Path(sys.argv[2]).is_absolute():
             return 2

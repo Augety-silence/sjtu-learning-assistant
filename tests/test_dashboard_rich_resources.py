@@ -27,6 +27,7 @@ from sjtu_learning_assistant.mail_client import EmailRecord
 from sjtu_learning_assistant.models import Email, EmailAttachment
 from sjtu_learning_assistant.repository import persist_canvas_data, persist_emails
 from sjtu_learning_assistant.text_content import sanitize_html_with_resources
+from sjtu_learning_assistant.local_settings import LocalSettings
 
 
 class FakeCanvasClient:
@@ -63,6 +64,12 @@ class DashboardRichResourceTests(unittest.TestCase):
         self.engine = create_database_engine(default_sqlite_url(self.root / "app.db"))
         bootstrap_sqlite(self.engine)
         self.commands: list[list[str]] = []
+        # Synthetic unscoped mail fixtures never inherit host settings.
+        self.settings = LocalSettings(archive_root=str(self.root / "archive"), mail_account="")
+        self.settings_store = SimpleNamespace(
+            path=self.root / "settings.json", load=lambda: self.settings,
+            resolve=lambda **_overrides: self.settings,
+        )
 
     def tearDown(self) -> None:
         self.engine.dispose()
@@ -118,6 +125,7 @@ class DashboardRichResourceTests(unittest.TestCase):
         )
 
     def service(self, **kwargs: object) -> DashboardService:
+        kwargs.setdefault("settings_store", self.settings_store)
         return DashboardService(
             self.engine,
             mail_attachments_root=self.attachment_root,

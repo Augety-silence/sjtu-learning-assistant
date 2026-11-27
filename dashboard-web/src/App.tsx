@@ -79,6 +79,7 @@ import {
   createBoundedReadPool,
 } from "@/lib/boundedReadPool";
 import { uniqueCalendarEventsById } from "@/lib/calendarEvents";
+import { parseMessageLink } from "@/lib/messageLink";
 import { applyThemeMode } from "@/lib/theme";
 import type {
   AppCapabilities,
@@ -1547,6 +1548,18 @@ export default function App() {
       `${window.location.pathname}${window.location.search}#/${view}`,
     );
   }, [view]);
+
+  useEffect(() => {
+    const openMessage = (event: Event) => {
+      const href = (event as CustomEvent).detail;
+      if (typeof href !== "string" || !parseMessageLink(href)) return;
+      window.sessionStorage.setItem("sjtu-message-citation", href);
+      setViewState("messages");
+      window.dispatchEvent(new Event("sjtu-message-citation-ready"));
+    };
+    window.addEventListener("sjtu-open-message", openMessage);
+    return () => window.removeEventListener("sjtu-open-message", openMessage);
+  }, []);
 
   useEffect(() => {
     const onHash = () => setViewState(initialView());

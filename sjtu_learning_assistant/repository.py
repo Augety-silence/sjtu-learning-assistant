@@ -1330,7 +1330,7 @@ def persist_course_catalog(engine: Engine, rows: list[dict[str, Any]]) -> None:
     with Session(engine) as session, session.begin():
         _freeze_default_courses(session)
         _upsert_courses(session, _course_rows(rows), now)
-        _upsert_sync_state(session, source="canvas", resource="course_catalog", now=now)
+        _upsert_sync_state(session, source="canvas", resource="course_catalog", now=now, cursor=json.dumps({"version": 1, "course_ids": [str(row["id"]) for row in rows]}))
 
 
 def persist_emails(

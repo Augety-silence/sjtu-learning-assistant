@@ -1,7 +1,6 @@
 import { CloudUpload, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import backupFinishedIllustration from "@/assets/empty-states/backup-finished.webp";
-import { ArchiveManager } from "@/components/archive/ArchiveManager";
 import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/Button";
@@ -193,7 +192,10 @@ export function BackupView() {
   const running = backup.status === "running" || watching;
   const progress = backup.progress;
   const progressTotal = Math.max(progress?.total ?? 0, 1);
-  const progressDone = Math.min(progress?.done ?? 0, progressTotal);
+  const progressDone = Math.min(
+    progress?.files?.completed ?? progress?.done ?? 0,
+    progressTotal,
+  );
   const showFinishedIllustration =
     backup.status === "finished" && Boolean(backup.last_result);
 
@@ -289,13 +291,6 @@ export function BackupView() {
           </p>
         )}
 
-        <div className="backup-credentials">
-          <div>
-            <strong>交大云盘连接</strong>
-            <small>UserToken 已统一移至“系统设置 → 交大云盘”管理。</small>
-          </div>
-        </div>
-
         <dl className="backup-counts" aria-label="归档候选统计">
           <div>
             <dt>全部候选</dt>
@@ -327,12 +322,18 @@ export function BackupView() {
           <div className="backup-progress-block">
             <div className="backup-progress-copy">
               <strong>
-                {progress.done} / {progress.total}
+                {progressDone} / {progress.total}
               </strong>
               <span>
                 {safeText(progress.current_name, "正在准备下一个文件…")}
               </span>
             </div>
+            {progress.files && (
+              <p>
+                已持久化完成 {progress.files.completed} · 待同步{" "}
+                {progress.files.pending} · 失败 {progress.files.failed}
+              </p>
+            )}
             <div
               className="backup-progress"
               role="progressbar"
@@ -340,7 +341,7 @@ export function BackupView() {
               aria-valuemin={0}
               aria-valuemax={progressTotal}
               aria-valuenow={progressDone}
-              aria-valuetext={`已完成 ${progress.done}，共 ${progress.total}`}
+              aria-valuetext={`已完成 ${progressDone}，共 ${progress.total}`}
             >
               <span
                 style={{ width: `${(progressDone / progressTotal) * 100}%` }}
@@ -349,8 +350,6 @@ export function BackupView() {
           </div>
         )}
       </section>
-
-      <ArchiveManager />
 
       {backup.last_result && <ResultSummary result={backup.last_result} />}
     </ContentReveal>

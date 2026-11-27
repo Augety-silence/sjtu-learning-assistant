@@ -41,6 +41,11 @@ import "@/app-brand.css";
 import "@/performance.css";
 import "@/workspace-motion.css";
 import "@/page-motion.css";
+import "@/sidebar-assistant.css";
+import "@/nav-indicator.css";
+import "@/selection-indicator.css";
+import "@/message-center.css";
+import "@/aime-chat.css";
 
 declare global {
   interface Window {
@@ -57,7 +62,12 @@ declare global {
 }
 
 const params = new URLSearchParams(window.location.search);
-const theme: ThemeMode = params.get("theme") === "dark" ? "dark" : "light";
+const theme: ThemeMode =
+  params.get("theme") === "aime"
+    ? "aime"
+    : params.get("theme") === "dark"
+      ? "dark"
+      : "light";
 const requestedReadDelay = Number(params.get("read_delay") ?? 0);
 const readDelayMs = Number.isFinite(requestedReadDelay)
   ? Math.min(2000, Math.max(0, requestedReadDelay))
@@ -121,6 +131,8 @@ const messages: MessageItem[] = [
     source_id: "audit-mail-1",
     kind: "email",
     title: "本周课程讨论安排",
+    preview: "本周讨论围绕文本分类展开，请结合课程讲义准备阅读和实验报告。",
+    attachment_count: 1,
     source_label: "课程助教",
     occurred_at: daysFromNow(-1, 15),
     is_unread: true,
@@ -592,6 +604,8 @@ const readActions = new Set([
   "timetable_status",
   "timetable_schedule",
   "messages",
+  "message_archive",
+  "message_reference",
   "message_detail",
   "message_resource",
   "assignments_list",
@@ -677,8 +691,9 @@ function messageDetail(kind: string | undefined): MessageDetail {
     source_label: item.source_label,
     occurred_at: item.occurred_at,
     body: "这是仅供本地页面验收的合成消息正文，用于观察标题、正文和附件区域的文字起始位置。",
-    body_html: null,
-    format: "text",
+    body_html:
+      "<h2>本周课程讨论</h2><p>同学们好：</p><p>本周课程讨论将围绕文本分类展开。请先完成阅读，再结合课堂内容整理自己的思路。</p><blockquote><ul><li><strong>阅读材料：</strong>课程讲义第 4 章，第 4.1、4.3 与 4.5 节。</li><li><strong>提交方式：</strong>请在课程页面提交 PDF 文件。</li><li><strong>截止时间：</strong>以课程页面公布的时间为准。</li></ul></blockquote><h3>准备要点</h3><p>在报告中说明使用的方法、实验设计和结果。用清楚的段落组织内容，保留必要的推导与条件。</p><table role='table'><thead><tr><th>内容</th><th>要求</th></tr></thead><tbody><tr><td>方法说明</td><td>阐述基本原理与适用条件</td></tr><tr><td>实验结果</td><td>解释比较结果和主要发现</td></tr></tbody></table><p>如有问题，请在课程讨论区留言。</p>",
+    format: "html",
     pending_body_sync: false,
     attachments: [],
     resources: [],
@@ -710,12 +725,21 @@ function fixtureData(action: string, payload: Record<string, unknown> = {}) {
       return timetableStatus;
     case "timetable_schedule":
       return timetableSchedule;
+    case "message_archive":
     case "messages":
       return {
         items:
           payload.kind === "all"
             ? messages
             : messages.filter((item) => item.kind === payload.kind),
+      };
+    case "message_reference":
+      return {
+        item: {
+          ...messages[0],
+          title: "历史消息引用定位",
+          source_id: "audit-old-message",
+        },
       };
     case "message_detail":
       return messageDetail(String(payload.kind ?? ""));
@@ -1006,7 +1030,12 @@ async function localInvoke<T>(
   };
 }
 
-window.pywebview = { api: { invoke: localInvoke } };
+function installFixtureBridge() {
+  window.pywebview ??= {};
+  window.pywebview.api = { invoke: localInvoke };
+}
+installFixtureBridge();
+window.addEventListener("pywebviewready", installFixtureBridge);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("本地视觉验收入口缺少 #root 容器。");
