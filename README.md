@@ -6,9 +6,9 @@
 
 [下载最新正式版](https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest)
 
-## v1.8.26 发行说明
+## v1.8.27 发行说明
 
-完整功能版已加入 Windows 本地资源映射启动修复，并保留 Aime 工具输出、当前学期 Markdown 与云盘续传功能。公开附件仅 DMG、Windows 安装器 EXE 与便携 ZIP，详情见 [发行说明](docs/releases/v1.8.26.md)。
+完整功能版已加入 Windows 本地资源映射启动修复，并保留 Aime 工具输出、当前学期 Markdown 与云盘续传功能。公开附件仅 DMG、Windows 安装器 EXE 与便携 ZIP，详情见 [发行说明](docs/releases/v1.8.27.md)。
 
 ## 主要功能
 

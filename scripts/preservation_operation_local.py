@@ -263,12 +263,15 @@ def capture(archive, support, operations_dir, *, baselines=(), mutable_fields=No
         stream.flush()
         os.fsync(stream.fileno())
     os.chmod(operation / 'manifest.sha256', 0o400)
-    for directory in (operation / 'bytes', operation, parent):
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    # Every copied file and sealed manifest is already flushed/fsynced.
+    # Directory fsync is POSIX-only; the Windows CRT rejects directory opens.
+    if os.name != 'nt':
+        for directory in (operation / 'bytes', operation, parent):
+            descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     return path
 
 
@@ -312,7 +315,7 @@ def verify(manifest_path):
                 pointers = record.get('mutable_fields')
                 if not pointers:
                     raise ValueError('immutable_file_changed')
-                state_changes(json.loads(backup.read_text()), json.loads(artifact.read_text()), pointers)
+                state_changes(json.loads(backup.read_text(encoding="utf-8")), json.loads(artifact.read_text(encoding="utf-8")), pointers)
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
             code = str(exc) if type(exc) is ValueError and str(exc).replace('_', '').isalnum() else type(exc).__name__
             failures.append(dict(path=name, error=code))
@@ -344,7 +347,7 @@ def main(argv=None):
     after.add_argument('--manifest', type=Path, required=True)
     args = parser.parse_args(argv)
     if args.action == 'capture':
-        fields = json.loads(safe_path(args.mutable_fields).read_text()) if args.mutable_fields else None
+        fields = json.loads(safe_path(args.mutable_fields).read_text(encoding="utf-8")) if args.mutable_fields else None
         path = capture(args.archive, args.support, args.operations_dir, baselines=args.old_baseline, mutable_fields=fields)
         print(json.dumps(dict(manifest=str(path), models_called=0)))
         return 0

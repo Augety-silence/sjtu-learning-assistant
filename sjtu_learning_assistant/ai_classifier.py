@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
+import httpcore
 import httpx
 
 from sjtu_learning_assistant.ai_limits import (
@@ -147,6 +148,9 @@ class _RequestWatch:
         self._stop = threading.Event()
         self._thread = None
         self._stream = None
+        self._stream_lock = threading.Lock()
+        self._original_read = None
+        self._wrapped_read = None
         self._response = None
         self._abort: Exception | None = None
         self.partial_response: dict[str, Any] = {}
@@ -156,14 +160,22 @@ class _RequestWatch:
         # Wake this request's blocking read without closing its descriptor from
         # the observer thread. The request-owning HTTP context performs close;
         # cross-thread close can race a timed recv/select on macOS.
-        stream = self._stream
-        if stream is not None:
-            try:
-                connection = stream.get_extra_info('socket')
-                if connection is not None:
-                    connection.shutdown(socket.SHUT_RDWR)
-            except (OSError, AttributeError):
-                pass
+        with self._stream_lock:
+            stream = self._stream
+            if stream is not None:
+                try:
+                    connection = stream.get_extra_info('socket')
+                    if connection is not None:
+                        connection.shutdown(socket.SHUT_RDWR)
+                except (OSError, AttributeError):
+                    pass
+
+    def _restore_stream(self):
+        # Called by the request owner with _stream_lock held, after reads have
+        # unwound and before HTTP/1.1 marks the connection idle for pool reuse.
+        if self._original_read is not None and self._stream.read is self._wrapped_read:
+            self._stream.read = self._original_read
+        self._original_read = self._wrapped_read = self._stream = None
 
     def check(self):
         if self._abort is not None:
@@ -185,15 +197,51 @@ class _RequestWatch:
             return True
         return False
 
+    def _watch_stream(self, stream):
+        with self._stream_lock:
+            # TLS replaces the TCP stream; repeated traces must not wrap
+            # an earlier wrapper or keep its callback alive on that stream.
+            self._restore_stream()
+            self._stream = stream
+            read = getattr(stream, 'read', None)
+            if self.callback is not None and read is not None:
+                def interruptible_read(max_bytes, timeout=None):
+                    # Windows timed recv/select need not wake on shutdown.
+                    # Poll this backend read, preserving its original
+                    # deadline; parsing and close stay on the request owner.
+                    deadline = None if timeout is None else time.monotonic() + timeout
+                    while True:
+                        self.check()
+                        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                        read_timeout = 0.1 if remaining is None else min(0.1, remaining)
+                        try:
+                            return read(max_bytes, timeout=read_timeout)
+                        except httpcore.ReadTimeout:
+                            self.check()
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise
+                self._original_read, self._wrapped_read = read, interruptible_read
+                stream.read = interruptible_read
+        if self._abort is not None:
+            self._interrupt_stream()
+            self.check()
+
     def trace(self, event, info):
-        if event in ('connection.connect_tcp.complete', 'connection.start_tls.complete'):
-            self._stream = info.get('return_value')
-            if self._abort is not None:
-                self._interrupt_stream()
-                self.check()
+        if event == 'http11.response_closed.started':
+            with self._stream_lock:
+                self._restore_stream()
+        elif event in ('connection.connect_tcp.complete', 'connection.start_tls.complete'):
+            self._watch_stream(info.get('return_value'))
 
     def response(self, response, *, check=True):
         self._response = response
+        # An injected keepalive transport may supply a reused stream without a
+        # connect trace. Capture it before streaming the body, never after post
+        # has already closed the response and handed its socket back to the pool.
+        if self.callback is not None and self._stream is None and not getattr(response, 'is_closed', False):
+            stream = getattr(response, 'extensions', dict()).get('network_stream')
+            if stream is not None:
+                self._watch_stream(stream)
         if check:
             self.check()
 
@@ -216,6 +264,8 @@ class _RequestWatch:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1)
+        with self._stream_lock:
+            self._restore_stream()
         original = error.original if isinstance(error, _DeltaCallbackAbort) else self._abort
         if original is not None:
             if self.response_snapshot is not None:

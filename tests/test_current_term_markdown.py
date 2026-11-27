@@ -24,7 +24,7 @@ def setup(tmp_path):
             s.add(CourseFile(id=i,source_id=str(i),course_id=i,display_name='lecture.txt',size=len(payload),source_updated_at=stamp,last_seen_at=stamp,is_active=True))
     def download(source_id,directory,size,cancelled):
         path=directory/'source.bin'; path.write_bytes(payload); digest=hashlib.sha256(payload).hexdigest()
-        (directory/'download.json').write_text(json.dumps(dict(source_id=source_id,size=len(payload),sha256=digest)))
+        (directory/'download.json').write_text(json.dumps(dict(source_id=source_id,size=len(payload),sha256=digest)), encoding='utf-8')
         return path,len(payload),digest
     downloader=Mock(side_effect=download)
     def make(**kwargs): return CurrentTermMarkdown(engine,lambda:settings,downloader,**kwargs)
@@ -89,21 +89,21 @@ def test_restart_after_download_receipt_no_second_download(setup):
 def test_manual_download_race_preserves_both_copies(setup):
     engine,root,_,_,make=setup
     def convert(*args):
-        result=convert_local(*args); original=root/'manual.txt'; original.write_text('用户主动下载原件')
+        result=convert_local(*args); original=root/'manual.txt'; original.write_text('用户主动下载原件', encoding='utf-8')
         with Session(engine) as s,s.begin():
             f=s.get(CourseFile,2); f.local_path=str(original); f.download_status='downloaded'
         return result
     assert make(converter=convert).run_once()['completed']==1; item=job(engine)
-    assert item['state']=='retained' and (root/item['temporary_path']).exists(); assert (root/'manual.txt').read_text()=='用户主动下载原件'
+    assert item['state']=='retained' and (root/item['temporary_path']).exists(); assert (root/'manual.txt').read_text(encoding='utf-8')=='用户主动下载原件'
 
 @pytest.mark.parametrize('change',['md','source','symlink','version','asset'])
 def test_cleanup_rejects_changed_files_and_versions(setup,change):
     engine,root,_,_,make=setup; first=make(); first._cleanup=Mock(side_effect=InterruptedError); first.run_once(); item=job(engine)
     source=root/item['temporary_path']; md=root/item['md_path']
-    if change=='md': md.write_text('用户修改的 MD')
-    elif change=='source': source.write_text('用户修改的原件')
+    if change=='md': md.write_text('用户修改的 MD', encoding='utf-8')
+    elif change=='source': source.write_text('用户修改的原件', encoding='utf-8')
     elif change=='symlink':
-        other=root/'protected.txt'; other.write_text('保留'); source.unlink(); source.symlink_to(other)
+        other=root/'protected.txt'; other.write_text('保留', encoding='utf-8'); source.unlink(); source.symlink_to(other)
     elif change=='version':
         with Session(engine) as s,s.begin(): s.get(CourseFile,2).source_updated_at+=timedelta(seconds=1)
         assert not ready_records(engine,root) and source.exists(); return
@@ -113,7 +113,7 @@ def test_cleanup_rejects_changed_files_and_versions(setup,change):
             state=s.scalar(select(SyncState).where(SyncState.resource==item['key'])); j=json.loads(state.cursor); j['assets']={asset.relative_to(root).as_posix():file_fingerprint(asset)}; state.cursor=json.dumps(j)
         asset.write_bytes(b'changed asset!')
     assert make().run_once()['failed']==1; assert source.exists() or source.is_symlink()
-    if change=='symlink': assert (root/'protected.txt').read_text()=='保留'
+    if change=='symlink': assert (root/'protected.txt').read_text(encoding='utf-8')=='保留'
 
 def test_pdf_page_images_survive_cleanup(setup):
     engine,root,_,downloader,make=setup
@@ -143,7 +143,7 @@ def test_material_view_and_original_download_option_after_cleanup(setup):
 
 def test_legacy_settings_upgrade_keeps_ai_and_asr_pause(tmp_path):
     payload=LocalSettings(ai_enabled=True,course_markdown_enabled=False,recording_asr_paused=True).to_dict(); payload.pop('current_term_md_enabled')
-    path=tmp_path/'settings.json'; path.write_text(json.dumps(payload)); loaded=SettingsStore(path).load()
+    path=tmp_path/'settings.json'; path.write_text(json.dumps(payload), encoding='utf-8'); loaded=SettingsStore(path).load()
     assert not loaded.current_term_md_enabled and not loaded.course_markdown_enabled and loaded.ai_enabled and loaded.recording_asr_paused
 
 @pytest.mark.parametrize('suffix',['.pptx','.docx','.xlsx'])
@@ -157,7 +157,7 @@ def test_ooxml_text_and_all_assets_saved_before_cleanup(setup,suffix):
         path=directory/'source.bin'; path.write_bytes(payload); return path,len(payload),hashlib.sha256(payload).hexdigest()
     downloader.side_effect=download
     assert make().run_once()['completed']==1
-    item=job(engine); text=(root/item['md_path']).read_text()
+    item=job(engine); text=(root/item['md_path']).read_text(encoding='utf-8')
     assert item['units']>0 and '未进行 AI' in text and not (root/item['temporary_path']).exists()
     assert all((root/relative).is_file() for relative in item['assets'])
     if suffix=='.pptx': assert '讲解重点' in text and item['assets']
@@ -190,7 +190,7 @@ def test_temporary_downloader_validates_receipt_and_never_updates_original_recor
     service=ArchiveService(engine,canvas,archive_root=root,download_client_factory=lambda:httpx.Client(transport=httpx.MockTransport(handler)))
     directory=root/'isolated'; path,size,digest=service.download_temporary('2',directory,len(payload))
     assert path.read_bytes()==payload and size==len(payload) and digest==hashlib.sha256(payload).hexdigest()
-    assert json.loads((directory/'download.json').read_text())['sha256']==digest
+    assert json.loads((directory/'download.json').read_text(encoding='utf-8'))['sha256']==digest
     with Session(engine) as s: assert s.get(CourseFile,2).local_path is None and s.get(CourseFile,2).download_attempts==0
     canvas.close()
 

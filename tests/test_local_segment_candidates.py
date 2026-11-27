@@ -17,7 +17,7 @@ class LocalCandidateTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.ledger = Path(self.temp.name).resolve() / 'requests.json'
-        self.ledger.write_text(json.dumps({'requests': 46, 'limit': 64, 'results': []}))
+        self.ledger.write_text(json.dumps({'requests': 46, 'limit': 64, 'results': []}), encoding="utf-8")
         self.stored, self.calls = {}, []
         self.data = {'pages': [{'page': 1, 'source_text': '关系模型定义'}, {'page': 2, 'source_text': '约束条件'}], 'topic_ids': []}
         self.good = json.loads(knowledge_response('deepseek-chat', SUMMARY_PROMPT, json.dumps(self.data)))

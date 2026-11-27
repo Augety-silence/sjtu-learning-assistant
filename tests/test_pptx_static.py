@@ -87,7 +87,7 @@ class StaticTests(unittest.TestCase):
                 with self.assertRaises(CompilationDeferred):
                     DocumentCompiler(self.runner, threading.Event(), static_pptx=True).compile(self.source, self.path, self.target)
             manifest_path = next(self.target.rglob('manifest.json'))
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
             self.assertNotEqual('completed', manifest.get('status'))
             previews = [name for name in manifest['outputs'] if name.startswith('static-previews/')]
             self.assertTrue(previews)
@@ -104,7 +104,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(source_before, self.path.read_bytes())
         for name, payload in before.items():
             self.assertEqual(payload, (manifest_path.parent / name).read_bytes())
-        self.assertEqual('completed', json.loads(manifest_path.read_text())['status'])
+        self.assertEqual('completed', json.loads(manifest_path.read_text(encoding='utf-8'))['status'])
 
     def test_rejected_review_not_approved(self):
         def reject(model, prompt, content):

@@ -50,7 +50,7 @@ def _safe_path(path):
 
 
 def _write(path, text, *, immutable=False):
-    """fsync both file and parent; immutable response files are never replaced."""
+    """fsync every file and POSIX parent; immutable responses are never replaced."""
     path = _safe_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if immutable:
@@ -74,11 +74,39 @@ def _write(path, text, *, immutable=False):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-    fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    # The Windows CRT cannot fsync directory handles. File flush/fsync above
+    # stays mandatory; POSIX additionally persists the directory entry.
+    if os.name != 'nt':
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+@contextmanager
+def _ledger_lock(handle):
+    """Hold an OS-owned cross-process lock; never proceed without acquisition."""
+    if os.name == 'nt':
+        import msvcrt
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b'0')
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 RECOVERY_GUIDANCE = '''\nExplicit authorized segmented recovery: read ALL supplied pages or ALL input_summaries.
@@ -195,12 +223,10 @@ class AuthorizedSegmentRecovery:
 
     @contextmanager
     def _ledger(self):
-        import fcntl
         with self._mutex:
             lock = _safe_path(self.ledger_path.with_name(self.ledger_path.name + '.lock'))
             with lock.open('a+b') as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
+                with _ledger_lock(handle):
                     history = json.loads(self.ledger_path.read_text(encoding='utf-8'))
                     if (type(history.get('requests')) is not int or type(history.get('limit')) is not int
                             or not 0 <= history['requests'] <= history['limit']
@@ -210,8 +236,6 @@ class AuthorizedSegmentRecovery:
                     yield history
                     if _wire(history) != before:
                         _write(self.ledger_path, json.dumps(history, ensure_ascii=False, indent=2) + '\n')
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _scope(self, history):
         record = history['authorized_scopes'][self.scope]

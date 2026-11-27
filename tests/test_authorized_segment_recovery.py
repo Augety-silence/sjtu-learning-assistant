@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from office_fixtures import knowledge_response
 from sjtu_learning_assistant.knowledge_compiler import KnowledgeResponseError
@@ -22,7 +24,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.ledger = Path(self.temp.name).resolve() / 'requests.json'
-        self.ledger.write_text(json.dumps({'requests': 40, 'limit': 64, 'results': [{'old': True}]}))
+        self.ledger.write_text(json.dumps({'requests': 40, 'limit': 64, 'results': [{'old': True}]}), encoding="utf-8")
         self.stored = {}
         self.calls = []
 
@@ -50,7 +52,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
     def test_total_reservations_before_timeout_and_all_requests_bounded(self):
         context = self.context(max_calls=1)
         def timeout(*args):
-            self.assertEqual(41, json.loads(self.ledger.read_text())['requests'])
+            self.assertEqual(41, json.loads(self.ledger.read_text(encoding="utf-8"))['requests'])
             raise TimeoutError('fake timeout')
         context.runner = timeout
         compiler = self.compiler(context)
@@ -62,7 +64,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         context2 = self.context(max_calls=1, runner=timeout)
         with self.assertRaises(RecoveryOutcomeUnknown):
             self.invoke(self.compiler(context2), context2)
-        self.assertEqual(41, json.loads(self.ledger.read_text())['requests'])
+        self.assertEqual(41, json.loads(self.ledger.read_text(encoding="utf-8"))['requests'])
 
     def test_shared_ten_total_and_linked_limit_never_reset(self):
         context = self.context(registrations={'source-A': ['part-0'], 'source-B': ['merge-0-0']})
@@ -75,12 +77,12 @@ class AuthorizedRecoveryTests(unittest.TestCase):
                 compiler.request('qwen3.8-27b', '来源审校员', json.dumps({'i': i}))
         with self.assertRaises(RecoveryBudgetExhausted):
             self.invoke(a, context, content='{"i":99}')
-        history = json.loads(self.ledger.read_text())
+        history = json.loads(self.ledger.read_text(encoding="utf-8"))
         self.assertEqual((50, 64, [{'old': True}]), (history['requests'], history['limit'], history['results']))
         self.assertEqual(10, len(self.calls))
 
     def test_linked_existing_limit_checked_before_provider(self):
-        self.ledger.write_text(json.dumps({'requests': 64, 'limit': 64, 'results': []}))
+        self.ledger.write_text(json.dumps({'requests': 64, 'limit': 64, 'results': []}), encoding="utf-8")
         context = self.context()
         with self.assertRaises(RecoveryBudgetExhausted):
             self.invoke(self.compiler(context), context)
@@ -92,7 +94,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         restarted = self.context()
         self.assertEqual(first, self.invoke(self.compiler(restarted), restarted))
         self.assertEqual(1, len(self.calls))
-        self.assertEqual(41, json.loads(self.ledger.read_text())['requests'])
+        self.assertEqual(41, json.loads(self.ledger.read_text(encoding="utf-8"))['requests'])
 
     def test_provider_user_exact_cache_is_consulted_before_reservation(self):
         context = self.context(cache_lookup=lambda *args: '{"approved":true,"issues":[]}')
@@ -110,7 +112,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         self.invoke(self.compiler(opted), opted)
         self.assertEqual(2, opted.status()['requests'])
         self.assertEqual(1, len(self.calls))
-        self.assertEqual(42, json.loads(self.ledger.read_text())['requests'])
+        self.assertEqual(42, json.loads(self.ledger.read_text(encoding="utf-8"))['requests'])
 
     def test_successful_explicit_unknown_retry_does_not_block_later_node_review(self):
         context = self.context(runner=lambda *args: (_ for _ in ()).throw(TimeoutError()))
@@ -122,7 +124,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         self.invoke(compiler, opted, content='{"next_review":true}')
         self.assertEqual(3, opted.status()['requests'])
         self.assertEqual(2, len(self.calls))
-        self.assertEqual(43, json.loads(self.ledger.read_text())['requests'])
+        self.assertEqual(43, json.loads(self.ledger.read_text(encoding="utf-8"))['requests'])
 
     def test_two_generations_per_failed_node_reviews_share_total(self):
         context = self.context()
@@ -140,9 +142,9 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         with self.assertRaises(KnowledgeResponseError) as caught:
             self.invoke(self.compiler(context), context)
         self.assertEqual(body, caught.exception.content)
-        history = json.loads(self.ledger.read_text())
+        history = json.loads(self.ledger.read_text(encoding="utf-8"))
         attempt = history['authorized_scopes']['explicit-operation']['attempts'][0]
-        raw = json.loads(context._response_path(attempt).read_text())
+        raw = json.loads(context._response_path(attempt).read_text(encoding="utf-8"))
         self.assertEqual(body, raw['raw']['content'])
         with self.assertRaises(KnowledgeResponseError):
             self.invoke(self.compiler(context), context)
@@ -161,8 +163,8 @@ class AuthorizedRecoveryTests(unittest.TestCase):
         self.assertEqual(body, self.invoke(self.compiler(context), context))
         self.assertEqual(body, self.invoke(self.compiler(context), context))
         self.assertEqual(1, len(self.calls))
-        attempt = json.loads(self.ledger.read_text())['authorized_scopes']['explicit-operation']['attempts'][0]
-        self.assertEqual(payload, json.loads(context._response_path(attempt).read_text())['raw']['provider_response'])
+        attempt = json.loads(self.ledger.read_text(encoding="utf-8"))['authorized_scopes']['explicit-operation']['attempts'][0]
+        self.assertEqual(payload, json.loads(context._response_path(attempt).read_text(encoding="utf-8"))['raw']['provider_response'])
 
     def test_actual_review_rejection_cannot_be_replaced_by_metadata_or_old_approval(self):
         context = self.context()
@@ -189,12 +191,12 @@ class AuthorizedRecoveryTests(unittest.TestCase):
     def test_immutable_saved_response_tamper_is_not_replaced(self):
         context = self.context()
         self.invoke(self.compiler(context), context)
-        attempt = json.loads(self.ledger.read_text())['authorized_scopes']['explicit-operation']['attempts'][0]
+        attempt = json.loads(self.ledger.read_text(encoding="utf-8"))['authorized_scopes']['explicit-operation']['attempts'][0]
         response_path = context._response_path(attempt)
-        response_path.write_text('manual edit')
+        response_path.write_text('manual edit', encoding="utf-8")
         with self.assertRaises(RecoveryBlocked):
             self.invoke(self.compiler(context), context)
-        self.assertEqual('manual edit', response_path.read_text())
+        self.assertEqual('manual edit', response_path.read_text(encoding="utf-8"))
         self.assertEqual(1, len(self.calls))
 
     def test_scope_source_node_binding_not_prompt_date_error_identity(self):
@@ -300,7 +302,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
 
     def test_protected_commit_preserves_manual_markdown(self):
         note = Path(self.temp.name) / 'manual.md'
-        note.write_text('manual edits')
+        note.write_text('manual edits', encoding="utf-8")
         context = self.context(offline=True)
         def commit(values):
             if any(name.endswith('part-0-hash.json') for name in values):
@@ -311,7 +313,7 @@ class AuthorizedRecoveryTests(unittest.TestCase):
             context.recover(compiler, 'part-0-hash.json', SUMMARY_PROMPT,
                 {'pages': [{'page': 1}, {'page': 2}]}, lambda v: validate_summary(v, [1, 2]),
                 self.draft(), compiler.prefix + 'part-0-hash.json')
-        self.assertEqual('manual edits', note.read_text())
+        self.assertEqual('manual edits', note.read_text(encoding="utf-8"))
         self.assertEqual([], self.calls)
 
     def test_only_failed_part_repaired_approved_sibling_reused_old_counters_retained(self):
@@ -358,3 +360,100 @@ class AuthorizedRecoveryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecoveryPlatformTests(unittest.TestCase):
+    def test_windows_ledger_uses_real_byte_lock_protocol_and_unlocks_on_error(self):
+        from sjtu_learning_assistant import segment_recovery as recovery
+        fake_os = SimpleNamespace()
+        fake_os.__dict__.update(vars(recovery.os))
+        fake_os.name = 'nt'
+        positions, modes = list(), list()
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / 'ledger.lock'
+            with lock.open('a+b') as handle:
+                def locking(fd, mode, size):
+                    positions.append(handle.tell())
+                    modes.append((mode, size))
+                api = SimpleNamespace(LK_LOCK=1, LK_UNLCK=2, locking=locking)
+                with patch.object(recovery, 'os', fake_os), patch.dict('sys.modules', dict(msvcrt=api)):
+                    with self.assertRaisesRegex(ValueError, 'synthetic body failure'):
+                        with recovery._ledger_lock(handle):
+                            raise ValueError('synthetic body failure')
+                self.assertEqual(b'0', lock.read_bytes())
+        self.assertEqual((0, 0), tuple(positions))
+        self.assertEqual(((1, 1), (2, 1)), tuple(modes))
+
+    def test_windows_lock_acquisition_failure_never_enters_ledger(self):
+        from sjtu_learning_assistant import segment_recovery as recovery
+        fake_os = SimpleNamespace()
+        fake_os.__dict__.update(vars(recovery.os))
+        fake_os.name = 'nt'
+        entered = list()
+        api = SimpleNamespace(LK_LOCK=1, LK_UNLCK=2, locking=Mock(side_effect=PermissionError('synthetic locked range')))
+        with tempfile.TemporaryDirectory() as directory, (Path(directory) / 'ledger.lock').open('a+b') as handle:
+            with patch.object(recovery, 'os', fake_os), patch.dict('sys.modules', dict(msvcrt=api)), self.assertRaises(PermissionError):
+                with recovery._ledger_lock(handle):
+                    entered.append(True)
+        self.assertEqual(list(), entered)
+        api.locking.assert_called_once()
+
+    def test_windows_writes_keep_file_fsync_and_immutable_utf8_without_directory_open(self):
+        from sjtu_learning_assistant import segment_recovery as recovery
+        actual_os = recovery.os
+        fake_os = SimpleNamespace()
+        fake_os.__dict__.update(vars(actual_os))
+        fake_os.name = 'nt'
+        def open_file(path, flags, *args, **kwargs):
+            if Path(path).is_dir():
+                raise AssertionError('Windows CRT directory open forbidden')
+            return actual_os.open(path, flags, *args, **kwargs)
+        fake_os.open = open_file
+        fake_os.fsync = Mock(wraps=actual_os.fsync)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / 'response.json'
+            with patch.object(recovery, 'os', fake_os):
+                recovery._write(path, '中文 paid response', immutable=True)
+                before = path.read_bytes()
+                recovery._write(path, '中文 paid response', immutable=True)
+                with self.assertRaises(RecoveryBlocked):
+                    recovery._write(path, 'different paid response', immutable=True)
+                self.assertEqual(before, path.read_bytes())
+                recovery._write(Path(directory).resolve() / 'ledger.json', '中文 ledger')
+            self.assertEqual('中文 paid response', before.decode('utf-8'))
+            self.assertEqual(2, fake_os.fsync.call_count)
+
+    def test_ledger_lock_excludes_another_process_until_owner_releases(self):
+        import subprocess
+        import sys
+        import time
+        from sjtu_learning_assistant.segment_recovery import _ledger_lock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock, ready, entered = root / 'ledger.lock', root / 'ready', root / 'entered'
+            script = (
+                'from pathlib import Path; import sys; '
+                'from sjtu_learning_assistant.segment_recovery import _ledger_lock; '
+                'lock,ready,entered=map(Path,sys.argv[1:]); '
+                'ready.write_text("ready",encoding="utf-8"); '
+                'handle=lock.open("a+b"); context=_ledger_lock(handle); context.__enter__(); '
+                'entered.write_text("entered",encoding="utf-8"); context.__exit__(None,None,None); handle.close()'
+            )
+            process = None
+            try:
+                with lock.open('a+b') as handle, _ledger_lock(handle):
+                    process = subprocess.Popen((sys.executable, '-B', '-c', script, str(lock), str(ready), str(entered)),
+                        cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    deadline = time.monotonic() + 5
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    time.sleep(0.1)
+                    self.assertFalse(entered.exists())
+                process.communicate(timeout=5)
+                self.assertEqual(0, process.returncode)
+                self.assertEqual('entered', entered.read_text(encoding='utf-8'))
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)

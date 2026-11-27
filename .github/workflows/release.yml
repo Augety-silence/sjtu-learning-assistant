@@ -111,8 +111,48 @@ jobs:
       - name: Redacted history secrets gate
         run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 detect --source=/repo --redact --no-banner
 
-  windows-release:
+  windows-preflight:
+    # Fast, packaging-free Windows signal so encoding, locking or read-only
+    # fixture regressions fail in minutes instead of after a full build.
     needs: initialize
+    if: needs.initialize.outputs.eligible == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Preserve exact recipe bytes across Windows and Mac checkouts
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.initialize.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-windows.txt
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-windows.txt
+      - name: Full Windows tests without packaging
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pytest -vv -o faulthandler_timeout=120 tests
+
+  windows-release:
+    needs: [initialize, windows-preflight]
     if: needs.initialize.outputs.eligible == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
