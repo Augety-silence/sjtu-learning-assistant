@@ -205,12 +205,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           if (-not (Test-Path -LiteralPath $env:SJTU_MSYS2_BASH)) { throw "setup-msys2 Bash not found" }
           ./scripts/build_windows_app.ps1
-      - name: Full Windows tests (no subset or silent timeout skips)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          & .venv/Scripts/python.exe -m pytest -vv -o faulthandler_timeout=120 tests
+      # The identical full suite already ran on this same immutable commit in
+      # windows-preflight; do not duplicate a ~10 minute run after packaging.
       - name: Execute native evidence gates and produce all checksum sidecars
         shell: pwsh
         run: |

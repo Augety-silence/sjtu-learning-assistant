@@ -656,11 +656,31 @@ class DraftLifecycleTests(unittest.TestCase):
         gh.assert_not_called()
 
     def test_initialize_absent_creates_only_draft(self):
-        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "assert_draft"), patch.object(assets, "gh") as gh:
+        created = json.dumps({"id": 7, "tag_name": "v1.8.21", "draft": True})
+        with patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "gh", return_value=created) as gh:
             self.assertTrue(assets.initialize("owner/repo", "v1.8.21", "a" * 40))
-        self.assertIn("--draft", gh.call_args.args)
-        self.assertIn("--verify-tag", gh.call_args.args)
-        self.assertNotIn("--latest", gh.call_args.args)
+        self.assertEqual(1, gh.call_count)
+        args = gh.call_args.args
+        self.assertEqual(("api", "--method", "POST", "repos/owner/repo/releases"), args[1:5])
+        self.assertIn("tag_name=v1.8.21", args)
+        self.assertIn("name=SJTU Learning Assistant v1.8.21", args)
+        self.assertIn("draft=true", args)
+        self.assertNotIn("--latest", args)
+
+    def test_initialize_rejects_non_draft_or_malformed_create_response(self):
+        for payload in ({"id": 7, "tag_name": "v1.8.21", "draft": False},
+                        {"id": 0, "tag_name": "v1.8.21", "draft": True},
+                        {"id": 7, "tag_name": "v1.8.99", "draft": True}):
+            with self.subTest(payload=payload), patch.object(prepare, "validate_identity"), patch.object(assets, "remote_commit", return_value="a" * 40), patch.object(assets, "release_metadata", return_value=None), patch.object(assets, "gh", return_value=json.dumps(payload)), self.assertRaisesRegex(ValueError, "Draft creation response"):
+                assets.initialize("owner/repo", "v1.8.21", "a" * 40)
+
+    def test_gh_decodes_utf8_stdout_and_stderr_under_non_utf8_locale(self):
+        completed = subprocess.CompletedProcess([], 0, "已".encode("utf-8"), b"")
+        with patch.object(assets.subprocess, "run", return_value=completed):
+            self.assertEqual("已", assets.gh("owner/repo", "api", "repos/owner/repo/releases"))
+        failed = subprocess.CompletedProcess([], 1, b"", "错误".encode("utf-8"))
+        with patch.object(assets.subprocess, "run", return_value=failed), self.assertRaisesRegex(ValueError, "错误"):
+            assets.gh("owner/repo", "api", "repos/owner/repo/releases")
 
     def test_remote_moved_tag_blocks_mutation(self):
         with patch.object(assets, "remote_commit", return_value="b" * 40), patch.object(assets, "release_metadata") as metadata, self.assertRaisesRegex(ValueError, "Remote tag changed"):
@@ -918,9 +938,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("msystem: MINGW64", text)
         self.assertIn("mingw-w64-x86_64-gcc make", text)
         self.assertIn("SJTU_MSYS2_BASH", text)
+        preflight = text.split("  windows-preflight:\n", 1)[1].split("  windows-release:\n", 1)[0]
+        self.assertIn("python -m pytest", preflight)
+        self.assertIn("requirements-windows.txt", preflight)
         windows = text.split("  windows-release:\n", 1)[1].split("  macos-release:\n", 1)[0]
+        self.assertIn("needs: [initialize, windows-preflight]", windows)
         self.assertNotIn("needs: macos-release", windows)
-        self.assertIn("python.exe -m pytest", windows)
+        # The full suite runs once on this same immutable commit, before packaging.
+        self.assertNotIn("-m pytest", windows)
         self.assertNotIn("needs.initialize.outputs.use_local_macos == 'false'", text)
         self.assertIn("always() &&", text)
         self.assertIn("needs.windows-release.result == 'success'", text)

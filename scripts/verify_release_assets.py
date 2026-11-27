@@ -268,11 +268,16 @@ def verify_directory(directory, tag, commit, metadata, provenance):
 
 
 def gh(repo, *args, missing_ok=False):
-    result = subprocess.run(["gh", *args, "--repo", repo] if args[0] == "release" else ["gh", *args], capture_output=True, text=True, timeout=60 if args[0] == "api" else 600)
-    if missing_ok and result.returncode and re.search(r"\bHTTP 404\b", result.stderr):
+    # gh always emits UTF-8. Capturing bytes and decoding explicitly avoids the
+    # Windows locale (cp1252) charmap crash on non-ASCII release titles/bodies.
+    command = ["gh", *args, "--repo", repo] if args[0] == "release" else ["gh", *args]
+    result = subprocess.run(command, capture_output=True, timeout=60 if args[0] == "api" else 600)
+    stdout = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode("utf-8")
+    stderr = result.stderr if isinstance(result.stderr, str) else (result.stderr or b"").decode("utf-8", "replace")
+    if missing_ok and result.returncode and re.search(r"\bHTTP 404\b", stderr):
         return None
-    require(result.returncode == 0, "GitHub command failed (no promotion): " + result.stderr[-500:])
-    return result.stdout
+    require(result.returncode == 0, "GitHub command failed (no promotion): " + stderr[-500:])
+    return stdout
 
 
 def release_metadata(repo, tag, missing_ok=False):
@@ -330,7 +335,20 @@ def initialize(repo, tag, commit):
         print("Published release already exists; left untouched")
         return False
     if metadata is None:
-        gh(repo, "release", "create", tag, "--verify-tag", "--target", commit, "--draft", "--generate-notes", "--title", "SJTU Learning Assistant " + tag)
+        # The REST response is authoritative; re-listing immediately after a
+        # create can miss the draft (eventual consistency) and previously caused
+        # a false failure plus duplicate drafts with the same tag.
+        created = json.loads(gh(
+            repo, "api", "--method", "POST", f"repos/{repo}/releases",
+            "-f", "tag_name=" + tag,
+            "-f", "name=SJTU Learning Assistant " + tag,
+            "-F", "draft=true", "-F", "generate_release_notes=true",
+        ))
+        require(isinstance(created, dict) and created.get("tag_name") == tag
+                and created.get("draft") is True
+                and type(created.get("id")) is int and created["id"] > 0,
+                "Draft creation response mismatch")
+        return True
     assert_draft(repo, tag, commit)
     return True
 
