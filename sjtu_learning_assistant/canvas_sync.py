@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from sjtu_learning_assistant.sync_diagnostics import diagnostic_stage
 from sjtu_learning_assistant.credential_store import (
     CANVAS_ACCOUNT as KEYCHAIN_ACCOUNT,
     CANVAS_SERVICE as KEYCHAIN_SERVICE,
@@ -133,19 +134,23 @@ def get_saved_token() -> str | None:
         return stored
 
 
-def get_token(use_keychain: bool) -> tuple[str, bool]:
+def get_token(use_keychain: bool, *, interactive: bool = True) -> tuple[str, bool]:
     """Return ``(token, came_from_keychain)``."""
     if use_keychain:
         try:
             stored = get_saved_token()
         except CanvasCheckError as exc:
+            if not interactive:
+                raise CanvasCheckError(
+                    "无法读取系统凭据库中的 Canvas Access Token，请在设置中重新保存后重试。"
+                ) from exc
             print(f"提示：暂时无法读取 {credential_storage_name()}，将改为安全输入（{exc}）。")
         else:
             if stored:
                 print(f"已从 {credential_storage_name()} 读取 Canvas Access Token。")
                 return stored, True
 
-    if sys.stdin is None:
+    if not interactive or sys.stdin is None:
         raise CanvasCheckError("尚未保存 Canvas Access Token，请在设置中配置后重试。")
     try:
         token = getpass.getpass("请输入 Canvas Access Token（输入内容不会显示）：").strip()
@@ -228,7 +233,8 @@ def request_json(
 ) -> tuple[list[dict[str, Any]], str | None]:
     ensure_same_origin(client, url)
     try:
-        response = client.get(url, params=params)
+        with diagnostic_stage("canvas", "http_request"):
+            response = client.get(url, params=params)
     except httpx.TimeoutException as exc:
         raise CanvasCheckError("Canvas API 请求超时，请检查网络后重试。") from exc
     except httpx.NetworkError as exc:
@@ -294,7 +300,8 @@ def fetch_paginated_with_etag(
     ensure_same_origin(client, url)
     headers = {"If-None-Match": etag} if etag else None
     try:
-        response = client.get(url, params=params, headers=headers)
+        with diagnostic_stage("canvas", "http_request"):
+            response = client.get(url, params=params, headers=headers)
     except httpx.TimeoutException as exc:
         raise CanvasCheckError("Canvas API 请求超时，请检查网络后重试。") from exc
     except httpx.NetworkError as exc:
@@ -535,16 +542,17 @@ def build_http_client(base_url: str, token: str, timeout: float) -> httpx.Client
         raise CanvasCheckError(
             "Canvas Access Token 含有无效字符，请在 Canvas 重新复制后再保存。"
         )
-    return httpx.Client(
-        base_url=base_url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "SJTU-Learning-Assistant/Phase-1C",
-        },
-        timeout=httpx.Timeout(timeout),
-        follow_redirects=False,
-    )
+    with diagnostic_stage("canvas", "http_client"):
+        return httpx.Client(
+            base_url=base_url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": "SJTU-Learning-Assistant/Phase-1C",
+            },
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=False,
+        )
 
 
 def connect_and_fetch(base_url: str, token: str, timeout: float) -> list[CourseSummary]:

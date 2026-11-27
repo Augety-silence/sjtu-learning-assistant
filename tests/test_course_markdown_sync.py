@@ -329,7 +329,7 @@ class CourseMarkdownSyncTests(unittest.TestCase):
         dashboard.download_material("1")
         automatic.notify.assert_called_once_with(settings_changed=False)
         dashboard._sync_lock.acquire()
-        dashboard._release_sync_when_done(SimpleNamespace(wait=lambda: 0))
+        dashboard._release_sync_when_done(SimpleNamespace(wait=lambda **kwargs: 0))
         self.assertEqual(2, automatic.notify.call_count)
         dashboard.knowledge_compiler_start = Mock(return_value={"accepted": True})
         bridge = DesktopBridge(dashboard)

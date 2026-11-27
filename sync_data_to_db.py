@@ -161,7 +161,8 @@ def sync_canvas(
 ) -> dict:
     token = saved_token
     if token is None:
-        token, _ = get_token(use_keychain=True)
+        with diagnostic_stage("canvas", "credentials"):
+            token, _ = get_token(use_keychain=True, interactive=False)
     print("正在增量读取 Canvas 课程、公告、作业、文件与模块 …")
     with build_http_client(
         DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
@@ -173,9 +174,11 @@ def sync_canvas(
             raw_courses = selected_courses
         elif historical:
             from sjtu_learning_assistant.course_scope import select_scope
-            raw_courses = select_scope(fetch_all_courses(client), term_id, course_ids)
+            with diagnostic_stage("canvas", "courses"):
+                raw_courses = select_scope(fetch_all_courses(client), term_id, course_ids)
         else:
-            raw_courses = fetch_active_courses(client)
+            with diagnostic_stage("canvas", "courses"):
+                raw_courses = fetch_active_courses(client)
         issues = []
         announcements_by_course = {}
         assignments_by_course = {}
@@ -191,11 +194,13 @@ def sync_canvas(
         unchanged_files = 0
 
         for index, course in enumerate(raw_courses):
+            record_event("canvas", "course_resources", "started", selected=index, fetched=len(raw_courses))
             source_id = str(course["id"])
             if progress:
                 progress(index, len(raw_courses), "同步课程资料")
             if course.get("access_restricted_by_date") is True:
                 issues.append({"course_id": source_id, "resource": "course", "http": 403})
+                record_event("canvas", "course_resources", "skipped", selected=index + 1, fetched=len(raw_courses))
                 continue
             announcement_resource = f"course:{source_id}:announcements"
             assignment_resource = f"course:{source_id}:assignments"
@@ -209,11 +214,12 @@ def sync_canvas(
             # 单门课程的公告/作业栏目被隐藏或不可访问（403/404）时只跳过该资源，
             # 不推进游标；401/429/网络错误仍中止整轮同步。
             try:
-                announcement_result = fetch_course_announcements_incremental(
-                    client,
-                    source_id,
-                    etag=announcement_state.cursor if announcement_state else None,
-                )
+                with diagnostic_stage("canvas", "announcements"):
+                    announcement_result = fetch_course_announcements_incremental(
+                        client,
+                        source_id,
+                        etag=announcement_state.cursor if announcement_state else None,
+                    )
             except CanvasCheckError as exc:
                 if exc.status_code not in (403, 404):
                     raise
@@ -224,11 +230,12 @@ def sync_canvas(
                     file=sys.stderr,
                 )
             try:
-                assignment_result = fetch_course_assignments_incremental(
-                    client,
-                    source_id,
-                    etag=assignment_state.cursor if assignment_state else None,
-                )
+                with diagnostic_stage("canvas", "assignments"):
+                    assignment_result = fetch_course_assignments_incremental(
+                        client,
+                        source_id,
+                        etag=assignment_state.cursor if assignment_state else None,
+                    )
             except CanvasCheckError as exc:
                 if exc.status_code not in (403, 404):
                     raise
@@ -240,12 +247,14 @@ def sync_canvas(
                 )
             # 隐藏栏目（403/404）仅跳过资源；认证、限流或网络故障必须中止。
             try:
-                file_result = fetch_course_files_incremental(
-                    client,
-                    source_id,
-                    etag=file_state.cursor if file_state else None,
-                )
-                folders = fetch_course_folders(client, source_id)
+                with diagnostic_stage("canvas", "files"):
+                    file_result = fetch_course_files_incremental(
+                        client,
+                        source_id,
+                        etag=file_state.cursor if file_state else None,
+                    )
+                with diagnostic_stage("canvas", "folders"):
+                    folders = fetch_course_folders(client, source_id)
             except CanvasCheckError as exc:
                 if exc.status_code not in (403, 404):
                     raise
@@ -256,15 +265,17 @@ def sync_canvas(
                     file=sys.stderr,
                 )
             try:
-                modules = fetch_course_modules(client, source_id)
-                module_items = []
-                for module in modules:
-                    module_id = module.get("id")
-                    if module_id is None:
-                        continue
-                    module_items.extend(
-                        fetch_course_module_items(client, source_id, module_id)
-                    )
+                with diagnostic_stage("canvas", "modules"):
+                    modules = fetch_course_modules(client, source_id)
+                    module_items = []
+                    for module in modules:
+                        module_id = module.get("id")
+                        if module_id is None:
+                            continue
+                        with diagnostic_stage("canvas", "module_items"):
+                            module_items.extend(
+                                fetch_course_module_items(client, source_id, module_id)
+                            )
             except CanvasCheckError as exc:
                 if exc.status_code not in (403, 404):
                     raise
@@ -303,23 +314,25 @@ def sync_canvas(
                 unchanged_files += 1
             else:
                 files_by_course[source_id] = file_result.records
+            record_event("canvas", "course_resources", "succeeded", selected=index + 1, fetched=len(raw_courses))
 
     if progress:
         progress(len(raw_courses), len(raw_courses), "保存课程资料")
-    result = persist_canvas_data(
-        engine,
-        raw_courses=raw_courses,
-        announcements_by_course=announcements_by_course,
-        assignments_by_course=assignments_by_course,
-        folders_by_course=folders_by_course,
-        files_by_course=files_by_course,
-        modules_by_course=modules_by_course,
-        module_items_by_course=module_items_by_course,
-        announcement_cursors=announcement_cursors,
-        assignment_cursors=assignment_cursors,
-        file_cursors=file_cursors,
-        default_scope=not historical,
-    )
+    with diagnostic_stage("canvas", "persist"):
+        result = persist_canvas_data(
+            engine,
+            raw_courses=raw_courses,
+            announcements_by_course=announcements_by_course,
+            assignments_by_course=assignments_by_course,
+            folders_by_course=folders_by_course,
+            files_by_course=files_by_course,
+            modules_by_course=modules_by_course,
+            module_items_by_course=module_items_by_course,
+            announcement_cursors=announcement_cursors,
+            assignment_cursors=assignment_cursors,
+            file_cursors=file_cursors,
+            default_scope=not historical,
+        )
     print(
         "Canvas 同步成功："
         f"课程 {result.courses.fetched}（新增 {result.courses.inserted} / "
@@ -337,7 +350,7 @@ def sync_canvas(
     if download:
         if progress:
             progress(len(raw_courses), len(raw_courses), "下载课程资料")
-        with build_http_client(
+        with diagnostic_stage("canvas", "download"), build_http_client(
             DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS
         ) as archive_client:
             archive_result = ArchiveService(
@@ -386,7 +399,7 @@ def sync_canvas(
     history_result = {"courses": 0, "files": 0, "issues": []}
     if not historical:
         from sjtu_learning_assistant.course_material_sync import sync_historical_materials
-        with build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS) as history_client:
+        with diagnostic_stage("canvas", "historical_materials"), build_http_client(DEFAULT_BASE_URL, token, DEFAULT_TIMEOUT_SECONDS) as history_client:
             history_result = sync_historical_materials(
                 engine, history_client, {str(course["id"]) for course in raw_courses},
                 progress=progress,

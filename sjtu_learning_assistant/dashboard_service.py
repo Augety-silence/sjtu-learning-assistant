@@ -156,7 +156,12 @@ from sjtu_learning_assistant.models import (
     SyncState,
     UnifiedItem,
 )
-from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT
+from sjtu_learning_assistant.repository import MAIL_ATTACHMENTS_ROOT, record_sync_failure
+from sjtu_learning_assistant.sync_process import (
+    DEFAULT_SYNC_TIMEOUT_SECONDS,
+    SYNC_STOP_GRACE_SECONDS,
+    stop_sync_process,
+)
 from sjtu_learning_assistant.text_content import (
     extract_html_resource_ids,
     html_to_plain_text,
@@ -4659,18 +4664,45 @@ class DashboardService:
         }
 
     def _release_sync_when_done(self, process: Any) -> None:
+        reaped = False
         try:
             waiter = getattr(process, "wait", None)
             if waiter is not None:
-                exit_code = waiter()
-                # SyncRun rows are only written on success; remember in-app failures.
-                if isinstance(exit_code, int) and exit_code != 0:
+                timed_out = False
+                try:
+                    exit_code = waiter(timeout=DEFAULT_SYNC_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    self._last_sync_failed_at = self.now()
+                    with diagnostic_run(), diagnostic_stage("sync", "watchdog"):
+                        record_event("sync", "watchdog", "timed_out", duration_ms=DEFAULT_SYNC_TIMEOUT_SECONDS * 1000)
+                        stop_sync_process(process)
+                        try:
+                            exit_code = waiter(timeout=SYNC_STOP_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            stop_sync_process(process, force=True)
+                            exit_code = waiter(timeout=SYNC_STOP_GRACE_SECONDS)
+                        record_sync_failure(
+                            self.engine, source="sync", resource="run",
+                            error="同步超过 15 分钟，已停止本轮任务，请检查连接后重试。",
+                        )
+                reaped = True
+                # 记住进程失败，避免未落库的异常退出沿用旧成功状态。
+                if timed_out or (isinstance(exit_code, int) and exit_code != 0):
                     self._last_sync_failed_at = self.now()
                 elif exit_code == 0:
                     self._last_sync_failed_at = None
-                self._notify_course_markdown_sync()
+                if not timed_out:
+                    self._notify_course_markdown_sync()
+            else:
+                reaped = True
+        except Exception:
+            self._last_sync_failed_at = self.now()
+            # 回收失败时保留互斥，不能允许另一个任务与存活的旧进程同时写库。
+            reaped = reaped or process.poll() is not None
         finally:
-            self._sync_lock.release()
+            if reaped:
+                self._sync_lock.release()
 
     def trigger_sync(self) -> dict[str, str]:
         if not self._sync_lock.acquire(blocking=False):
@@ -4680,6 +4712,7 @@ class DashboardService:
                 process = self.process_launcher(
                     self._fallback_sync_command(),
                     cwd=str(PROJECT_ROOT),
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     close_fds=True,

@@ -92,7 +92,7 @@ class SyncReentryTests(unittest.TestCase):
         release = threading.Event()
 
         class Process:
-            def wait(self):
+            def wait(self, timeout=None):
                 release.wait(1)
 
         service = DashboardService(

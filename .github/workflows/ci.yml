@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: 仅生成 Windows 安装包，跳过 macOS 构建
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -102,6 +108,7 @@ jobs:
         run: python3 scripts/scan_secrets.py
 
   macos-app:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows_only
     runs-on: macos-15
     needs: [python-tests, frontend, licenses, secret-scan]
     steps:
@@ -132,7 +139,7 @@ jobs:
 
   windows-app:
     runs-on: windows-latest
-    needs: [python-tests, frontend, licenses, secret-scan]
+    needs: [python-tests, windows-pytest, frontend, licenses, secret-scan]
     steps:
       - name: Preserve source and recipe bytes
         shell: pwsh
@@ -166,6 +173,21 @@ jobs:
       - name: 构建 Windows portable 与安装器
         shell: pwsh
         run: scripts/build_windows_app.ps1
+      - name: 验证实际 EXE 的界面与桌面桥接启动
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & .venv/Scripts/python.exe -c @'
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('scripts').resolve()))
+          from prepare_release_evidence import frontend_startup_gate
+          bundle = Path('dist/SJTU Learning Assistant').resolve()
+          check, report = frontend_startup_gate(bundle / 'SJTU Learning Assistant.exe', bundle, 'windows')
+          print(json.dumps(dict(check=check, startup=report), ensure_ascii=False))
+          '@
       - uses: actions/upload-artifact@v4
         with:
           name: SJTU-Learning-Assistant-Windows-x64
