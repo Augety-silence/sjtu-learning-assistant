@@ -192,8 +192,9 @@ def frontend_startup_gate(app_exe, bundle, platform_name):
             result = subprocess.run((str(app_exe), "--startup-self-test", str(report)), cwd=private,
                 env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
         except subprocess.TimeoutExpired as exc:
-            raise ValueError("Native frontend startup timed out") from exc
-        require(result.returncode == 0, "Native frontend startup failed")
+            raise ValueError("Native frontend startup timed out" + startup_failure_details(report, exc.stdout, exc.stderr)) from exc
+        if result.returncode != 0:
+            raise ValueError("Native frontend startup failed" + startup_failure_details(report, result.stdout, result.stderr))
         require(report.is_file() and not report.is_symlink() and 0 < report.stat().st_size <= 8192, "Missing bounded native startup report")
         raw = report.read_bytes()
         value = json.loads(raw.decode("utf-8"))
@@ -205,6 +206,27 @@ def frontend_startup_gate(app_exe, bundle, platform_name):
         require(all(digest(p) == frontend_hash for p in indices), "Packaged frontend changed during startup gate")
         value["report_sha256"] = hashlib.sha256(raw).hexdigest()
         return dict(check="frontend_startup", tool=app_exe.name, returncode=0), value
+
+
+def startup_failure_details(report, stdout, stderr):
+    """Keep bounded, redacted diagnostics outside release evidence."""
+    details = []
+    if report.is_file() and not report.is_symlink() and report.stat().st_size <= 8192:
+        try:
+            value = json.loads(report.read_text(encoding="utf-8"))
+            reason = value.get("reason", "")
+            if reason in ("ok", "not_ready", "timeout", "renderer_unavailable", "native_startup_failed",
+                          "navigation_failed", "network_guard_failed", "closed_before_ready",
+                          "frontend_changed", "frontend_resources_invalid"):
+                details.append("report reason: " + reason)
+        except (OSError, ValueError, AttributeError):
+            pass
+    for name, output in (("stdout", stdout), ("stderr", stderr)):
+        if output:
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            details.append(name + ": " + failure_diagnostic(output))
+    return "\n" + "\n".join(details) if details else ""
 
 
 def tree_digest(bundle):

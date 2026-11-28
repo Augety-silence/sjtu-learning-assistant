@@ -203,7 +203,7 @@ def test_frozen_search_self_test_still_rejects_failed_evidence():
     from pathlib import Path
     import sjtu_learning_assistant.search_self_test as self_test
     namespace={'__name__':'frozen_search_check'}
-    exec(compile(Path(self_test.__file__).read_text(),self_test.__file__,'exec',optimize=1),namespace)
+    exec(compile(Path(self_test.__file__).read_text(encoding='utf-8'),self_test.__file__,'exec',optimize=1),namespace)
     with pytest.raises(RuntimeError,match='未取得证据'):
         namespace['require'](False,'未取得证据')
 

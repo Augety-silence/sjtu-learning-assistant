@@ -140,3 +140,24 @@ class MaterialTreeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OfficeMarkdownPreviewTests(unittest.TestCase):
+    def test_downloaded_office_uses_existing_markdown_preview(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from sjtu_learning_assistant.dashboard_service import DashboardService
+        with tempfile.TemporaryDirectory() as directory:
+            markdown = Path(directory) / 'lecture.md'
+            markdown.write_text('# 可读课件\n\n课程正文', encoding='utf-8')
+            for extension in ('pptx', 'docx', 'xlsx'):
+                with self.subTest(extension=extension):
+                    service = DashboardService.__new__(DashboardService)
+                    service._material_record = lambda _: SimpleNamespace(display_name='lecture.'+extension, filename='lecture.'+extension, content_type=None)
+                    service._temporary_markdown_path = lambda _: markdown
+                    service._resolve_local_file = Mock(return_value=Path(directory) / ('lecture.'+extension))
+                    result = service.material_preview('fixture')
+                    self.assertEqual(result['kind'], 'text')
+                    self.assertEqual(result['text'], markdown.read_text(encoding='utf-8'))
+                    self.assertTrue(result['name'].endswith(' · MD'))
+                    service._resolve_local_file.assert_not_called()

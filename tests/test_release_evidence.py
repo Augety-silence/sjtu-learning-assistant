@@ -283,6 +283,16 @@ class NativeFrontendGateTests(unittest.TestCase):
             prepare.frontend_startup_gate(Path("unused.exe"), Path("unused"), "windows")
         run.assert_not_called()
 
+    def test_startup_failure_diagnostics_accept_timeout_bytes_and_redact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text(json.dumps(dict(reason="timeout", private_data="synthetic-private")), encoding="utf-8")
+            message = prepare.startup_failure_details(report, b"stage: native GUI", b"api_key=synthetic-key\n")
+            self.assertIn("report reason: timeout", message)
+            self.assertIn("stage: native GUI", message)
+            self.assertNotIn("synthetic-private", message)
+            self.assertNotIn("synthetic-key", message)
+
 
 class ReleaseAssetTests(unittest.TestCase):
     def test_windows_prepare_writes_native_evidence_and_checksum_sidecars(self):
