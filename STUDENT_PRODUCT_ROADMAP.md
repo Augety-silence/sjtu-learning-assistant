@@ -1,5 +1,7 @@
 # SJTU Learning Assistant 学生端产品发展路线
 
+> 最新接续（2026-11-28，2.0.2 在线搜索质量）：本地已安装，在线追问仅继承用户原文，清除邮件／课程／页面／附件上下文，并在缓存和执行边界核对权限；Bing完整短语过滤、同源空结果停止、1200 token短回复和MCP真实计数落地。安装后的DeepSeek真实验收 11.89秒、2次模型请求、一次搜索，无本地工具、旧邮件标记或自动续写。76项前端资源及二进制一致，70,006个学习文件零变化、Apple日历只读通过。Bing本轮仍无有效人物匹配，未更换模型；下一步提高搜索源覆盖和可信原文读取，Windows真机验收单独进行。保留原设计修改，本轮仅本地提交和部署，不移动v2.0.0或新增GitHub发行。详见 docs/releases/v2.0.2-search-quality.md。
+
 > 最新接续（2026-11-28，2.0.0 已正式发行）：本机安装、确认卡片和概览 Apple 日程读取均已验收，AI开关恢复、学习文件核对零变化。源提交 `9d6a10afd99c3caf0befa7005ac82b9c802f655d` 已创建不可变 `v2.0.0` 标签；[双平台CI](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46129656101)与[正式发行流程](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46131243488)全部成功，三个安装包已在[GitHub Release](https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v2.0.0)公开。Windows 目前为本机个人日程与手动ICS导出，Outlook双向同步待Microsoft Graph委托授权接入。后续继续真实Windows账户体验验收及Graph增量、删除与冲突同步；本轮不移动标签、不合并旧主分支。
 
 > 最新接续（2026-11-28，本机 2.0.0 最终反馈）：确认卡片与概览 Apple 日程修复已安装；75个前端资源及二进制与本机构建一致，69,941个学习文件核对零变化，AI开关已恢复。临时签名更新后通过系统原生授权取得完整访问；App自身只读读取当天2项Apple日程，晚间1项18:00–18:30，未创建或修改事件。Windows原生启动清理发现WebView2短暂文件占用，父级临时目录仅针对共享锁进行30秒内等待；长期锁及其他权限错误继续失败，不关闭其他浏览器。当前继续在原工作分支完成双平台CI与正式Release，发布结果以GitHub为准。

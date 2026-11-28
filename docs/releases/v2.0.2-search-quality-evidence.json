@@ -1,0 +1,84 @@
+{
+  "version": "2.0.2",
+  "deployment": "macOS local",
+  "source_parent": "ec5e553d4ee0198006a99663d65b909931dfd83e",
+  "final_source_sha256": {
+    "AGENT.md": "055bcdc73318d5b2b151ae947ad8a2ab1ef7beb1487b29d615ae5ef7956a44b4",
+    "desktop_app.py": "a0adb9ba73eed21b6ca0b5822dbbfc2c9a00f8a8ef38054424603874a5be43a4",
+    "sjtu_learning_assistant/__init__.py": "0c117412f3b47f0c45f72eb6d31d23c9fd67547ba4b1877df9847b20d4af22d2",
+    "sjtu_learning_assistant/agent_runtime/loop.py": "6107eccd1dd1a0e073f905ffab1f0ff18a3d85df66cd9e58cca36a45d31203a0",
+    "sjtu_learning_assistant/agent_runtime/tools.py": "7ac406e2b8f80439c288e7ac5fef27f8012a47aa896f0c8a2fbbaba5114dfaed",
+    "sjtu_learning_assistant/external_mcp.py": "e3d5d5952cad5c6fe93dc88bf71220512ce9b5edfe29742b90cae1a13317226a",
+    "sjtu_learning_assistant/web_search_mcp.py": "16a4802da858a4f2871a3679df0a2faffab73e7ff093f3a159a097b01f76cdf8",
+    "sjtu_learning_assistant/agent_runtime/turn_scope.py": "275985f12da9fdda6d5be79f414719757ff8a9f0ac80fe4b984a04022ad95b86",
+    "sjtu_learning_assistant/search_self_test.py": "35a2458466acf96403ed14bf72d15e17ed17a508d981de654287250551811c23",
+    "tests/test_search_quality_scope.py": "65e497b6d6ed9b4533ffe178e3aec43628996f1e614e2fa6a1c7f0837bec8998"
+  },
+  "live": {
+    "ok": true,
+    "model": "deepseek-chat",
+    "seconds": 11.89,
+    "model_calls": 2,
+    "local_tools_called": 0,
+    "automatic_continuations": 0,
+    "reply_chars": 101,
+    "calendar_writes": 0,
+    "isolated_task_ledger": true,
+    "private_canary_exported": false,
+    "tool_results": [
+      {
+        "name": "mcp_f72aae191aa5_search",
+        "status": "ok",
+        "count": 0
+      }
+    ],
+    "query": "周济睿",
+    "reply": "本轮通过 Bing 联网搜索检索了「周济睿」，上游返回的条目没有匹配完整姓名的有效结果，未取得可核验的公开资料。\n\n因此无法确认「周济睿」的身份信息。这不代表此人没有公开资料，只是本轮未检索到有效证据。",
+    "requests": [
+      {
+        "tool_count": 1,
+        "max_tokens": 1200,
+        "private_canary_present": false
+      },
+      {
+        "tool_count": 1,
+        "max_tokens": 1200,
+        "private_canary_present": false
+      }
+    ]
+  },
+  "installation": {
+    "version": "2.0.2",
+    "startup": "passed",
+    "frontend_files_verified": 76,
+    "binary_matches_build": true,
+    "protected_files": 70006,
+    "protected_files_changed": 0,
+    "ai_restored": true,
+    "search_definitions": {
+      "refreshed_count": 1,
+      "enabled_permissions_selections_preserved": true,
+      "exact_phrase_discovered": true
+    },
+    "calendar_read_only": true,
+    "calendar_writes": 0
+  },
+  "validation": {
+    "extended_regression": {
+      "passed": 164,
+      "subtests_passed": 2
+    },
+    "final_targeted_regression": {
+      "passed": 89,
+      "subtests_passed": 2
+    },
+    "bundle": {
+      "codesign": true,
+      "macos_verify": true,
+      "ffmpeg": true,
+      "packaged_mcp": true
+    }
+  },
+  "search_limit": "Bing 本轮没有取得有效人物匹配；DuckDuckGo 的上游拦截限制仍在。",
+  "test_harness_correction": "初次安装后验收曾错误标为通过：冻结优化移除了assert，且读取了最后一条用户消息。该记录不作为验收依据；现在使用显式RuntimeError检查、任务chat_result和助手role核对。"
+}

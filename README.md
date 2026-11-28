@@ -1,5 +1,7 @@
 # SJTU Learning Assistant
 
+> 本地补丁 2.0.2（2026-11-28）已安装：在线追问隔离旧邮件、完整姓名相关性过滤、同源空结果停止与短回复。模型仍为 deepseek-chat，Bing 本轮仍无有效人物匹配。见 [本机修复和验收](docs/releases/v2.0.2-search-quality.md)。
+
 > 2.0.0（2026-11-28）：完整界面迭代、外部 Skill／MCP、Mac 原生日历、播放器与悬浮文件预览。Windows 日程和安装兼容范围见 [发行说明](docs/releases/v2.0.0.md)，正式包状态以 GitHub Release 为准。
 
 一个面向上海交通大学学习场景的本地桌面助手，把 **Canvas 课程、交大邮箱、作业截止时间、课程资料、交大云盘和 AI 学习助手** 集中到一个应用里。

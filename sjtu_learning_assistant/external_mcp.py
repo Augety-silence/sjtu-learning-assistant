@@ -211,6 +211,20 @@ class ExternalMCP:
         if len(result)>MAX_TOOLS:raise MCPClientError(f'已启用工具超过 {MAX_TOOLS} 个，请关闭部分工具。')
         return result
 
+    def web_tool_names(self):
+        """在已授权的只读工具中定位网页检索/读取；不包含文件或日历服务。"""
+        names = []
+        for identity, row in self.load().items():
+            if not row.get('enabled'):
+                continue
+            for tool in row.get('tools', []):
+                context = identity + ' ' + tool.get('description', '')
+                if (tool.get('enabled') and tool.get('read_only') and
+                    re.search(r'bing|duckduckgo|brave|tavily|网页|联网|互联网|web|internet', context, re.I) and
+                    re.search(r'search|fetch|browse|read_url|read_page', tool['name'], re.I)):
+                    names.append(tool['model_name'])
+        return tuple(names)
+
     def call(self, model_name, arguments):
         if type(arguments) is not dict:raise MCPClientError('工具参数需要为对象。')
         # 每次执行重新核对状态；关闭服务或降权立即阻止后续调用。

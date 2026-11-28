@@ -259,6 +259,7 @@ class ReadOnlyToolRegistry:
         if native_calendar is not None:
             for name in CALENDAR_SCHEMAS:
                 self._handlers[name] = lambda raw, op=name.removeprefix("native_calendar_"): self._calendar_call(op, raw)
+        self.web_tool_names = frozenset(external_mcp.web_tool_names()) if external_mcp is not None else frozenset()
         if external_mcp is not None:
             for definition in external_mcp.definitions():
                 function=definition['function'];name=function['name']
@@ -285,6 +286,17 @@ class ReadOnlyToolRegistry:
             if result.get('isError'):
                 # 服务错误不能被执行轨迹计为ok；文本随后经过安全摘要处理。
                 raise AgentToolError('外部MCP工具执行未成功：'+_bounded_payload(result).get('text','')[:200],category='execution',retryable=False)
+            structured = result.get('structuredContent')
+            if not isinstance(structured, dict):
+                try:
+                    structured = json.loads(result.get('text', ''))
+                except (ValueError, TypeError):
+                    structured = None
+            if isinstance(structured, dict) and isinstance(structured.get('items'), list):
+                # 结构化结果按实际条目计数，不把整个协议外壳显示成“命中1项”。
+                result = {**structured, 'mcp_source': summary}
+                if not result['items'] and isinstance(result.get('note'), str):
+                    result['text'] = result['note']
             return result,summary
         except (MCPClientError,SkillPackageError) as exc:
             raise AgentToolError(str(exc), category='execution') from None
@@ -364,6 +376,10 @@ class ReadOnlyToolRegistry:
             "count": len(items) if isinstance(items, list) else result.get("count", 1),
             "truncated": bool(result.get("truncated", False)),
         }
+        if name in self.web_tool_names:
+            for key in ('provider', 'status', 'upstream_count', 'discarded_count', 'match_policy'):
+                if key in result:
+                    summary['search_status' if key == 'status' else key] = result[key]
         if name == "propose_file_change":
             for key in ("change_id", "path", "mode", "added", "removed"):
                 if key in result:
