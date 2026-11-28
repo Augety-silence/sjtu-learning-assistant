@@ -15,6 +15,13 @@ from typing import Iterable
 PRESET_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 KNOWN_TOOLS = frozenset(
     {
+        "list_skill_files", "read_skill_file", "run_skill_script",
+        "native_calendar_status",
+        "native_calendar_calendars",
+        "native_calendar_events",
+        "native_calendar_get",
+        "native_calendar_save",
+        "native_calendar_delete",
         "list_courses",
         "search_course_files",
         "list_course_files",
@@ -290,24 +297,17 @@ class PresetLoader:
         default_id = self._text(manifest["default_preset"], field="default_preset", limit=32)
         if default_id not in result:
             raise PresetError("默认 agent preset 不存在。")
-        if self.user_skills is not None:
-            for skill in self.user_skills.load():
-                if skill["id"] in result:
-                    continue
-                result[str(skill["id"])] = AgentPreset(
-                    id=str(skill["id"]),
-                    name=str(skill["name"]),
-                    description=str(skill["description"]) or "自定义技能",
-                    allowed_tools=tuple(skill["allowed_tools"]),  # type: ignore[arg-type]
-                    skill_prompt=str(skill["instructions"]),
-                    source="user",
-                    reference_attachment_ids=tuple(skill["reference_attachment_ids"]),  # type: ignore[arg-type]
-                )
+        # 技能与助理分离；旧自建技能仍保存在原文件，由 SkillPackages 管理。
         return default_id, result
 
     def get(self, preset_id: object | None = None) -> AgentPreset:
         default_id, presets = self.load()
         selected = default_id if preset_id is None else self._text(preset_id, field="id", limit=32)
+        if selected not in presets and (selected.startswith("u-") or selected in {
+            "file-assistant", "course-navigator", "material-manager", "deadline-coach",
+            "message-analyst", "review-planner", "course-summarizer", "learning-diagnostics",
+        }):
+            selected = default_id
         if selected not in presets:
             raise PresetError("Agent preset 不存在。")
         return presets[selected]

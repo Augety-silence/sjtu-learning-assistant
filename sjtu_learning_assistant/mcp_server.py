@@ -1,4 +1,4 @@
-"""通过 stdio 暴露本地只读学习工具的最小 MCP/JSON-RPC 服务。
+"""通过 stdio 暴露学习查询和已授权原生日历工具的最小 MCP/JSON-RPC 服务。
 
 协议消息逐行写入 stdout；诊断信息（如有）只能写入 stderr。模块不会在导入时
 创建数据库连接，因而既适合桌面打包，也便于使用内存流进行契约测试。
@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+from sjtu_learning_assistant.native_calendar import native_calendar_service
+
 import json
 import sys
 import time
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, IO, Mapping, Sequence
@@ -25,7 +28,7 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset(
     {"2024-11-05", "2025-03-26", "2025-06-18"}
 )
-SERVER_NAME = "sjtu-learning-assistant-readonly"
+SERVER_NAME = "sjtu-learning-assistant"
 
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
@@ -134,6 +137,7 @@ class MCPServer:
                 {
                     "name": function["name"],
                     "description": function.get("description", ""),
+                    "annotations": {"readOnlyHint": function["name"] not in {"native_calendar_save", "native_calendar_delete", "propose_file_change"}, "destructiveHint": function["name"] == "native_calendar_delete", "openWorldHint": False},
                     "inputSchema": function.get(
                         "parameters",
                         {"type": "object", "additionalProperties": False},
@@ -324,6 +328,37 @@ def run_stdio_server(
 serve_stdio = run_stdio_server
 
 
+def create_stdio_registry(engine, *, settings_store=None) -> ReadOnlyToolRegistry:
+    """桌面与独立 MCP 复用用户选择的工作区，不隐式扩大文件访问范围。"""
+    from sjtu_learning_assistant.ai_workspace import AIWorkspace, AIWorkspaceError
+    from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
+    from sjtu_learning_assistant.database import APP_SUPPORT_DIR
+    from sjtu_learning_assistant.local_settings import SettingsStore
+
+    store = settings_store or SettingsStore()
+    settings = store.resolve()
+    config_root = Path(store.path).parent
+    workspace = None
+    try:
+        payload = json.loads((config_root / "ai_workspace.json").read_text(encoding="utf-8"))
+        if type(payload) is dict and type(payload.get("root")) is str and payload["root"].strip():
+            workspace = AIWorkspace(
+                Path(payload["root"]),
+                changes_dir=config_root / "ai_file_changes",
+                protected=(APP_SUPPORT_DIR, config_root, Path(settings.archive_root)),
+            )
+    except (OSError, UnicodeError, json.JSONDecodeError, AIWorkspaceError):
+        # 未选择、损坏或失效的配置不注册文件工具；客户端仍能使用学习查询。
+        pass
+    return ReadOnlyToolRegistry(
+        engine,
+        compiled_knowledge=CompiledKnowledge(engine=engine),
+        mail_account=settings.mail_account,
+        workspace=workspace,
+        native_calendar=native_calendar_service(),
+    )
+
+
 def main() -> int:
     """使用应用默认数据库启动独立服务。"""
 
@@ -334,9 +369,7 @@ def main() -> int:
             if stream is not None and hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
-        from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
-        from sjtu_learning_assistant.local_settings import SettingsStore
-        run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine), mail_account=SettingsStore().load().mail_account))
+        run_stdio_server(create_stdio_registry(engine))
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

@@ -1,0 +1,27 @@
+:root[data-ui-release="2"] .drive-transfer-anchor { margin-left:auto; flex:none; }
+:root[data-ui-release="2"] .drive-transfer-anchor > button { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+:root[data-ui-release="2"] .ui2-floating-menu.drive-transfer-popover { padding:0; color:var(--v2-ink); background:var(--v2-bg); border:1px solid var(--v2-line); border-radius:8px; box-shadow:0 8px 28px #0002; overflow:auto; }
+:root[data-ui-release="2"] .drive-transfer-popover .drive-transfer-tray { position:static; width:100%; max-width:none; padding:0; margin:0; border-radius:0; animation:none; box-shadow:none; border:0; color:var(--v2-ink); }
+:root[data-ui-release="2"] .drive-transfer-tray > header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border-bottom:1px solid var(--v2-line); }
+:root[data-ui-release="2"] .drive-transfer-tray > header p { margin:0; font-size:13px; font-weight:600; }
+:root[data-ui-release="2"] .drive-transfer-tray > header > div { display:flex; align-items:center; gap:4px; }
+:root[data-ui-release="2"] .drive-transfer-list { max-height:280px; overflow:auto; overscroll-behavior:contain; margin:0; padding:0; list-style:none; }
+:root[data-ui-release="2"] .drive-transfer-row { display:flex; align-items:center; gap:10px; padding:12px; border-bottom:1px solid var(--v2-line); }
+:root[data-ui-release="2"] .drive-transfer-popover .drive-transfer-row { padding:12px; }
+:root[data-ui-release="2"] .drive-transfer-row:last-child { border-bottom:0; }
+:root[data-ui-release="2"] .drive-transfer-kind { width:18px; height:18px; flex:none; }
+:root[data-ui-release="2"] .drive-transfer-main { flex:1; min-width:0; }
+:root[data-ui-release="2"] .drive-transfer-title { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:13px; }
+:root[data-ui-release="2"] .drive-transfer-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+:root[data-ui-release="2"] .drive-transfer-status { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; font-size:12px; }
+:root[data-ui-release="2"] .drive-transfer-status svg { width:14px; height:14px; }
+:root[data-ui-release="2"] .drive-transfer-meta { margin:4px 0 0; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+:root[data-ui-release="2"] .drive-transfer-actions { display:flex; align-items:center; gap:4px; flex:none; }
+:root[data-ui-release="2"] .drive-transfer-actions button { width:28px; height:28px; }
+:root[data-ui-release="2"] .drive-transfer-actions svg { width:15px; height:15px; }
+:root[data-ui-release="2"] .drive-progress { height:3px; margin-top:7px; border-radius:3px; background:var(--v2-line); overflow:hidden; }
+:root[data-ui-release="2"] .drive-progress > span { display:block; height:100%; background:var(--v2-ink); }
+:root[data-ui-release="2"] .drive-progress > .is-indeterminate { width:30%; animation:drive-v2-progress 1.2s ease-in-out infinite alternate; }
+:root[data-ui-release="2"] .drive-transfer-empty { padding:24px 12px; text-align:center; font-size:13px; }
+@keyframes drive-v2-progress { from { transform:translateX(0); } to { transform:translateX(230%); } }
+@media (prefers-reduced-motion:reduce) { :root[data-ui-release="2"] .drive-progress > .is-indeterminate { animation:none; } }

@@ -52,6 +52,7 @@ import type {
   PickedLocalFile,
   SubmissionResult,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 import { useModalFocus } from "@/lib/useModalFocus";
 import "./assignments-workspace.css";
 
@@ -311,6 +312,8 @@ export function AssignmentsView({
   initialTarget,
   onInitialTargetHandled,
 }: AssignmentsViewProps = {}) {
+  const release = useUIRelease();
+  const [v2Query, setV2Query] = useState("");
   const [category, setCategory] = useState<AssignmentCategory>(
     initialTarget ? "upcoming" : "all",
   );
@@ -673,7 +676,11 @@ export function AssignmentsView({
   const hasType = (type: string) => selected?.submission_types.includes(type);
   return (
     <ContentReveal
-      className="section-stack assignments-page"
+      className={
+        release === "2"
+          ? "v2-assignments-page"
+          : "section-stack assignments-page"
+      }
       ready={items !== null || Boolean(error)}
     >
       <p className="finder-empty">仅显示最新学期课程的作业</p>
@@ -758,42 +765,84 @@ export function AssignmentsView({
           }
         />
       ) : (
-        <div className="assignment-layout">
-          <div className="assignment-list" aria-label="作业列表">
-            {items.map((item) => {
-              const status = getAssignmentStatus(item);
-              return (
-                <button
-                  key={`${item.course_id}:${item.id}`}
-                  type="button"
-                  className={
-                    selected && sameAssignment(selected, item)
-                      ? "assignment-card assignment-card-active"
-                      : "assignment-card"
-                  }
-                  aria-current={
-                    selected && sameAssignment(selected, item)
-                      ? "true"
-                      : undefined
-                  }
-                  data-tone={status.tone}
-                  onClick={() => void selectAssignment(item)}
-                >
-                  <strong>{item.name}</strong>
-                  <span>{item.course_name}</span>
-                  <span className="assignment-card-footer">
-                    <small>{formatDateTime(item.due_at)}</small>
-                    <span
-                      className={`assignment-status assignment-status-${status.tone}`}
-                    >
-                      {status.label}
+        <div
+          className={
+            release === "2" ? "v2-assignment-layout" : "assignment-layout"
+          }
+        >
+          <div
+            className={
+              release === "2" ? "v2-assignment-list" : "assignment-list"
+            }
+            aria-label="作业列表"
+          >
+            {release === "2" && (
+              <header>
+                <input
+                  type="search"
+                  aria-label="搜索作业"
+                  placeholder="搜索作业或课程"
+                  value={v2Query}
+                  onChange={(e) => setV2Query(e.target.value)}
+                />
+                <div>
+                  <span>作业 / 课程</span>
+                  <span>截止 / 状态</span>
+                </div>
+              </header>
+            )}
+            {items
+              .filter(
+                (item) =>
+                  release !== "2" ||
+                  !v2Query.trim() ||
+                  `${item.name} ${item.course_name}`
+                    .toLocaleLowerCase()
+                    .includes(v2Query.toLocaleLowerCase()),
+              )
+              .map((item) => {
+                const status = getAssignmentStatus(item);
+                return (
+                  <button
+                    key={`${item.course_id}:${item.id}`}
+                    type="button"
+                    className={
+                      selected && sameAssignment(selected, item)
+                        ? release === "2"
+                          ? "v2-assignment-row selected"
+                          : "assignment-card assignment-card-active"
+                        : release === "2"
+                          ? "v2-assignment-row"
+                          : "assignment-card"
+                    }
+                    aria-current={
+                      selected && sameAssignment(selected, item)
+                        ? "true"
+                        : undefined
+                    }
+                    data-tone={status.tone}
+                    onClick={() => void selectAssignment(item)}
+                  >
+                    <strong>{item.name}</strong>
+                    <span>{item.course_name}</span>
+                    <span className="assignment-card-footer">
+                      <small>{formatDateTime(item.due_at)}</small>
+                      <span
+                        className={`assignment-status assignment-status-${status.tone}`}
+                      >
+                        {status.label}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })}
           </div>
-          <section className="assignment-detail" aria-live="polite">
+          <section
+            className={
+              release === "2" ? "v2-assignment-detail" : "assignment-detail"
+            }
+            aria-live="polite"
+          >
             {!selected ? (
               <p className="finder-empty">选择一项作业查看详情</p>
             ) : (

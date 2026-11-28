@@ -116,10 +116,12 @@ function ProgressRow({
 
 export function MarkdownSyncProgress({
   onNavigate,
+  embedded = false,
 }: {
   onNavigate: (view: "knowledge" | "settings") => void;
+  embedded?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(embedded);
   const [data, setData] = useState<MarkdownSyncProgressState | null>(null);
   const [error, setError] = useState("");
   const [fresh, setFresh] = useState(false);
@@ -172,7 +174,11 @@ export function MarkdownSyncProgress({
     const timer = window.setInterval(() => void refresh(), 5000);
     document.addEventListener("visibilitychange", refresh);
     const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !host.current?.contains(event.target))
+      if (
+        !embedded &&
+        event.target instanceof Node &&
+        !host.current?.contains(event.target)
+      )
         setOpen(false);
     };
     document.addEventListener("pointerdown", outside);
@@ -183,11 +189,11 @@ export function MarkdownSyncProgress({
       document.removeEventListener("pointerdown", outside);
       window.removeEventListener("resize", position);
     };
-  }, [open, attempt]);
+  }, [open, attempt, embedded]);
   return (
     <div
       ref={host}
-      className="markdown-progress-host"
+      className={`markdown-progress-host ${embedded ? "is-embedded" : ""}`}
       onKeyDown={(e) => {
         if (open && e.key === "Escape") {
           e.stopPropagation();
@@ -195,25 +201,31 @@ export function MarkdownSyncProgress({
         }
       }}
     >
-      <Button
-        ref={trigger}
-        variant="ghost"
-        aria-expanded={open}
-        aria-controls="markdown-sync-progress"
-        onClick={() => {
-          setFresh(false);
-          setOpen((value) => !value);
-        }}
-      >
-        <Activity aria-hidden="true" size={16} strokeWidth={1.5} />
-        同步进度
-      </Button>
+      {!embedded && (
+        <Button
+          ref={trigger}
+          variant="ghost"
+          aria-expanded={open}
+          aria-controls="markdown-sync-progress"
+          onClick={() => {
+            setFresh(false);
+            setOpen((value) => !value);
+          }}
+        >
+          <Activity aria-hidden="true" size={16} strokeWidth={1.5} />
+          同步进度
+        </Button>
+      )}
       {open && (
         <section
           id="markdown-sync-progress"
           className="markdown-progress-window"
           aria-label="同步进度"
-          style={{ right: placement.right, maxHeight: placement.maxHeight }}
+          style={
+            embedded
+              ? undefined
+              : { right: placement.right, maxHeight: placement.maxHeight }
+          }
         >
           <header>
             <div className="heading-with-info">
@@ -225,14 +237,16 @@ export function MarkdownSyncProgress({
                 秒更新，不启动转换或调用模型。
               </InfoTooltip>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="关闭同步进度"
-              onClick={close}
-            >
-              <X aria-hidden="true" size={16} />
-            </Button>
+            {!embedded && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="关闭同步进度"
+                onClick={close}
+              >
+                <X aria-hidden="true" size={16} />
+              </Button>
+            )}
           </header>
           {!data && !error && <p role="status">读取进度…</p>}
           {error && (

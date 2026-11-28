@@ -1,3 +1,7 @@
+// 既有测试验证保留的经典业务；2.0 测试显式切换版本。
+if (typeof document !== "undefined")
+  document.documentElement.dataset.uiRelease = "classic";
+
 import {
   type RenderOptions,
   render as testingLibraryRender,

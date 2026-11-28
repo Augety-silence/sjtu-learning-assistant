@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { formatDateTime } from "@/lib/format";
 import type { MessageFilter, MessageItem, MessageKind } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
+import { V2MessageList } from "@/v2/MessageList";
 
 const messageKey = (item: MessageItem) => `${item.kind}:${item.source_id}`;
 const kindIcons: Record<MessageKind, typeof Mail> = {
@@ -38,6 +40,22 @@ export function MessageInbox({
   loadingMore: boolean;
   loadMore: () => Promise<void>;
 }) {
+  const release = useUIRelease();
+  if (release === "2")
+    return (
+      <V2MessageList
+        items={items}
+        total={total}
+        unreadCount={unreadCount}
+        selectedKey={selectedKey ?? (detailItem && messageKey(detailItem))}
+        rowRefs={rowRefs}
+        onSelect={onSelect}
+        onOpen={onOpen}
+        nextOffset={nextOffset}
+        loadingMore={loadingMore}
+        loadMore={loadMore}
+      />
+    );
   return (
     <section className="message-list-pane" aria-label="收件箱">
       <div className="message-list-heading">

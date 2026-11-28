@@ -7,9 +7,11 @@ import remarkGfm from "remark-gfm";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
+import { VideoTranscript } from "@/components/VideoTranscript";
 import { getTranscriptArtifacts, readTranscriptArtifact } from "@/lib/api";
 import type { TranscriptArtifact, TranscriptJob } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
+import { parseVttCues } from "@/lib/videoSubtitles";
 
 type DetailTab = "summary" | "raw_vtt";
 // Older callers may request a legacy tab; never restore the removed UI.
@@ -41,6 +43,9 @@ export function TranscriptDetailDrawer({
   onRetry,
   onCancel,
   onReveal,
+  onSeek,
+  portalContainer,
+  playbackTime = -1,
 }: {
   job: TranscriptJob;
   initialTab?: InitialTab;
@@ -49,6 +54,8 @@ export function TranscriptDetailDrawer({
   onCancel?: (job: TranscriptJob) => void | Promise<void>;
   onReveal?: (artifact: TranscriptArtifact) => void | Promise<void>;
   onSeek?: (seconds: number) => void;
+  portalContainer?: HTMLElement | null;
+  playbackTime?: number;
 }) {
   const [tab, setTab] = useState<DetailTab>(normalizeTab(initialTab));
   const [artifacts, setArtifacts] = useState<TranscriptArtifact[]>([]);
@@ -118,8 +125,8 @@ export function TranscriptDetailDrawer({
     if (tab === "summary")
       return artifacts.find((item) => item.kind === "lesson_summary");
     return (
-      artifacts.find((item) => item.kind === "original") ??
-      artifacts.find((item) => item.kind === "raw_vtt")
+      artifacts.find((item) => item.kind === "raw_vtt") ??
+      artifacts.find((item) => item.kind === "original")
     );
   }, [artifacts, listedRevision, revision, tab]);
 
@@ -220,7 +227,10 @@ export function TranscriptDetailDrawer({
   const error = listError || bodyError;
 
   return createPortal(
-    <div className="transcript-overlay" data-modal-layer>
+    <div
+      className={`transcript-overlay${portalContainer ? " is-player-contained" : ""}`}
+      data-modal-layer
+    >
       <button
         type="button"
         className="transcript-overlay-backdrop"
@@ -341,10 +351,20 @@ export function TranscriptDetailDrawer({
               正在读取字幕结果…
             </p>
           ) : artifact ? (
-            artifact.kind === "raw_vtt" ? (
-              <pre className="transcript-raw" style={{ userSelect: "text" }}>
-                {content[artifact.id] ?? ""}
-              </pre>
+            tab === "raw_vtt" &&
+            (artifact.kind === "raw_vtt" ||
+              parseVttCues(content[artifact.id] ?? "").length > 0) ? (
+              onSeek ? (
+                <VideoTranscript
+                  cues={parseVttCues(content[artifact.id] ?? "")}
+                  playbackTime={playbackTime}
+                  onSeek={onSeek}
+                />
+              ) : (
+                <pre className="transcript-raw" style={{ userSelect: "text" }}>
+                  {content[artifact.id] ?? ""}
+                </pre>
+              )
             ) : (
               <div
                 className="ai-markdown transcript-markdown"
@@ -370,6 +390,6 @@ export function TranscriptDetailDrawer({
         </ContentReveal>
       </section>
     </div>,
-    document.body,
+    portalContainer ?? document.body,
   );
 }

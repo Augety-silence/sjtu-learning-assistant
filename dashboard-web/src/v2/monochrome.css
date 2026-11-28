@@ -1,0 +1,44 @@
+/* 2.0 所有页面的交互颜色契约；最后加载，覆盖旧页面的颜色。 */
+:root[data-ui-release="2"] {
+  --primary:#171717;--primary-foreground:#fff;--app-blue:var(--v2-ink);
+  --action-primary:var(--v2-ink);--focus-ring:var(--v2-ink)
+}
+:root[data-ui-release="2"] .v2-button {color:var(--v2-ink);background:var(--v2-bg)!important;border-color:var(--v2-line)!important
+}
+:root[data-ui-release="2"] .v2-button-default, :root[data-ui-release="2"] .v2-button.primary {color:var(--v2-bg);background:var(--v2-ink)!important;border-color:var(--v2-ink)!important
+}
+:root[data-ui-release="2"] .v2-button-default:hover, :root[data-ui-release="2"] .v2-button.primary:hover {background:#343434!important;color:#fff
+}
+:root[data-ui-release="2"] .v2-button-outline:hover, :root[data-ui-release="2"] .v2-button-ghost:hover {background:var(--v2-soft)!important;color:var(--v2-ink)
+}
+:root[data-ui-release="2"] button:disabled, :root[data-ui-release="2"] .v2-button:disabled {opacity:1;color:#454545!important;background:#ededed!important;border-color:#d5d5d5!important;cursor:default
+}
+:root[data-ui-release="2"] button:focus-visible {outline-color:var(--v2-ink)
+}
+:root[data-ui-release="2"] button[aria-selected=true], :root[data-ui-release="2"] button[aria-pressed=true], :root[data-ui-release="2"] button[data-state=active], :root[data-ui-release="2"] button.is-selected, :root[data-ui-release="2"] .v2-sidebar button[aria-current=page] {font-weight:650
+}
+:root[data-ui-release="2"] .assignment-submit-workspace :is(h4,label,p,small), :root[data-ui-release="2"] .submission-forms {color:var(--v2-ink)
+}
+:root[data-ui-release="2"] .submission-forms button:hover:not(:disabled) {color:#fff;background:#343434!important
+}
+:root[data-ui-release="2"] .ai-composer-actions>button:last-child {background:var(--v2-ink);color:var(--v2-bg)
+}
+:root[data-ui-release="2"] .ai-composer-actions>button:last-child:disabled {background:#ededed!important;color:#454545!important
+}
+:root[data-ui-release="2"] .ai-composer-actions>.ai-stop-button:last-child {background:var(--v2-ink);color:var(--v2-bg)
+}
+:root[data-ui-release="2"] .ui2-tabbar [aria-selected=true], :root[data-ui-release="2"] .v2-tabs [aria-selected=true], :root[data-ui-release="2"] .v2-tabs [data-state=active] {background:var(--v2-bg);color:var(--v2-ink);font-weight:650
+}
+:root[data-ui-release="2"] input[type=checkbox], :root[data-ui-release="2"] input[type=radio], :root[data-ui-release="2"] input[type=range] {accent-color:var(--v2-ink)
+}
+:root[data-ui-release="2"] .video-player-shell button:disabled {background:#333!important;color:#eee!important;border-color:#555!important
+}
+:root[data-ui-release="2"] .video-player-shell .video-tool-panel button:not(:disabled) {color:#fff
+}
+:root[data-ui-release="2"][data-theme=dark] button:disabled {color:#dedede!important;background:#333!important;border-color:#555!important
+}
+:root[data-ui-release="2"][data-theme=dark] .v2-button-default:hover {background:#ddd!important;color:#171717
+}
+
+:root[data-ui-release="2"] .ai-workspace-new-chat {background:var(--v2-ink)!important;color:var(--v2-bg)!important}
+:root[data-ui-release="2"][data-theme-mode="aime"] {--v2-accent:var(--v2-ink);--action-primary:var(--v2-ink);--v2-sidebar:#f7f7f7;--v2-soft:#f3f3f3;--v2-selected:#eaeaea;--v2-line:#e2e2e2;--focus-ring:var(--v2-ink);--status-info:var(--v2-ink)}

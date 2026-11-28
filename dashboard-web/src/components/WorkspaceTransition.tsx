@@ -24,7 +24,7 @@ function WorkspaceScene({
     if (!present || !focusOnEntry) return;
     sceneRef.current
       ?.querySelector<HTMLElement>(
-        '.page-heading h1, textarea[aria-label="输入问题"]',
+        '.page-heading h1, .v2-page-heading h1, textarea[aria-label="输入问题"]',
       )
       ?.focus({ preventScroll: true });
   }, [present, focusOnEntry]);

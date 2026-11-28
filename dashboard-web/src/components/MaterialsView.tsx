@@ -43,7 +43,9 @@ import type {
   MaterialTree,
   MediaPreviewResult,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 import { useCompactViewport } from "@/lib/useCompactViewport";
+import { V2Materials } from "@/v2/Materials";
 
 const structuredPreviewExtensions = new Set([
   "docx",
@@ -208,6 +210,12 @@ export function MaterialsView({
   termId?: string;
   courseId?: string;
 } = {}) {
+  const release = useUIRelease();
+  const previewRequestRef = useRef(0);
+  const closeV2Preview = useCallback(() => {
+    previewRequestRef.current += 1;
+    setPreview(null);
+  }, []);
   const [tree, setTree] = useState<MaterialTree | null>(null);
   const [selectedId, setSelectedId] = useState("root");
   const [activeId, setActiveId] = useState("root");
@@ -475,14 +483,16 @@ export function MaterialsView({
     if (!file.source_id) return;
     const returnRow = activeContentRow();
     let opened = false;
+    const previewRequest = ++previewRequestRef.current;
     const toastId = `material:${file.source_id}:preview`;
     setBusy((value) => ({ ...value, [file.source_id as string]: "preview" }));
-    showToast({
-      id: toastId,
-      kind: "info",
-      message: `正在加载“${file.name}”预览…`,
-      duration: 0,
-    });
+    if (release !== "2")
+      showToast({
+        id: toastId,
+        kind: "info",
+        message: `正在加载“${file.name}”预览…`,
+        duration: 0,
+      });
     try {
       const extension = file.name.split(".").pop()?.toLocaleLowerCase() ?? "";
       const nextPreview =
@@ -497,12 +507,14 @@ export function MaterialsView({
           : await previewMaterial(file.source_id);
       previewReturnRef.current = returnRow;
       opened = true;
+      if (previewRequest !== previewRequestRef.current) return;
       setPreview(nextPreview);
-      showToast({
-        id: toastId,
-        kind: "success",
-        message: `已加载“${file.name}”`,
-      });
+      if (release !== "2")
+        showToast({
+          id: toastId,
+          kind: "success",
+          message: `已加载“${file.name}”`,
+        });
     } catch (reason) {
       showToast({
         id: toastId,
@@ -675,6 +687,70 @@ export function MaterialsView({
     }
   };
 
+  if (release === "2" && tree && tree.root.children?.length && !error)
+    return (
+      <V2Materials
+        tree={tree}
+        directory={current}
+        folders={childFolders}
+        files={visibleFiles.map((item) => item.file)}
+        path={path}
+        query={query}
+        onQuery={setQuery}
+        onSelect={(id) => {
+          setSelectedId(id);
+          setActiveId(id);
+        }}
+        preview={preview}
+        onClosePreview={closeV2Preview}
+        onPreview={previewFile}
+        onAct={act}
+        onRestore={restoreAuto}
+        busy={busy}
+        onMove={(file, category) => {
+          const targetPath = findNodePath(
+            tree.root,
+            `category:${file.course_id}:${category}`,
+          );
+          const target = targetPath?.[targetPath.length - 1];
+          if (target) void move(file, target);
+        }}
+        searchRef={searchInputRef}
+        onFileDrag={(file) =>
+          setDragSource(
+            file.source_id && file.course_id
+              ? {
+                  sourceId: file.source_id,
+                  courseId: file.course_id,
+                  name: file.name,
+                }
+              : null,
+          )
+        }
+        onDragEnd={() => {
+          setDragSource(null);
+          setDropTargetId(null);
+        }}
+        treeContent={
+          <MaterialTreeBranch
+            node={tree.root}
+            level={1}
+            selectedId={selectedId}
+            activeId={activeId}
+            expandedIds={expandedIds}
+            select={selectTreeItem}
+            focusItem={setActiveId}
+            toggle={toggleTreeItem}
+            onKeyDown={onTreeKeyDown}
+            registerItem={registerItem}
+            dragSource={dragSource}
+            dropTargetId={dropTargetId}
+            hoverTarget={(node) => setDropTargetId(node?.id ?? null)}
+            drop={drop}
+          />
+        }
+      />
+    );
   return (
     <ContentReveal
       className="section-stack materials-page"

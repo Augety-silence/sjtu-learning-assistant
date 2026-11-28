@@ -15,6 +15,8 @@ export interface CalendarEventItem {
   courseName: string;
   startAt: string;
   endAt?: string | null;
+  allDay?: boolean;
+  deadlineAt?: string | null;
   status?: "upcoming" | "submitted" | "graded" | "overdue";
   url?: string | null;
   location?: string | null;

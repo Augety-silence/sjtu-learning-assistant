@@ -27,13 +27,15 @@ RENDERERS = dict(darwin="wkwebview", win32="edgechromium")
 # A rendered shell/navigation/header are required, not merely #root or an error
 # boundary. Rejected page-level data requests are expected in this offline mode.
 PROBE = r"""(() => {
-  const shell = document.querySelector('#root .app-shell[data-aura-shell]');
+  const shell = document.querySelector('#root .v2-shell');
   const box = shell ? shell.getBoundingClientRect() : null;
   const ready = !!(window.pywebview && window.pywebview.api &&
     typeof window.pywebview.api.invoke === 'function');
   const appShell = !!(shell && box.width > 0 && box.height > 0 &&
-    shell.querySelector('.sidebar nav[data-nav-group] button.nav-item') &&
-    shell.querySelector('.workspace .page-header') && shell.querySelector('.content'));
+    document.documentElement.dataset.uiRelease === '2' &&
+    shell.querySelector('.v2-sidebar nav[aria-label="主导航"] button') &&
+    shell.querySelector('.v2-main .v2-app-header') &&
+    shell.querySelector('.v2-content .v2-page-heading h1'));
   const rootError = !!document.querySelector('#root > main > .state-error[role="alert"]');
   const moduleScript = !!document.querySelector('script[type="module"][src]');
   if (ready && !window.__sjtuStartupProbeSent) {

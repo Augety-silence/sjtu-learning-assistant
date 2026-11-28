@@ -1,12 +1,18 @@
 # SJTU Learning Assistant
 
+> 2.0.0（2026-11-28）：完整界面迭代、外部 Skill／MCP、Mac 原生日历、播放器与悬浮文件预览。Windows 日程和安装兼容范围见 [发行说明](docs/releases/v2.0.0.md)，正式包状态以 GitHub Release 为准。
+
 一个面向上海交通大学学习场景的本地桌面助手，把 **Canvas 课程、交大邮箱、作业截止时间、课程资料、交大云盘和 AI 学习助手** 集中到一个应用里。
 
 **不需要安装 Python，不需要配置数据库，也不需要打开终端。** 下载与你电脑匹配的安装包，安装后在应用“设置”中填写账号信息即可使用。
 
 [下载最新正式版](https://github.com/Augety-silence/sjtu-learning-assistant/releases/latest)
 
-## v1.8.28 发行说明
+## 2.0.0
+
+按审阅 HTML 重建完整 React + TypeScript 界面与独立 CSS，保留真实接口。综合助手与资料库助手、外部 Skill ZIP 原结构导入、多技能选择、标准 MCP 客户端、Mac EventKit 日历、文件悬浮预览已接入。Windows 支持本机个人日程和手动 ICS 导出；系统日历双向同步尚未接入。DuckDuckGo 搜索仍可能受上游反爬限制。完整能力与安装依赖见 [2.0.0 发行说明](docs/releases/v2.0.0.md)。
+
+## v1.8.28 公开发行说明
 
 完整功能版已加入 Windows 本地资源映射启动修复，并保留 Aime 工具输出、当前学期 Markdown 与云盘续传功能。公开附件仅 DMG、Windows 安装器 EXE 与便携 ZIP，详情见 [发行说明](docs/releases/v1.8.28.md)。
 

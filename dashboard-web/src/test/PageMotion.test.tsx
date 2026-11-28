@@ -47,6 +47,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 beforeEach(() => {
+  document.documentElement.dataset.uiRelease = "2";
   present.mockReturnValue(true);
   vi.mocked(getAiPresets).mockResolvedValue(presetResult);
 });
@@ -95,7 +96,7 @@ describe("page entry lifecycle", () => {
     const toggle = screen.getByRole("button", {
       name: "切换 Activity 检索轨迹",
     });
-    await screen.findByText("今天想从学习数据里查什么？");
+    await screen.findByText("今天想一起完成什么？");
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     present.mockReturnValue(false);

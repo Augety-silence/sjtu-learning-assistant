@@ -59,9 +59,12 @@ datas = [
 datas += copy_metadata("imageio-ffmpeg", recursive=True)
 datas += copy_metadata("pypdf", recursive=True)
 datas += copy_metadata("Pillow", recursive=True)
+datas += copy_metadata("mcp")
+datas += copy_metadata("PyYAML")
 datas.append((str(ROOT / "licenses" / "FFmpeg.txt"), "licenses"))
 
 hiddenimports = [
+    "EventKit",
     "logging.config",
     "keyring.backends.chainer",
     "keyring.backends.fail",
@@ -156,6 +159,8 @@ app = PostSignedBundle(
         "CFBundleVersion": __version__,
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
+        "NSCalendarsFullAccessUsageDescription": "学习助手需要读取和修改您授权的日历，让日程与 AI 助手双向同步并设置提醒。",
+        "NSCalendarsUsageDescription": "学习助手需要访问日历以同步个人日程与提醒。",
         "NSHumanReadableCopyright": "Copyright 2026 周济睿",
     },
 )

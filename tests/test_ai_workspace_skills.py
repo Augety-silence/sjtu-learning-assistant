@@ -42,11 +42,13 @@ class UserSkillTests(unittest.TestCase):
         self.assertEqual([3, 5], skill["reference_attachment_ids"])
         loader = PresetLoader(user_skills_path=self.path)
         _default, presets = loader.load()
-        preset = presets[str(skill["id"])]
-        self.assertEqual(("user", "论文精读", (3, 5)), (preset.source, preset.name, preset.reference_attachment_ids))
-        dto = preset.dto()
-        self.assertEqual("先给结论，再逐段解释术语。", dto["instructions"])
-        # 内置技能不向界面回传提示词。
+        self.assertEqual({"general", "knowledge"}, set(presets))
+        self.assertEqual("general", loader.get(str(skill["id"])).id)
+        from sjtu_learning_assistant.skill_packages import SkillPackages
+        package = SkillPackages(self.path, Path(__file__).resolve().parents[1]).get(str(skill["id"]))
+        self.assertEqual("论文精读", package["name"])
+        self.assertEqual("先给结论，再逐段解释术语。", package["instructions"])
+        self.assertEqual([3, 5], package["reference_attachment_ids"])
         self.assertNotIn("instructions", presets["general"].dto())
         self.assertEqual("builtin", presets["general"].dto()["source"])
 

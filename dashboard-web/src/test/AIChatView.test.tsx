@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AIChatView } from "@/components/AIChatView";
+import { type AIComposerDraft, AIComposerDraftContext } from "@/lib/aiDrafts";
 import {
   createAiChatSession,
   getAiChatSession,
   getAiChatSessions,
+  getAiWorkspaceStatus,
   getSettings,
   ingestAiAttachment,
   pickAiAttachment,
+  pickAiWorkspace,
   resumeAiChatMessageTask,
   sendAiChatMessage,
   steerAiChatTask,
@@ -156,6 +159,10 @@ vi.mock("@/lib/api", () => ({
     path: null,
     reason: null,
   })),
+  getKnowledgeMCPConfig: vi.fn(async () => ({
+    command: "/tmp/python",
+    args: ["--mcp-stdio"],
+  })),
   pickAiWorkspace: vi.fn(),
   clearAiWorkspace: vi.fn(),
   listAiAttachments: vi.fn(async () => ({ items: [] })),
@@ -165,6 +172,10 @@ vi.mock("@/lib/api", () => ({
   applyAiFileChange: vi.fn(),
   rejectAiFileChange: vi.fn(),
 }));
+
+beforeEach(() => {
+  document.documentElement.dataset.uiRelease = "classic";
+});
 
 afterEach(() => {
   cleanup();
@@ -1790,5 +1801,106 @@ describe("AIChatView", () => {
     expect(leftResizer.getAttribute("aria-valuenow")).toBe("240");
     fireEvent.keyDown(leftResizer, { key: "ArrowRight" });
     expect(leftResizer.getAttribute("aria-valuenow")).toBe("248");
+  });
+});
+
+describe("2.0 workspace integration", () => {
+  beforeEach(() => {
+    document.documentElement.dataset.uiRelease = "2";
+  });
+
+  it("opens configuration centrally and preserves the conversation draft", async () => {
+    render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByText("今天想一起完成什么？");
+    const input = screen.getByRole("textbox", { name: "输入问题" });
+    fireEvent.change(input, { target: { value: "未发送的复习安排" } });
+    fireEvent.click(screen.getByRole("button", { name: "技能配置" }));
+    expect(
+      await screen.findByRole("region", { name: "技能配置" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "输入问题" })).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe("未发送的复习安排");
+    expect(screen.queryByRole("button", { name: "导入 ZIP" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "外部技能" }));
+    expect(screen.getByRole("button", { name: "导入 ZIP" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "全部任务" }));
+    const search = await screen.findByRole("searchbox", {
+      name: "搜索全部任务",
+    });
+    expect(search.closest("aside")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
+    expect(
+      (screen.getByRole("textbox", { name: "输入问题" }) as HTMLTextAreaElement)
+        .value,
+    ).toBe("未发送的复习安排");
+    expect(sendAiChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses a portal for the agent menu and keeps drafts when switching interface", async () => {
+    const { container } = render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByText("今天想一起完成什么？");
+    fireEvent.click(
+      screen.getByRole("button", { name: "当前 Agent：学习数据 Agent" }),
+    );
+    const list = screen.getByRole("listbox", { name: "切换 Agent" });
+    expect(list.closest("[data-ai-floating-menu]")?.parentElement).toBe(
+      document.body,
+    );
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    fireEvent.click(screen.getByRole("option", { name: "学习数据 Agent" }));
+    expect(screen.queryByRole("listbox", { name: "切换 Agent" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "输入问题" }), {
+      target: { value: "界面切换草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "切换界面版本" }));
+    expect(await screen.findByText("今天想从学习数据里查什么？")).toBeTruthy();
+    expect(
+      (screen.getByRole("textbox", { name: "输入问题" }) as HTMLTextAreaElement)
+        .value,
+    ).toBe("界面切换草稿");
+  });
+
+  it("selects the workspace through the original bridge callback", async () => {
+    vi.mocked(pickAiWorkspace).mockResolvedValueOnce({
+      configured: true,
+      available: true,
+      name: "练习",
+      path: "/tmp/练习",
+      reason: null,
+    });
+    render(<AIChatView onBack={vi.fn()} />);
+    await screen.findByText("今天想一起完成什么？");
+    await waitFor(() => expect(getAiWorkspaceStatus).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(await screen.findByRole("button", { name: "选择文件夹" }));
+    expect(await screen.findByText("/tmp/练习")).toBeTruthy();
+    expect(pickAiWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "取消授权" })).toBeTruthy();
+  });
+
+  it("restores draft text and attachments after returning from the workbench", async () => {
+    const drafts = new Map<string, AIComposerDraft>();
+    const view = () => (
+      <AIComposerDraftContext.Provider value={drafts}>
+        <AIChatView onBack={vi.fn()} />
+      </AIComposerDraftContext.Provider>
+    );
+    const first = render(view());
+    await screen.findByText("今天想一起完成什么？");
+    fireEvent.change(screen.getByRole("textbox", { name: "输入问题" }), {
+      target: { value: "先保留这个计划" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "唤起技能与工具" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加本地文件" }));
+    await screen.findByText("复习提纲.txt");
+    first.unmount();
+    render(view());
+    await screen.findByText("今天想一起完成什么？");
+    expect(
+      (screen.getByRole("textbox", { name: "输入问题" }) as HTMLTextAreaElement)
+        .value,
+    ).toBe("先保留这个计划");
+    expect(await screen.findByText("复习提纲.txt")).toBeTruthy();
+    expect(sendAiChatMessage).not.toHaveBeenCalled();
   });
 });

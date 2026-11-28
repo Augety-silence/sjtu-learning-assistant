@@ -220,7 +220,7 @@ describe("AppShell 移动导航", () => {
     expect(workspace).toBeTruthy();
     expect(workspace?.getAttribute("data-aura-surface")).toBe("workspace");
     expect(workspace?.querySelector(":scope > .page-header")).toBeTruthy();
-    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(11);
+    expect(within(mainNavigation).getAllByRole("button")).toHaveLength(8);
     expect(within(utilityNavigation).getAllByRole("button")).toHaveLength(2);
     const overviewButton = within(mainNavigation).getByRole("button", {
       name: "概览",

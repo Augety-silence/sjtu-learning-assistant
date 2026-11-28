@@ -179,6 +179,41 @@ export interface AIFileChange {
 export interface AIAgentPresetsResult {
   default_preset_id: string;
   items: AIAgentPreset[];
+  skills?: AIExtensionSkill[];
+}
+
+export interface AIExtensionSkill {
+  id: string;
+  name: string;
+  description: string;
+  source: "builtin" | "user";
+  enabled: boolean;
+  allow_scripts: boolean;
+  instructions: string;
+  entry?: string;
+  files: string[];
+  allowed_tools?: string[];
+  reference_attachment_ids?: number[];
+}
+
+export interface ExternalMCPService {
+  id: string;
+  name: string;
+  enabled: boolean;
+  permission: "read_only" | "all";
+  transport: string;
+  command: string;
+  url: string;
+  env_keys: string[];
+  error: string;
+  tools: {
+    name: string;
+    model_name: string;
+    description: string;
+    enabled: boolean;
+    read_only: boolean;
+    inputSchema: Record<string, unknown>;
+  }[];
 }
 
 export interface AIManagedAttachment {

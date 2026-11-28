@@ -62,8 +62,9 @@ class FrontendSelfTestTests(unittest.TestCase):
                 self.assertFalse(gate.webbrowser.open("https://example.invalid"))
 
     def test_probe_requires_shell_navigation_header_and_bridge_handshake(self):
-        for selector in ("data-aura-shell", "button.nav-item", ".workspace .page-header", "rootError", "moduleScript", "startup_probe", "__sjtuStartupProbeReady"):
+        for selector in (".v2-shell", "dataset.uiRelease === '2'", ".v2-sidebar nav", ".v2-main .v2-app-header", ".v2-content .v2-page-heading h1", "rootError", "moduleScript", "startup_probe", "__sjtuStartupProbeReady"):
             self.assertIn(selector, gate.PROBE)
+        self.assertNotIn(".app-shell", gate.PROBE)
         session = gate._Session(gate.RejectBridge("nonce"), "a".ljust(64, "a"), Path("unused.json"))
         session.webview = SimpleNamespace(renderer="qt")
         session.network_blocked = True

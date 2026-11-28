@@ -32,6 +32,7 @@ import type {
   KnowledgeCompilerMode,
   KnowledgeCompilerTask,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 
 const POLL_INTERVAL_MS = 1200;
 const SOURCE_KEY = "knowledge-compiler-source";
@@ -111,6 +112,7 @@ function PathPicker({
 }
 
 export function KnowledgeCompilerView() {
+  const release = useUIRelease();
   const [sourceRoot, setSourceRoot] = useState(
     () => window.localStorage.getItem(SOURCE_KEY) ?? "",
   );
@@ -278,8 +280,55 @@ export function KnowledgeCompilerView() {
     return <ErrorState message={error} retry={retryInitialLoad} />;
 
   return (
-    <ContentReveal className="section-stack knowledge-page" afterLoad>
-      <CompiledKnowledgeBrowser />
+    <ContentReveal
+      className={
+        release === "2" ? "v2-knowledge-page" : "section-stack knowledge-page"
+      }
+      afterLoad
+    >
+      {release === "2" ? (
+        <div className="v2-knowledge-workspace">
+          <CompiledKnowledgeBrowser />
+          <aside className="v2-compile-rail">
+            <h2>编译与同步队列</h2>
+            <div className="v2-compile-task">
+              <strong>{statusLabel(task?.status ?? "idle")}</strong>
+              <small>
+                {task?.current_phase?.label || "选择素材和输出目录后开始编译"}
+              </small>
+              {(running || terminal) && task && (
+                <>
+                  <progress
+                    value={percentage}
+                    max={100}
+                    aria-label="知识库编译进度"
+                  />
+                  <span>
+                    {percentage}% · 已生成 {task.counts.generated_notes} 份笔记
+                  </span>
+                </>
+              )}
+              <div>
+                <Button variant="outline" onClick={() => setToolsOpen(true)}>
+                  配置与任务详情
+                </Button>
+                {running && (
+                  <Button
+                    variant="outline"
+                    disabled={working}
+                    onClick={() => void stop()}
+                  >
+                    安全停止
+                  </Button>
+                )}
+              </div>
+            </div>
+            <CourseMarkdownSyncPanel />
+          </aside>
+        </div>
+      ) : (
+        <CompiledKnowledgeBrowser />
+      )}
       <details
         className="knowledge-tools"
         open={toolsOpen}
@@ -299,7 +348,7 @@ export function KnowledgeCompilerView() {
             </div>
           )}
 
-          <CourseMarkdownSyncPanel />
+          {release !== "2" && <CourseMarkdownSyncPanel />}
 
           <section
             className="knowledge-config"

@@ -1,0 +1,167 @@
+:root[data-ui-release="2"] .extension-library {min-width:0;max-width:1000px;margin:auto;font-size:14px
+}
+:root[data-ui-release="2"] .extension-toolbar {display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px
+}
+:root[data-ui-release="2"] .extension-toolbar p {font-size:13px;line-height:1.7
+}
+:root[data-ui-release="2"] .extension-library button {font-size:13px
+}
+:root[data-ui-release="2"] .extension-toolbar>button, :root[data-ui-release="2"] .extension-import-actions>button, :root[data-ui-release="2"] .extension-empty>button, :root[data-ui-release="2"] .extension-search-test>button {display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:5px 10px;border:1px solid var(--v2-line);border-radius:6px;white-space:nowrap
+}
+:root[data-ui-release="2"] .ui2-tabbar .ui2-tab-action {margin-left:auto;display:flex;align-items:center;gap:6px;border:1px solid var(--v2-line);border-radius:6px;padding:5px 10px
+}
+:root[data-ui-release="2"] .extension-rows {margin-top:14px;border-top:1px solid var(--v2-line)
+}
+:root[data-ui-release="2"] .extension-row {display:flex;align-items:center;gap:12px;padding:12px 8px;border-bottom:1px solid var(--v2-line);min-height:64px
+}
+:root[data-ui-release="2"] .extension-row.is-selected {background:var(--v2-soft)
+}
+:root[data-ui-release="2"] .extension-row-info {flex:1;min-width:0;text-align:left;display:grid;gap:3px
+}
+:root[data-ui-release="2"] .extension-row-info strong {font-size:14px;font-weight:500
+}
+:root[data-ui-release="2"] .extension-row.is-selected .extension-row-info strong {font-weight:650
+}
+:root[data-ui-release="2"] .extension-row-info span {font-size:12px;line-height:1.6;overflow-wrap:anywhere
+}
+:root[data-ui-release="2"] .extension-row>button:not(.extension-row-info) {padding:5px 10px;border:1px solid var(--v2-line);border-radius:5px
+}
+:root[data-ui-release="2"] .extension-switch {position:relative;display:inline-flex;width:36px;height:22px;flex:none;cursor:pointer
+}
+:root[data-ui-release="2"] .extension-switch input {position:absolute;inset:0;margin:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:1
+}
+:root[data-ui-release="2"] .extension-switch>span {width:36px;height:22px;border-radius:12px;background:#c5c5c5;transition:background 120ms ease-out
+}
+:root[data-ui-release="2"] .extension-switch>span::after {content:"";display:block;width:16px;height:16px;margin:3px;border-radius:50%;background:#fff;transition:transform 120ms ease-out
+}
+:root[data-ui-release="2"] .extension-switch input:checked+span {background:#222
+}
+:root[data-ui-release="2"] .extension-switch input:checked+span::after {transform:translateX(14px)
+}
+:root[data-ui-release="2"] .extension-switch input:focus-visible+span {outline:2px solid var(--v2-ink);outline-offset:3px
+}
+:root[data-ui-release="2"] .extension-switch input:disabled+span {opacity:.65
+}
+:root[data-ui-release="2"] .extension-detail, :root[data-ui-release="2"] .extension-import {margin-top:20px;border:1px solid var(--v2-line);border-radius:8px;overflow:hidden
+}
+:root[data-ui-release="2"] .extension-detail>header, :root[data-ui-release="2"] .extension-import>header {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--v2-line)
+}
+:root[data-ui-release="2"] .extension-detail>header>div {display:flex;align-items:center;gap:8px
+}
+:root[data-ui-release="2"] .extension-detail>header button {display:inline-flex;align-items:center;gap:5px;padding:5px;border-radius:4px
+}
+:root[data-ui-release="2"] .extension-file-layout {display:grid;grid-template-columns:minmax(180px,25%) minmax(0,1fr);min-height:260px;max-height:480px
+}
+:root[data-ui-release="2"] .extension-file-layout nav {overflow:auto;overscroll-behavior:contain;border-right:1px solid var(--v2-line);padding:8px;background:var(--v2-soft)
+}
+:root[data-ui-release="2"] .extension-file-layout nav button {display:flex;gap:6px;align-items:flex-start;width:100%;padding:7px 6px;border-radius:4px;text-align:left;font-size:12px;overflow-wrap:anywhere
+}
+:root[data-ui-release="2"] .extension-file-layout nav button svg {flex:none;margin-top:2px
+}
+:root[data-ui-release="2"] .extension-file-layout nav [aria-current=true] {background:var(--v2-selected);font-weight:600
+}
+:root[data-ui-release="2"] .extension-file-layout pre, :root[data-ui-release="2"] .extension-test-result {white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;padding:16px;font-size:12px;line-height:1.8;user-select:text
+}
+:root[data-ui-release="2"] .extension-script-permission {display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--v2-line)
+}
+:root[data-ui-release="2"] .extension-script-permission p {font-size:12px;line-height:1.7;margin-top:4px
+}
+:root[data-ui-release="2"] .extension-empty {display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:48px 20px;text-align:center
+}
+:root[data-ui-release="2"] .extension-empty p {max-width:460px;font-size:13px;line-height:1.8
+}
+:root[data-ui-release="2"] .extension-error {padding:10px 12px;border:1px solid var(--v2-line);border-radius:6px;font-size:13px;line-height:1.7
+}
+:root[data-ui-release="2"] .extension-import textarea {display:block;width:100%;height:190px;padding:14px;border:0;border-radius:0;background:var(--v2-soft);font-size:12px;font-family:ui-monospace,monospace;resize:vertical
+}
+:root[data-ui-release="2"] .extension-import-actions {display:flex;justify-content:flex-end;gap:8px;padding:12px
+}
+:root[data-ui-release="2"] .extension-import-actions .extension-primary {background:var(--v2-ink);color:var(--v2-bg)
+}
+:root[data-ui-release="2"] .extension-file-pick {position:relative;display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer
+}
+:root[data-ui-release="2"] .extension-file-pick input {position:absolute;inset:0;opacity:0;width:100%;cursor:pointer
+}
+:root[data-ui-release="2"] .extension-connection-info {display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--v2-line);font-size:12px;overflow-wrap:anywhere
+}
+:root[data-ui-release="2"] .extension-connection-info label {display:flex;align-items:center;gap:8px;margin-left:auto
+}
+:root[data-ui-release="2"] .extension-connection-info select {font-size:12px;padding:5px 8px;background:var(--v2-soft);border:1px solid var(--v2-line);border-radius:5px
+}
+:root[data-ui-release="2"] .extension-tools {padding:0 14px
+}
+:root[data-ui-release="2"] .extension-tools>label {display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid var(--v2-line)
+}
+:root[data-ui-release="2"] .extension-tools input {margin-top:4px;flex:none;accent-color:var(--v2-ink)
+}
+:root[data-ui-release="2"] .extension-tools label>div {flex:1;min-width:0
+}
+:root[data-ui-release="2"] .extension-tools strong {font-size:13px
+}
+:root[data-ui-release="2"] .extension-tools p {font-size:12px;line-height:1.7;margin-top:4px;overflow-wrap:anywhere
+}
+:root[data-ui-release="2"] .extension-tools label>span {font-size:11px;flex:none
+}
+:root[data-ui-release="2"] .extension-search-test {display:flex;align-items:center;gap:8px;padding:14px
+}
+:root[data-ui-release="2"] .extension-search-test>label {display:flex;align-items:center;gap:8px;flex:1;min-width:0;border:1px solid var(--v2-line);border-radius:6px;padding:6px 10px
+}
+:root[data-ui-release="2"] .extension-search-test input {flex:1;min-width:0;border:0;padding:0;background:transparent;font-size:13px
+}
+:root[data-ui-release="2"] .extension-test-result {max-height:360px;border-top:1px solid var(--v2-line)
+}
+:root[data-ui-release="2"] .ai-skill-select-trigger {display:flex;align-items:center;gap:5px;padding:4px 6px;border-radius:5px;font-size:12px;white-space:nowrap
+}
+:root[data-ui-release="2"] .ai-skill-select-trigger:hover {background:var(--v2-soft)
+}
+:root[data-ui-release="2"] .ai-skill-select-options {max-height:270px;overflow:auto;overscroll-behavior:contain;padding:4px
+}
+:root[data-ui-release="2"] .ai-skill-select-options>label {display:flex;align-items:flex-start;gap:8px;padding:8px;border-radius:5px;cursor:pointer
+}
+:root[data-ui-release="2"] .ai-skill-select-options>label:hover {background:var(--v2-soft)
+}
+:root[data-ui-release="2"] .ai-skill-select-options input {margin-top:3px;accent-color:var(--v2-ink)
+}
+:root[data-ui-release="2"] .ai-skill-select-options label>span {flex:1;min-width:0
+}
+:root[data-ui-release="2"] .ai-skill-select-options strong {display:block;font-size:13px;font-weight:500
+}
+:root[data-ui-release="2"] .ai-skill-select-options small {display:block;font-size:11px;line-height:1.6;margin-top:3px
+}
+:root[data-ui-release="2"] .ai-skill-select-options input:checked+span strong {font-weight:650
+}
+:root[data-ui-release="2"] .ai-skill-select-note {margin:8px;padding:8px 0 0;border-top:1px solid var(--v2-line);font-size:11px;line-height:1.6
+}
+@media(max-width:1000px) {
+:root[data-ui-release="2"] .extension-file-layout {grid-template-columns:150px minmax(0,1fr)
+}
+:root[data-ui-release="2"] .extension-toolbar {align-items:flex-start
+}
+:root[data-ui-release="2"] .extension-toolbar p {font-size:12px
+}
+:root[data-ui-release="2"] .extension-connection-info label {margin-left:0
+}
+}
+
+/* 配置详情用独立窗口，服务和技能列表不随展开而增长。 */
+:root[data-ui-release="2"] .extension-modal-layer {position:fixed;inset:0;z-index:550;display:flex;align-items:center;justify-content:center;padding:24px}
+:root[data-ui-release="2"] .extension-modal-backdrop {position:absolute;inset:0;background:#0003;border:0}
+:root[data-ui-release="2"] .extension-modal {position:relative;display:flex;flex-direction:column;width:min(860px,100%);max-height:calc(100dvh - 48px);min-height:0;overflow:hidden;background:var(--v2-bg);color:var(--v2-ink);border:1px solid var(--v2-line);border-radius:12px;box-shadow:0 16px 48px #0003;font-size:13px}
+:root[data-ui-release="2"] .extension-modal-header {display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px;border-bottom:1px solid var(--v2-line);flex:none}
+:root[data-ui-release="2"] .extension-modal-header h2 {font-size:16px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}
+:root[data-ui-release="2"] .extension-modal-header>div {display:flex;align-items:center;gap:10px;flex:none}
+:root[data-ui-release="2"] .extension-modal-header button {display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:12px;padding:6px;border-radius:5px;color:var(--v2-ink)}
+:root[data-ui-release="2"] .extension-modal-header button:hover {background:var(--v2-soft)}
+:root[data-ui-release="2"] .extension-modal-body {min-height:0;overflow:auto;overscroll-behavior:contain;padding:0;scrollbar-gutter:stable}
+:root[data-ui-release="2"] .extension-modal-body :is(.extension-detail,.extension-import) {margin:0;border:0;border-radius:0}
+:root[data-ui-release="2"] .extension-modal-body .extension-file-layout {height:min(440px,55vh);max-height:none;min-height:220px}
+:root[data-ui-release="2"] .extension-modal-body .extension-error {margin:12px 14px}
+:root[data-ui-release="2"] .extension-modal .extension-switch {width:36px;height:22px}
+:root[data-ui-release="2"] .extension-modal input[type=checkbox] {accent-color:var(--v2-ink)}
+:root[data-ui-release="2"] .extension-modal :is(button,input,select,textarea):focus-visible {outline:2px solid var(--v2-ink);outline-offset:2px}
+@media(max-width:700px) {
+:root[data-ui-release="2"] .extension-modal-layer {padding:12px}
+:root[data-ui-release="2"] .extension-modal {max-height:calc(100dvh - 24px)}
+:root[data-ui-release="2"] .extension-modal-header {padding:12px;flex-wrap:wrap}
+:root[data-ui-release="2"] .extension-modal-body .extension-file-layout {grid-template-columns:140px minmax(0,1fr)}
+}

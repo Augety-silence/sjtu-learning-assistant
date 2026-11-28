@@ -1,0 +1,18 @@
+.v2-drive-page .drive-toolbar { display:grid; grid-template-columns:minmax(0,1fr) clamp(220px,28vw,350px) 32px; height:40px; flex-wrap:nowrap; }
+.v2-drive-page .drive-toolbar .drive-search { min-width:0; width:100%; max-width:none; margin-left:0; }
+.v2-drive-page .drive-selection-tools { display:flex; align-items:center; gap:12px; min-width:0; height:40px; }
+.v2-drive-page .drive-selection-tools > span { font-size:13px; white-space:nowrap; }
+.v2-drive-page .drive-selection-tools > div { display:flex; align-items:center; gap:4px; }
+.v2-drive-page .drive-selection-tools button { flex:none; padding:6px 8px; min-height:32px; }
+.v2-drive-page .drive-selection-tools button > svg { width:16px; height:16px; }
+.v2-drive-page .drive-selection-tools button[aria-label="取消选择"] { width:32px; padding:6px; }
+@media(max-width:1250px) {
+  .v2-drive-page .drive-selection-tools .drive-selection-label { display:none; }
+  .v2-drive-page .drive-selection-tools button { width:32px; padding:6px; }
+  .v2-drive-page .drive-selection-tools { gap:8px; }
+}
+@media(max-width:900px) {
+  .v2-drive-page .drive-toolbar { height:82px; grid-template-columns:minmax(0,1fr) 32px; align-content:center; }
+  .v2-drive-page .drive-toolbar .drive-search { grid-column:1/-1; grid-row:2; }
+  .v2-drive-page .drive-selection-tools { flex:1; }
+}

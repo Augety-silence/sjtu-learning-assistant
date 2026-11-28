@@ -55,10 +55,12 @@ import type {
   DriveSortOrder,
   DriveSpace,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 import { cn } from "@/lib/utils";
 import { DriveDetails } from "./DriveDetails";
 import { DeleteDialog, NameDialog, TransferDialog } from "./DriveDialogs";
 import { DriveMenu, type DriveMenuItem, type MenuAnchor } from "./DriveMenu";
+import { DriveSelectionActions } from "./DriveSelectionActions";
 import { DriveTable, type RowIntent } from "./DriveTable";
 import { driveTransfers, useDriveTransfers } from "./driveTransfers";
 import {
@@ -69,6 +71,7 @@ import {
   pathKey,
   ROOT_LABEL,
 } from "./driveUtils";
+import { TransferTray } from "./TransferTray";
 import { type NativeDroppedFile, useNativeFileDrop } from "./useNativeFileDrop";
 
 const PAGE_SIZES = [20, 50, 100];
@@ -119,6 +122,7 @@ function refs(items: DriveItem[]) {
 
 /** 交大云盘文件浏览器：浏览、搜索、上传、下载与整理个人空间中的文件。 */
 export function DriveBrowser({ active }: { active: boolean }) {
+  const release = useUIRelease();
   const { showToast } = useToast();
   const { conflict, completion } = useDriveTransfers();
   const [path, setPath] = useState<string[]>([]);
@@ -861,51 +865,65 @@ export function DriveBrowser({ active }: { active: boolean }) {
       </div>
 
       <div className="drive-toolbar" role="toolbar" aria-label="文件操作">
-        <div className="drive-toolbar-primary">
-          <Button
-            ref={uploadButtonRef}
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={menu?.kind === "upload"}
-            disabled={Boolean(error)}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              setMenu({
-                kind: "upload",
-                anchor: { x: rect.left, y: rect.bottom + 4 },
-                trigger: event.currentTarget,
-              });
-            }}
-          >
-            <Upload aria-hidden="true" />
-            上传
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={Boolean(error)}
-            onClick={() => setDialog({ kind: "mkdir" })}
-          >
-            <FolderPlus aria-hidden="true" />
-            新建文件夹
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="刷新"
-            title="刷新"
-            onClick={() => {
-              reload(true);
-              loadSpace();
-            }}
-          >
-            <RefreshCw
-              className={cn(loading && data && "drive-spin")}
-              aria-hidden="true"
-            />
-          </Button>
-        </div>
+        {release === "2" && selectedItems.length > 0 ? (
+          <DriveSelectionActions
+            inline={release === "2"}
+            items={selectedItems}
+            onOpen={open}
+            onDownload={download}
+            onRename={askRename}
+            onMove={(items) => setDialog({ kind: "move", items })}
+            onCopy={(items) => setDialog({ kind: "copy", items })}
+            onDelete={askDelete}
+            onClear={() => setSelected(new Set())}
+          />
+        ) : (
+          <div className="drive-toolbar-primary">
+            <Button
+              ref={uploadButtonRef}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={menu?.kind === "upload"}
+              disabled={Boolean(error)}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setMenu({
+                  kind: "upload",
+                  anchor: { x: rect.left, y: rect.bottom + 4 },
+                  trigger: event.currentTarget,
+                });
+              }}
+            >
+              <Upload aria-hidden="true" />
+              上传
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={Boolean(error)}
+              onClick={() => setDialog({ kind: "mkdir" })}
+            >
+              <FolderPlus aria-hidden="true" />
+              新建文件夹
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="刷新"
+              title="刷新"
+              onClick={() => {
+                reload(true);
+                loadSpace();
+              }}
+            >
+              <RefreshCw
+                className={cn(loading && data && "drive-spin")}
+                aria-hidden="true"
+              />
+            </Button>
+          </div>
+        )}
         <div className="drive-search">
           <Search aria-hidden="true" />
           <input
@@ -994,80 +1012,21 @@ export function DriveBrowser({ active }: { active: boolean }) {
             全部路径搜索“{query}”：{data.total} 个结果
           </span>
         )}
+        {release === "2" && <TransferTray placement="header" active={active} />}
       </div>
 
-      {selectedItems.length > 0 && (
-        <div
-          className="drive-selection-bar"
-          role="region"
-          aria-label="批量操作"
-        >
-          <span aria-live="polite">已选择 {selectedItems.length} 项</span>
-          <div>
-            {selectedItems.length === 1 && selectedItems[0].is_directory ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => open(selectedItems[0])}
-              >
-                <Eye aria-hidden="true" />
-                打开
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={selectedItems.every((item) => item.is_directory)}
-                onClick={() => download(selectedItems)}
-              >
-                <Download aria-hidden="true" />
-                下载
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={selectedItems.length !== 1}
-              onClick={() => askRename(selectedItems)}
-            >
-              <Pencil aria-hidden="true" />
-              重命名
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setDialog({ kind: "move", items: selectedItems })}
-            >
-              <FolderInput aria-hidden="true" />
-              移动
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setDialog({ kind: "copy", items: selectedItems })}
-            >
-              <Copy aria-hidden="true" />
-              复制
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="drive-danger-text"
-              onClick={() => askDelete(selectedItems)}
-            >
-              <Trash2 aria-hidden="true" />
-              删除
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="取消选择"
-              onClick={() => setSelected(new Set())}
-            >
-              <X aria-hidden="true" />
-            </Button>
-          </div>
-        </div>
+      {release !== "2" && selectedItems.length > 0 && (
+        <DriveSelectionActions
+          inline={false}
+          items={selectedItems}
+          onOpen={open}
+          onDownload={download}
+          onRename={askRename}
+          onMove={(items) => setDialog({ kind: "move", items })}
+          onCopy={(items) => setDialog({ kind: "copy", items })}
+          onDelete={askDelete}
+          onClear={() => setSelected(new Set())}
+        />
       )}
 
       <div className={cn("drive-workspace", detailsOpen && "has-details")}>

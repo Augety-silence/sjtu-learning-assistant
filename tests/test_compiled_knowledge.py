@@ -163,6 +163,22 @@ class CompiledKnowledgeTests(unittest.TestCase):
             offset = page["next_offset"]
         self.assertEqual(self.body, "".join(parts))
 
+    def test_directory_browser_filters_before_paging_and_keeps_full_folder_tree(self):
+        documents = [{"id": f"{i:032x}", "source_id": "automatic-courses", "folder": "学期/课程/子目录" if i < 25 else "学期/课程", "relative_path": f"{i}.md"} for i in range(52)]
+        with patch.object(self.service, "_catalog", return_value=([{"id": "automatic-courses"}], documents, [], False)):
+            first = self.service.search(folder="学期/课程", direct_children=True)
+            second = self.service.search(folder="学期/课程", direct_children=True, offset=20)
+            self.assertEqual(27, first["count"])
+            self.assertEqual(20, first["next_offset"])
+            self.assertEqual([doc["id"] for doc in documents[25:]], [doc["id"] for doc in first["items"] + second["items"]])
+            self.assertIsNone(second["next_offset"])
+            self.assertTrue(any(item["path"] == "学期/课程/子目录" for item in first["folders"]))
+            self.assertEqual(52, self.service.search(folder="学期/课程")["count"])
+            self.assertEqual([], self.service.search(direct_children=True)["items"])
+            for invalid in (1, "true", None):
+                with self.assertRaises(CompiledKnowledgeError):
+                    self.service.search(direct_children=invalid)
+
     def test_folder_catalog_is_not_limited_to_document_page(self):
         state = json.loads(self.marker.read_text())
         for index in range(25):
@@ -333,6 +349,10 @@ class CompiledKnowledgeTests(unittest.TestCase):
         result = bridge.invoke("compiled_knowledge_search", {"query": "关系代数"})
         self.assertTrue(result["ok"])
         doc = result["data"]["items"][0]
+        direct = bridge.invoke("compiled_knowledge_search", {"folder": doc["folder"], "direct_children": True})
+        self.assertTrue(direct["ok"])
+        self.assertEqual([doc["id"]], [item["id"] for item in direct["data"]["items"]])
+        self.assertFalse(bridge.invoke("compiled_knowledge_search", {"direct_children": "true"})["ok"])
         self.assertTrue(bridge.invoke("compiled_knowledge_read", {"document_id": doc["id"]})["ok"])
         for action, payload in (("compiled_knowledge_read", {}), ("compiled_knowledge_search", {"path": "/etc/private"}), ("compiled_knowledge_open", {})):
             self.assertFalse(bridge.invoke(action, payload)["ok"])

@@ -40,6 +40,9 @@ if ($LASTEXITCODE -ne 0) { throw "前端构建失败（退出码 $LASTEXITCODE�
 & $Python -m unittest `
     tests.test_dashboard_desktop_actions.DesktopActionSafetyTests.test_windows_commands_use_shell_free_system_handlers `
     tests.test_notifications.WindowsNotificationSenderTests `
+    tests.test_native_calendar `
+    tests.test_ai_extensions `
+    tests.test_frontend_self_test `
     tests.test_ffmpeg_packaging -v
 & $Python scripts/check_licenses.py
 node scripts/check_licenses.mjs

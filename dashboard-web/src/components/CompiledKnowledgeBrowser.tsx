@@ -6,12 +6,10 @@ import {
   Search,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
+import { FloatingDocumentPreview } from "@/components/FloatingDocumentPreview";
 import { KnowledgeDocumentInfo } from "@/components/KnowledgeDocumentInfo";
+import { KnowledgeDocumentReader } from "@/components/KnowledgeDocumentReader";
 import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import { Button } from "@/components/ui/Button";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
@@ -36,6 +34,8 @@ import type {
   CompiledKnowledgeSearch,
   CompiledKnowledgeSource,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
+import { V2KnowledgeFiles } from "@/v2/KnowledgeFiles";
 import "./compiled-knowledge.css";
 
 const statusLabels = {
@@ -65,6 +65,9 @@ export function CompiledKnowledgeBrowser({
 }: {
   preferredSource?: string;
 }) {
+  const release = useUIRelease();
+  const [openDocument, setOpenDocument] =
+    useState<CompiledKnowledgeDocument | null>(null);
   const [sources, setSources] = useState<CompiledKnowledgeSource[]>([]);
   const [sourceId, setSourceId] = useState(preferredSource);
   const [query, setQuery] = useState("");
@@ -171,19 +174,41 @@ export function CompiledKnowledgeBrowser({
       const generation = ++searchGeneration.current;
       ++readGeneration.current;
       setReading(false);
+      setOpenDocument(null);
+      if (release === "2") {
+        displayedPage.current = null;
+        setPage(null);
+      }
       setLoading(true);
       setActiveQuery(keywords);
       setSearchOffset(offset);
       setFolder(selectedFolder);
       setError("");
       try {
-        const result = await (selectedFolder
-          ? searchCompiledKnowledge(keywords, selected, offset, selectedFolder)
-          : searchCompiledKnowledge(keywords, selected, offset));
+        const result = await (release === "2"
+          ? searchCompiledKnowledge(
+              keywords,
+              selected,
+              offset,
+              selectedFolder,
+              undefined,
+              !keywords.trim(),
+            )
+          : selectedFolder
+            ? searchCompiledKnowledge(
+                keywords,
+                selected,
+                offset,
+                selectedFolder,
+              )
+            : searchCompiledKnowledge(keywords, selected, offset));
         if (generation !== searchGeneration.current) return;
         setSearch(result);
-        if (!selectedFolder) setFolders(result.folders ?? []);
+        setFolders((current) =>
+          !selectedFolder || !current.length ? (result.folders ?? []) : current,
+        );
         if (
+          release !== "2" &&
           result.items[0] &&
           (selectedFolder || keywords || !result.folders?.length)
         )
@@ -201,7 +226,7 @@ export function CompiledKnowledgeBrowser({
         if (generation === searchGeneration.current) setLoading(false);
       }
     },
-    [read, readingPosition.capture],
+    [read, readingPosition.capture, release],
   );
 
   const refresh = useCallback(async () => {
@@ -265,12 +290,28 @@ export function CompiledKnowledgeBrowser({
       setError(reason instanceof Error ? reason.message : "连接配置读取失败");
     }
   };
+  const closePreview = () => {
+    readingPosition.capture();
+    ++readGeneration.current;
+    setReading(false);
+    setOpenDocument(null);
+    displayedPage.current = null;
+    setPage(null);
+  };
+  const previewDocument = (doc: CompiledKnowledgeDocument) => {
+    setOpenDocument(doc);
+    void read(doc);
+  };
+  const chooseFolder = (source: string, path: string) => {
+    setSourceId(source);
+    void load(source, activeQuery, 0, path);
+  };
   const browsingRoot =
     Boolean(search?.folders?.length) && !folder && !activeQuery;
 
   return (
     <section
-      className="knowledge-config compiled-knowledge"
+      className={`knowledge-config compiled-knowledge ${release === "2" ? "v2-knowledge-browser" : ""}`}
       aria-label="编译结果与知识点"
       aria-busy={loading || reading}
     >
@@ -335,235 +376,252 @@ export function CompiledKnowledgeBrowser({
       {search?.truncated && (
         <p role="alert">结果范围不完整，请缩小搜索范围或进入课程目录。</p>
       )}
-      {search && !search.items.length && !loading && (
+      {release !== "2" && search && !search.items.length && !loading && (
         <p>{query ? "未找到匹配资料" : "暂无编译资料"}</p>
       )}
-      <div
-        className="compiled-knowledge-layout"
-        data-browsing={browsingRoot ? "root" : "folder"}
-        data-navigation={browsingRoot || navigationOpen ? "open" : "closed"}
-      >
-        <aside
-          className="compiled-knowledge-navigation"
-          hidden={!browsingRoot && !navigationOpen}
-        >
-          <nav
-            className="compiled-knowledge-folders"
-            aria-label="课程与课时文件夹"
-          >
-            {!browsingRoot && (
-              <Button
-                variant="ghost"
-                aria-pressed={!folder}
-                onClick={() => {
-                  const selected = sources.some(
-                    (source) => source.id === preferredSource,
-                  )
-                    ? preferredSource
-                    : "";
-                  setSourceId(selected);
-                  void load(selected, activeQuery);
-                }}
-              >
-                全部课程
-              </Button>
-            )}
-            <KnowledgeFolders
-              folders={folders}
-              selected={folder}
-              selectedSource={sourceId}
-              onSelect={(source, path) => {
-                setSourceId(source);
-                void load(source, activeQuery, 0, path);
-              }}
-            />
-          </nav>
-          {!browsingRoot && (
-            <div
-              className="compiled-knowledge-list"
-              aria-label="Markdown 结果列表"
-            >
-              <p
-                className="compiled-knowledge-folder-path"
-                title={folder || "全部课程"}
-              >
-                {folder.split("/").at(-1) || "全部课程"}
-              </p>
-              {search?.items.map((doc) => (
-                <Button
-                  key={doc.id}
-                  variant="ghost"
-                  aria-pressed={page?.id === doc.id}
-                  className="compiled-knowledge-item"
-                  title={`${documentTitle(doc)} · ${documentStatus(doc)}`}
-                  onClick={() => void read(doc)}
-                >
-                  <strong>
-                    <FileText aria-hidden="true" />
-                    {documentTitle(doc)}
-                  </strong>
-                  {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
-                </Button>
-              ))}
-              {search?.next_offset != null && (
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    void load(
-                      sourceId,
-                      activeQuery,
-                      search.next_offset ?? 0,
-                      folder,
-                    )
-                  }
-                  disabled={loading}
-                >
-                  下一组结果
-                </Button>
-              )}
-              {search && searchOffset > 0 && (
-                <Button
-                  variant="ghost"
-                  onClick={() => void load(sourceId, activeQuery, 0, folder)}
-                  disabled={loading}
-                >
-                  返回首组结果
-                </Button>
-              )}
-            </div>
-          )}
-        </aside>
-        {!browsingRoot && (
-          <div className="compiled-knowledge-reading-pane">
-            <div
-              className="compiled-knowledge-reader-actions"
-              role="toolbar"
-              aria-label="阅读操作"
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="compiled-knowledge-navigation-toggle"
-                aria-label={navigationOpen ? "收起课程目录" : "展开课程目录"}
-                title={navigationOpen ? "收起课程目录" : "展开课程目录"}
-                onClick={() => setNavigationOpen((value) => !value)}
-              >
-                {navigationOpen ? (
-                  <PanelLeftClose
-                    aria-hidden="true"
-                    size={16}
-                    strokeWidth={1.5}
-                  />
-                ) : (
-                  <PanelLeftOpen
-                    aria-hidden="true"
-                    size={16}
-                    strokeWidth={1.5}
-                  />
-                )}
-              </Button>
-              {page && (
-                <>
-                  <span
-                    className="compiled-knowledge-reader-title"
-                    title={documentTitle(page)}
-                  >
-                    {documentTitle(page)}
-                  </span>
+      {release === "2" ? (
+        <>
+          <V2KnowledgeFiles
+            folders={folders}
+            search={search}
+            folder={folder}
+            sourceId={sourceId}
+            query={activeQuery}
+            loading={loading}
+            selectedId={openDocument?.id ?? page?.id}
+            onSelectFolder={chooseFolder}
+            onPreview={previewDocument}
+            onNext={() =>
+              void load(sourceId, activeQuery, search?.next_offset ?? 0, folder)
+            }
+            onFirst={
+              searchOffset > 0
+                ? () => void load(sourceId, activeQuery, 0, folder)
+                : undefined
+            }
+          />
+          {openDocument && (
+            <FloatingDocumentPreview
+              title={documentTitle(openDocument)}
+              detail={
+                page && (
                   <KnowledgeDocumentInfo
                     status={documentStatus(page)}
                     section={page.section}
                     citation={page.citation}
                   />
+                )
+              }
+              onClose={closePreview}
+              actions={
+                <>
                   <Button
                     variant="ghost"
-                    disabled={reading}
-                    onClick={() => void read(page, 0, false, true)}
+                    disabled={reading || !page}
+                    onClick={() => page && void read(page, 0, false, true)}
                   >
                     从头阅读
                   </Button>
-                  <Button variant="ghost" onClick={() => void open(page)}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => void open(openDocument)}
+                  >
                     在本地显示
                   </Button>
                 </>
-              )}
-            </div>
-            <div
-              ref={readingPosition.ref}
-              onScroll={readingPosition.onScroll}
-              className="compiled-knowledge-reader"
-              aria-label="Markdown 正文预览"
-              tabIndex={0}
+              }
             >
-              {page && (
-                <>
-                  {page.error && (
-                    <p role="alert">
-                      尚未完成：{page.error}{" "}
-                      当前显示已保存原文，不是完整知识稿。
-                    </p>
-                  )}
-                  <div className="rich-preview-markdown">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[
-                        [
-                          rehypeKatex,
-                          {
-                            trust: false,
-                            throwOnError: false,
-                            maxExpand: 1000,
-                            maxSize: 10,
-                          },
-                        ],
-                      ]}
-                      skipHtml
-                      components={{
-                        img: ({ alt }) => (
-                          <span>［{alt || "页图"}：请在结果目录查看］</span>
-                        ),
-                        a: ({ children, href }) =>
-                          href?.startsWith("#") ? (
-                            <a href={href}>{children}</a>
-                          ) : (
-                            <span>{children}</span>
-                          ),
-                        h1: ({ children }) => (
-                          <h1
-                            id={String(children)
-                              .replace(/[–—]/g, "-")
-                              .replace(/\s+/g, "-")}
-                          >
-                            {children}
-                          </h1>
-                        ),
-                      }}
-                    >
-                      {page.offset === 0
-                        ? page.text.replace(
-                            /^---\r?\n[\s\S]*?\r?\n---\r?\n/,
-                            "",
-                          )
-                        : page.text}
-                    </ReactMarkdown>
-                  </div>
-                  {page.next_offset != null && (
-                    <Button
-                      variant="outline"
-                      disabled={reading}
-                      onClick={() =>
-                        void read(page, page.next_offset ?? 0, true)
-                      }
-                    >
-                      继续阅读
-                    </Button>
-                  )}
-                </>
+              {reading && !page ? (
+                <div className="v2-empty" role="status">
+                  正在读取文件…
+                </div>
+              ) : (
+                <KnowledgeDocumentReader
+                  page={page}
+                  reading={reading}
+                  position={readingPosition}
+                  onContinue={() =>
+                    page && void read(page, page.next_offset ?? 0, true)
+                  }
+                />
               )}
+              {error && (
+                <p className="v2-file-preview-error" role="alert">
+                  {error}
+                  <Button
+                    variant="ghost"
+                    onClick={() => void read(openDocument)}
+                  >
+                    重试
+                  </Button>
+                </p>
+              )}
+            </FloatingDocumentPreview>
+          )}
+        </>
+      ) : (
+        <div
+          className="compiled-knowledge-layout"
+          data-browsing={browsingRoot ? "root" : "folder"}
+          data-navigation={browsingRoot || navigationOpen ? "open" : "closed"}
+        >
+          <aside
+            className="compiled-knowledge-navigation"
+            hidden={!browsingRoot && !navigationOpen}
+          >
+            <nav
+              className="compiled-knowledge-folders"
+              aria-label="课程与课时文件夹"
+            >
+              {!browsingRoot && (
+                <Button
+                  variant="ghost"
+                  aria-pressed={!folder}
+                  onClick={() => {
+                    const selected = sources.some(
+                      (source) => source.id === preferredSource,
+                    )
+                      ? preferredSource
+                      : "";
+                    setSourceId(selected);
+                    void load(selected, activeQuery);
+                  }}
+                >
+                  全部课程
+                </Button>
+              )}
+              <KnowledgeFolders
+                folders={folders}
+                selected={folder}
+                selectedSource={sourceId}
+                onSelect={(source, path) => {
+                  setSourceId(source);
+                  void load(source, activeQuery, 0, path);
+                }}
+              />
+            </nav>
+            {!browsingRoot && (
+              <div
+                className="compiled-knowledge-list"
+                aria-label="Markdown 结果列表"
+              >
+                <p
+                  className="compiled-knowledge-folder-path"
+                  title={folder || "全部课程"}
+                >
+                  {folder.split("/").at(-1) || "全部课程"}
+                </p>
+                {search?.items.map((doc) => (
+                  <Button
+                    key={doc.id}
+                    variant="ghost"
+                    aria-pressed={page?.id === doc.id}
+                    className="compiled-knowledge-item"
+                    title={`${documentTitle(doc)} · ${documentStatus(doc)}`}
+                    onClick={() => void read(doc)}
+                  >
+                    <strong>
+                      <FileText aria-hidden="true" />
+                      {documentTitle(doc)}
+                    </strong>
+                    {activeQuery && doc.snippet && <small>{doc.snippet}</small>}
+                  </Button>
+                ))}
+                {search?.next_offset != null && (
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void load(
+                        sourceId,
+                        activeQuery,
+                        search.next_offset ?? 0,
+                        folder,
+                      )
+                    }
+                    disabled={loading}
+                  >
+                    下一组结果
+                  </Button>
+                )}
+                {search && searchOffset > 0 && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => void load(sourceId, activeQuery, 0, folder)}
+                    disabled={loading}
+                  >
+                    返回首组结果
+                  </Button>
+                )}
+              </div>
+            )}
+          </aside>
+          {!browsingRoot && (
+            <div className="compiled-knowledge-reading-pane">
+              <div
+                className="compiled-knowledge-reader-actions"
+                role="toolbar"
+                aria-label="阅读操作"
+              >
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="compiled-knowledge-navigation-toggle"
+                  aria-label={navigationOpen ? "收起课程目录" : "展开课程目录"}
+                  title={navigationOpen ? "收起课程目录" : "展开课程目录"}
+                  onClick={() => setNavigationOpen((value) => !value)}
+                >
+                  {navigationOpen ? (
+                    <PanelLeftClose
+                      aria-hidden="true"
+                      size={16}
+                      strokeWidth={1.5}
+                    />
+                  ) : (
+                    <PanelLeftOpen
+                      aria-hidden="true"
+                      size={16}
+                      strokeWidth={1.5}
+                    />
+                  )}
+                </Button>
+                {page && (
+                  <>
+                    <span
+                      className="compiled-knowledge-reader-title"
+                      title={documentTitle(page)}
+                    >
+                      {documentTitle(page)}
+                    </span>
+                    <KnowledgeDocumentInfo
+                      status={documentStatus(page)}
+                      section={page.section}
+                      citation={page.citation}
+                    />
+                    <Button
+                      variant="ghost"
+                      disabled={reading}
+                      onClick={() => void read(page, 0, false, true)}
+                    >
+                      从头阅读
+                    </Button>
+                    <Button variant="ghost" onClick={() => void open(page)}>
+                      在本地显示
+                    </Button>
+                  </>
+                )}
+              </div>
+              <KnowledgeDocumentReader
+                page={page}
+                reading={reading}
+                position={readingPosition}
+                onContinue={() =>
+                  page && void read(page, page.next_offset ?? 0, true)
+                }
+              />
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
       <details className="compiled-knowledge-connection">
         <summary>外部 AI 接入</summary>
         <InfoTooltip label="AI 接入说明">

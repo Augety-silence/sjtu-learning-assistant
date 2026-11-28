@@ -410,7 +410,7 @@ class CompiledKnowledge:
         except UnicodeError:
             raise CompiledKnowledgeError("知识文件不是 UTF-8 Markdown。") from None
 
-    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20, folder: object = "", term_id: object = "", course_id: object = "") -> dict:
+    def search(self, query: object = "", source_id: object = "", offset: object = 0, limit: object = 20, folder: object = "", term_id: object = "", course_id: object = "", direct_children: object = False) -> dict:
         from sjtu_learning_assistant.course_scope import validate_scope
         try:
             validate_scope(term_id, [course_id] if course_id else None)
@@ -422,6 +422,8 @@ class CompiledKnowledge:
             raise CompiledKnowledgeError("知识搜索参数无效。")
         if type(folder) is not str or len(folder) > 1024 or "\\" in folder or "\x00" in folder or PurePosixPath(folder).is_absolute() or ".." in PurePosixPath(folder).parts:
             raise CompiledKnowledgeError("知识文件夹参数无效。")
+        if type(direct_children) is not bool:
+            raise CompiledKnowledgeError("知识目录浏览参数无效。")
         offset = _integer(offset, "offset", 0, MAX_ENTRIES)
         limit = _integer(limit, "limit", 1, 50)
         sources, documents, issues, truncated = self._catalog()
@@ -476,7 +478,10 @@ class CompiledKnowledge:
                 key = (scope, prefix)
                 summary = folders.setdefault(key, {"source_id": scope, "path": prefix, "name": parts[index - 1], "count": 0})
                 summary["count"] += 1
-        if folder:
+        if direct_children:
+            # 在分页前选择直属文件，目录树仍来自完整匹配范围，避免漏掉后续页文件。
+            matches = [doc for doc in matches if doc["folder"] == folder]
+        elif folder:
             matches = [doc for doc in matches if doc["folder"] == folder or doc["folder"].startswith(folder + "/")]
         return {"items": matches[offset:end], "count": len(matches), "next_offset": end if end < len(matches) else None,
                 "folders": sorted(folders.values(), key=lambda entry: (entry["source_id"], entry["path"])),

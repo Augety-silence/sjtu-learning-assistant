@@ -340,6 +340,7 @@ export function searchCompiledKnowledge(
   offset = 0,
   folder = "",
   scope?: { termId: string; courseId: string },
+  directChildren = false,
 ) {
   return invoke<import("@/lib/types").CompiledKnowledgeSearch>(
     "compiled_knowledge_search",
@@ -351,6 +352,7 @@ export function searchCompiledKnowledge(
       ...(folder ? { folder } : {}),
       ...(scope?.termId ? { term_id: scope.termId } : {}),
       ...(scope?.courseId ? { course_id: scope.courseId } : {}),
+      ...(directChildren ? { direct_children: true } : {}),
     },
   );
 }
@@ -759,6 +761,7 @@ export async function sendAiChatMessage(
     signal?: AbortSignal;
     pollSignal?: AbortSignal;
     onTaskStart?: (taskId: string) => void;
+    skillIds?: string[];
   } = {},
 ) {
   // 已中止的 signal 不再启动后端任务（避免白白创建再取消）。
@@ -772,6 +775,7 @@ export async function sendAiChatMessage(
       model,
       thinking_depth: thinkingDepth,
       preset_id: presetId,
+      ...(options.skillIds?.length ? { skill_ids: options.skillIds } : {}),
       ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
       ...(pageContext ? { page_context: pageContext } : {}),
     },
@@ -1099,9 +1103,14 @@ export function prepareDriveDownload(path: string[], transferId: string) {
   });
 }
 
-export function downloadDriveItem(path: string[], transferId?: string) {
+export function downloadDriveItem(
+  path: string[],
+  transferId?: string,
+  saveMode?: "dialog" | "downloads",
+) {
   return invoke<import("@/lib/types").DriveDownloadResult>("drive_download", {
     path,
+    ...(saveMode ? { save_mode: saveMode } : {}),
     ...(transferId ? { transfer_id: transferId } : {}),
   });
 }

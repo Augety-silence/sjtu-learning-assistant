@@ -19,3 +19,5 @@ STREAM_IDLE_TIMEOUT_SECONDS = 60.0
 MAX_OUTPUT_TOKENS_PER_CALL = 8192
 # 单次工具调用参数上限（写入文件内容经由工具参数传递）；更长的文件分多次 append。
 MAX_TOOL_ARGUMENT_CHARS = 32_000
+# 扩展后的综合助理同时包含学习、文件工作区和原生日历工具。
+MAX_CHAT_TOOL_DEFINITIONS = 64

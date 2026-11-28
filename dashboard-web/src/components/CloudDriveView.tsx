@@ -3,6 +3,7 @@ import { useState } from "react";
 import { BackupView } from "@/components/BackupView";
 import { ContentReveal } from "@/components/ContentReveal";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
+import { useUIRelease } from "@/lib/uiRelease";
 import { DriveBrowser } from "./cloud-drive/DriveBrowser";
 import { ConflictDialog } from "./cloud-drive/DriveDialogs";
 import {
@@ -19,12 +20,16 @@ type DriveTab = "files" | "sync";
  * 原“云盘备份”工作流降级为「本地同步」子页签。
  */
 export function CloudDriveView() {
+  const release = useUIRelease();
   const [tab, setTab] = useState<DriveTab>("files");
   const { conflict } = useDriveTransfers();
   return (
-    <ContentReveal className="section-stack drive-page" afterLoad>
+    <ContentReveal
+      className={release === "2" ? "v2-drive-page" : "section-stack drive-page"}
+      afterLoad
+    >
       <Tabs value={tab} onValueChange={(value) => setTab(value as DriveTab)}>
-        <div className="drive-page-head">
+        <header className="drive-page-head">
           <TabsList indicator indicatorRadius={8} aria-label="交大云盘视图">
             <TabsTrigger value="files">
               <HardDrive aria-hidden="true" className="drive-tab-icon" />
@@ -35,7 +40,15 @@ export function CloudDriveView() {
               本地同步
             </TabsTrigger>
           </TabsList>
-        </div>
+          {release === "2" && tab === "sync" && (
+            <TransferTray placement="header" />
+          )}
+          {release === "2" && (
+            <small>
+              {tab === "files" ? "交大云盘 · 个人空间" : "本地文件与云端同步"}
+            </small>
+          )}
+        </header>
         {/* 文件浏览保持挂载：切到「本地同步」再回来时保留所在文件夹、选择与滚动位置。 */}
         <TabsContent
           value="files"
@@ -49,7 +62,7 @@ export function CloudDriveView() {
           <BackupView />
         </TabsContent>
       </Tabs>
-      <TransferTray />
+      {release !== "2" && <TransferTray />}
       {conflict && (
         <ConflictDialog
           key={conflict.id}

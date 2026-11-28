@@ -41,6 +41,12 @@ export const toolIcons: Record<
 };
 
 const toolLabels: Record<string, string> = {
+  native_calendar_status: "检查日历连接",
+  native_calendar_calendars: "读取系统日历列表",
+  native_calendar_events: "读取 Mac 日程",
+  native_calendar_get: "核对日程详情",
+  native_calendar_save: "保存 Mac 日程",
+  native_calendar_delete: "删除 Mac 日程",
   list_compiled_knowledge: "列出编译知识库",
   browse_knowledge_wiki: "浏览课程知识地图",
   get_knowledge_status: "读取知识库进度",

@@ -20,6 +20,7 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { parseMessageLink } from "@/lib/messageLink";
 import type { MessageFilter, MessageItem } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 
 const kinds: Array<{ value: MessageFilter; label: string }> = [
   { value: "all", label: "全部" },
@@ -35,6 +36,7 @@ function messageError(reason: unknown, fallback = "未知错误") {
 }
 
 export function MessagesView() {
+  const release = useUIRelease();
   const [kind, setKind] = useState<MessageFilter>("all");
   const [items, setItems] = useState<MessageItem[] | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -395,7 +397,11 @@ export function MessagesView() {
 
   return (
     <ContentReveal
-      className="section-stack messages-page"
+      className={
+        release === "2"
+          ? "v2-messages-page messages-page"
+          : "section-stack messages-page"
+      }
       ready={items !== null || Boolean(error)}
     >
       <h2 className="sr-only">消息中心</h2>
@@ -460,7 +466,11 @@ export function MessagesView() {
         />
       ) : (
         <div
-          className={`message-workspace${detailItem ? " message-workspace-reading" : ""}`}
+          className={
+            release === "2"
+              ? `v2-message-workspace${detailItem ? " reading" : ""}`
+              : `message-workspace${detailItem ? " message-workspace-reading" : ""}`
+          }
         >
           <MessageInbox
             items={items}
@@ -479,6 +489,9 @@ export function MessagesView() {
             loadingMore={loadingMore}
             loadMore={loadMore}
           />
+          {!selectedItem && release === "2" && (
+            <div className="v2-message-reader-empty">选择一条消息查看内容</div>
+          )}
           {selectedItem && (
             <MessageReader
               key={messageKey(selectedItem)}

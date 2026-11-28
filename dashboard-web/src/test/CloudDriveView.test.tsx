@@ -25,6 +25,7 @@ import {
   uploadDriveFile,
 } from "@/lib/api";
 import type { DriveItem, DrivePage } from "@/lib/types";
+import { setUIRelease } from "@/lib/uiRelease";
 import {
   cleanup,
   fireEvent,
@@ -144,9 +145,112 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetDriveTransfersForTest();
+  setUIRelease("classic");
 });
 
 describe("CloudDriveView", () => {
+  it("新版勾选操作在原工具栏内切换，文件列表前不插入新行", async () => {
+    setUIRelease("2");
+    render();
+    const checkbox = await screen.findByRole("checkbox", {
+      name: "选择“报告.pdf”",
+    });
+    const toolbar = screen.getByRole("toolbar", { name: "文件操作" });
+    const workspace = document.querySelector(".drive-workspace")!;
+    const previous = workspace.previousElementSibling;
+    fireEvent.click(checkbox);
+    const actions = screen.getByRole("region", { name: "批量操作" });
+    expect(toolbar.contains(actions)).toBe(true);
+    expect(workspace.previousElementSibling).toBe(previous);
+    expect(document.querySelector(".drive-selection-bar")).toBeNull();
+    expect(within(actions).getByRole("button", { name: "下载" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择“课程资料”" }));
+    expect(
+      (
+        within(actions).getByRole("button", {
+          name: "重命名",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    fireEvent.click(within(actions).getByRole("button", { name: "取消选择" }));
+    expect(workspace.previousElementSibling).toBe(previous);
+    expect(screen.queryByRole("region", { name: "批量操作" })).toBeNull();
+    expect(within(toolbar).getByRole("button", { name: "上传" })).toBeTruthy();
+  });
+  it("新版传输入口与个人空间同行，下载不会自动展开，切页收起浮层", async () => {
+    setUIRelease("2");
+    vi.mocked(downloadDriveItem).mockResolvedValue({
+      status: "downloaded",
+      transfer_id: "download-header",
+      name: "报告.pdf",
+      size: 2048,
+    });
+    render();
+    const file = await screen.findByText("报告.pdf");
+    const trigger = screen.getByRole("button", { name: "查看传输列表" });
+    expect(
+      trigger.closest(".drive-location")?.querySelector("nav"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "传输列表" })).toBeNull();
+    fireEvent.doubleClick(file.closest("tr")!);
+    await waitFor(() =>
+      expect(downloadDriveItem).toHaveBeenCalledWith(
+        ["报告.pdf"],
+        expect.any(String),
+        "downloads",
+      ),
+    );
+    expect(screen.queryByRole("region", { name: "传输列表" })).toBeNull();
+    fireEvent.click(trigger);
+    const tray = screen.getByRole("region", { name: "传输列表" });
+    expect(
+      within(tray).getByRole("button", { name: "在文件夹中显示“报告.pdf”" }),
+    ).toBeTruthy();
+    fireEvent.keyDown(tray, { key: "Escape" });
+    expect(screen.queryByRole("region", { name: "传输列表" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "本地同步" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "本地同步" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "传输列表" })).toBeNull(),
+    );
+  });
+  it("新版传输浮层可取消排队下载，任务更新不自动打开", async () => {
+    setUIRelease("2");
+    let finish!: (value: Awaited<ReturnType<typeof downloadDriveItem>>) => void;
+    vi.mocked(downloadDriveItem).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render();
+    await screen.findByText("报告.pdf");
+    const first = driveTransfers.download(item(["第一份.pdf"]));
+    const second = driveTransfers.download(item(["第二份.pdf"]));
+    await waitFor(() => expect(downloadDriveItem).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("region", { name: "传输列表" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看传输列表" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "取消下载“第二份.pdf”" }),
+    );
+    finish({
+      status: "downloaded",
+      transfer_id: "download-first",
+      name: "第一份.pdf",
+      size: 2048,
+    });
+    await first;
+    await second;
+    expect(downloadDriveItem).toHaveBeenCalledOnce();
+    expect(
+      screen.getByText("第二份.pdf").closest("li")?.getAttribute("data-status"),
+    ).toBe("cancelled");
+  });
   it("像网页端一样展示空间用量、文件列表与统计", async () => {
     render();
     expect(

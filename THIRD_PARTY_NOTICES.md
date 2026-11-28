@@ -18,7 +18,7 @@
 | tzdata（Windows） | Apache-2.0 | https://github.com/python/tzdata |
 | pywebview | BSD-3-Clause | https://github.com/r0x0r/pywebview |
 | bottle、proxy_tools | MIT | https://github.com/bottlepy/bottle；https://github.com/jtushman/proxy_tools |
-| PyObjC（core、Cocoa、Quartz、Security、WebKit） | MIT | https://github.com/ronaldoussoren/pyobjc |
+| PyObjC（core、Cocoa、Quartz、Security、WebKit、EventKit） | MIT | https://github.com/ronaldoussoren/pyobjc |
 
 | imageio-ffmpeg（Python 包装库） | BSD-2-Clause | https://github.com/imageio/imageio-ffmpeg；不等于执行文件许可证。 |
 | FFmpeg（自编译独立执行文件） | LGPL-2.1-or-later；同源码另含兼容许可证 | 官方 n7.1.3 固定源码构建，禁用 GPL/nonfree 和外部自动探测；完整源码、许可、构建配方及平台清单随包发布，详见 licenses/FFmpeg.txt。 |

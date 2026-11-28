@@ -232,34 +232,20 @@ describe("Canvas Helper 页面集成", () => {
     expect(screen.queryByRole("button", { name: "下载" })).toBeNull();
   });
 
-  it("教师可进入课程管理页面并共享同一个侧栏 AI 对话入口", async () => {
+  it("教师账号也只显示学生版功能，并保留视频与 AI 入口", async () => {
     role = "teacher";
     render(<App />);
-    await screen.findByRole("button", { name: "成绩" });
-
-    fireEvent.click(screen.getByRole("button", { name: "成绩" }));
-    expect(await screen.findByRole("heading", { name: "评分册" })).toBeTruthy();
-    expect(getGradebook).toHaveBeenCalledWith(12);
-
-    fireEvent.click(screen.getByRole("button", { name: "花名册" }));
-    expect(
-      await screen.findByRole("heading", { name: "课程花名册" }),
-    ).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "作业批改" }));
-    expect(
-      await screen.findByRole("heading", { name: "作业批改" }),
-    ).toBeTruthy();
-    await waitFor(() => expect(getGrading).toHaveBeenCalledWith(12, 21));
-
+    await screen.findByRole("button", { name: "课程视频" });
+    for (const name of ["成绩", "花名册", "作业批改"])
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    expect(getGradebook).not.toHaveBeenCalled();
+    expect(getRoster).not.toHaveBeenCalled();
+    expect(getGrading).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "课程视频" }));
     expect(
       await screen.findByRole("heading", { name: "课程视频" }),
     ).toBeTruthy();
     expect(getCourseMedia).toHaveBeenCalledWith(12);
-
     expect(screen.getByRole("region", { name: "AI 对话" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "直接询问 AI" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Canvas Agent" })).toBeNull();
   });
 });

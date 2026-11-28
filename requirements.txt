@@ -9,3 +9,6 @@ pypdfium2>=5.15.2,<6
 Pillow>=13,<14
 imageio-ffmpeg>=0.6,<1
 SQLAlchemy>=2.0,<3
+mcp>=1.20,<2
+PyYAML>=6,<7
+pyobjc-framework-EventKit>=11,<13; sys_platform == "darwin"

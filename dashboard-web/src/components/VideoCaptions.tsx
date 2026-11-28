@@ -1,5 +1,5 @@
 import { Captions } from "lucide-react";
-import { type RefObject, useEffect, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
 type Cue = { startMs: number; endMs: number; text: string };
 type NativeVideo = HTMLVideoElement & { webkitDisplayingFullscreen?: boolean };
@@ -36,6 +36,7 @@ export function VideoCaptions({
   videoRef: RefObject<HTMLVideoElement | null>;
   cues: Cue[];
 }) {
+  const captionRef = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [native, setNative] = useState(false);
@@ -93,6 +94,9 @@ export function VideoCaptions({
       video.textTracks?.removeEventListener?.("addtrack", fullscreen);
     };
   }, [videoRef, cues, enabled]);
+  useEffect(() => {
+    if (captionRef.current) captionRef.current.scrollTop = 0;
+  }, [text]);
   if (native || !cues.length) return null;
   return (
     <>
@@ -108,6 +112,7 @@ export function VideoCaptions({
       </button>
       {enabled && text && (
         <div
+          ref={captionRef}
           className="video-caption-overlay"
           data-testid="video-caption-overlay"
           aria-hidden="true"

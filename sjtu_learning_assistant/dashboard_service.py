@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sjtu_learning_assistant.native_calendar import native_calendar_service
+
 import base64
 import hashlib
 import json
@@ -16,7 +18,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from math import isfinite
 from urllib.parse import urljoin, urlparse, urlsplit
 from datetime import datetime, timedelta, timezone
@@ -532,7 +534,7 @@ class DashboardService:
         result: dict[str, Any] = {
             "media": self.media_features.capabilities(),
             "update": {"check_only": True, "automatic_install": False},
-            "mcp": {"transport": "stdio", "read_only": True},
+            "mcp": {"transport": "stdio", "read_only": False, "calendar_write_requires_connection": True},
         }
         result["courses"] = self.course_capabilities(course_id)
         result["ai"] = self.ai_capabilities()
@@ -1467,7 +1469,8 @@ class DashboardService:
             "transport": "stdio",
             "command": command,
             "args": args,
-            "read_only": True,
+            "read_only": False,
+            "calendar_write_requires_connection": True,
         }
 
     # Small semantic aliases keep the service usable outside the pywebview bridge.
@@ -3002,6 +3005,62 @@ class DashboardService:
     def _preset_loader(self) -> PresetLoader:
         return PresetLoader(user_skills_path=self.agent_skills_path)
 
+    def _skill_packages(self):
+        from .skill_packages import SkillPackages
+        return SkillPackages(self.agent_skills_path, self._preset_loader().resource_root)
+
+    def _external_mcp(self):
+        from .external_mcp import ExternalMCP
+        return ExternalMCP(self.agent_skills_path.parent / 'external-mcp.json')
+
+    def ai_skill_import(self, path):
+        from .skill_packages import SkillPackageError
+        try:row=self._skill_packages().import_zip(Path(path))
+        except SkillPackageError as exc:raise DashboardError(str(exc)) from None
+        return {'skill':row,**self.ai_presets()}
+
+    def ai_skill_update(self, identity, enabled=None, allow_scripts=None):
+        from .skill_packages import SkillPackageError
+        try:self._skill_packages().update(identity,enabled=enabled,allow_scripts=allow_scripts)
+        except SkillPackageError as exc:raise DashboardError(str(exc)) from None
+        return self.ai_presets()
+
+    def ai_mcp_action(self, action, payload):
+        from .external_mcp import MCPClientError
+        manager=self._external_mcp()
+        try:
+            if action=='template':
+                if payload.get('provider')!='bing':raise MCPClientError('不支持此搜索模板。')
+                if getattr(sys,'frozen',False):command,args=sys.executable,['--web-search-mcp']
+                else:command,args=sys.executable,['-m','sjtu_learning_assistant.web_search_mcp']
+                return {'config':json.dumps({'mcpServers':{'Bing 联网搜索':{'command':command,'args':args}}},ensure_ascii=False,indent=2)}
+            if action=='list':return manager.list()
+            if action=='import':return manager.import_config(payload['config'])
+            if action=='connect':return manager.connect(payload['id'])
+            if action=='update':return manager.update(payload['id'],enabled=payload.get('enabled'),permission=payload.get('permission'),tools=payload.get('tools'))
+            if action=='delete':return manager.update(payload['id'],delete=True)
+            if action=='test':
+                identity=payload['id']
+                row=manager.load().get(identity)
+                if not row:raise MCPClientError('服务不存在。')
+                tool=next((t for t in row.get('tools',[]) if t['name']=='search'),None)
+                if not tool:raise MCPClientError('此服务没有 search 工具。')
+                query=payload.get('query','Model Context Protocol')
+                if type(query) is not str or not query.strip() or len(query)>200:raise MCPClientError('搜索词无效。')
+                result,_=manager.call(tool['model_name'],{'query':query,'max_results':3})
+                return result
+            raise MCPClientError('操作无效。')
+        except MCPClientError as exc:raise DashboardError(str(exc)) from None
+
+    def ai_skill_output_reveal(self, identity):
+        if type(identity) is not str or not re.fullmatch('[a-f0-9]{32}',identity):raise DashboardError('输出标识无效。')
+        folder=self.agent_skills_path.parent/'skill-output'/identity
+        if not folder.is_dir() or folder.is_symlink():raise DashboardError('输出目录不存在。')
+        if sys.platform=='darwin':subprocess.run(['open',str(folder)],check=True)
+        elif os.name=='nt':os.startfile(folder)
+        else:subprocess.run(['xdg-open',str(folder)],check=True)
+        return {'opened':True}
+
     def _get_preset(self, preset_id: object | None) -> AgentPreset:
         loader = self._preset_loader()
         try:
@@ -3016,6 +3075,7 @@ class DashboardService:
             raise
 
     def ai_skill_save(self, payload: object) -> dict[str, Any]:
+        from .skill_packages import SkillPackageError
         if type(payload) is not dict:
             raise DashboardError("技能内容格式无效。")
         references = payload.get("reference_attachment_ids") or []
@@ -3026,17 +3086,17 @@ class DashboardService:
                 except AIFileError:
                     raise DashboardError("技能参考资料中有附件不存在或已删除。") from None
         try:
-            skill = UserSkillStore(self.agent_skills_path).save(
-                payload, updated_at=to_shanghai(self.now()) or ""
-            )
-        except PresetError as exc:
+            skill = self._skill_packages().save_draft(payload)
+        except (PresetError, SkillPackageError) as exc:
             raise DashboardError(str(exc)) from None
         return {"skill": skill, **self.ai_presets()}
 
     def ai_skill_delete(self, skill_id: object) -> dict[str, Any]:
+        from .skill_packages import SkillPackageError
         try:
-            deleted = UserSkillStore(self.agent_skills_path).delete(skill_id)
-        except PresetError as exc:
+            self._skill_packages().update(skill_id,delete=True)
+            deleted=True
+        except SkillPackageError as exc:
             raise DashboardError(str(exc)) from None
         return {"deleted": deleted, **self.ai_presets()}
 
@@ -3124,6 +3184,7 @@ class DashboardService:
             raise DashboardError(str(exc)) from None
         return {
             "default_preset_id": default_id,
+            "skills": self._skill_packages().list(),
             "items": [
                 {**preset.dto(), "is_default": preset.id == default_id}
                 for preset in presets.values()
@@ -3143,7 +3204,7 @@ class DashboardService:
                     "title": row.title,
                     "model": row.model,
                     "thinking_depth": row.thinking_depth,
-                    "preset_id": row.preset_id,
+                    "preset_id": self._get_preset(row.preset_id).id,
                     "created_at": to_shanghai(row.created_at),
                     "updated_at": to_shanghai(row.updated_at),
                 }
@@ -3214,7 +3275,7 @@ class DashboardService:
                 "title": row.title,
                 "model": row.model,
                 "thinking_depth": row.thinking_depth,
-                "preset_id": row.preset_id,
+                "preset_id": self._get_preset(row.preset_id).id,
                 "created_at": to_shanghai(row.created_at),
                 "updated_at": to_shanghai(row.updated_at),
                 "messages": [
@@ -3298,6 +3359,7 @@ class DashboardService:
         steering_control: ChatSteeringControl | None = None,
         page_context: Mapping[str, Any] | None = None,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        skill_ids: object | None = None,
     ) -> dict[str, Any]:
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
@@ -3451,6 +3513,19 @@ class DashboardService:
             preset = self._get_preset(selected_preset_id)
         except PresetError as exc:
             raise DashboardError(str(exc)) from None
+        from .skill_packages import SkillPackageError
+        try:selected_skills=self._skill_packages().selected(skill_ids)
+        except SkillPackageError as exc:raise DashboardError(str(exc)) from None
+        if selected_skills:
+            details='\n\n'.join('已选技能 '+s['name']+'（id='+s['id']+'，完整文件用 read_skill_file 读取）：\n'+s['instructions'][:4000] for s in selected_skills)
+            references=tuple(dict.fromkeys(i for s in selected_skills for i in s.get('reference_attachment_ids',[])))
+            preset=replace(preset,skill_prompt=preset.skill_prompt+'\n\n'+details,reference_attachment_ids=references)
+        external=self._external_mcp() if preset.id=='general' else None
+        if external is not None:
+            from .external_mcp import MCPClientError
+            try:external_names=tuple(d['function']['name'] for d in external.definitions())
+            except MCPClientError as exc:raise DashboardError(str(exc)) from None
+            preset=replace(preset,allowed_tools=(*preset.allowed_tools,*external_names))
         # 技能参考资料：作为增强上下文随每轮提供摘要，并允许按 ID 读取正文。
         reference_ids = [
             attachment_id
@@ -3532,6 +3607,10 @@ class DashboardService:
                     workspace=workspace,
                     compiled_knowledge=self._compiled_knowledge_service(),
                     mail_account=settings.mail_account,
+                    native_calendar=native_calendar_service() if preset.id=='general' else None,
+                    external_mcp=external,
+                    skill_packages=self._skill_packages(),
+                    selected_skills=selected_skills if preset.id=='general' else [dict(s,allow_scripts=False) for s in selected_skills],
                 )
             if steering_control is not None:
                 steering_control.attach_registry(registry)
@@ -3667,12 +3746,16 @@ class DashboardService:
         preset_id: object | None = None,
         attachment_ids: object | None = None,
         page_context: object | None = None,
+        skill_ids: object | None = None,
     ) -> dict[str, Any]:
         if type(session_id) is not str or not session_id or len(session_id) > 36:
             raise DashboardError("对话标识无效。")
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
         context = normalize_page_context(page_context)
+        from .skill_packages import SkillPackageError
+        try:self._skill_packages().selected(skill_ids)
+        except SkillPackageError as exc:raise DashboardError(str(exc)) from None
         if attachment_ids is None:
             selected_attachments = []
         elif type(attachment_ids) is list and len(attachment_ids) <= 20 and all(type(identity) is int and 0 < identity <= 9_007_199_254_740_991 for identity in attachment_ids):
@@ -3707,6 +3790,7 @@ class DashboardService:
                 "page_context": context,
                 "persisted_user_id": original_id,
                 "steering_control": control,
+                **({'skill_ids':skill_ids} if skill_ids else {}),
             },
             name=f"ai-chat-{task_id[:8]}",
             daemon=True,
@@ -3738,6 +3822,7 @@ class DashboardService:
         page_context: Mapping[str, Any],
         persisted_user_id: int | None = None,
         steering_control: ChatSteeringControl | None = None,
+        skill_ids: object | None = None,
     ) -> None:
         def check_active() -> None:
             if self.ai_tasks.is_cancel_requested(task_id):
@@ -3759,6 +3844,7 @@ class DashboardService:
                     task_id=task_id,
                     page_context=page_context,
                     event_callback=buffer.add,
+                    **({'skill_ids':skill_ids} if skill_ids else {}),
                     **({'persisted_user_id': persisted_user_id, 'steering_control': steering_control}
                        if steering_control is not None else {}),
                 )

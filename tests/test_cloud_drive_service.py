@@ -193,6 +193,8 @@ class HelperTests(unittest.TestCase):
             root = Path(directory)
             (root / "a.txt").write_text("1")
             self.assertEqual("a (1).txt", unique_local_path(root, "a.txt").name)
+            (root / "a (1).txt").symlink_to(root / "missing.txt")
+            self.assertEqual("a (2).txt", unique_local_path(root, "a.txt").name)
             folder = root / "课件"
             (folder / "第1周").mkdir(parents=True)
             (folder / "第1周" / "slides.pdf").write_text("x")
@@ -844,6 +846,42 @@ class DriveBridgeTests(unittest.TestCase):
         self.assertFalse(self.call("drive_cancel", {"transfer_id": "dl-000001"})["data"]["cancelled"])
         cancelled = DesktopBridge(Mock(), FakeLearning(self.pan), save_file_picker=lambda name: None)
         self.assertEqual("cancelled", cancelled.invoke("drive_download", {"path": ["课程", "第1周.pdf"]})["data"]["status"])
+
+    def test_downloads_mode_skips_picker_and_preserves_existing_names(self):
+        downloads = self.root / "Downloads"
+        downloads.mkdir()
+        original = downloads / "第1周.pdf"
+        original.write_bytes(b"keep")
+        dangling = downloads / "第1周 (1).pdf"
+        dangling.symlink_to(downloads / "absent.pdf")
+        picker = Mock(side_effect=AssertionError("不能弹出系统保存窗口"))
+        self.bridge._save_file_picker = picker
+        payload = {"path": ["课程", "第1周.pdf"], "transfer_id": "auto-download", "save_mode": "downloads"}
+        with patch("desktop_app.Path.home", return_value=self.root):
+            self.assertTrue(self.call("drive_prepare_download", {k: v for k, v in payload.items() if k != "save_mode"})["ok"])
+            result = self.call("drive_download", payload)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("第1周 (2).pdf", result["data"]["name"])
+        self.assertEqual(b"hello", (downloads / "第1周 (2).pdf").read_bytes())
+        self.assertEqual(b"keep", original.read_bytes())
+        self.assertTrue(dangling.is_symlink())
+        picker.assert_not_called()
+        self.assertTrue(self.call("drive_reveal_download", {"transfer_id": "auto-download"})["ok"])
+        self.assertFalse(list(downloads.glob(".sjtu-pan-*.part")))
+
+    def test_downloads_mode_cancellation_removes_temporary_file(self):
+        payload = {"path": ["课程", "第1周.pdf"], "transfer_id": "auto-cancel"}
+        self.assertTrue(self.call("drive_prepare_download", payload)["ok"])
+        with patch("desktop_app.Path.home", return_value=self.root), patch("sjtu_learning_assistant.cloud_drive_service.os.fsync") as fsync:
+            fsync.side_effect = lambda _: self.call("drive_cancel", {"transfer_id": "auto-cancel"})
+            result = self.call("drive_download", {**payload, "save_mode": "downloads"})
+        self.assertEqual("cancelled", result["error"]["code"])
+        self.assertFalse(list((self.root / "Downloads").iterdir()))
+
+    def test_downloads_mode_rejects_unknown_mode_and_target_path(self):
+        for extra in ({"save_mode": "elsewhere"}, {"save_mode": None}, {"save_mode": "downloads", "destination": str(self.root / "other")}):
+            result = self.call("drive_download", {"path": ["课程", "第1周.pdf"], **extra})
+            self.assertFalse(result["ok"])
 
     def test_save_target_symlink_does_not_overwrite_its_destination(self):
         victim = self.root / "victim.pdf"

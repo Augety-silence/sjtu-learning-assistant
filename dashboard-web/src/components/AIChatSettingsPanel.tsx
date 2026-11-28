@@ -16,12 +16,22 @@ import type {
 
 type PreferenceChange = Partial<AIChatPreferences>;
 
-function PersonalizationSurface({ children }: { children: React.ReactNode }) {
+function PersonalizationSurface({
+  children,
+  embedded = false,
+}: {
+  children: React.ReactNode;
+  embedded?: boolean;
+}) {
   const isPresent = useIsPresent();
   return (
     <motion.section
-      className="ai-personalization-panel"
-      role="dialog"
+      className={
+        embedded
+          ? "ai-personalization-panel is-embedded"
+          : "ai-personalization-panel"
+      }
+      role={embedded ? "region" : "dialog"}
       aria-label="AI 助手个性化设置"
       aria-modal="false"
       aria-hidden={!isPresent}
@@ -166,6 +176,7 @@ export function AIChatSettingsPanel({
   workspaceBusy = false,
   onPickWorkspace,
   onClearWorkspace,
+  embedded = false,
 }: {
   preferences: AIChatPreferences;
   saving: boolean;
@@ -175,8 +186,9 @@ export function AIChatSettingsPanel({
   workspaceBusy?: boolean;
   onPickWorkspace?: () => void;
   onClearWorkspace?: () => void;
+  embedded?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(embedded);
   const shortcutChoices = buildShortcutChoices(isMacPlatform());
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -186,7 +198,7 @@ export function AIChatSettingsPanel({
   };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || embedded) return;
     const handleOutside = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) close();
     };
@@ -206,19 +218,19 @@ export function AIChatSettingsPanel({
       document.removeEventListener("mousedown", handleOutside);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, [open]);
+  }, [open, embedded]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || embedded) return;
     rootRef.current
       ?.querySelector<HTMLElement>(
         ".ai-personalization-panel [role='radio'][aria-checked='true']",
       )
       ?.focus();
-  }, [open]);
+  }, [open, embedded]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || embedded) return;
     const root = rootRef.current;
     const handleFocusOut = (event: FocusEvent) => {
       if (
@@ -229,26 +241,28 @@ export function AIChatSettingsPanel({
     };
     root?.addEventListener("focusout", handleFocusOut);
     return () => root?.removeEventListener("focusout", handleFocusOut);
-  }, [open]);
+  }, [open, embedded]);
 
   return (
     <div className="ai-personalization" ref={rootRef}>
       <AnimatePresence>
         {open && (
-          <PersonalizationSurface>
+          <PersonalizationSurface embedded={embedded}>
             <header>
               <span>
                 <strong>个性化设置</strong>
                 <small>只保存在这台设备</small>
               </span>
-              <button
-                type="button"
-                className="ai-personalization-close"
-                aria-label="关闭个性化设置"
-                onClick={() => close(true)}
-              >
-                <X aria-hidden="true" />
-              </button>
+              {!embedded && (
+                <button
+                  type="button"
+                  className="ai-personalization-close"
+                  aria-label="关闭个性化设置"
+                  onClick={() => close(true)}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              )}
             </header>
 
             <div className="ai-personalization-scroll">
@@ -341,17 +355,19 @@ export function AIChatSettingsPanel({
           </PersonalizationSurface>
         )}
       </AnimatePresence>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="ai-personalization-trigger"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <Settings2 aria-hidden="true" />
-        <span>个性化设置</span>
-      </button>
+      {!embedded && (
+        <button
+          ref={triggerRef}
+          type="button"
+          className="ai-personalization-trigger"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <Settings2 aria-hidden="true" />
+          <span>个性化设置</span>
+        </button>
+      )}
     </div>
   );
 }

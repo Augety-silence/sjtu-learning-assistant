@@ -836,7 +836,7 @@ def unique_local_path(directory: Path, name: str) -> Path:
     clean = safe_local_filename(name)
     candidate = directory / clean
     index = 1
-    while candidate.exists():
+    while candidate.exists() or candidate.is_symlink():
         if index > MAX_UNIQUE_NAME_ATTEMPTS:
             raise CloudDriveError("下载目录中同名文件过多，请先清理后再试。")
         candidate = directory / numbered_name(clean, index)

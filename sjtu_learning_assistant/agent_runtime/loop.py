@@ -138,10 +138,11 @@ class AgentLoop:
         char_budget: int = PREFETCH_CHAR_BUDGET,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         plans: list[tuple[str, dict[str, Any]]] = []
+        external_only = any(word in text.casefold() for word in ('联网','网络搜索','互联网','网上','web search','online search','duckduckgo','bing')) and not any(word in text for word in ('本地','课件','资料库','作业'))
         progress_query = any(word in text for word in ("索引", "编译进度", "转换进度", "精炼进度", "总结进度"))
         if progress_query and "get_knowledge_status" in self.preset.allowed_tools and "get_knowledge_status" in self.tools.names:
             plans.append(("get_knowledge_status", {}))
-        elif "browse_knowledge_wiki" in self.preset.allowed_tools and "browse_knowledge_wiki" in self.tools.names:
+        elif not external_only and "browse_knowledge_wiki" in self.preset.allowed_tools and "browse_knowledge_wiki" in self.tools.names:
             plans.append(("browse_knowledge_wiki", {"limit": 8}))
         if attachment_ids and "search_ai_attachments" in self.preset.allowed_tools:
             plans.append(("search_ai_attachments", {"query": "", "limit": min(len(attachment_ids), 20)}))

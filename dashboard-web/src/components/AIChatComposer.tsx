@@ -1,37 +1,44 @@
 import {
   ArrowUp,
-  Check,
-  ChevronDown,
+  FolderOpen,
   LoaderCircle,
   Paperclip,
+  Plus,
+  Server,
+  Sparkles,
+  Square,
   X,
 } from "lucide-react";
-import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { AnimatePresence } from "motion/react";
 import {
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
   type RefObject,
   useEffect,
   useRef,
   useState,
 } from "react";
-import aiAgentLogo from "@/assets/ai-agent-logo.png";
+import {
+  AgentChoice,
+  type Choice,
+  ChoiceMenu,
+} from "@/components/AIComposerChoice";
+import { AIComposerFooter } from "@/components/AIComposerFooter";
+import { AIFloatingMenu } from "@/components/AIFloatingMenu";
+import {
+  AISelectedSkillAttachments,
+  AISelectedSkills,
+} from "@/components/AISelectedSkills";
 import { Button } from "@/components/ui/Button";
-import { motionDuration, motionEase } from "@/lib/motion";
 import type {
   AIAgentPreset,
   AIChatSendShortcut,
+  AIExtensionSkill,
   AIManagedAttachment,
   AIModel,
   AIThinkingDepth,
+  AIWorkspaceStatus,
 } from "@/lib/types";
-
-interface Choice<T extends string> {
-  value: T;
-  label: string;
-  detail?: string;
-}
+import { useUIRelease } from "@/lib/uiRelease";
 
 const COMPOSER_MIN_HEIGHT = 42;
 const COMPOSER_MAX_HEIGHT = 160;
@@ -49,182 +56,6 @@ function attachmentTextStatusLabel(attachment: AIManagedAttachment) {
   return "正文仍在处理中";
 }
 
-function AnimatedChoiceMenu({
-  id,
-  className = "ai-choice-menu",
-  label,
-  children,
-  menuRef,
-  onKeyDown,
-}: {
-  id: string;
-  className?: string;
-  label: string;
-  children: ReactNode;
-  menuRef?: RefObject<HTMLDivElement | null>;
-  onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
-}) {
-  const isPresent = useIsPresent();
-  return (
-    <motion.div
-      ref={menuRef}
-      id={id}
-      className={className}
-      role="listbox"
-      aria-label={label}
-      aria-hidden={!isPresent}
-      inert={!isPresent ? true : undefined}
-      onKeyDown={onKeyDown}
-      initial={{ opacity: 0.65 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{
-        type: "tween",
-        duration: isPresent ? motionDuration.popoverEnter : motionDuration.fast,
-        ease: motionEase.out,
-      }}
-    >
-      {children}
-    </motion.div>
-  );
-}
-
-function ChoiceMenu<T extends string>({
-  label,
-  triggerLabel = label,
-  menuId,
-  value,
-  items,
-  open,
-  disabled,
-  onToggle,
-  onSelect,
-}: {
-  label: string;
-  triggerLabel?: string;
-  menuId: string;
-  value: T;
-  items: Choice<T>[];
-  open: boolean;
-  disabled: boolean;
-  onToggle: () => void;
-  onSelect: (value: T) => void;
-}) {
-  const selected = items.find((item) => item.value === value) ?? items[0];
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    queueMicrotask(() => {
-      menuRef.current
-        ?.querySelector<HTMLButtonElement>(
-          '[role="option"][aria-selected="true"]',
-        )
-        ?.focus();
-    });
-  }, [open]);
-
-  const focusRelativeOption = (
-    event: ReactKeyboardEvent<HTMLDivElement>,
-    direction: -1 | 1,
-  ) => {
-    const options = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ??
-        [],
-    );
-    if (options.length === 0) return;
-    event.preventDefault();
-    const current = options.indexOf(
-      document.activeElement as HTMLButtonElement,
-    );
-    const next =
-      current < 0 ? 0 : (current + direction + options.length) % options.length;
-    options[next]?.focus();
-  };
-
-  const closeAndRestoreFocus = () => {
-    if (open) onToggle();
-    queueMicrotask(() => triggerRef.current?.focus());
-  };
-
-  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowDown") focusRelativeOption(event, 1);
-    else if (event.key === "ArrowUp") focusRelativeOption(event, -1);
-    else if (event.key === "Home" || event.key === "End") {
-      const options = Array.from(
-        menuRef.current?.querySelectorAll<HTMLButtonElement>(
-          '[role="option"]',
-        ) ?? [],
-      );
-      event.preventDefault();
-      options[event.key === "Home" ? 0 : options.length - 1]?.focus();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      closeAndRestoreFocus();
-    }
-  };
-
-  return (
-    <div className="ai-compact-choice">
-      <button
-        ref={triggerRef}
-        type="button"
-        className="ai-compact-trigger"
-        aria-label={`${label}：${selected?.label ?? value}`}
-        aria-controls={menuId}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={onToggle}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            if (!open) onToggle();
-          }
-        }}
-      >
-        <span className="ai-compact-trigger-copy">
-          <span>{triggerLabel}：</span>
-          <strong>{selected?.label ?? value}</strong>
-        </span>
-        <ChevronDown aria-hidden="true" />
-      </button>
-      <AnimatePresence>
-        {open && (
-          <AnimatedChoiceMenu
-            id={menuId}
-            label={label}
-            menuRef={menuRef}
-            onKeyDown={handleMenuKeyDown}
-          >
-            <header>{label}</header>
-            {items.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                role="option"
-                aria-selected={item.value === value}
-                onClick={() => {
-                  onSelect(item.value);
-                  queueMicrotask(() => triggerRef.current?.focus());
-                }}
-              >
-                <span>
-                  <strong>{item.label}</strong>
-                  {item.detail && <small>{item.detail}</small>}
-                </span>
-                {item.value === value && <Check aria-hidden="true" />}
-              </button>
-            ))}
-          </AnimatedChoiceMenu>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 export function AIChatComposer({
   draft,
   error,
@@ -233,6 +64,9 @@ export function AIChatComposer({
   active,
   presets,
   selectedPresetId,
+  skills = [],
+  selectedSkills = [],
+  onSelectSkills = () => undefined,
   model,
   depth,
   models,
@@ -241,6 +75,12 @@ export function AIChatComposer({
   sendShortcut,
   textareaRef,
   onDraftChange,
+  workspace,
+  onOpenWorkspace,
+  onOpenResources,
+  onChangeWorkspace,
+  workspaceBusy = false,
+  workspaceError,
   onSelectPreset,
   onModelChange,
   onDepthChange,
@@ -254,12 +94,21 @@ export function AIChatComposer({
   onCancel,
 }: {
   draft: string;
+  workspace?: AIWorkspaceStatus | null;
+  onOpenWorkspace?: () => void;
+  onOpenResources?: (page: "skills" | "mcp") => void;
+  onChangeWorkspace?: (action: "pick" | "clear") => void;
+  workspaceBusy?: boolean;
+  workspaceError?: string | null;
   error: string | null;
   attachmentBusy: boolean;
   attachments: AIManagedAttachment[];
   active: boolean;
   presets: AIAgentPreset[];
   selectedPresetId: string;
+  skills?: AIExtensionSkill[];
+  selectedSkills?: string[];
+  onSelectSkills?: (ids: string[]) => void;
   model: AIModel;
   depth: AIThinkingDepth;
   models: Choice<AIModel>[];
@@ -280,26 +129,22 @@ export function AIChatComposer({
   stopping?: boolean;
   onCancel?: () => void;
 }) {
-  const [openMenu, setOpenMenu] = useState<"agent" | "model" | "depth" | null>(
-    null,
-  );
+  const uiRelease = useUIRelease();
+  const [openMenu, setOpenMenu] = useState<
+    | "agent"
+    | "model"
+    | "depth"
+    | "resources"
+    | "workspace"
+    | "permission"
+    | null
+  >(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-  const agentTriggerRef = useRef<HTMLButtonElement>(null);
-  const agentMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (openMenu !== "agent") return;
-    queueMicrotask(() => {
-      const menu = agentMenuRef.current;
-      (
-        menu?.querySelector<HTMLButtonElement>(
-          '[role="option"][aria-selected="true"]',
-        ) ?? menu?.querySelector<HTMLButtonElement>('[role="option"]')
-      )?.focus();
-    });
-  }, [openMenu]);
-  const selectedPreset =
-    presets.find((preset) => preset.id === selectedPresetId) ?? null;
+  const resourceTrigger = useRef<HTMLButtonElement>(null);
+  const hasDraft = Boolean(draft.trim()) || attachments.length > 0;
+  const showStop = Boolean(
+    busy && onCancel && (uiRelease !== "2" || !hasDraft),
+  );
 
   useEffect(() => {
     const input = textareaRef.current;
@@ -319,7 +164,10 @@ export function AIChatComposer({
 
   useEffect(() => {
     const closeOnOutside = (event: MouseEvent) => {
-      if (!controlsRef.current?.contains(event.target as Node))
+      if (
+        !controlsRef.current?.contains(event.target as Node) &&
+        !(event.target as Element)?.closest?.("[data-ai-floating-menu]")
+      )
         setOpenMenu(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -343,6 +191,78 @@ export function AIChatComposer({
     onSubmit(draft);
   };
 
+  const attachmentChips = attachments.length > 0 && (
+    <div className="ai-attachment-chips" role="group" aria-label="待发送附件">
+      {attachments.map((attachment) => (
+        <span className="ai-attachment-chip" key={attachment.id}>
+          <span
+            aria-label={
+              attachment.name + "：" + attachmentTextStatusLabel(attachment)
+            }
+            title={
+              attachment.text_status === "ready"
+                ? (attachment.summary ?? attachment.name)
+                : attachment.name + "：" + attachmentTextStatusLabel(attachment)
+            }
+          >
+            {attachment.name}
+          </span>
+          <button
+            type="button"
+            aria-label={`移除附件 ${attachment.name}`}
+            disabled={attachmentBusy}
+            onClick={(event) => {
+              // 被点击的按钮会随 chip 卸载，焦点会掉到 <body>；先移到相邻 chip 的移除按钮，没有则回到输入框。
+              const chip = event.currentTarget.closest(".ai-attachment-chip");
+              const sibling = (
+                chip?.nextElementSibling ?? chip?.previousElementSibling
+              )?.querySelector<HTMLButtonElement>("button");
+              onRemoveAttachment(attachment.id);
+              (sibling ?? textareaRef.current)?.focus();
+            }}
+          >
+            <X aria-hidden="true" />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+
+  const modelControls = (
+    <>
+      <ChoiceMenu
+        label="模型"
+        menuId="ai-model-menu"
+        value={model}
+        items={models}
+        open={openMenu === "model"}
+        disabled={false}
+        onToggle={() =>
+          setOpenMenu((menu) => (menu === "model" ? null : "model"))
+        }
+        onSelect={(value) => {
+          onModelChange(value);
+          setOpenMenu(null);
+        }}
+      />
+      <ChoiceMenu
+        label="推理强度"
+        triggerLabel="推理"
+        menuId="ai-depth-menu"
+        value={depth}
+        items={depths}
+        open={openMenu === "depth"}
+        disabled={false}
+        onToggle={() =>
+          setOpenMenu((menu) => (menu === "depth" ? null : "depth"))
+        }
+        onSelect={(value) => {
+          onDepthChange(value);
+          setOpenMenu(null);
+        }}
+      />
+    </>
+  );
   return (
     <form className="ai-composer" onSubmit={submit}>
       {error && (
@@ -361,6 +281,15 @@ export function AIChatComposer({
         </div>
       )}
       <div className="ai-composer-box">
+        {uiRelease === "2" && attachmentChips}
+        {uiRelease === "2" && (
+          <AISelectedSkillAttachments
+            skills={skills}
+            selected={selectedSkills}
+            onChange={onSelectSkills}
+            busy={busy}
+          />
+        )}
         <textarea
           ref={textareaRef}
           className="ai-composer-input"
@@ -368,7 +297,11 @@ export function AIChatComposer({
           maxLength={4000}
           rows={1}
           aria-label="输入问题"
-          placeholder="让 Agent 检索课程、文件、截止日期或消息…"
+          placeholder={
+            uiRelease === "2"
+              ? "输入你的问题，添加文件或选择技能与工具"
+              : "让 Agent 检索课程、文件、截止日期或消息…"
+          }
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={(event) => {
             // Ignore Enter while an IME (e.g. Chinese pinyin) is composing a candidate.
@@ -392,13 +325,16 @@ export function AIChatComposer({
           <div className="ai-chat-controls">
             <button
               type="button"
+              ref={resourceTrigger}
               className="ai-attachment-button"
               aria-label={
                 attachmentBusy
                   ? "正在添加附件"
                   : attachments.length >= 20
                     ? "已达到20个附件上限"
-                    : "添加本地附件"
+                    : uiRelease === "2"
+                      ? "唤起技能与工具"
+                      : "添加本地附件"
               }
               title={
                 attachments.length >= 20
@@ -406,221 +342,175 @@ export function AIChatComposer({
                   : undefined
               }
               disabled={attachmentBusy || attachments.length >= 20}
-              onClick={onPickAttachment}
+              onClick={() =>
+                uiRelease === "2"
+                  ? setOpenMenu(openMenu === "resources" ? null : "resources")
+                  : onPickAttachment()
+              }
             >
               {attachmentBusy ? (
                 <LoaderCircle className="ai-spin" aria-hidden="true" />
+              ) : uiRelease === "2" ? (
+                <Plus aria-hidden="true" />
               ) : (
                 <Paperclip aria-hidden="true" />
               )}
             </button>
-            {attachments.length > 0 && (
-              <div
-                className="ai-attachment-chips"
-                role="group"
-                aria-label="待发送附件"
+            {uiRelease === "2" && openMenu === "resources" && (
+              <AIFloatingMenu
+                anchorRef={resourceTrigger}
+                onClose={() => setOpenMenu(null)}
+                width={260}
               >
-                {attachments.map((attachment) => (
-                  <span className="ai-attachment-chip" key={attachment.id}>
-                    <span
-                      aria-label={
-                        attachment.name +
-                        "：" +
-                        attachmentTextStatusLabel(attachment)
-                      }
-                      title={
-                        attachment.text_status === "ready"
-                          ? (attachment.summary ?? attachment.name)
-                          : attachment.name +
-                            "：" +
-                            attachmentTextStatusLabel(attachment)
-                      }
-                    >
-                      {attachment.name}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`移除附件 ${attachment.name}`}
-                      disabled={attachmentBusy}
-                      onClick={(event) => {
-                        // 被点击的按钮会随 chip 卸载，焦点会掉到 <body>；先移到相邻 chip 的移除按钮，没有则回到输入框。
-                        const chip = event.currentTarget.closest(
-                          ".ai-attachment-chip",
-                        );
-                        const sibling = (
-                          chip?.nextElementSibling ??
-                          chip?.previousElementSibling
-                        )?.querySelector<HTMLButtonElement>("button");
-                        onRemoveAttachment(attachment.id);
-                        (sibling ?? textareaRef.current)?.focus();
-                      }}
-                    >
-                      <X aria-hidden="true" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="ai-compact-choice ai-agent-choice">
-              <button
-                ref={agentTriggerRef}
-                type="button"
-                className="ai-agent-trigger"
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                    event.preventDefault();
-                    if (openMenu !== "agent") setOpenMenu("agent");
-                  }
-                }}
-                aria-label={`Agent：${selectedPreset?.name ?? "未选择"}`}
-                aria-controls="ai-composer-agent-menu"
-                aria-haspopup="listbox"
-                aria-expanded={openMenu === "agent"}
-                onClick={() =>
-                  setOpenMenu((menu) => (menu === "agent" ? null : "agent"))
-                }
-              >
-                <img src={aiAgentLogo} alt="" aria-hidden="true" />
-                <span>{selectedPreset?.name ?? "选择 Agent"}</span>
-              </button>
-              <AnimatePresence>
-                {openMenu === "agent" && (
-                  <AnimatedChoiceMenu
-                    id="ai-composer-agent-menu"
-                    className="ai-choice-menu ai-agent-menu"
-                    label="Agent 预设"
-                    menuRef={agentMenuRef}
-                    onKeyDown={(event) => {
-                      const options = Array.from(
-                        event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                          '[role="option"]',
-                        ),
-                      );
-                      const current = options.indexOf(
-                        document.activeElement as HTMLButtonElement,
-                      );
-                      let next: number;
-                      if (event.key === "ArrowDown")
-                        next = (current + 1) % options.length;
-                      else if (event.key === "ArrowUp")
-                        next = current <= 0 ? options.length - 1 : current - 1;
-                      else if (event.key === "Home") next = 0;
-                      else if (event.key === "End") next = options.length - 1;
-                      else if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setOpenMenu(null);
-                        queueMicrotask(() => agentTriggerRef.current?.focus());
-                        return;
-                      } else return;
-                      event.preventDefault();
-                      options[next]?.focus();
+                <div
+                  className="ai-resource-actions"
+                  role="menu"
+                  aria-label="添加与控制"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onPickAttachment();
                     }}
                   >
-                    <header>选择 Agent</header>
-                    {presets.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        role="option"
-                        aria-selected={preset.id === selectedPresetId}
-                        onClick={() => {
-                          onSelectPreset(preset.id);
-                          setOpenMenu(null);
-                          queueMicrotask(() =>
-                            agentTriggerRef.current?.focus(),
-                          );
-                        }}
-                      >
-                        <img src={aiAgentLogo} alt="" aria-hidden="true" />
-                        <span>
-                          <strong>{preset.name}</strong>
-                          <small>{preset.description}</small>
-                        </span>
-                        {preset.id === selectedPresetId && (
-                          <Check aria-hidden="true" />
-                        )}
-                      </button>
-                    ))}
-                  </AnimatedChoiceMenu>
-                )}
-              </AnimatePresence>
-            </div>
-            <ChoiceMenu
-              label="模型"
-              menuId="ai-model-menu"
-              value={model}
-              items={models}
-              open={openMenu === "model"}
-              disabled={false}
+                    <Paperclip />
+                    添加本地文件
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onOpenWorkspace?.();
+                    }}
+                  >
+                    <FolderOpen />
+                    工作区文件
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onOpenResources?.("skills");
+                    }}
+                  >
+                    <Sparkles />
+                    技能配置
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onOpenResources?.("mcp");
+                    }}
+                  >
+                    <Server />
+                    MCP 与工具权限
+                  </button>
+                </div>
+              </AIFloatingMenu>
+            )}
+            {uiRelease !== "2" && attachmentChips}
+            <AgentChoice
+              presets={presets}
+              selectedPresetId={selectedPresetId}
+              open={openMenu === "agent"}
               onToggle={() =>
-                setOpenMenu((menu) => (menu === "model" ? null : "model"))
+                setOpenMenu((menu) => (menu === "agent" ? null : "agent"))
               }
-              onSelect={(value) => {
-                onModelChange(value);
-                setOpenMenu(null);
-              }}
+              onClose={() => setOpenMenu(null)}
+              onSelectPreset={onSelectPreset}
             />
-            <ChoiceMenu
-              label="推理强度"
-              triggerLabel="推理"
-              menuId="ai-depth-menu"
-              value={depth}
-              items={depths}
-              open={openMenu === "depth"}
-              disabled={false}
-              onToggle={() =>
-                setOpenMenu((menu) => (menu === "depth" ? null : "depth"))
-              }
-              onSelect={(value) => {
-                onDepthChange(value);
-                setOpenMenu(null);
-              }}
-            />
+            {uiRelease === "2" && (
+              <AISelectedSkills
+                skills={skills}
+                selected={selectedSkills}
+                onChange={onSelectSkills}
+                busy={busy}
+              />
+            )}
+            {uiRelease !== "2" && modelControls}
           </div>
-          {busy && onCancel && (
-            <Button
-              type="button"
-              size={stopping ? "sm" : "icon"}
-              aria-label={stopping ? "正在停止本次任务" : "停止本次任务"}
-              title={
-                stopping
-                  ? "正在等待当前模型或工具请求返回"
-                  : "停止当前会话的任务"
-              }
-              disabled={stopping}
-              onClick={onCancel}
-            >
-              {stopping ? (
-                <>
-                  <LoaderCircle className="ai-spin" aria-hidden="true" />
-                  正在停止
-                </>
-              ) : (
-                <X aria-hidden="true" />
-              )}
-            </Button>
-          )}
-          <Button
-            type="submit"
-            size="icon"
-            aria-label={busy ? "补充指令" : "发送消息"}
-            title={busy ? "立即补充当前任务的要求" : "发送消息"}
-            disabled={
-              attachmentBusy ||
-              (!draft.trim() && attachments.length === 0) ||
-              !active ||
-              !selectedPresetId
-            }
+          <div
+            className="ai-composer-actions"
+            style={uiRelease !== "2" ? { display: "contents" } : undefined}
           >
-            <ArrowUp aria-hidden="true" />
-          </Button>
+            {uiRelease === "2" && modelControls}
+            {showStop && (
+              <Button
+                type="button"
+                className="ai-stop-button"
+                size={uiRelease === "2" ? "icon" : stopping ? "sm" : "icon"}
+                aria-label={stopping ? "正在停止本次任务" : "停止本次任务"}
+                title={
+                  stopping
+                    ? "正在等待当前模型或工具请求返回"
+                    : "停止当前会话的任务"
+                }
+                disabled={stopping}
+                onClick={onCancel}
+              >
+                {uiRelease === "2" ? (
+                  stopping ? (
+                    <LoaderCircle className="ai-spin" aria-hidden="true" />
+                  ) : (
+                    <Square aria-hidden="true" />
+                  )
+                ) : stopping ? (
+                  <>
+                    <LoaderCircle className="ai-spin" aria-hidden="true" />
+                    正在停止
+                  </>
+                ) : (
+                  <X aria-hidden="true" />
+                )}
+              </Button>
+            )}
+            {!(uiRelease === "2" && showStop) && (
+              <Button
+                type="submit"
+                size="icon"
+                aria-label={busy ? "补充指令" : "发送消息"}
+                title={busy ? "立即补充当前任务的要求" : "发送消息"}
+                disabled={
+                  attachmentBusy ||
+                  (!draft.trim() && attachments.length === 0) ||
+                  !active ||
+                  !selectedPresetId
+                }
+              >
+                <ArrowUp aria-hidden="true" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
-      <p className="ai-chat-notice">
-        已输入 {draft.length}/4000 字 · 只读访问本机同步数据 · AI
-        可能出错，请核对截止时间与提交要求
-      </p>
+      {uiRelease === "2" ? (
+        <AIComposerFooter
+          workspace={workspace}
+          workspaceBusy={workspaceBusy}
+          workspaceError={workspaceError}
+          onChangeWorkspace={onChangeWorkspace}
+          onOpenWorkspace={onOpenWorkspace}
+          attachmentBusy={attachmentBusy}
+          attachmentCount={attachments.length}
+          onPickAttachment={onPickAttachment}
+          models={models}
+          model={model}
+          onModelChange={onModelChange}
+          openMenu={openMenu}
+          setOpenMenu={setOpenMenu}
+          length={draft.length}
+        />
+      ) : (
+        <div className="ai-composer-footer">
+          <p className="ai-chat-notice">{draft.length}/4000 字</p>
+        </div>
+      )}
     </form>
   );
 }

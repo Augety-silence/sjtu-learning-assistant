@@ -211,21 +211,23 @@ class DashboardBridgeIntegrationTests(unittest.TestCase):
         expected = {
             "capabilities",
             "calendar",
-            "gradebook",
-            "roster",
-            "grading",
             "media",
             "video",
             "update_check",
             "mcp_config",
         }
         self.assertTrue(expected <= set(self.bridge._handlers))
+        for action in ("gradebook", "roster", "grading"):
+            with self.subTest(removed_action=action):
+                response = self.bridge.invoke(action, {"course_id": 1})
+                self.assertFalse(response["ok"])
+                self.assertEqual("not_allowed", response["error"]["code"])
+
         self.assertTrue(self.bridge.invoke("calendar", {"year": 2026, "month": 9, "course_ids": [1]})["ok"])
         self.assertTrue(self.bridge.invoke("update_check", {})["ok"])
         self.assertTrue(self.bridge.invoke("mcp_config", {})["ok"])
         for action, payload in (
             ("calendar", {"year": 2026, "month": 9, "url": "https://evil.example"}),
-            ("roster", {"course_id": 1, "path": "/tmp/users.csv"}),
             ("update_check", {"url": "https://evil.example/release.json"}),
             ("mcp_config", {"command": "/tmp/server"}),
             ("video", {"source_id": "video-1", "path": "/tmp/video.mp4"}),

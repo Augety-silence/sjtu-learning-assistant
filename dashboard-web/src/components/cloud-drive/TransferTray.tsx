@@ -9,7 +9,9 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AIFloatingMenu } from "@/components/AIFloatingMenu";
+import "@/v2/transfer.css";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/Button";
 import { revealDriveDownload } from "@/lib/api";
@@ -146,11 +148,22 @@ function TransferRow({ item }: { item: LocalTransfer }) {
   );
 }
 
-/** 右下角传输面板：参照主流网盘的“传输列表”，可折叠、可取消/重试。 */
-export function TransferTray() {
+/** 新版固定在页头，手动展开进度；旧版保留浮动面板。 */
+export function TransferTray({
+  placement = "floating",
+  active: visible = true,
+}: {
+  placement?: "floating" | "header";
+  active?: boolean;
+}) {
   const { tasks } = useDriveTransfers();
   const [collapsed, setCollapsed] = useState(false);
-  if (tasks.length === 0) return null;
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!visible) setOpen(false);
+  }, [visible]);
+  if (tasks.length === 0 && placement === "floating") return null;
   const active = tasks.filter(isActiveTransfer);
   const failed = tasks.filter((item) => item.status === "failed").length;
   const uploads = active.filter((item) => item.kind === "upload").length;
@@ -163,10 +176,12 @@ export function TransferTray() {
         ]
           .filter(Boolean)
           .join("，")
-      : failed > 0
-        ? `传输结束，${failed} 项失败`
-        : "全部传输已完成";
-  return (
+      : tasks.length === 0
+        ? "暂无传输任务"
+        : failed > 0
+          ? `传输结束，${failed} 项失败`
+          : "全部传输已完成";
+  const panel = (
     <section
       className="drive-transfer-tray"
       aria-label="传输列表"
@@ -175,7 +190,7 @@ export function TransferTray() {
       <header>
         <p aria-live="polite">{summary}</p>
         <div>
-          {active.length === 0 && (
+          {active.length === 0 && tasks.length > 0 && (
             <Button
               type="button"
               variant="ghost"
@@ -203,11 +218,41 @@ export function TransferTray() {
       </header>
       {!collapsed && (
         <ul className="drive-transfer-list">
+          {tasks.length === 0 && (
+            <li className="drive-transfer-empty">暂无传输任务</li>
+          )}
           {[...tasks].reverse().map((item) => (
             <TransferRow key={item.id} item={item} />
           ))}
         </ul>
       )}
     </section>
+  );
+  if (placement === "floating") return panel;
+  return (
+    <div className="drive-transfer-anchor">
+      <Button
+        ref={anchor}
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label="查看传输列表"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CloudDownload size={16} aria-hidden="true" />
+        传输{active.length > 0 ? ` · ${active.length}` : ""}
+      </Button>
+      {open && visible && (
+        <AIFloatingMenu
+          anchorRef={anchor}
+          width={420}
+          className="drive-transfer-popover"
+          onClose={() => setOpen(false)}
+        >
+          {panel}
+        </AIFloatingMenu>
+      )}
+    </div>
   );
 }

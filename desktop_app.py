@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from sjtu_learning_assistant.native_calendar import NativeCalendarError, native_calendar_service
+
 import hashlib
 import copy
 import json
@@ -59,6 +61,7 @@ from sjtu_learning_assistant.cloud_drive_service import (
     cloud_error_code,
     iter_folder_files,
     safe_local_filename,
+    unique_local_path,
 )
 from sjtu_learning_assistant.local_settings import LocalSettings, SettingsError
 from sjtu_learning_assistant.media_features import MediaFeatureError
@@ -447,6 +450,7 @@ class DesktopBridge:
         backup_manager: BackupManager | None = None,
         diagnostic_bundle: DiagnosticBundleService | None = None,
         timetable_service: TimetableService | None = None,
+        sync_scheduler: DesktopScheduler | None = None,
     ) -> None:
         self._service = service
         self._learning_service = learning_service
@@ -455,6 +459,7 @@ class DesktopBridge:
         self._save_file_picker = save_file_picker
         self._backup_manager = backup_manager
         self._diagnostic_bundle = diagnostic_bundle
+        self._sync_scheduler = sync_scheduler
         self._timetable = timetable_service
         self._picked_files: set[str] = set()
         self._multi_file_picker = multi_file_picker
@@ -469,6 +474,8 @@ class DesktopBridge:
         self._drive_pending_downloads: dict[str, tuple[Any, tuple[str, ...], float]] = {}
         self._command_runner = command_runner or subprocess.run
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
+            **{f"native_calendar_{op}": (lambda payload, operation=op: native_calendar_service().call(operation, dict(payload))) for op in ("status", "connect", "disconnect", "calendars", "events", "get", "save", "delete")},
+            "sync_automation_status": lambda payload: self._without_payload(payload, self._sync_automation_status),
             "health": lambda payload: self._without_payload(
                 payload, service.health
             ),
@@ -551,6 +558,17 @@ class DesktopBridge:
             "ai_attachment_reveal": self._ai_attachment_reveal,
             "ai_skill_save": self._ai_skill_save,
             "ai_skill_delete": self._ai_skill_delete,
+            "ai_skill_import": self._ai_skill_import,
+            "ai_skill_update": self._ai_skill_update,
+            "ai_skill_read": self._ai_skill_read,
+            "ai_skill_output_reveal": self._ai_skill_output_reveal,
+            "ai_mcp_list": lambda payload: self._ai_mcp_action('list',payload),
+            "ai_mcp_template": lambda payload: self._ai_mcp_action('template',payload),
+            "ai_mcp_import": lambda payload: self._ai_mcp_action('import',payload),
+            "ai_mcp_connect": lambda payload: self._ai_mcp_action('connect',payload),
+            "ai_mcp_update": lambda payload: self._ai_mcp_action('update',payload),
+            "ai_mcp_delete": lambda payload: self._ai_mcp_action('delete',payload),
+            "ai_mcp_test": lambda payload: self._ai_mcp_action('test',payload),
             "ai_workspace_status": self._ai_workspace_status,
             "ai_workspace_pick": self._ai_workspace_pick,
             "ai_workspace_clear": self._ai_workspace_clear,
@@ -583,15 +601,6 @@ class DesktopBridge:
             "timetable_commit_preview": self._timetable_commit,
             "timetable_load_bundled_sample": self._timetable_sample,
             "timetable_import_ics": self._timetable_import_ics,
-            "gradebook": self._gradebook,
-            "gradebook_export": self._gradebook_export,
-            "roster": self._roster,
-            "roster_export": self._roster_export,
-            "academic_export_reveal": self._academic_export_reveal,
-            "grading": self._grading,
-            "grading_submissions": self._grading_submissions,
-            "grading_submission": self._grading_submission,
-            "grading_update": self._grading_update,
             "media": self._course_media,
             "course_media": self._course_media,
             "media_capabilities": self._media_capabilities,
@@ -844,6 +853,7 @@ class DesktopBridge:
                 "preset_id",
                 "attachment_ids",
                 "page_context",
+                "skill_ids",
             },
         )
         preset_id = payload.get("preset_id")
@@ -867,6 +877,7 @@ class DesktopBridge:
             preset_id,
             attachment_ids,
             page_context,
+            **({'skill_ids': payload['skill_ids']} if payload.get('skill_ids') else {}),
         )
 
     def _ai_task_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -967,7 +978,7 @@ class DesktopBridge:
         return self._service.local_projects_list()
 
     def _compiled_knowledge_call(self, payload: Mapping[str, Any], operation: str) -> dict[str, Any]:
-        fields = {"search": {"query", "source_id", "offset", "limit", "folder", "term_id", "course_id"},
+        fields = {"search": {"query", "source_id", "offset", "limit", "folder", "term_id", "course_id", "direct_children"},
                   "read": {"document_id", "offset", "max_chars"},
                   "open": {"source_id", "document_id"}}[operation]
         _only_keys(payload, fields)
@@ -1058,6 +1069,32 @@ class DesktopBridge:
         if type(skill) is not dict or len(json.dumps(skill, ensure_ascii=False)) > 40_000:
             raise DashboardError("技能内容格式无效或过长。")
         return self._service.ai_skill_save(dict(skill))
+
+    def _ai_skill_import(self, payload):
+        _empty_payload(payload)
+        if self._file_picker is None:raise DashboardError('当前环境不支持本地文件选择。')
+        selected=self._file_picker()
+        if not selected:return {'cancelled':True}
+        return {'cancelled':False,**self._service.ai_skill_import(selected)}
+
+    def _ai_skill_update(self, payload):
+        _only_keys(payload,{'skill_id','enabled','allow_scripts'})
+        return self._service.ai_skill_update(_bounded_id(payload.get('skill_id'),limit=40,label='技能标识'),payload.get('enabled'),payload.get('allow_scripts'))
+
+    def _ai_skill_read(self, payload):
+        _only_keys(payload,{'skill_id','path'})
+        from sjtu_learning_assistant.skill_packages import SkillPackageError
+        try:return self._service._skill_packages().read(payload.get('skill_id'),payload.get('path'),require_enabled=False)
+        except SkillPackageError as exc:raise DashboardError(str(exc)) from None
+
+    def _ai_skill_output_reveal(self,payload):
+        _only_keys(payload,{'run_id'})
+        return self._service.ai_skill_output_reveal(payload.get('run_id'))
+
+    def _ai_mcp_action(self, action, payload):
+        keys={'list':set(),'template':{'provider'},'import':{'config'},'connect':{'id'},'update':{'id','enabled','permission','tools'},'delete':{'id'},'test':{'id','query'}}
+        _only_keys(payload,keys[action])
+        return self._service.ai_mcp_action(action,payload)
 
     def _ai_skill_delete(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"skill_id"})
@@ -1639,9 +1676,12 @@ class DesktopBridge:
         return {"transfer_id": transfer_id}
 
     def _drive_download(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        _only_keys(payload, {"path", "transfer_id"})
+        _only_keys(payload, {"path", "transfer_id", "save_mode"})
         path = _remote_segments(payload.get("path"), allow_root=False)
         transfer_id = _transfer_id(payload.get("transfer_id"))
+        save_mode = payload.get("save_mode", "dialog")
+        if save_mode not in ("dialog", "downloads"):
+            raise DashboardError("下载保存方式不正确。")
         drive = self._drive()
         with self._drive_lock:
             pending = self._drive_pending_downloads.get(transfer_id or "")
@@ -1657,12 +1697,17 @@ class DesktopBridge:
         try:
             if transfer.cancel_event.is_set():
                 raise TransferCancelled("传输已取消。")
-            if self._save_file_picker is None:
-                raise LearningServiceError("当前环境不支持选择下载位置。")
-            destination = self._save_file_picker(safe_local_filename(path[-1]))
-            if not destination:
-                drive.transfers.finish(transfer, "cancelled", "已取消")
-                return {"status": "cancelled"}
+            if save_mode == "downloads":
+                directory = Path.home() / "Downloads"
+                directory.mkdir(parents=True, exist_ok=True)
+                destination = unique_local_path(directory, path[-1])
+            else:
+                if self._save_file_picker is None:
+                    raise LearningServiceError("当前环境不支持选择下载位置。")
+                destination = self._save_file_picker(safe_local_filename(path[-1]))
+                if not destination:
+                    drive.transfers.finish(transfer, "cancelled", "已取消")
+                    return {"status": "cancelled"}
             if transfer.cancel_event.is_set():
                 raise TransferCancelled("传输已取消。")
             selected = Path(_validated_local_attachment_path(str(destination))).expanduser()
@@ -2104,6 +2149,10 @@ class DesktopBridge:
             raise DashboardError("链接不正确。")
         return self._service.open_external(value)
 
+    def _sync_automation_status(self):
+        scheduler = self._sync_scheduler
+        return {"enabled": bool(scheduler and scheduler._thread and scheduler._thread.is_alive()), "interval_seconds": scheduler.interval_seconds if scheduler else None}
+
     def invoke(self, action: str, payload: object = None) -> dict[str, Any]:
         """The only public Bridge method exposed to JavaScript."""
         try:
@@ -2136,6 +2185,7 @@ class DesktopBridge:
             CanvasError,
             CloudStorageError,
             TimetableError,
+            NativeCalendarError,
         ) as exc:
             # The 交大云盘 page branches on auth/not-found/conflict/network; other pages keep
             # the historical generic code.
@@ -2782,6 +2832,7 @@ def run_desktop_app() -> int:
             config_status_provider=getattr(service, "settings_status", lambda: {}),
             status_provider=getattr(service, "sync_status", lambda: {}),
         )
+        scheduler = DesktopScheduler(service.trigger_sync)
         bridge = DesktopBridge(
             service,
             learning_service,
@@ -2792,11 +2843,11 @@ def run_desktop_app() -> int:
             folder_picker=pick_folder,
             backup_manager=backup_manager,
             diagnostic_bundle=diagnostic_bundle,
+            sync_scheduler=scheduler,
             timetable_service=TimetableService(
                 engine, PROJECT_ROOT / "resources" / "samples" / "sjtu_lessons_anonymous.json"
             ),
         )
-        scheduler = DesktopScheduler(service.trigger_sync)
         native_vibrancy = sys.platform == "darwin"
         windows_frontend = None
         if sys.platform == "win32":
@@ -2883,6 +2934,15 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if tuple(sys.argv[1:2]) == ("--web-search-mcp",):
+        from sjtu_learning_assistant.web_search_mcp import main as web_search_main
+        return web_search_main()
+    if tuple(sys.argv[1:2]) == ("--extensions-self-test",):
+        from sjtu_learning_assistant.extensions_self_test import main as extensions_main
+        return extensions_main()
+    if tuple(sys.argv[1:2]) == ("--calendar-self-test",):
+        from sjtu_learning_assistant.calendar_self_test import main as calendar_main
+        return calendar_main()
     if tuple(sys.argv[1:2]) == ("--startup-self-test",):
         from sjtu_learning_assistant.frontend_self_test import main as startup_main
         return startup_main(sys.argv[2:])
@@ -2892,8 +2952,7 @@ def main() -> int:
         from sjtu_learning_assistant.asr_self_test import run
         return run(Path(sys.argv[2]))
     if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--mcp-stdio"]:
-        from sjtu_learning_assistant.agent_runtime import ReadOnlyToolRegistry
-        from sjtu_learning_assistant.mcp_server import run_stdio_server
+        from sjtu_learning_assistant.mcp_server import create_stdio_registry, run_stdio_server
 
         if sys.stdin is None or sys.stdout is None:
             _report_startup_error("错误：MCP stdio 模式需要可用的标准输入和标准输出。")
@@ -2904,8 +2963,7 @@ def main() -> int:
                 stream.reconfigure(encoding="utf-8", newline="\n")
         engine = create_database_engine()
         try:
-            from sjtu_learning_assistant.compiled_knowledge import CompiledKnowledge
-            run_stdio_server(ReadOnlyToolRegistry(engine, compiled_knowledge=CompiledKnowledge(engine=engine)))
+            run_stdio_server(create_stdio_registry(engine))
         finally:
             engine.dispose()
         return 0

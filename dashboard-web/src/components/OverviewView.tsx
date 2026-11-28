@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import overviewAllClearIllustration from "@/assets/empty-states/overview-all-clear.webp";
+import type { AssignmentTarget } from "@/components/AssignmentsView";
 import { ContentReveal } from "@/components/ContentReveal";
 import { MessageDetailDialog } from "@/components/MessageDetailDialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
@@ -17,12 +18,14 @@ import { Button } from "@/components/ui/Button";
 import { invoke, openExternal } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { MessageItem, OverviewData, ViewName } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
+import { V2Overview } from "@/v2/Overview";
 
 const messageKey = (item: MessageItem) => `${item.kind}:${item.source_id}`;
 /** Mirrors `DashboardService.overview()` which returns `deadlines(limit=5)`. */
 const OVERVIEW_DEADLINE_LIMIT = 5;
 
-export function OverviewView({
+function ClassicOverviewView({
   navigate,
 }: {
   navigate: (view: ViewName) => void;
@@ -303,5 +306,18 @@ export function OverviewView({
         )}
       </AnimatePresence>
     </ContentReveal>
+  );
+}
+
+export function OverviewView(props: {
+  navigate: (view: ViewName) => void;
+  onAssignment?: (target: AssignmentTarget) => void;
+  onAskAI?: (prompt: string) => void;
+}) {
+  const release = useUIRelease();
+  return release === "2" ? (
+    <V2Overview {...props} />
+  ) : (
+    <ClassicOverviewView navigate={props.navigate} />
   );
 }

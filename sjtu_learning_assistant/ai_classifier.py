@@ -31,6 +31,7 @@ from sjtu_learning_assistant.ai_limits import (
     MAX_SSE_STREAM_SECONDS,
     MAX_OUTPUT_TOKENS_PER_CALL,
     MAX_TOOL_ARGUMENT_CHARS,
+    MAX_CHAT_TOOL_DEFINITIONS,
     STREAM_IDLE_TIMEOUT_SECONDS,
 )
 from sjtu_learning_assistant.material_classifier import CATEGORY_ORDER
@@ -753,7 +754,7 @@ class OpenAIClassificationClient:
             )
         request_messages.extend(clean_messages)
         if tools is not None:
-            if type(tools) is not list or len(tools) > 16:
+            if type(tools) is not list or len(tools) > MAX_CHAT_TOOL_DEFINITIONS:
                 raise AIClassificationError("AI 工具定义无效。")
             try:
                 encoded_tools = json.dumps(tools, ensure_ascii=False)
@@ -897,7 +898,7 @@ class OpenAIClassificationClient:
             request_messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
         request_messages.extend(clean_messages)
         if tools is not None:
-            if type(tools) is not list or len(tools) > 16:
+            if type(tools) is not list or len(tools) > MAX_CHAT_TOOL_DEFINITIONS:
                 raise AIClassificationError("AI 工具定义无效。")
             try:
                 encoded_tools = json.dumps(tools, ensure_ascii=False)

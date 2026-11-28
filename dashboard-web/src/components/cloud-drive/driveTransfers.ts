@@ -2,7 +2,7 @@
  * 交大云盘传输队列（模块级存储）。
  *
  * 上传/下载在切换页面后仍需继续，因此队列放在组件外部，通过 useSyncExternalStore 订阅。
- * 上传串行执行，便于逐个处理同名冲突；下载串行弹出保存对话框，避免多个系统对话框叠加。
+ * 上传串行处理同名冲突；新版下载串行保存到系统下载目录，旧版保留保存对话框。
  */
 import { useSyncExternalStore } from "react";
 import {
@@ -398,7 +398,7 @@ export const driveTransfers = {
     return { queued: queued.length, rejected: created.length - queued.length };
   },
 
-  /** 串行下载：每个文件先弹出系统保存对话框，再以不覆盖方式提交临时文件。 */
+  /** 串行下载：新版保存到下载目录，以不覆盖方式提交临时文件。 */
   download(item: DriveItem) {
     const id = newTransferId("d");
     emit({
@@ -411,7 +411,10 @@ export const driveTransfers = {
           total: item.size,
           done: 0,
           status: "preparing",
-          message: "等待选择保存位置…",
+          message:
+            document.documentElement.dataset.uiRelease === "2"
+              ? "准备保存到下载目录…"
+              : "等待选择保存位置…",
           parent: item.path.slice(0, -1),
           relativeDir: [],
           remotePath: [...item.path],
@@ -419,6 +422,10 @@ export const driveTransfers = {
         },
       ],
     });
+    const saveMode =
+      document.documentElement.dataset.uiRelease === "2"
+        ? "downloads"
+        : undefined;
     const run = async () => {
       startedDownloads.add(id);
       try {
@@ -432,7 +439,9 @@ export const driveTransfers = {
           const result = await cancelDriveTransfer(id);
           if (!result.cancelled) throw new Error("取消下载失败，请重试");
         }
-        const result = await downloadDriveItem(item.path, id);
+        const result = saveMode
+          ? await downloadDriveItem(item.path, id, saveMode)
+          : await downloadDriveItem(item.path, id);
         if (result.status === "cancelled") {
           emit({ tasks: state.tasks.filter((entry) => entry.id !== id) });
           return { status: "cancelled" as const, id };

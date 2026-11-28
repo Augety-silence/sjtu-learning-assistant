@@ -8,6 +8,7 @@ import {
 import {
   type DragEvent as ReactDragEvent,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -21,8 +22,15 @@ import { AIChatSidebar } from "@/components/AIChatSidebar";
 import { AIChatTracePanel } from "@/components/AIChatTracePanel";
 import { InlineAgentExecution } from "@/components/AIExecutionCard";
 import { AISkillManager } from "@/components/AISkillManager";
+import {
+  AIWorkspaceNavigation,
+  type AIWorkspacePage,
+} from "@/components/AIWorkspaceNavigation";
+import { AIWorkspacePanel } from "@/components/AIWorkspacePanel";
 import { ContentReveal } from "@/components/ContentReveal";
+import { UIReleaseToggle } from "@/components/UIReleaseToggle";
 import { Button } from "@/components/ui/Button";
+import { AIComposerDraftContext } from "@/lib/aiDrafts";
 import {
   AI_CHAT_STREAM_EVENT,
   clearAiWorkspace,
@@ -49,11 +57,14 @@ import type {
   AIChatPreferences,
   AIChatSession,
   AIChatSessionSummary,
+  AIExtensionSkill,
   AIManagedAttachment,
   AIModel,
   AIThinkingDepth,
   AIWorkspaceStatus,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
+import { useChatMeasure } from "@/lib/useChatMeasure";
 import { useChatSessionTasks } from "@/lib/useChatSessionTasks";
 import { useResizablePanes } from "@/lib/useResizablePanes";
 
@@ -101,6 +112,7 @@ interface PendingChatRequest {
   model: AIModel;
   depth: AIThinkingDepth;
   presetId: string;
+  skillIds?: string[];
   steeringTaskId?: string;
 }
 
@@ -169,7 +181,30 @@ function chatPreferences(settings: AIChatPreferences): AIChatPreferences {
 }
 
 export function AIChatView({ onBack }: { onBack: () => void }) {
+  const uiRelease = useUIRelease();
+  const [configPage, setConfigPage] = useState<AIWorkspacePage | null>(null);
+  const { conversationRef, readingStyle } = useChatMeasure(
+    uiRelease === "2",
+    !configPage,
+  );
+  useEffect(() => {
+    if (uiRelease !== "2") setConfigPage(null);
+  }, [uiRelease]);
+  const inheritedDrafts = useContext(AIComposerDraftContext);
   const [presets, setPresets] = useState<AIAgentPreset[]>([]);
+  const [skills, setSkills] = useState<AIExtensionSkill[]>([]);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const skillsBySession = useRef(new Map<string, string[]>());
+  const changeSelectedSkills = (ids: string[]) => {
+    setSelectedSkills(ids);
+    if (activeSessionIdRef.current) {
+      skillsBySession.current.set(activeSessionIdRef.current, ids);
+      window.localStorage.setItem(
+        `ai-chat-skills:${activeSessionIdRef.current}`,
+        JSON.stringify(ids),
+      );
+    }
+  };
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [sessions, setSessions] = useState<AIChatSessionSummary[]>([]);
   const [active, setActive] = useState<AIChatSession | null>(null);
@@ -190,6 +225,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   } | null>(null);
   const [workspace, setWorkspace] = useState<AIWorkspaceStatus | null>(null);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     // 放进 then 中调用：旧版桥接或测试替身缺少该动作时只当作“未设置工作区”。
@@ -206,15 +242,17 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const changeWorkspace = async (action: "pick" | "clear") => {
     if (workspaceBusy) return;
     setWorkspaceBusy(true);
+    setWorkspaceError(null);
     try {
       const status = await (action === "pick"
         ? pickAiWorkspace()
         : clearAiWorkspace());
       if (!status.cancelled) setWorkspace(status);
     } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "设置 AI 工作区失败。",
-      );
+      const message =
+        reason instanceof Error ? reason.message : "设置 AI 工作区失败。";
+      setWorkspaceError(message);
+      setError(message);
     } finally {
       setWorkspaceBusy(false);
     }
@@ -237,7 +275,8 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
   const steeringInFlightRef = useRef(new Set<string>());
   const steeringFlushingRef = useRef(new Set<string>());
   const composerBySessionRef = useRef(
-    new Map<string, { draft: string; attachments: AIManagedAttachment[] }>(),
+    inheritedDrafts ??
+      new Map<string, { draft: string; attachments: AIManagedAttachment[] }>(),
   );
   // Failed requests whose session was no longer active; restored on reopen.
   const failedRequestsRef = useRef(new Map<string, FailedChatRequest[]>());
@@ -742,6 +781,12 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         const saved = composerBySessionRef.current.get(session.id);
         setDraft(saved?.draft ?? "");
         setAttachments(saved?.attachments ?? []);
+      } else if (!activeSessionIdRef.current) {
+        const saved = composerBySessionRef.current.get(session.id);
+        if (saved) {
+          setDraft((current) => (current.trim() ? current : saved.draft));
+          setAttachments(saved.attachments);
+        }
       }
       setMotionMessageIds([]);
       stickToBottomRef.current = true;
@@ -750,6 +795,23 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       setModel((session.model as AIModel) || "auto");
       setDepth(session.thinking_depth);
       setSelectedPresetId(session.preset_id);
+      let attached = skillsBySession.current.get(session.id);
+      if (!attached) {
+        try {
+          const saved = JSON.parse(
+            window.localStorage.getItem(`ai-chat-skills:${session.id}`) || "[]",
+          );
+          attached = Array.isArray(saved)
+            ? saved
+                .filter((id): id is string => typeof id === "string")
+                .slice(0, 8)
+            : [];
+        } catch {
+          attached = [];
+        }
+        skillsBySession.current.set(session.id, attached);
+      }
+      setSelectedSkills(attached);
       setCanRetry(false);
       const failed = failedRequestsRef.current.get(session.id);
       if (failed) {
@@ -812,6 +874,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         ]);
         if (cancelled) return;
         setPresets(presetResult.items);
+        setSkills(presetResult.skills ?? []);
         setSessions(sessionResult.items);
         const defaultPresetId =
           presetResult.default_preset_id || presetResult.items[0]?.id || "";
@@ -1210,6 +1273,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               {
                 signal: controller.signal,
                 pollSignal: pollController.signal,
+                skillIds: request.skillIds,
                 onTaskStart: (taskId) => {
                   trackedTaskId = taskId;
                   sessionTasks.update(request.sessionId, { taskId });
@@ -1228,6 +1292,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               {
                 signal: controller.signal,
                 pollSignal: pollController.signal,
+                skillIds: request.skillIds,
                 onTaskStart: (taskId) => {
                   trackedTaskId = taskId;
                   sessionTasks.update(request.sessionId, { taskId });
@@ -1468,6 +1533,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       model,
       depth,
       presetId: selectedPresetId,
+      skillIds: selectedSkills.filter((id) =>
+        skills.some((skill) => skill.id === id && skill.enabled),
+      ),
     };
 
     stickToBottomRef.current = true;
@@ -1605,37 +1673,61 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       <div
         style={paneStyle}
         className={
-          activityOpen
+          activityOpen && !configPage
             ? "ai-workspace-body"
             : "ai-workspace-body activity-closed"
         }
       >
-        <AIChatSidebar
-          open={historyOpen}
-          onClose={() => setHistoryOpen(false)}
-          onBack={onBack}
-          onNew={() => void newSession()}
-          presets={presets}
-          selectedPresetId={selectedPresetId}
-          onSelectPreset={setSelectedPresetId}
-          sessions={sessions}
-          activeSessionId={active?.id}
-          onOpenSession={(id) => void openSession(id)}
-          onDeleteSession={(id) => void removeSession(id)}
-          busy={busy}
-          preferences={preferences}
-          settingsSaving={settingsSaving}
-          settingsStatus={settingsStatus}
-          onPreferenceChange={(change) => void updatePreference(change)}
-          onManageSkills={(skillId) =>
-            setSkillManager({ skillId: skillId ?? null })
-          }
-          workspace={workspace}
-          workspaceBusy={workspaceBusy}
-          onPickWorkspace={() => void changeWorkspace("pick")}
-          onClearWorkspace={() => void changeWorkspace("clear")}
-        />
-        {skillManager && (
+        {uiRelease === "2" ? (
+          <AIWorkspaceNavigation
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+            onBack={onBack}
+            onNew={() => {
+              setConfigPage(null);
+              void newSession();
+            }}
+            presets={presets}
+            selectedPresetId={selectedPresetId}
+            onSelectPreset={setSelectedPresetId}
+            sessions={sessions}
+            activeSessionId={active?.id}
+            onOpenSession={(id) => {
+              setConfigPage(null);
+              void openSession(id);
+            }}
+            onDeleteSession={(id) => void removeSession(id)}
+            page={configPage}
+            onPage={setConfigPage}
+          />
+        ) : (
+          <AIChatSidebar
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+            onBack={onBack}
+            onNew={() => void newSession()}
+            presets={presets}
+            selectedPresetId={selectedPresetId}
+            onSelectPreset={setSelectedPresetId}
+            sessions={sessions}
+            activeSessionId={active?.id}
+            onOpenSession={(id) => void openSession(id)}
+            onDeleteSession={(id) => void removeSession(id)}
+            busy={busy}
+            preferences={preferences}
+            settingsSaving={settingsSaving}
+            settingsStatus={settingsStatus}
+            onPreferenceChange={(change) => void updatePreference(change)}
+            onManageSkills={(skillId) =>
+              setSkillManager({ skillId: skillId ?? null })
+            }
+            workspace={workspace}
+            workspaceBusy={workspaceBusy}
+            onPickWorkspace={() => void changeWorkspace("pick")}
+            onClearWorkspace={() => void changeWorkspace("clear")}
+          />
+        )}
+        {skillManager && uiRelease !== "2" && (
           <AISkillManager
             presets={presets}
             initialSkillId={skillManager.skillId}
@@ -1683,7 +1775,43 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
           )}
         </AnimatePresence>
 
+        {uiRelease === "2" && configPage && (
+          <AIWorkspacePanel
+            key={configPage}
+            page={configPage}
+            onClose={() => setConfigPage(null)}
+            skills={skills}
+            onSkillsSaved={(result) => {
+              setPresets(result.items);
+              setSkills(result.skills ?? []);
+              changeSelectedSkills(
+                selectedSkills.filter((id) =>
+                  result.skills?.some(
+                    (skill) => skill.id === id && skill.enabled,
+                  ),
+                ),
+              );
+            }}
+            sessions={sessions}
+            onOpenSession={(id) => {
+              setConfigPage(null);
+              void openSession(id);
+            }}
+            workspace={workspace}
+            workspaceBusy={workspaceBusy}
+            workspaceError={workspaceError}
+            onPickWorkspace={() => void changeWorkspace("pick")}
+            onClearWorkspace={() => void changeWorkspace("clear")}
+            preferences={preferences}
+            settingsSaving={settingsSaving}
+            settingsStatus={settingsStatus}
+            onPreferenceChange={(change) => void updatePreference(change)}
+          />
+        )}
         <section
+          hidden={uiRelease === "2" && Boolean(configPage)}
+          ref={conversationRef}
+          style={readingStyle}
           className={
             hasMessages
               ? "ai-conversation has-messages"
@@ -1734,6 +1862,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
               )}
               Activity
             </Button>
+            <UIReleaseToggle />
           </header>
 
           {dragActive && (
@@ -1786,7 +1915,11 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
                   alt=""
                   aria-hidden="true"
                 />
-                <h1>今天想从学习数据里查什么？</h1>
+                <h1>
+                  {uiRelease === "2"
+                    ? "今天想一起完成什么？"
+                    : "今天想从学习数据里查什么？"}
+                </h1>
                 <p>
                   {selectedPreset?.name ?? "学习 Agent"}
                   会按需调用只读工具，查询课程、课程文件、截止日期、消息和资料树；每一步都可在
@@ -1877,12 +2010,23 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
           <AIChatComposer
             draft={draft}
+            workspace={workspace}
+            onOpenWorkspace={() => setConfigPage("workspace")}
+            onOpenResources={setConfigPage}
+            onChangeWorkspace={(action) => void changeWorkspace(action)}
+            workspaceBusy={workspaceBusy}
+            workspaceError={workspaceError}
             error={error}
             attachmentBusy={attachmentBusy}
             attachments={attachments}
             active={Boolean(active)}
             presets={presets}
             selectedPresetId={selectedPresetId}
+            skills={skills}
+            selectedSkills={selectedSkills.filter((id) =>
+              skills.some((skill) => skill.id === id && skill.enabled),
+            )}
+            onSelectSkills={changeSelectedSkills}
             model={model}
             depth={depth}
             models={models}
@@ -1915,7 +2059,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
 
         <div
           className={
-            activityOpen
+            activityOpen && !(uiRelease === "2" && configPage)
               ? "ai-pane-resizer ai-pane-resizer-right"
               : "ai-pane-resizer ai-pane-resizer-right is-hidden"
           }
@@ -1933,7 +2077,7 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         </div>
 
         <AIChatTracePanel
-          open={activityOpen}
+          open={activityOpen && !(uiRelease === "2" && configPage)}
           onClose={closeActivity}
           preset={selectedPreset}
           traces={active?.traces ?? []}

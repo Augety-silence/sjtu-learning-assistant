@@ -33,6 +33,7 @@ datas = [
     (str(ROOT / "agent_presets"), "agent_presets"),
     *collect_data_files("pypdfium2"),
     *copy_metadata("pypdfium2"),
+    *collect_data_files("tzdata"),
 ]
 
 hiddenimports = [
@@ -43,6 +44,10 @@ hiddenimports = [
     "keyring.backends.Windows",
     "pypdf",
     "pypdfium2",
+    "yaml",
+    "mcp.client.stdio",
+    "mcp.client.sse",
+    "mcp.client.streamable_http",
     "sqlalchemy.dialects.postgresql",
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.dialects.sqlite.pysqlite",
@@ -73,6 +78,10 @@ excludes = [
     "webview.platforms.gtk",
     "webview.platforms.mshtml",
     "webview.platforms.qt",
+    "EventKit",
+    "Foundation",
+    "AppKit",
+    "objc",
 ]
 
 analysis = Analysis(

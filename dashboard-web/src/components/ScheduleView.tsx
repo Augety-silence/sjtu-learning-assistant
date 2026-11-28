@@ -12,6 +12,8 @@ import {
 import { mergeCalendarEvents } from "@/lib/calendarEvents";
 import { formatDateTime } from "@/lib/format";
 import type { TimetableStatus } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
+import { V2Schedule } from "@/v2/Schedule";
 
 const CACHE_KEY = "sjtu-learning-timetable-cache-v1";
 
@@ -55,6 +57,7 @@ export function ScheduleView({
   onOpenCanvasEvent,
   onAskAI,
 }: ScheduleViewProps) {
+  const release = useUIRelease();
   const [status, setStatus] = useState<TimetableStatus | null>(null);
   const [courseEvents, setCourseEvents] = useState<CalendarEventItem[]>([]);
   const [offline, setOffline] = useState(false);
@@ -200,6 +203,24 @@ export function ScheduleView({
           ? `Canvas 数据已落地 · ${formatDateTime(canvasSyncedAt)}`
           : "尚未完成 Canvas 数据同步");
 
+  if (release === "2")
+    return (
+      <V2Schedule
+        events={allEvents}
+        month={month}
+        onMonthChange={onMonthChange}
+        onOpenEvent={onOpenCanvasEvent}
+        onAskAI={onAskAI}
+        onImport={() => void importIcs()}
+        importing={importing}
+        status={liveStatus}
+        error={displayError}
+        onRetry={() => {
+          if (loadError) void load();
+          if (calendarError) void onRetryCanvas?.();
+        }}
+      />
+    );
   return (
     <ContentReveal
       className="section-stack schedule-workspace calm-schedule"

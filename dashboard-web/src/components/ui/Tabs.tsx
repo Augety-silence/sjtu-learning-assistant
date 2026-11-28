@@ -2,6 +2,7 @@ import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { selectionIndicatorDuration } from "@/components/ui/SelectionIndicator";
+import { useUIRelease } from "@/lib/uiRelease";
 import { cn } from "@/lib/utils";
 
 /** Active tab value, mirrored so triggers know where the sliding rectangle lives. */
@@ -45,6 +46,7 @@ export const TabsList = React.forwardRef<
     { className, children, indicator = false, indicatorRadius = 8, ...props },
     ref,
   ) => {
+    const release = useUIRelease();
     const listRef = React.useRef<HTMLDivElement | null>(null);
     const value = React.useContext(TabsValueContext);
     const reducedMotion = useReducedMotion();
@@ -116,13 +118,15 @@ export const TabsList = React.forwardRef<
             else if (ref) ref.current = node;
           }}
           className={cn(
-            "aura-tabs-list inline-flex h-9 items-center rounded-[11px] bg-control-fill p-1 text-caption",
-            indicator && "tabs-sliding-group",
+            release === "2"
+              ? "v2-tabs"
+              : "aura-tabs-list inline-flex h-9 items-center rounded-[11px] bg-control-fill p-1 text-caption",
+            indicator && release !== "2" && "tabs-sliding-group",
             className,
           )}
           {...props}
         >
-          {indicator && box && (
+          {indicator && release !== "2" && box && (
             <motion.span
               aria-hidden="true"
               data-selection-indicator
@@ -154,6 +158,7 @@ export const TabsTrigger = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
 >(({ className, children, value, ...props }, ref) => {
+  const release = useUIRelease();
   const indicator = React.useContext(TabsIndicatorContext);
   const active = React.useContext(TabsValueContext) === value;
   return (
@@ -161,7 +166,9 @@ export const TabsTrigger = React.forwardRef<
       ref={ref}
       value={value}
       className={cn(
-        "aura-tabs-trigger inline-flex h-8 items-center justify-center whitespace-nowrap rounded-[8px] px-3 text-sm font-normal hover:bg-neutral-hover active:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary focus-visible:[outline-style:solid] disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-surface-elevated data-[state=active]:font-medium data-[state=active]:text-ink",
+        release === "2"
+          ? "v2-tab"
+          : "aura-tabs-trigger inline-flex h-8 items-center justify-center whitespace-nowrap rounded-[8px] px-3 text-sm font-normal hover:bg-neutral-hover active:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary focus-visible:[outline-style:solid] disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-surface-elevated data-[state=active]:font-medium data-[state=active]:text-ink",
         indicator && "selection-host tabs-sliding-trigger",
         indicator && active && "selection-active",
         className,

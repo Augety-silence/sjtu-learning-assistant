@@ -44,6 +44,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { type CourseVideoItem, VideosView } from "@/components/VideosView";
 import { WorkspaceTransition } from "@/components/WorkspaceTransition";
 import { explainAIReadiness, getAICapabilities } from "@/lib/aiCapabilities";
+import { type AIComposerDraft, AIComposerDraftContext } from "@/lib/aiDrafts";
 import {
   cancelTranscriptJob,
   createVideoScreenshotPdf,
@@ -94,6 +95,7 @@ import type {
   TranscriptJob,
   ViewName,
 } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 
 const views: ViewName[] = [
   "overview",
@@ -101,9 +103,6 @@ const views: ViewName[] = [
   "messages",
   "assignments",
   "materials",
-  "grades",
-  "roster",
-  "grading",
   "videos",
   "backup",
   "knowledge",
@@ -196,19 +195,8 @@ function courseNumber(course: CourseCapabilities | undefined) {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function availableViewsFor(capabilities: AppCapabilities | null): ViewName[] {
-  const courses = courseCapabilities(capabilities);
-  const staffCourses = courses.filter(
-    (course) =>
-      course.roles.some((role) => role === "teacher" || role === "ta") &&
-      (course.can_manage_grades || course.can_view_submissions),
-  );
-  return [
-    ...baseViews,
-    ...(staffCourses.length
-      ? (["grades", "roster", "grading"] as ViewName[])
-      : []),
-  ];
+function availableViewsFor(_capabilities: AppCapabilities | null): ViewName[] {
+  return baseViews;
 }
 
 function eventDate(event: CalendarEventDto) {
@@ -349,436 +337,6 @@ function ScheduleAdapter({
       }}
       onAskAI={onAskAI}
     />
-  );
-}
-
-function gradeStatus(submission: Record<string, unknown> | undefined) {
-  if (!submission) return "unsubmitted" as const;
-  if (submission.missing) return "unsubmitted" as const;
-  if (submission.late) return "late" as const;
-  if (submission.score != null || submission.grade != null)
-    return "graded" as const;
-  return submission.workflow_state === "submitted"
-    ? ("submitted" as const)
-    : ("unsubmitted" as const);
-}
-
-function adaptGradebook(result: GradebookResult) {
-  const assignments: GradeAssignment[] = result.assignments.map(
-    (assignment) => ({
-      id: String(assignment.id),
-      name: assignment.name ?? `作业 ${assignment.id}`,
-      pointsPossible:
-        typeof assignment.points_possible === "number"
-          ? assignment.points_possible
-          : null,
-    }),
-  );
-  const grouped = new Map(
-    result.submissions.map((group) => [
-      String(group.user_id ?? ""),
-      group.submissions ?? [],
-    ]),
-  );
-  const students: StudentGradeRow[] = result.students.map((student) => {
-    const studentId = String(student.id);
-    const submissions = grouped.get(studentId) ?? [];
-    return {
-      studentId,
-      studentName: student.name ?? `学生 ${studentId}`,
-      loginId: student.login_id,
-      grades: Object.fromEntries(
-        assignments.map((assignment) => {
-          const submission = submissions.find(
-            (item) => String(item.assignment_id) === assignment.id,
-          );
-          return [
-            assignment.id,
-            {
-              score:
-                typeof submission?.score === "number" ? submission.score : null,
-              displayGrade:
-                typeof submission?.grade === "string" ? submission.grade : null,
-              status: gradeStatus(submission),
-              editable: true,
-            },
-          ];
-        }),
-      ),
-    };
-  });
-  return { assignments, students };
-}
-
-function GradesAdapter({
-  courseId,
-  courseResolved,
-}: {
-  courseId: number | null;
-  courseResolved: boolean;
-}) {
-  const [book, setBook] = useState<GradebookResult | null>(null);
-  const [loading, setLoading] = useState(Boolean(courseId));
-  const [error, setError] = useState<string | null>(null);
-  const requestRef = useRef(0);
-  const load = useCallback(
-    async (silent = false) => {
-      if (!courseId) return;
-      const request = ++requestRef.current;
-      if (!silent) setLoading(true);
-      setError(null);
-      try {
-        const result = await getGradebook(courseId);
-        if (requestRef.current === request) setBook(result);
-      } catch (reason) {
-        if (requestRef.current === request)
-          setError(messageFrom(reason, "评分册加载失败"));
-      } finally {
-        if (requestRef.current === request) setLoading(false);
-      }
-    },
-    [courseId],
-  );
-  useEffect(() => {
-    void load();
-    return () => {
-      requestRef.current += 1;
-    };
-  }, [load]);
-  const adapted = useMemo(
-    () => (book ? adaptGradebook(book) : { assignments: [], students: [] }),
-    [book],
-  );
-  const save = async (input: GradeSaveInput) => {
-    if (!courseId) return;
-    const studentNumber = positiveInteger(input.studentId);
-    if (studentNumber === null) {
-      throw new Error("该成绩缺少有效学生标识，已取消保存。");
-    }
-    const assignmentNumber = positiveInteger(input.assignmentId);
-    if (assignmentNumber === null) {
-      throw new Error("作业标识无效，已取消保存。");
-    }
-    await updateGrading(courseId, assignmentNumber, studentNumber, {
-      grade: input.score,
-    });
-    await load(true);
-  };
-  return (
-    <GradesView
-      {...adapted}
-      loading={loading || !courseResolved}
-      error={error}
-      permissionDenied={courseResolved && !courseId}
-      onRetry={load}
-      onSaveGrade={save}
-    />
-  );
-}
-
-function memberRole(member: Record<string, unknown>) {
-  const roles = Array.isArray(member.academic_roles)
-    ? member.academic_roles.filter(
-        (role): role is string => typeof role === "string",
-      )
-    : [];
-  return roles.join("、") || "成员";
-}
-
-function memberSection(member: Record<string, unknown>) {
-  const enrollments = Array.isArray(member.enrollments)
-    ? member.enrollments
-    : [];
-  for (const item of enrollments) {
-    if (!item || typeof item !== "object") continue;
-    const enrollment = item as Record<string, unknown>;
-    const value = enrollment.course_section_id ?? enrollment.section_id;
-    if (typeof value === "string" || typeof value === "number")
-      return String(value);
-  }
-  return null;
-}
-
-function RosterAdapter({
-  courseId,
-  courseResolved,
-}: {
-  courseId: number | null;
-  courseResolved: boolean;
-}) {
-  const [members, setMembers] = useState<RosterMember[]>([]);
-  const [loading, setLoading] = useState(Boolean(courseId));
-  const [error, setError] = useState<string | null>(null);
-  const requestRef = useRef(0);
-  const load = useCallback(async () => {
-    if (!courseId) return;
-    const request = ++requestRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await getRoster(courseId);
-      if (requestRef.current !== request) return;
-      setMembers(
-        result.items.map((member) => ({
-          id: String(member.id),
-          name: member.name ?? `成员 ${member.id}`,
-          sortableName: member.sortable_name,
-          loginId: member.login_id,
-          email: member.email,
-          role: memberRole(member),
-          section: memberSection(member),
-          joinedAt: member.created_at,
-        })),
-      );
-    } catch (reason) {
-      if (requestRef.current === request)
-        setError(messageFrom(reason, "课程花名册加载失败"));
-    } finally {
-      if (requestRef.current === request) setLoading(false);
-    }
-  }, [courseId]);
-  useEffect(() => {
-    void load();
-    return () => {
-      requestRef.current += 1;
-    };
-  }, [load]);
-  const runExport = async (request: RosterExportRequest) => {
-    if (!courseId) return;
-    const ids = request.members
-      .map((member) => Number(member.id))
-      .filter((id) => Number.isSafeInteger(id) && id > 0);
-    // 空 user_ids 在后端表示导出全员；任何成员标识无效都取消，避免过量或静默缩水导出。
-    if (ids.length === 0 || ids.length !== request.members.length)
-      throw new Error("所选成员标识无效，已取消导出。");
-    if (ids.length > 500)
-      throw new Error("单次最多导出 500 名成员，请缩小筛选范围后重试。");
-    const result = await exportRoster(courseId, ids);
-    await revealAcademicExport(result.reveal_token);
-  };
-  return (
-    <RosterView
-      members={members}
-      loading={loading || !courseResolved}
-      error={error}
-      permissionDenied={courseResolved && !courseId}
-      onRetry={load}
-      onExport={runExport}
-    />
-  );
-}
-
-function adaptGradingSubmission(
-  submission: GradingSubmissionDto,
-  index: number,
-): GradingSubmission {
-  const user =
-    submission.user && typeof submission.user === "object"
-      ? submission.user
-      : {};
-  // 缺少真实学生 id 时不再用下标冒充，避免把评分写给另一位学生。
-  const studentId = String(submission.user_id ?? user.id ?? "");
-  const attachments = Array.isArray(submission.attachments)
-    ? submission.attachments
-    : [];
-  const comments = Array.isArray(submission.submission_comments)
-    ? submission.submission_comments
-    : [];
-  const status =
-    submission.missing ||
-    (submission.workflow_state === "unsubmitted" && !submission.submitted_at)
-      ? "missing"
-      : submission.late
-        ? "late"
-        : submission.score != null || submission.grade != null
-          ? "graded"
-          : "submitted";
-  return {
-    id: String(submission.id ?? `${studentId}:${index}`),
-    studentId,
-    studentName:
-      (typeof user.name === "string" && user.name) ||
-      (typeof user.display_name === "string" && user.display_name) ||
-      (studentId ? `学生 ${studentId}` : "学生（缺少标识）"),
-    loginId: typeof user.login_id === "string" ? user.login_id : null,
-    submittedAt: submission.submitted_at,
-    status,
-    score: submission.score,
-    displayGrade: submission.grade,
-    attempt: submission.attempt,
-    body: submission.body,
-    attachments: attachments.map((attachment, attachmentIndex) => ({
-      id: String(attachment.id ?? attachment.source_id ?? attachmentIndex),
-      name:
-        attachment.display_name ??
-        attachment.filename ??
-        `附件 ${attachmentIndex + 1}`,
-      size: attachment.size,
-      downloadStatus: "ready",
-    })),
-    comments: comments.map((comment, commentIndex) => ({
-      id: String(comment.id ?? commentIndex),
-      author: comment.author_name ?? comment.author?.display_name ?? "课程教师",
-      content: comment.comment ?? comment.text_comment ?? "",
-      createdAt: comment.created_at,
-    })),
-  };
-}
-
-function GradingAdapter({
-  courseId,
-  courseResolved,
-}: {
-  courseId: number | null;
-  courseResolved: boolean;
-}) {
-  const [assignments, setAssignments] = useState<GradeAssignment[]>([]);
-  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>("");
-  const selectedAssignmentIdRef = useRef("");
-  const [assignment, setAssignment] = useState<GradeAssignment | null>(null);
-  const [submissions, setSubmissions] = useState<GradingSubmission[]>([]);
-  const [loading, setLoading] = useState(Boolean(courseId));
-  const [error, setError] = useState<string | null>(null);
-  const gradingRequest = useRef(0);
-  // 提交附件是学生个人文件，不在课程资料表里，不能走 material_download；改用 Canvas 返回的下载链接。
-  // useRef 的初始值每次渲染都会求值，Map 改为惰性创建，避免每渲染分配一个随即丢弃的 Map。
-  const attachmentUrls = useRef<Map<string, string> | null>(null);
-  if (attachmentUrls.current === null) attachmentUrls.current = new Map();
-  const load = useCallback(
-    async (silent = false) => {
-      if (!courseId) return;
-      const request = ++gradingRequest.current;
-      if (!silent) setLoading(true);
-      setError(null);
-      try {
-        const book = await getGradebook(courseId);
-        if (gradingRequest.current !== request) return;
-        const availableAssignments = book.assignments.map((item) => ({
-          id: String(item.id),
-          name: item.name ?? `作业 ${item.id}`,
-          pointsPossible:
-            typeof item.points_possible === "number"
-              ? item.points_possible
-              : null,
-        }));
-        setAssignments(availableAssignments);
-        const nextAssignment =
-          availableAssignments.find(
-            (item) => item.id === selectedAssignmentIdRef.current,
-          ) ?? availableAssignments[0];
-        if (!nextAssignment) {
-          selectedAssignmentIdRef.current = "";
-          setSelectedAssignmentId("");
-          setAssignment(null);
-          setSubmissions([]);
-          return;
-        }
-        if (nextAssignment.id !== selectedAssignmentIdRef.current) {
-          selectedAssignmentIdRef.current = nextAssignment.id;
-          setSelectedAssignmentId(nextAssignment.id);
-        }
-        setAssignment(nextAssignment);
-        const result = await getGrading(courseId, Number(nextAssignment.id));
-        if (gradingRequest.current !== request) return;
-        const items =
-          "items" in result && Array.isArray(result.items)
-            ? result.items
-            : [result as GradingSubmissionDto];
-        const adapted = items.map(adaptGradingSubmission);
-        const urls = new Map<string, string>();
-        items.forEach((item, index) => {
-          const raw = Array.isArray(item.attachments) ? item.attachments : [];
-          adapted[index].attachments.forEach((attachment, attachmentIndex) => {
-            const url = raw[attachmentIndex]?.url;
-            if (typeof url === "string")
-              urls.set(`${adapted[index].id}\n${attachment.id}`, url);
-          });
-        });
-        attachmentUrls.current = urls;
-        setSubmissions(adapted);
-      } catch (reason) {
-        if (gradingRequest.current === request)
-          setError(messageFrom(reason, "作业提交加载失败"));
-      } finally {
-        if (gradingRequest.current === request) setLoading(false);
-      }
-    },
-    [courseId],
-  );
-  useEffect(() => {
-    void load();
-    return () => {
-      gradingRequest.current += 1;
-    };
-  }, [load]);
-  const update = async (
-    studentId: string,
-    payload: { grade?: number | null; comment?: string },
-  ) => {
-    if (!courseId || !assignment) return;
-    const studentNumber = positiveInteger(studentId);
-    if (studentNumber === null) {
-      throw new Error("该提交缺少学生标识，无法写入评分或评论。");
-    }
-    await updateGrading(
-      courseId,
-      Number(assignment.id),
-      studentNumber,
-      payload,
-    );
-    await load(true);
-  };
-  return (
-    <ContentReveal className="section-stack" ready={!loading && courseResolved}>
-      {assignments.length > 1 && (
-        <div className="finder-toolbar">
-          <label>
-            <span>作业</span>
-            <select
-              aria-label="选择要批改的作业"
-              value={selectedAssignmentId}
-              onChange={(event) => {
-                selectedAssignmentIdRef.current = event.target.value;
-                setSelectedAssignmentId(event.target.value);
-                void load();
-              }}
-            >
-              {assignments.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
-      <GradingView
-        assignmentName={assignment?.name}
-        maxScore={assignment?.pointsPossible}
-        submissions={submissions}
-        loading={loading || !courseResolved}
-        error={error}
-        permissionDenied={courseResolved && !courseId}
-        onRetry={load}
-        onSaveScore={({ studentId, score }) =>
-          update(studentId, { grade: score })
-        }
-        onAddComment={({ studentId, comment }) =>
-          update(studentId, { comment })
-        }
-        onDownloadAttachment={async (attachment, submission) => {
-          const url = attachmentUrls.current?.get(
-            `${submission.id}\n${attachment.id}`,
-          );
-          if (!url?.startsWith("https://")) {
-            throw new Error(
-              "该附件没有可用的 Canvas 下载链接，请在 Canvas 网页中查看。",
-            );
-          }
-          await openExternal(url);
-        }}
-      />
-    </ContentReveal>
   );
 }
 
@@ -1330,6 +888,8 @@ function VideosAdapter({
 }
 
 export default function App() {
+  const uiRelease = useUIRelease();
+  const aiDrafts = useRef(new Map<string, AIComposerDraft>());
   const readRequest = useBoundedReadRequests();
   const [view, setViewState] = useState<ViewName>(initialView);
   const videoTarget = useRef<HTMLDivElement>(null);
@@ -1356,16 +916,8 @@ export default function App() {
     () => availableViewsFor(capabilities),
     [capabilities],
   );
-  const staffCourses = courseCapabilities(capabilities).filter(
-    (course) =>
-      course.roles.some((role) => role === "teacher" || role === "ta") &&
-      (course.can_manage_grades || course.can_view_submissions),
-  );
   const learnerCourses = courseCapabilities(capabilities).filter((course) =>
     course.roles.some((role) => ["student", "teacher", "ta"].includes(role)),
-  );
-  const [selectedStaffCourseId, setStaffCourseId] = useState<number | null>(
-    null,
   );
   const [selectedLearnerCourseId, setSelectedLearnerCourseId] = useState<
     number | null
@@ -1379,17 +931,6 @@ export default function App() {
     learnerCourseIds.includes(selectedLearnerCourseId)
       ? selectedLearnerCourseId
       : (learnerCourseIds[0] ?? null);
-
-  // 与 learnerCourseId 一样在渲染期派生：effect 同步会在能力解析后多提交一帧
-  // courseResolved=true 且 courseId=null，闪现并播报“无访问权限”后再重挂。
-  const staffCourseIds = staffCourses.flatMap((course) => {
-    const id = courseNumber(course);
-    return id ? [id] : [];
-  });
-  const staffCourseId =
-    selectedStaffCourseId && staffCourseIds.includes(selectedStaffCourseId)
-      ? selectedStaffCourseId
-      : (staffCourseIds[0] ?? null);
 
   const coursePicker = (
     courses: CourseCapabilities[],
@@ -1443,9 +984,6 @@ export default function App() {
       if (request.prompt) {
         const selection: Record<string, string | number | boolean | null> = {};
         if (view === "calendar") selection.schedule_mode = scheduleMode;
-        if (["grades", "roster", "grading"].includes(view) && staffCourseId) {
-          selection.course_id = staffCourseId;
-        }
         window.localStorage.setItem("ai-chat-pending-prompt", request.prompt);
         window.localStorage.setItem("ai-chat-auto-submit", "true");
         window.localStorage.setItem(
@@ -1773,7 +1311,9 @@ export default function App() {
         mode={view === "ai-chat" ? "assistant" : "workbench"}
       >
         {view === "ai-chat" ? (
-          <AIChatView onBack={() => setView("overview")} />
+          <AIComposerDraftContext.Provider value={aiDrafts.current}>
+            <AIChatView onBack={() => setView("overview")} />
+          </AIComposerDraftContext.Provider>
         ) : (
           <AppShell
             view={view}
@@ -1789,12 +1329,22 @@ export default function App() {
           >
             <div key={view} className="view-transition">
               {view === "overview" && (
-                <OverviewView key={dataVersion} navigate={setView} />
+                <OverviewView
+                  key={dataVersion}
+                  navigate={setView}
+                  onAssignment={(target) => {
+                    setAssignmentTarget(target);
+                    setView("assignments");
+                  }}
+                  onAskAI={(prompt) =>
+                    openSidebarAI({ prompt, newSession: true })
+                  }
+                />
               )}
               {view === "calendar" && (
                 <ScheduleAdapter
                   key={dataVersion}
-                  mode={scheduleMode}
+                  mode={uiRelease === "2" ? "calendar" : scheduleMode}
                   syncStatus={syncStatus}
                   onNavigateAssignments={(target) => {
                     setAssignmentTarget(target ?? null);
@@ -1849,36 +1399,6 @@ export default function App() {
               )}
               {view === "materials" && (
                 <CourseMaterialsView key={dataVersion} />
-              )}
-              {view === "grades" && (
-                <div className="section-stack">
-                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                  <GradesAdapter
-                    key={`${dataVersion}:${staffCourseId}`}
-                    courseId={staffCourseId}
-                    courseResolved={capabilitiesInitialized}
-                  />
-                </div>
-              )}
-              {view === "roster" && (
-                <div className="section-stack">
-                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                  <RosterAdapter
-                    key={`${dataVersion}:${staffCourseId}`}
-                    courseId={staffCourseId}
-                    courseResolved={capabilitiesInitialized}
-                  />
-                </div>
-              )}
-              {view === "grading" && (
-                <div className="section-stack">
-                  {coursePicker(staffCourses, staffCourseId, setStaffCourseId)}
-                  <GradingAdapter
-                    key={`${dataVersion}:${staffCourseId}`}
-                    courseId={staffCourseId}
-                    courseResolved={capabilitiesInitialized}
-                  />
-                </div>
               )}
               {view === "videos" && <div ref={videoTarget} />}
               {view === "backup" && <CloudDriveView />}

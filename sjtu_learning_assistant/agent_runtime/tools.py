@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
+from sjtu_learning_assistant.native_calendar import CALENDAR_SCHEMAS, NativeCalendarError
+
 from sqlalchemy import Engine, case, func, literal, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -206,7 +208,13 @@ class ReadOnlyToolRegistry:
         workspace: AIWorkspace | None = None,
         compiled_knowledge: CompiledKnowledge | None = None,
         mail_account: str | None = None,
+        native_calendar=None,
+        external_mcp=None,
+        skill_packages=None,
+        selected_skills=None,
     ) -> None:
+        self.native_calendar = native_calendar
+        self._extension_definitions = {}
         self.engine = engine
         self.mail_account = mail_account
         # 用户指定的 AI 工作区；未配置时不注册任何文件工具。
@@ -246,6 +254,59 @@ class ReadOnlyToolRegistry:
             self._handlers["read_workspace_file"] = self._read_workspace_file
             self._handlers["propose_file_change"] = self._propose_file_change
 
+        if native_calendar is not None:
+            for name in CALENDAR_SCHEMAS:
+                self._handlers[name] = lambda raw, op=name.removeprefix("native_calendar_"): self._calendar_call(op, raw)
+        if external_mcp is not None:
+            for definition in external_mcp.definitions():
+                function=definition['function'];name=function['name']
+                self._extension_definitions[name]=function
+                self._handlers[name]=lambda raw, name=name: self._extension_call(external_mcp.call,name,raw)
+        if skill_packages is not None and selected_skills:
+            identities=[s['id'] for s in selected_skills]
+            parameters={'type':'object','properties':{'skill_id':{'type':'string','enum':identities}},'required':['skill_id'],'additionalProperties':False}
+            self._extension_definitions['list_skill_files']={'name':'list_skill_files','description':'列出本轮已选技能的原始文件结构，包括 README、SKILL.md、scripts 和资源。','parameters':parameters}
+            self._handlers['list_skill_files']=lambda raw:self._skill_call(skill_packages,identities,'list',raw)
+            parameters={'type':'object','properties':{'skill_id':{'type':'string','enum':identities},'path':{'type':'string'},'offset':{'type':'integer','minimum':0}},'required':['skill_id','path'],'additionalProperties':False}
+            self._extension_definitions['read_skill_file']={'name':'read_skill_file','description':'分页读取已选技能的 SKILL.md、README、脚本源码或文本资源；未完整读取指令时继续读取。','parameters':parameters}
+            self._handlers['read_skill_file']=lambda raw:self._skill_call(skill_packages,identities,'read',raw)
+            if any(s.get('allow_scripts') for s in selected_skills):
+                parameters={'type':'object','properties':{'skill_id':{'type':'string','enum':[s['id'] for s in selected_skills if s.get('allow_scripts')]},'path':{'type':'string'},'args':{'type':'array','items':{'type':'string'},'maxItems':24}},'required':['skill_id','path'],'additionalProperties':False}
+                self._extension_definitions['run_skill_script']={'name':'run_skill_script','description':'运行用户已明确允许的技能包 scripts 脚本，按本机进程权限执行，45秒超时。输出文件保存到本次技能输出目录；返回运行编号和文件列表。','parameters':parameters}
+                self._handlers['run_skill_script']=lambda raw:self._skill_call(skill_packages,identities,'run',raw)
+
+    def _extension_call(self, function, *args):
+        from ..external_mcp import MCPClientError
+        from ..skill_packages import SkillPackageError
+        try:
+            result,summary=function(*args)
+            if result.get('isError'):
+                # 服务错误不能被执行轨迹计为ok；文本随后经过安全摘要处理。
+                raise AgentToolError('外部MCP工具执行未成功：'+_bounded_payload(result).get('text','')[:200],category='execution',retryable=False)
+            return result,summary
+        except (MCPClientError,SkillPackageError) as exc:
+            raise AgentToolError(str(exc), category='execution') from None
+
+    def _skill_call(self, packages, identities, operation, raw):
+        from ..skill_packages import SkillPackageError
+        try:
+            if type(raw) is not dict or raw.get('skill_id') not in identities:
+                raise SkillPackageError('只能使用本轮已选择的技能。')
+            identity=raw['skill_id']
+            if operation=='list':result={'items':packages.get(identity,enabled=True)['files']}
+            elif operation=='read':result=packages.read(identity,raw.get('path'),raw.get('offset',0))
+            else:result=packages.run_script(identity,raw.get('path'),raw.get('args',[]))
+            return result, {'skill_id':identity,'operation':operation}
+        except SkillPackageError as exc:
+            raise AgentToolError(str(exc),category='execution') from None
+
+    def _calendar_call(self, operation, raw):
+        try:
+            result = self.native_calendar.call(operation, raw)
+            return result, {"operation": operation}
+        except NativeCalendarError as exc:
+            raise AgentToolError(str(exc), category="execution") from None
+
     @property
     def names(self) -> frozenset[str]:
         return frozenset(self._handlers)
@@ -271,6 +332,7 @@ class ReadOnlyToolRegistry:
             "propose_file_change": ("在 AI 工作区内新建或修改文本文件。修改不会立即生效：会生成差异预览，由用户在界面确认后才写入。mode=create 新建；overwrite 整体替换；replace 按 edits 中每个 find（必须在文件中恰好出现一次）替换为 replace；append 在末尾追加（长文档请先 create 再多次 append，每次不超过约 6000 字）。", {"type": "object", "properties": {"path": {"type": "string", "maxLength": 512}, "mode": {"type": "string", "enum": ["create", "overwrite", "replace", "append"]}, "content": {"type": "string"}, "edits": {"type": "array", "maxItems": 30, "items": {"type": "object", "properties": {"find": {"type": "string"}, "replace": {"type": "string"}}, "required": ["find", "replace"], "additionalProperties": False}}, "summary": {"type": "string", "maxLength": 300, "description": "一句话说明这次修改做了什么"}}, "required": ["path", "mode"], "additionalProperties": False}),
             "read_ai_attachment_text": ("按附件 ID 按需读取有上限的正文，不接受路径", {"type": "object", "properties": {"attachment_id": {"type": "integer", "minimum": 1, "maximum": MAX_ATTACHMENT_ID}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000}}, "required": ["attachment_id"], "additionalProperties": False}),
         }
+        schemas.update(CALENDAR_SCHEMAS)
         # 学期范围共用 desktop/MCP 契约，禁止用同名课程或文件夹名猜身份。
         schemas["browse_knowledge_wiki"][1]["properties"]["max_chars"]["maximum"] = 12000
         schemas["read_compiled_knowledge"][1]["properties"]["max_chars"]["maximum"] = 16000
@@ -278,7 +340,7 @@ class ReadOnlyToolRegistry:
         schemas["search_compiled_knowledge"][1]["properties"].update({"term_id": {"type": "string", "maxLength": 140}, "course_id": {"type": "string", "maxLength": 128}})
         # 只声明本次实际注册的工具：未配置工作区时文件工具不出现在模型可选项中。
         return [
-            {"type": "function", "function": {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
+            {"type": "function", "function": self._extension_definitions[name] if name in self._extension_definitions else {"name": name, "description": schemas[name][0], "parameters": schemas[name][1]}}
             for name in allowed_tools
             if name in self._handlers
         ]

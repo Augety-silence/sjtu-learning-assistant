@@ -69,3 +69,9 @@ Thumbs.db
 
 # Generated chat-steering preview
 /dashboard-web/chat-steering-preview-dist/
+
+# Local 2.0 visual audits and device reports
+/dashboard-web/v2-native-preview-dist/
+/.impeccable/review/
+/docs/releases/*-preview/
+/docs/releases/v2.0.0-*.json

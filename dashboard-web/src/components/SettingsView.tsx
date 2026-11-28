@@ -31,7 +31,6 @@ import {
 import { createPortal } from "react-dom";
 import settingsFirstConfigIllustration from "@/assets/empty-states/settings-first-config.webp";
 import { ASRSettingsPanel } from "@/components/ASRSettingsPanel";
-import { ContentReveal } from "@/components/ContentReveal";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
 import { TokenUsageDashboard } from "@/components/TokenUsageDashboard";
@@ -57,6 +56,7 @@ import {
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { SettingsStatus, ThemeMode, UpdateCheckResult } from "@/lib/types";
 import { useModalFocus } from "@/lib/useModalFocus";
+import { V2SettingsSurface } from "@/v2/Settings";
 
 const AI_MODELS = [
   "deepseek-chat",
@@ -465,7 +465,7 @@ export function SettingsView({
   const isFirstConfig = !Object.values(savedByKind).some(Boolean);
 
   return (
-    <ContentReveal className="section-stack settings-page" afterLoad>
+    <V2SettingsSurface>
       {status.credential_status_error && (
         <p className="settings-warning" role="status">
           {status.credential_status_error}
@@ -769,7 +769,7 @@ export function SettingsView({
           />
         )}
       </AnimatePresence>
-    </ContentReveal>
+    </V2SettingsSurface>
   );
 }
 

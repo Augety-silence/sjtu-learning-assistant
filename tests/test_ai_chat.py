@@ -282,9 +282,10 @@ class AIChatHistoryTests(unittest.TestCase):
             }
         )
         skill_id = saved["skill"]["id"]
-        self.assertIn(skill_id, [item["id"] for item in saved["items"]])
+        self.assertIn(skill_id, [item["id"] for item in saved["skills"]])
+        self.assertEqual({"general", "knowledge"}, {item["id"] for item in saved["items"]})
         chat = self.service.ai_chat_new("deepseek-chat", "standard", skill_id)
-        self.service.ai_chat_send(chat["id"], "解释乘数效应", "deepseek-chat", "standard", skill_id)
+        self.service.ai_chat_send(chat["id"], "解释乘数效应", "deepseek-chat", "standard", "general", skill_ids=[skill_id])
         request = str(FakeAIClient.requested_messages[-1])
         self.assertIn("用术语表解释概念", request)
         self.assertIn("宏观复习", request)

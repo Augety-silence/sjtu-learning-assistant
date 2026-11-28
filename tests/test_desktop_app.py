@@ -271,6 +271,15 @@ class DesktopBridgeTests(unittest.TestCase):
             )["error"]["code"],
         )
 
+    def test_student_ui_rejects_teacher_management_actions(self):
+        for action in ("gradebook", "gradebook_export", "roster", "roster_export",
+                       "academic_export_reveal", "grading", "grading_submissions",
+                       "grading_submission", "grading_update"):
+            with self.subTest(action=action):
+                result = self.bridge.invoke(action, {"course_id": 1})
+                self.assertFalse(result["ok"])
+                self.assertEqual("not_allowed", result["error"]["code"])
+
     def test_local_project_actions_are_allowlisted_and_strict(self):
         listed = self.bridge.invoke("local_projects_list", {})
         self.assertEqual([], listed["data"]["items"])

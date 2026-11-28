@@ -75,11 +75,13 @@ export function AISkillManager({
   initialSkillId,
   onClose,
   onSaved,
+  embedded = false,
 }: {
   presets: AIAgentPreset[];
   initialSkillId?: string | null;
   onClose: () => void;
   onSaved: (result: AIAgentPresetsResult, selectedId: string | null) => void;
+  embedded?: boolean;
 }) {
   const userSkills = presets.filter((preset) => preset.source === "user");
   const initial = userSkills.find((preset) => preset.id === initialSkillId);
@@ -96,6 +98,7 @@ export function AISkillManager({
   useModalFocus(dialogRef, onClose, {
     initialFocusRef: nameRef,
     dismissible: !saving,
+    active: !embedded,
   });
 
   useEffect(() => {
@@ -188,20 +191,29 @@ export function AISkillManager({
     }
   };
 
-  return createPortal(
-    <div className="confirm-layer ai-skill-layer" data-modal-layer>
-      <button
-        type="button"
-        className="confirm-backdrop"
-        aria-label="关闭技能管理"
-        disabled={saving}
-        onClick={onClose}
-      />
+  const content = (
+    <div
+      className={embedded ? "ui2-skill-editor" : "confirm-layer ai-skill-layer"}
+      data-modal-layer={embedded ? undefined : true}
+    >
+      {!embedded && (
+        <button
+          type="button"
+          className="confirm-backdrop"
+          aria-label="关闭技能管理"
+          disabled={saving}
+          onClick={onClose}
+        />
+      )}
       <section
         ref={dialogRef}
-        className="confirm-dialog ai-skill-dialog"
-        role="dialog"
-        aria-modal="true"
+        className={
+          embedded
+            ? "ai-skill-dialog is-embedded"
+            : "confirm-dialog ai-skill-dialog"
+        }
+        role={embedded ? "region" : "dialog"}
+        aria-modal={embedded ? undefined : true}
         aria-labelledby={titleId}
         aria-busy={saving}
         tabIndex={-1}
@@ -380,7 +392,7 @@ export function AISkillManager({
           </form>
         </div>
       </section>
-    </div>,
-    document.body,
+    </div>
   );
+  return embedded ? content : createPortal(content, document.body);
 }

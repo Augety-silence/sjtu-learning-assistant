@@ -1,6 +1,7 @@
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
+import { useUIRelease } from "@/lib/uiRelease";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
@@ -49,11 +50,21 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     },
     ref,
   ) => {
+    const release = useUIRelease();
     const Component = asChild ? Slot : "button";
     return (
       <Component
         ref={ref}
-        className={cn(buttonVariants({ variant, size, className }))}
+        className={
+          release === "2"
+            ? cn(
+                "v2-button",
+                `v2-button-${variant ?? "default"}`,
+                `v2-button-size-${size ?? "default"}`,
+                className,
+              )
+            : cn(buttonVariants({ variant, size, className }))
+        }
         aria-busy={loading || undefined}
         disabled={!asChild ? disabled || loading : undefined}
         {...props}

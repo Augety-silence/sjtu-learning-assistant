@@ -29,12 +29,16 @@ import { ContentReveal } from "@/components/ContentReveal";
 import { useToast } from "@/components/Toast";
 import { TranscriptDetailDrawer } from "@/components/TranscriptDetailDrawer";
 import { useVideoPdfSync } from "@/components/useVideoPdfSync";
+import { V2VideoControls } from "@/components/V2VideoControls";
 import { syncCaptionTrack, VideoCaptions } from "@/components/VideoCaptions";
 import {
   type VideoLearningSegmentsResult,
   type VideoPlaybackPosition,
   VideoSynchronizedLearning,
 } from "@/components/VideoSynchronizedLearning";
+import { VideoTranscript } from "@/components/VideoTranscript";
+import { useUIRelease } from "@/lib/uiRelease";
+import { parseVttCues } from "@/lib/videoSubtitles";
 
 export type {
   VideoLearningSegment,
@@ -254,39 +258,6 @@ type SlidePanePointer = {
 };
 
 type SubtitleCue = { startMs: number; endMs: number; text: string };
-
-function parseVttTime(value: string) {
-  const parts = value.trim().replace(",", ".").split(":");
-  if (parts.length < 2 || parts.length > 3) return null;
-  const seconds = Number(parts.pop());
-  const minutes = Number(parts.pop());
-  const hours = parts.length ? Number(parts.pop()) : 0;
-  if (![hours, minutes, seconds].every(Number.isFinite)) return null;
-  return Math.round(((hours * 60 + minutes) * 60 + seconds) * 1000);
-}
-
-function parseVttCues(value: string | null) {
-  if (!value) return [] as SubtitleCue[];
-  return value
-    .replace(/^WEBVTT[^\n]*\n+/i, "")
-    .split(/\n\s*\n/)
-    .flatMap((block) => {
-      const lines = block.trim().split(/\r?\n/);
-      const timingIndex = lines.findIndex((line) => line.includes("-->"));
-      if (timingIndex < 0) return [];
-      const [start, end] = lines[timingIndex].split("-->");
-      const startMs = parseVttTime(start);
-      const endMs = parseVttTime(end.trim().split(/\s+/)[0]);
-      const text = lines
-        .slice(timingIndex + 1)
-        .join(" ")
-        .replace(/<[^>]*>/g, "")
-        .trim();
-      return startMs === null || endMs === null || !text
-        ? []
-        : [{ startMs, endMs, text }];
-    });
-}
 
 function formatVideoClock(seconds: number) {
   const value = Math.max(0, Math.floor(seconds));
@@ -861,6 +832,9 @@ export function VideosView({
   onRevealTranscript,
   aiReadiness,
 }: VideosViewProps) {
+  const release = useUIRelease();
+  const [v2ToolsOpen, setV2ToolsOpen] = useState(true);
+  const [v2SlidesMain, setV2SlidesMain] = useState(false);
   const [source, setSource] = useState<"all" | VideoSource>("all");
   const [subtitleSyncBusy, setSubtitleSyncBusy] = useState(false);
   const [selected, setSelected] = useState<CourseVideoItem | null>(null);
@@ -893,10 +867,12 @@ export function VideosView({
     height: 390,
   }));
   const [panePointerActive, setPanePointerActive] = useState(false);
-  const [learningTab, setLearningTab] = useState<LearningTab>("summary");
+  const [learningTab, setLearningTab] = useState<LearningTab>(
+    release === "2" ? "transcript" : "summary",
+  );
   const [detailJob, setDetailJob] = useState<TranscriptJob | null>(null);
   const [detailInitialTab, setDetailInitialTab] = useState<
-    "summary" | "practice" | "cleaned"
+    "summary" | "practice" | "cleaned" | "raw_vtt"
   >("summary");
   const [preparationBusy, setPreparationBusy] = useState(false);
   const [preparationAttempt, setPreparationAttempt] = useState(0);
@@ -1169,7 +1145,7 @@ export function VideosView({
     playBusyRef.current = null;
     operationsRef.current.clear();
     setOperationKeys(new Set());
-    setLearningTab("summary");
+    setLearningTab(release === "2" ? "transcript" : "summary");
     setDetailJob(null);
     setOpenMenuId(null);
     setMenuPosition(null);
@@ -1300,6 +1276,34 @@ export function VideosView({
       media?.removeEventListener("webkitendfullscreen", onWebkitFullscreen);
     };
   }, [playbackUrl]);
+  const constrainSlidePane = useCallback(
+    (rect: SlidePaneRect) => {
+      if (release !== "2" || !playerShellRef.current)
+        return clampSlidePaneRect(rect);
+      const area = playerShellRef.current.getBoundingClientRect();
+      const top = Math.min(56, area.height * 0.18);
+      const bottom = Math.min(84, area.height * 0.24);
+      const maxWidth = Math.max(
+        120,
+        Math.min(420, area.width - 24, (area.height - top - bottom) * 1.6),
+      );
+      const width = Math.min(maxWidth, Math.max(132, rect.width));
+      const height = width / 1.6;
+      return {
+        width,
+        height,
+        left: Math.max(
+          area.left + 12,
+          Math.min(rect.left, area.right - width - 12),
+        ),
+        top: Math.max(
+          area.top + top,
+          Math.min(rect.top, area.bottom - height - bottom),
+        ),
+      };
+    },
+    [release],
+  );
   useEffect(() => {
     if (!splitPaneOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -1308,14 +1312,14 @@ export function VideosView({
       }
     };
     const keepPaneInViewport = () =>
-      setSlidePaneRect((current) => clampSlidePaneRect(current));
+      setSlidePaneRect((current) => constrainSlidePane(current));
     document.addEventListener("keydown", closeOnEscape);
     window.addEventListener("resize", keepPaneInViewport);
     return () => {
       document.removeEventListener("keydown", closeOnEscape);
       window.removeEventListener("resize", keepPaneInViewport);
     };
-  }, [splitPaneOpen]);
+  }, [splitPaneOpen, constrainSlidePane]);
   useEffect(() => {
     const pointer = slidePanePointerRef.current;
     if (!pointer) return;
@@ -1334,7 +1338,7 @@ export function VideosView({
               width: pointer.rect.width + dx,
               height: pointer.rect.height + dy,
             };
-      setSlidePaneRect(clampSlidePaneRect(next));
+      setSlidePaneRect(constrainSlidePane(next));
     };
     const stopPointer = () => {
       slidePanePointerRef.current = null;
@@ -1348,7 +1352,7 @@ export function VideosView({
       window.removeEventListener("pointerup", stopPointer);
       window.removeEventListener("pointercancel", stopPointer);
     };
-  }, [panePointerActive]);
+  }, [panePointerActive, constrainSlidePane]);
   useEffect(() => {
     if (
       !splitPaneOpen ||
@@ -1904,7 +1908,7 @@ export function VideosView({
     slideMetadataRequestRef.current += 1;
     slideImageRequestRef.current += 1;
     setPreservedAcrossSource(false);
-    setLearningTab("summary");
+    setLearningTab(release === "2" ? "transcript" : "summary");
   };
   useEffect(
     () => () => {
@@ -2200,11 +2204,7 @@ export function VideosView({
       }
       setPlaybackUrl(nextUrl);
       if (!nextUrl) setPlaybackError("该节录像未返回可播放地址。");
-      if (
-        video.source === "video_space" &&
-        video.supportsSubtitle &&
-        onLoadSubtitles
-      ) {
+      if (video.supportsSubtitle && onLoadSubtitles) {
         const reading = beginSubtitleRead(video);
         void reading.promise
           .then((subtitleResult) => {
@@ -2300,11 +2300,19 @@ export function VideosView({
         <p className="video-tool-empty">课件可用时会自动同步。</p>
       );
     }
-    if (tab === "transcript" && subtitleVtt)
+    if (tab === "transcript" && subtitleVtt && release !== "2")
       return (
         <pre className="video-raw-subtitle">
           {subtitleCues.map((cue) => cue.text).join("\n\n")}
         </pre>
+      );
+    if (tab === "transcript" && subtitleVtt)
+      return (
+        <VideoTranscript
+          cues={subtitleCues}
+          playbackTime={playbackTime}
+          onSeek={seekToTime}
+        />
       );
     if (selectedJob)
       return (
@@ -2312,7 +2320,7 @@ export function VideosView({
           variant="ghost"
           size="sm"
           onClick={() => {
-            setDetailInitialTab(tab === "transcript" ? "cleaned" : "summary");
+            setDetailInitialTab(tab === "transcript" ? "raw_vtt" : "summary");
             setDetailJob(selectedJob);
           }}
         >
@@ -2328,17 +2336,303 @@ export function VideosView({
     );
   };
 
+  const speedControl = (
+    <div className="video-player-tool">
+      <button
+        ref={speedTriggerRef}
+        type="button"
+        className="video-player-tool-trigger"
+        aria-label={`播放速度 ${formatPlaybackRate(playbackRate)}`}
+        aria-haspopup="menu"
+        aria-expanded={speedMenuOpen}
+        onClick={() => {
+          setShortcutsOpen(false);
+          setSpeedMenuOpen((open) => !open);
+        }}
+      >
+        {formatPlaybackRate(playbackRate)}
+        <ChevronDown aria-hidden="true" />
+      </button>
+      {speedMenuOpen && (
+        <div
+          className="video-player-popover video-speed-menu"
+          role="menu"
+          aria-label="播放速度"
+        >
+          {playbackRates.map((rate, index) => (
+            <button
+              key={rate}
+              ref={(node) => {
+                speedOptionRefs.current[index] = node;
+              }}
+              type="button"
+              role="menuitemradio"
+              aria-checked={rate === playbackRate}
+              onClick={() => choosePlaybackRate(rate)}
+              onKeyDown={(event) => {
+                let nextIndex: number | null = null;
+                if (event.key === "ArrowDown")
+                  nextIndex = (index + 1) % playbackRates.length;
+                else if (event.key === "ArrowUp")
+                  nextIndex =
+                    (index - 1 + playbackRates.length) % playbackRates.length;
+                else if (event.key === "Home") nextIndex = 0;
+                else if (event.key === "End")
+                  nextIndex = playbackRates.length - 1;
+                else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSpeedMenuOpen(false);
+                  speedTriggerRef.current?.focus();
+                } else if (event.key === "Tab") {
+                  event.preventDefault();
+                  setSpeedMenuOpen(false);
+                  speedTriggerRef.current?.focus();
+                }
+                if (nextIndex !== null) {
+                  event.preventDefault();
+                  speedOptionRefs.current[nextIndex]?.focus();
+                }
+              }}
+            >
+              <span>{formatPlaybackRate(rate)}</span>
+              {rate === playbackRate && <Check aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+  const playerActions = selected && (
+    <div className="video-player-meta-row">
+      <div className="video-now-playing">
+        <strong>{selected.title}</strong>
+        <span>
+          {[
+            preservedAcrossSource
+              ? `正在播放 · ${sourceLabels[selected.source]}`
+              : null,
+            selected.classroom,
+            formatRecordedAt(selected.recordedAt),
+            formatDuration(selected.duration),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+      </div>
+      <div className="video-player-tools" ref={playerToolsRef}>
+        {playbackUrl && release !== "2" && (
+          <button
+            type="button"
+            className="video-player-tool-trigger video-player-tool-button"
+            aria-label={
+              portalFullscreen || playerFullscreen ? "退出全屏" : "全屏播放"
+            }
+            aria-pressed={portalFullscreen || playerFullscreen}
+            onClick={() => void togglePlayerFullscreen()}
+          >
+            {portalFullscreen || playerFullscreen ? (
+              <Minimize2 aria-hidden="true" />
+            ) : (
+              <Maximize2 aria-hidden="true" />
+            )}
+            <span>
+              {portalFullscreen || playerFullscreen ? "退出全屏" : "全屏"}
+            </span>
+          </button>
+        )}
+        {selected.source === "video_space" &&
+          selected.supportsSlidesPdf &&
+          onLoadSlides &&
+          onLoadSlideImage && (
+            <button
+              type="button"
+              className="video-player-tool-trigger video-player-tool-button"
+              aria-label={splitPaneOpen ? "关闭 PPT 分屏" : "打开 PPT 分屏"}
+              aria-pressed={splitPaneOpen}
+              onClick={() => {
+                if (splitPaneOpen) setSplitPaneOpen(false);
+                else void openSlidePane();
+              }}
+            >
+              <FileText aria-hidden="true" />
+              <span>PPT 分屏</span>
+            </button>
+          )}
+        {release !== "2" && speedControl}
+        <div className="video-player-tool">
+          <button
+            type="button"
+            className="video-shortcuts-trigger"
+            aria-haspopup="dialog"
+            aria-expanded={shortcutsOpen}
+            onClick={() => {
+              setSpeedMenuOpen(false);
+              setShortcutsOpen((open) => !open);
+            }}
+          >
+            快捷键
+          </button>
+          {shortcutsOpen && (
+            <div
+              className="video-player-popover video-shortcuts-popover"
+              role="dialog"
+              aria-label="播放器快捷键"
+            >
+              <span>
+                <kbd>Space</kbd> / <kbd>K</kbd> 播放或暂停
+              </span>
+              <span>
+                <kbd>J</kbd> / <kbd>L</kbd> 后退或前进 10 秒
+              </span>
+              <span>
+                短按 <kbd>←</kbd> / <kbd>→</kbd> 后退或前进 5 秒
+              </span>
+              <span>
+                长按 <kbd>←</kbd> / <kbd>→</kbd> 临时倒退或快进
+              </span>
+              <span>
+                按住方向键时用 <kbd>↑</kbd> / <kbd>↓</kbd> 调整临时速度
+              </span>
+              <span>
+                <kbd>[</kbd> / <kbd>]</kbd> 降低或提高基础倍速
+              </span>
+              <span>
+                <kbd>Shift</kbd> + <kbd>,</kbd> / <kbd>.</kbd> 调整倍速
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  const learningPanel = (
+    <Tabs
+      value={learningTab}
+      onValueChange={(value) => setLearningTab(value as LearningTab)}
+    >
+      <div className="video-material-toolbar">
+        <TabsList className="video-learning-tabs" aria-label="学习工具">
+          <TabsTrigger value="summary" onClick={() => setV2ToolsOpen(true)}>
+            讲义
+          </TabsTrigger>
+          <TabsTrigger value="transcript" onClick={() => setV2ToolsOpen(true)}>
+            字幕
+          </TabsTrigger>
+          <TabsTrigger value="pdf" onClick={() => setV2ToolsOpen(true)}>
+            课件
+          </TabsTrigger>
+        </TabsList>
+        {onSyncAllSubtitles && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={subtitleSyncBusy}
+            title="提前同步全部课程字幕，复用已有下载"
+            onClick={() => {
+              setSubtitleSyncBusy(true);
+              void onSyncAllSubtitles()
+                .then(() => {
+                  showToast({
+                    message: "已加入后台字幕同步",
+                    kind: "success",
+                  });
+                })
+                .catch((reason) => {
+                  showToast({
+                    message:
+                      reason instanceof Error
+                        ? reason.message
+                        : "字幕同步启动失败。",
+                    kind: "error",
+                  });
+                })
+                .finally(() => setSubtitleSyncBusy(false));
+            }}
+          >
+            同步全部字幕
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={
+            (!selected && !onRetrySync) ||
+            preparationBusy ||
+            syncedPdf.busy ||
+            syncRetryBusy
+          }
+          title={
+            (preparationError && preparationError.sourceId === selected?.id
+              ? preparationError.message
+              : syncedPdf.error) ||
+            syncIssue ||
+            (subtitleStatus === "error" ? subtitleMessage : null) ||
+            "保留已同步内容，从断点重试字幕与课件"
+          }
+          onClick={() => {
+            onRetrySync?.();
+            if (!selected) return;
+            preparedVideosRef.current.delete(
+              `${courseId ?? "unscoped"}:${selected.id}`,
+            );
+            if (
+              selectedJob &&
+              transcriptNeedsRetry(selectedJob) &&
+              onRetryTranscript
+            ) {
+              const sourceId = selected.id;
+              const generation = operationGenerationRef.current;
+              setSyncRetryBusy(true);
+              void Promise.resolve()
+                .then(() => onRetryTranscript(selectedJob))
+                .catch((reason) => {
+                  if (
+                    operationGenerationRef.current === generation &&
+                    selectedVideoRef.current?.id === sourceId
+                  )
+                    setPreparationError({
+                      sourceId,
+                      message:
+                        reason instanceof Error
+                          ? reason.message
+                          : "同步重试失败。",
+                    });
+                })
+                .finally(() => {
+                  if (operationGenerationRef.current !== generation) return;
+                  setSyncRetryBusy(false);
+                  setPreparationAttempt((value) => value + 1);
+                });
+            } else setPreparationAttempt((value) => value + 1);
+          }}
+        >
+          重试同步
+        </Button>
+      </div>
+      {(["transcript", "summary", "pdf"] as LearningTab[]).map((tab) => (
+        <TabsContent key={tab} value={tab} className="video-tool-panel">
+          {renderLearningContent(tab)}
+        </TabsContent>
+      ))}
+    </Tabs>
+  );
   const playerShell = (
     <div
       ref={playerShellRef}
-      className={`video-player-shell${portalFullscreen ? " video-player-shell--pseudo-fullscreen" : ""}`}
+      className={`video-player-shell${release === "2" && v2SlidesMain && splitPaneOpen ? " v2-slides-main" : ""}${portalFullscreen ? " video-player-shell--pseudo-fullscreen" : ""}`}
       data-testid="video-player-shell"
+      onDoubleClick={
+        release === "2" && v2SlidesMain
+          ? () => setV2SlidesMain(false)
+          : undefined
+      }
     >
       {playbackUrl ? (
         <video
           key={playbackUrl}
           ref={videoRef}
-          controls
+          controls={release !== "2"}
+          playsInline
           preload="metadata"
           aria-label={selected ? `播放 ${selected.title}` : "课程视频"}
           onPlay={(event) => {
@@ -2509,14 +2803,23 @@ export function VideosView({
               ? "正在获取视频地址…"
               : externalPlaybackSourceId === selected.id
                 ? "可在外部应用观看录像，或继续使用下方学习工具。"
-                : "可继续使用下方学习工具，或再次选择播放"}
+                : "点击开始播放，字幕会自动显示在画面下方。"}
           </span>
+          {busy !== `play:${selected.id}` && !externalPlaybackSourceId && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void play(selected)}
+            >
+              开始播放
+            </Button>
+          )}
         </div>
       ) : (
         <div className="video-player-empty">
           <Play aria-hidden="true" />
           <strong>尚未选择播放内容</strong>
-          <span>从右侧录像列表选择一节开始学习</span>
+          <span>从左侧录像列表选择一节开始学习</span>
         </div>
       )}
       {playbackUrl && (
@@ -2536,7 +2839,7 @@ export function VideosView({
           {playerFeedback.text}
         </div>
       )}
-      {portalFullscreen && (
+      {portalFullscreen && release !== "2" && (
         <button
           type="button"
           className="video-player-fullscreen-exit"
@@ -2546,6 +2849,22 @@ export function VideosView({
           <Minimize2 aria-hidden="true" />
           退出全屏
         </button>
+      )}{" "}
+      {release === "2" && selected && (
+        <>
+          <div className="v2-video-controls-top">{playerActions}</div>
+          {playbackUrl && (
+            <V2VideoControls
+              mediaRef={videoRef}
+              source={playbackUrl}
+              fullscreen={portalFullscreen || playerFullscreen}
+              onFullscreen={() => void togglePlayerFullscreen()}
+              onSeek={seekToTime}
+              onToggle={togglePlayback}
+              speedControl={speedControl}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -2554,7 +2873,11 @@ export function VideosView({
     <ContentReveal
       as="main"
       ready={!loading}
-      className="video-workbench"
+      className={
+        release === "2"
+          ? "video-workbench v2-video-workbench"
+          : "video-workbench"
+      }
       aria-busy={loading || undefined}
       data-state={
         loading
@@ -2601,311 +2924,6 @@ export function VideosView({
       </section>
 
       <section className="video-learning-grid" aria-label="课程视频学习工作台">
-        <div className="video-player-column">
-          {portalFullscreen
-            ? createPortal(playerShell, document.body)
-            : playerShell}
-          <Button
-            variant="outline"
-            size="sm"
-            className="video-list-jump"
-            onClick={() => {
-              const list = listPanelRef.current;
-              if (!list) return;
-              const reduceMotion =
-                window.matchMedia?.("(prefers-reduced-motion: reduce)")
-                  .matches ?? false;
-              list.scrollIntoView({
-                behavior: reduceMotion ? "auto" : "smooth",
-                block: "start",
-              });
-              list.focus({ preventScroll: true });
-            }}
-          >
-            查看录像列表
-          </Button>
-          {selected && (
-            <div className="video-player-meta-row">
-              <div className="video-now-playing">
-                <strong>{selected.title}</strong>
-                <span>
-                  {[
-                    preservedAcrossSource
-                      ? `正在播放 · ${sourceLabels[selected.source]}`
-                      : null,
-                    selected.classroom,
-                    formatRecordedAt(selected.recordedAt),
-                    formatDuration(selected.duration),
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
-              </div>
-              <div className="video-player-tools" ref={playerToolsRef}>
-                {playbackUrl && (
-                  <button
-                    type="button"
-                    className="video-player-tool-trigger video-player-tool-button"
-                    aria-label={
-                      portalFullscreen || playerFullscreen
-                        ? "退出全屏"
-                        : "全屏播放"
-                    }
-                    aria-pressed={portalFullscreen || playerFullscreen}
-                    onClick={() => void togglePlayerFullscreen()}
-                  >
-                    {portalFullscreen || playerFullscreen ? (
-                      <Minimize2 aria-hidden="true" />
-                    ) : (
-                      <Maximize2 aria-hidden="true" />
-                    )}
-                    <span>
-                      {portalFullscreen || playerFullscreen
-                        ? "退出全屏"
-                        : "全屏"}
-                    </span>
-                  </button>
-                )}
-                {selected.source === "video_space" &&
-                  selected.supportsSlidesPdf &&
-                  onLoadSlides &&
-                  onLoadSlideImage && (
-                    <button
-                      type="button"
-                      className="video-player-tool-trigger video-player-tool-button"
-                      aria-label={
-                        splitPaneOpen ? "关闭 PPT 分屏" : "打开 PPT 分屏"
-                      }
-                      aria-pressed={splitPaneOpen}
-                      onClick={() => {
-                        if (splitPaneOpen) setSplitPaneOpen(false);
-                        else void openSlidePane();
-                      }}
-                    >
-                      <FileText aria-hidden="true" />
-                      <span>PPT 分屏</span>
-                    </button>
-                  )}
-                <div className="video-player-tool">
-                  <button
-                    ref={speedTriggerRef}
-                    type="button"
-                    className="video-player-tool-trigger"
-                    aria-label={`播放速度 ${formatPlaybackRate(playbackRate)}`}
-                    aria-haspopup="menu"
-                    aria-expanded={speedMenuOpen}
-                    onClick={() => {
-                      setShortcutsOpen(false);
-                      setSpeedMenuOpen((open) => !open);
-                    }}
-                  >
-                    {formatPlaybackRate(playbackRate)}
-                    <ChevronDown aria-hidden="true" />
-                  </button>
-                  {speedMenuOpen && (
-                    <div
-                      className="video-player-popover video-speed-menu"
-                      role="menu"
-                      aria-label="播放速度"
-                    >
-                      {playbackRates.map((rate, index) => (
-                        <button
-                          key={rate}
-                          ref={(node) => {
-                            speedOptionRefs.current[index] = node;
-                          }}
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={rate === playbackRate}
-                          onClick={() => choosePlaybackRate(rate)}
-                          onKeyDown={(event) => {
-                            let nextIndex: number | null = null;
-                            if (event.key === "ArrowDown")
-                              nextIndex = (index + 1) % playbackRates.length;
-                            else if (event.key === "ArrowUp")
-                              nextIndex =
-                                (index - 1 + playbackRates.length) %
-                                playbackRates.length;
-                            else if (event.key === "Home") nextIndex = 0;
-                            else if (event.key === "End")
-                              nextIndex = playbackRates.length - 1;
-                            else if (event.key === "Escape") {
-                              event.preventDefault();
-                              setSpeedMenuOpen(false);
-                              speedTriggerRef.current?.focus();
-                            } else if (event.key === "Tab") {
-                              event.preventDefault();
-                              setSpeedMenuOpen(false);
-                              speedTriggerRef.current?.focus();
-                            }
-                            if (nextIndex !== null) {
-                              event.preventDefault();
-                              speedOptionRefs.current[nextIndex]?.focus();
-                            }
-                          }}
-                        >
-                          <span>{formatPlaybackRate(rate)}</span>
-                          {rate === playbackRate && (
-                            <Check aria-hidden="true" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="video-player-tool">
-                  <button
-                    type="button"
-                    className="video-shortcuts-trigger"
-                    aria-haspopup="dialog"
-                    aria-expanded={shortcutsOpen}
-                    onClick={() => {
-                      setSpeedMenuOpen(false);
-                      setShortcutsOpen((open) => !open);
-                    }}
-                  >
-                    快捷键
-                  </button>
-                  {shortcutsOpen && (
-                    <div
-                      className="video-player-popover video-shortcuts-popover"
-                      role="dialog"
-                      aria-label="播放器快捷键"
-                    >
-                      <span>
-                        <kbd>Space</kbd> / <kbd>K</kbd> 播放或暂停
-                      </span>
-                      <span>
-                        <kbd>J</kbd> / <kbd>L</kbd> 后退或前进 10 秒
-                      </span>
-                      <span>
-                        短按 <kbd>←</kbd> / <kbd>→</kbd> 后退或前进 5 秒
-                      </span>
-                      <span>
-                        长按 <kbd>←</kbd> / <kbd>→</kbd> 临时倒退或快进
-                      </span>
-                      <span>
-                        按住方向键时用 <kbd>↑</kbd> / <kbd>↓</kbd> 调整临时速度
-                      </span>
-                      <span>
-                        <kbd>[</kbd> / <kbd>]</kbd> 降低或提高基础倍速
-                      </span>
-                      <span>
-                        <kbd>Shift</kbd> + <kbd>,</kbd> / <kbd>.</kbd> 调整倍速
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-          <Tabs
-            value={learningTab}
-            onValueChange={(value) => setLearningTab(value as LearningTab)}
-          >
-            <div className="video-material-toolbar">
-              <TabsList className="video-learning-tabs" aria-label="学习工具">
-                <TabsTrigger value="summary">讲义</TabsTrigger>
-                <TabsTrigger value="transcript">字幕</TabsTrigger>
-                <TabsTrigger value="pdf">课件</TabsTrigger>
-              </TabsList>
-              {onSyncAllSubtitles && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={subtitleSyncBusy}
-                  title="提前同步全部课程字幕，复用已有下载"
-                  onClick={() => {
-                    setSubtitleSyncBusy(true);
-                    void onSyncAllSubtitles()
-                      .then(() => {
-                        showToast({
-                          message: "已加入后台字幕同步",
-                          kind: "success",
-                        });
-                      })
-                      .catch((reason) => {
-                        showToast({
-                          message:
-                            reason instanceof Error
-                              ? reason.message
-                              : "字幕同步启动失败。",
-                          kind: "error",
-                        });
-                      })
-                      .finally(() => setSubtitleSyncBusy(false));
-                  }}
-                >
-                  同步全部字幕
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={
-                  (!selected && !onRetrySync) ||
-                  preparationBusy ||
-                  syncedPdf.busy ||
-                  syncRetryBusy
-                }
-                title={
-                  (preparationError &&
-                  preparationError.sourceId === selected?.id
-                    ? preparationError.message
-                    : syncedPdf.error) ||
-                  syncIssue ||
-                  (subtitleStatus === "error" ? subtitleMessage : null) ||
-                  "保留已同步内容，从断点重试字幕与课件"
-                }
-                onClick={() => {
-                  onRetrySync?.();
-                  if (!selected) return;
-                  preparedVideosRef.current.delete(
-                    `${courseId ?? "unscoped"}:${selected.id}`,
-                  );
-                  if (
-                    selectedJob &&
-                    transcriptNeedsRetry(selectedJob) &&
-                    onRetryTranscript
-                  ) {
-                    const sourceId = selected.id;
-                    const generation = operationGenerationRef.current;
-                    setSyncRetryBusy(true);
-                    void Promise.resolve()
-                      .then(() => onRetryTranscript(selectedJob))
-                      .catch((reason) => {
-                        if (
-                          operationGenerationRef.current === generation &&
-                          selectedVideoRef.current?.id === sourceId
-                        )
-                          setPreparationError({
-                            sourceId,
-                            message:
-                              reason instanceof Error
-                                ? reason.message
-                                : "同步重试失败。",
-                          });
-                      })
-                      .finally(() => {
-                        if (operationGenerationRef.current !== generation)
-                          return;
-                        setSyncRetryBusy(false);
-                        setPreparationAttempt((value) => value + 1);
-                      });
-                  } else setPreparationAttempt((value) => value + 1);
-                }}
-              >
-                重试同步
-              </Button>
-            </div>
-            {(["transcript", "summary", "pdf"] as LearningTab[]).map((tab) => (
-              <TabsContent key={tab} value={tab} className="video-tool-panel">
-                {renderLearningContent(tab)}
-              </TabsContent>
-            ))}
-          </Tabs>
-        </div>
-
         <aside
           ref={listPanelRef}
           className="video-list-panel"
@@ -3144,7 +3162,11 @@ export function VideosView({
                                       onClick={() => {
                                         closeVideoMenu();
                                         selectLearningVideo(video);
-                                        setLearningTab("summary");
+                                        setLearningTab(
+                                          release === "2"
+                                            ? "transcript"
+                                            : "summary",
+                                        );
                                       }}
                                     >
                                       <FileText aria-hidden="true" />
@@ -3156,7 +3178,7 @@ export function VideosView({
                                       type="button"
                                       role="menuitem"
                                       onClick={() => {
-                                        setDetailInitialTab("cleaned");
+                                        setDetailInitialTab("raw_vtt");
                                         setDetailJob(job || null);
                                         closeVideoMenu();
                                       }}
@@ -3272,12 +3294,59 @@ export function VideosView({
             </ul>
           )}
         </aside>
+        <div className="video-player-column">
+          {portalFullscreen
+            ? createPortal(playerShell, document.body)
+            : playerShell}
+          {release === "2" && selected && (
+            <section
+              className={`v2-video-learning ${v2ToolsOpen ? "expanded" : ""}`}
+              aria-label="视频学习资料"
+            >
+              <button
+                type="button"
+                className="v2-video-tools-close"
+                aria-label={
+                  v2ToolsOpen ? "收起视频学习面板" : "展开视频学习面板"
+                }
+                aria-expanded={v2ToolsOpen}
+                onClick={() => setV2ToolsOpen(!v2ToolsOpen)}
+              >
+                {v2ToolsOpen ? "收起" : "展开"}
+              </button>
+              {learningPanel}
+            </section>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="video-list-jump"
+            onClick={() => {
+              const list = listPanelRef.current;
+              if (!list) return;
+              const reduceMotion =
+                window.matchMedia?.("(prefers-reduced-motion: reduce)")
+                  .matches ?? false;
+              list.scrollIntoView({
+                behavior: reduceMotion ? "auto" : "smooth",
+                block: "start",
+              });
+              list.focus({ preventScroll: true });
+            }}
+          >
+            查看录像列表
+          </Button>
+          {release !== "2" && playerActions}
+          {release !== "2" && learningPanel}
+        </div>
       </section>
 
       {detailJob && (
         <TranscriptDetailDrawer
           job={detailJob}
+          portalContainer={release === "2" ? playerShellRef.current : undefined}
           initialTab={detailInitialTab}
+          playbackTime={playbackTime}
           onClose={() => setDetailJob(null)}
           onRetry={
             videos.some(
@@ -3327,15 +3396,37 @@ export function VideosView({
       {splitPaneOpen &&
         createPortal(
           <aside
-            className="video-slide-pane"
+            className={`video-slide-pane ${release === "2" ? "v2-slide-overlay" : ""}`}
+            onDoubleClick={
+              release === "2"
+                ? (event) => {
+                    event.stopPropagation();
+                    setV2SlidesMain((value) => !value);
+                  }
+                : undefined
+            }
             role="dialog"
             aria-label="PPT 同步分屏"
-            style={{
-              left: slidePaneRect.left,
-              top: slidePaneRect.top,
-              width: slidePaneRect.width,
-              height: slidePaneRect.height,
-            }}
+            style={
+              release === "2"
+                ? (() => {
+                    const rect = constrainSlidePane(slidePaneRect);
+                    const bounds =
+                      playerShellRef.current?.getBoundingClientRect();
+                    return {
+                      left: rect.left - (bounds?.left ?? 0),
+                      top: rect.top - (bounds?.top ?? 0),
+                      width: rect.width,
+                      height: rect.height,
+                    };
+                  })()
+                : {
+                    left: slidePaneRect.left,
+                    top: slidePaneRect.top,
+                    width: slidePaneRect.width,
+                    height: slidePaneRect.height,
+                  }
+            }
           >
             <header className="video-slide-pane-header">
               <button
@@ -3349,7 +3440,7 @@ export function VideosView({
                   event.preventDefault();
                   const delta = event.shiftKey ? 48 : 16;
                   setSlidePaneRect((current) =>
-                    clampSlidePaneRect({
+                    constrainSlidePane({
                       ...current,
                       left:
                         current.left +
@@ -3426,7 +3517,7 @@ export function VideosView({
                 event.preventDefault();
                 const delta = event.shiftKey ? 48 : 16;
                 setSlidePaneRect((current) =>
-                  clampSlidePaneRect({
+                  constrainSlidePane({
                     ...current,
                     width:
                       current.width +
@@ -3447,7 +3538,7 @@ export function VideosView({
               }}
             />
           </aside>,
-          playerFullscreen && playerShellRef.current
+          (release === "2" || playerFullscreen) && playerShellRef.current
             ? playerShellRef.current
             : document.body,
         )}

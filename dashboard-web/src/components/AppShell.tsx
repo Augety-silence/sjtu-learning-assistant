@@ -1,6 +1,5 @@
 import {
   CalendarDays,
-  ChartNoAxesColumnIncreasing,
   ClipboardCheck,
   FolderKanban,
   FolderOpen,
@@ -10,10 +9,8 @@ import {
   LibraryBig,
   type LucideIcon,
   Mail,
-  NotebookPen,
   RefreshCw,
   Settings,
-  Users,
   Video,
 } from "lucide-react";
 import {
@@ -36,12 +33,15 @@ import {
   type SidebarAIRequest,
   SidebarAssistant,
 } from "@/components/SidebarAssistant";
+import { UIReleaseToggle } from "@/components/UIReleaseToggle";
 import { Button } from "@/components/ui/Button";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { useDistanceAwareIndicatorTransition } from "@/components/ui/SelectionIndicator";
 import { motionDuration, motionEase } from "@/lib/motion";
 import type { SyncStatus, ViewName } from "@/lib/types";
+import { useUIRelease } from "@/lib/uiRelease";
 import { useModalFocus } from "@/lib/useModalFocus";
+import { V2Shell } from "@/v2/Shell";
 
 const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: Home },
@@ -49,9 +49,6 @@ const navigation: Array<{ id: ViewName; label: string; icon: LucideIcon }> = [
   { id: "messages", label: "消息", icon: Mail },
   { id: "assignments", label: "作业中心", icon: ClipboardCheck },
   { id: "materials", label: "课程资料", icon: FolderOpen },
-  { id: "grades", label: "成绩", icon: ChartNoAxesColumnIncreasing },
-  { id: "roster", label: "花名册", icon: Users },
-  { id: "grading", label: "作业批改", icon: NotebookPen },
   { id: "videos", label: "课程视频", icon: Video },
   { id: "backup", label: "交大云盘", icon: HardDrive },
   { id: "knowledge", label: "课程知识库", icon: LibraryBig },
@@ -262,6 +259,7 @@ export function AppShell({
   headerActions,
   children,
 }: AppShellProps) {
+  const release = useUIRelease();
   const [isMobile, setIsMobile] = useState(mobileViewport);
   const visiblePrimaryNavigation = availableViews
     ? primaryNavigation.filter((item) => availableViews.includes(item.id))
@@ -329,6 +327,23 @@ export function AppShell({
     onOpenAI(request);
   };
 
+  if (release === "2")
+    return (
+      <V2Shell
+        view={view}
+        availableViews={availableViews}
+        setView={setView}
+        drawerOpen={drawerOpen}
+        setDrawerOpen={setDrawerOpen}
+        syncStatus={syncStatus}
+        syncing={syncing}
+        onSync={onSync}
+        onOpenAI={onOpenAI}
+        headerActions={headerActions}
+      >
+        {children}
+      </V2Shell>
+    );
   return (
     <div className="app-shell" data-aura-shell>
       <a
@@ -422,6 +437,7 @@ export function AppShell({
             </div>
           </div>
           <div className="page-header-actions">
+            <UIReleaseToggle />
             {headerActions}
             <MarkdownSyncProgress onNavigate={select} />
             {/* 用 aria-disabled 代替 disabled：Chromium/WebView2 会把已聚焦的禁用按钮的焦点丢到 <body>。 */}

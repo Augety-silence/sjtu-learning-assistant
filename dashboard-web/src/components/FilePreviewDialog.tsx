@@ -19,6 +19,8 @@ const previewerLabels: Record<PreviewerKind, string> = {
 };
 
 function selectedPreviewer(preview: MaterialPreview) {
+  if (preview.kind === "text" && /(?:\.md| · MD)$/i.test(preview.name))
+    return "markdown";
   const mimeType =
     preview.kind === "pdf"
       ? "application/pdf"
@@ -109,6 +111,21 @@ function renderPreview(
       }
       alt={preview.name}
     />
+  );
+}
+
+/** 复用同一预览器与 PDF Blob 生命周期，供 2.0 悬浮文件窗口使用。 */
+export function FilePreviewContent({ preview }: { preview: MaterialPreview }) {
+  const previewer = selectedPreviewer(preview);
+  const pdfSource = usePdfSource(preview);
+  return (
+    <div className="v2-file-preview-content" data-format={preview.kind}>
+      {preview.kind === "pdf" && !pdfSource ? (
+        <p role="status">正在准备 PDF 预览…</p>
+      ) : (
+        renderPreview(preview, previewer, pdfSource)
+      )}
+    </div>
   );
 }
 
