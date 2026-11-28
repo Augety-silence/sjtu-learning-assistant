@@ -1,0 +1,25 @@
+{
+  "startup": "passed",
+  "calendar_writes": 0,
+  "pause": {
+    "paused": true,
+    "inflight": 0,
+    "queued": 0
+  },
+  "install": {
+    "installed": "2.0.3",
+    "backup": "/Users/bytedance/Applications/SJTU App Backups/before-2.0.3-20261128-225930",
+    "protected_files": 70006,
+    "protected_files_changed": 0
+  },
+  "resume": {
+    "resumed": true,
+    "ai_enabled": true,
+    "installed": true
+  },
+  "ok": true,
+  "version": "2.0.3",
+  "mcp_config_unchanged": true,
+  "binary_matches_build": true,
+  "frontend_files_verified": 75
+}

@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "renderer": "WKWebView",
+  "external_links_opened": false,
+  "themes": [
+    {
+      "theme": "light",
+      "mode": "aime",
+      "color": "rgb(37, 99, 235)",
+      "executionColor": "rgb(37, 99, 235)",
+      "buttonColor": "rgb(255, 255, 255)",
+      "buttonBackground": "rgb(23, 23, 23)",
+      "focusColor": "rgb(29, 78, 216)",
+      "focusOutline": "solid"
+    },
+    {
+      "theme": "light",
+      "mode": "default",
+      "color": "rgb(37, 99, 235)",
+      "executionColor": "rgb(37, 99, 235)",
+      "buttonColor": "rgb(255, 255, 255)",
+      "buttonBackground": "rgb(23, 23, 23)",
+      "focusColor": "rgb(29, 78, 216)",
+      "focusOutline": "solid"
+    },
+    {
+      "theme": "dark",
+      "mode": "default",
+      "color": "rgb(125, 180, 255)",
+      "executionColor": "rgb(125, 180, 255)",
+      "buttonColor": "rgb(25, 25, 25)",
+      "buttonBackground": "rgb(241, 241, 241)",
+      "focusColor": "rgb(168, 204, 255)",
+      "focusOutline": "solid"
+    },
+    {
+      "theme": "dark",
+      "mode": "aime",
+      "color": "rgb(125, 180, 255)",
+      "executionColor": "rgb(125, 180, 255)",
+      "buttonColor": "rgb(25, 25, 25)",
+      "buttonBackground": "rgb(241, 241, 241)",
+      "focusColor": "rgb(168, 204, 255)",
+      "focusOutline": "solid"
+    }
+  ]
+}

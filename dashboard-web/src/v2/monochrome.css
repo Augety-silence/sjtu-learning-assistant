@@ -42,3 +42,27 @@
 
 :root[data-ui-release="2"] .ai-workspace-new-chat {background:var(--v2-ink)!important;color:var(--v2-bg)!important}
 :root[data-ui-release="2"][data-theme-mode="aime"] {--v2-accent:var(--v2-ink);--action-primary:var(--v2-ink);--v2-sidebar:#f7f7f7;--v2-soft:#f3f3f3;--v2-selected:#eaeaea;--v2-line:#e2e2e2;--focus-ring:var(--v2-ink);--status-info:var(--v2-ink)}
+
+/* AI 检索来源链接单独使用蓝色，便于识别和打开。 */
+:root[data-ui-release="2"] {
+  --ai-source-link: #2563eb;
+  --ai-source-link-hover: #1d4ed8;
+}
+:root[data-ui-release="2"][data-theme="dark"] {
+  --ai-source-link: #7db4ff;
+  --ai-source-link-hover: #a8ccff;
+}
+:root[data-ui-release="2"] .ai-markdown a:is([href^="https://" i], [href^="http://" i]) {
+  color: var(--ai-source-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+:root[data-ui-release="2"] .ai-markdown a:is([href^="https://" i], [href^="http://" i]):is(:hover, :focus-visible) {
+  color: var(--ai-source-link-hover);
+  text-decoration-thickness: 2px;
+}
+:root[data-ui-release="2"] .ai-markdown a:is([href^="https://" i], [href^="http://" i]):focus-visible {
+  outline: 2px solid var(--ai-source-link);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
