@@ -1,13 +1,45 @@
 """实际 App 身份下的 EventKit / AI / MCP 验收；仅创建并清理自身临时事件。"""
 from __future__ import annotations
 import json
+import argparse
+import os
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 
+def read_only_check(service, now):
+    """Read calendar state only; never request access or mutate events."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    status = service.call('status')
+    result = dict(ok=False, read_only=True, calendar_writes=0,
+                  permission_requests=0, event_titles_exported=False,
+                  date=start.date().isoformat(),
+                  status={k: status.get(k) for k in ('supported', 'enabled', 'authorization')})
+    if not status.get('enabled') or status.get('authorization') != 'full_access':
+        return result
+    events = service.call('events', dict(start_at=start.isoformat(), end_at=end.isoformat()))
+    evening = []
+    for event in events['items']:
+        a = datetime.fromisoformat(event['start_at']).astimezone(now.tzinfo)
+        b = datetime.fromisoformat(event['end_at']).astimezone(now.tzinfo)
+        if not event['all_day'] and b > start.replace(hour=18) and a < end:
+            evening.append([a.strftime('%H:%M'), b.strftime('%H:%M')])
+    result.update(ok=True, today_events=len(events['items']), evening_events=len(evening),
+                  evening_time_windows=evening, truncated=events.get('truncated', False))
+    return result
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--read-only', action='store_true', help='只读当前日程，不申请权限或创建事件')
+    parser.add_argument('--output', help='将只读摘要保存到一个尚不存在的绝对路径')
+    args = parser.parse_args(sys.argv[2:])
+    if args.output and (not args.read_only or not os.path.isabs(args.output)):
+        parser.error('--output requires --read-only and an absolute path')
     from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
     from Foundation import NSDate, NSRunLoop
     from sqlalchemy import create_engine
@@ -23,6 +55,9 @@ def main():
         service = native_calendar_service()
         created = None
         try:
+            if args.read_only:
+                result.update(read_only_check(service, datetime.now().astimezone()))
+                return
             service.call('connect')
             calendars = service.call('calendars')['items']
             calendar = next(c for c in calendars if c['writable'])
@@ -65,5 +100,10 @@ def main():
     while not done.is_set() and time.monotonic()<limit:
         NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
     if not done.is_set(): result.update(message='系统授权等待超时')
+    if args.output:
+        # Exclusive creation prevents a diagnostic from replacing user files.
+        fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(result, stream, ensure_ascii=False)
     print(json.dumps(result,ensure_ascii=False),flush=True)
     return 0 if result['ok'] else 1
