@@ -15,7 +15,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -198,6 +198,36 @@ class NativePreparationTests(unittest.TestCase):
 
 
 class NativeFrontendGateTests(unittest.TestCase):
+    def test_isolated_windows_profile_retries_only_transient_locks(self):
+        lock = PermissionError('WebView2 file is closing')
+        lock.winerror = 32
+        for platform_name, error in (("win32", lock), ("darwin", lock), ("win32", PermissionError('unrelated permission'))):
+            temporary = Mock(name='isolated directory')
+            temporary.name = 'isolated-test-profile'
+            temporary.cleanup.side_effect = [error, None]
+            with self.subTest(platform=platform_name, error=error), patch.object(sys, 'platform', platform_name), patch.object(prepare.tempfile, 'TemporaryDirectory', return_value=temporary), patch.object(prepare.time, 'sleep') as sleep:
+                if platform_name == 'win32' and error is lock:
+                    with prepare.startup_report_directory('runner') as directory:
+                        self.assertEqual('isolated-test-profile', directory)
+                    self.assertEqual(2, temporary.cleanup.call_count)
+                    sleep.assert_called_once_with(.2)
+                else:
+                    with self.assertRaises(PermissionError), prepare.startup_report_directory('runner'):
+                        pass
+                    self.assertEqual(1, temporary.cleanup.call_count)
+                    sleep.assert_not_called()
+
+    def test_isolated_profile_cleanup_failure_is_bounded(self):
+        lock = PermissionError('WebView2 file is still locked')
+        lock.winerror = 32
+        temporary = Mock()
+        temporary.name = 'isolated-test-profile'
+        temporary.cleanup.side_effect = lock
+        with patch.object(sys, 'platform', 'win32'), patch.object(prepare.tempfile, 'TemporaryDirectory', return_value=temporary), patch.object(prepare.time, 'monotonic', side_effect=[0, 31]), patch.object(prepare.time, 'sleep') as sleep:
+            with self.assertRaises(PermissionError), prepare.startup_report_directory('runner'):
+                pass
+            sleep.assert_not_called()
+
     def test_native_gate_runs_real_executable_and_rejects_bad_reports(self):
         for platform_name in ("macos", "windows"):
             for case in ("passed", "nonzero", "missing", "wrong_hash", "placeholder", "unready", "network", "extra_path", "timeout"):

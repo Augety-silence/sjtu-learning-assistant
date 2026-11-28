@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import verify_ffmpeg as ffmpeg
@@ -137,6 +139,26 @@ def execute(check, tool, *args):
 
 
 
+@contextmanager
+def startup_report_directory(runner):
+    """Bound cleanup of isolated WebView2 files after the app has exited."""
+    temporary = tempfile.TemporaryDirectory(prefix="sjtu-native-startup-", dir=runner)
+    try:
+        yield temporary.name
+    finally:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                temporary.cleanup()
+                break
+            except PermissionError as error:
+                # Only transient Windows sharing/lock violations are retried.
+                # Never terminate other browsers or ignore a lasting failure.
+                if sys.platform != "win32" or getattr(error, "winerror", None) not in (32, 33) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.2)
+
+
 def frontend_startup_gate(app_exe, bundle, platform_name):
     """Execute the actual native packaged app, not a mock or fixture executable."""
     require(sys.platform == ("darwin" if platform_name == "macos" else "win32"), "Startup gate requires native OS")
@@ -152,7 +174,7 @@ def frontend_startup_gate(app_exe, bundle, platform_name):
     runner = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).resolve()
     runner.mkdir(parents=True, exist_ok=True)
     require(not runner.is_relative_to(bundle) and not runner.is_relative_to(ROOT.resolve()), "Startup report must be outside source/package stage")
-    with tempfile.TemporaryDirectory(prefix="sjtu-native-startup-", dir=runner) as directory:
+    with startup_report_directory(runner) as directory:
         private = Path(directory).resolve()
         report = private / "startup-report.json"
         env = os.environ.copy()
