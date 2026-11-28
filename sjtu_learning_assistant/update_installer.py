@@ -197,7 +197,7 @@ def apply_update(manifest: Path) -> int:
             validate_macos_bundle(staged, target, data['version'])
         def launch(app):
             if sys.platform == 'darwin':
-                _run(['/usr/bin/open', '-n', str(app)])
+                _run(['/usr/bin/open', '-n', '--env', 'SJTU_APP_SUPPORT_DIR=' + str(APP_SUPPORT_DIR), str(app)])
             else:
                 subprocess.Popen([str(app / 'SJTU Learning Assistant.exe')], cwd=app,
                                  env={**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'})

@@ -80,6 +80,37 @@ class AutomaticUpdateTests(unittest.TestCase):
         result=extract_windows_package(archive,self.root/'out')
         self.assertEqual(result,self.root/'out')
 
+    def test_shutdown_timeout_restores_preferences_and_scheduler(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from sjtu_learning_assistant.update_shutdown import prepare_update_shutdown
+        settings=SimpleNamespace(ai_enabled=True,recording_asr_paused=False)
+        store=Mock();store.load.return_value=settings
+        sync=threading.Lock();sync.acquire()
+        worker=Mock()
+        service=SimpleNamespace(settings_store=store,_ai_task_lock=threading.Lock(),_ai_task_threads={},_sync_lock=sync,_course_markdown_instance=worker,prepare_recording_asr_quit=Mock(return_value=True))
+        scheduler=Mock()
+        with patch('sjtu_learning_assistant.update_shutdown.APP_SUPPORT_DIR',self.root), self.assertRaises(UpdateServiceError):
+            prepare_update_shutdown(service,scheduler,timeout=0)
+        self.assertFalse(service._updating)
+        store.update.assert_any_call(dict(ai_enabled=True,recording_asr_paused=False))
+        scheduler.start.assert_called_once()
+        worker.close.assert_not_called()
+
+    def test_shutdown_waits_for_tasks_before_helper_launch(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from sjtu_learning_assistant.update_shutdown import prepare_update_shutdown
+        store=Mock();store.load.return_value=SimpleNamespace(ai_enabled=True,recording_asr_paused=False)
+        service=SimpleNamespace(settings_store=store,_ai_task_lock=threading.Lock(),_ai_task_threads={},_sync_lock=threading.Lock(),prepare_recording_asr_quit=Mock(return_value=True))
+        scheduler=Mock()
+        with patch('sjtu_learning_assistant.update_shutdown.APP_SUPPORT_DIR',self.root):
+            restore=prepare_update_shutdown(service,scheduler)
+        self.assertTrue(service._updating)
+        service.prepare_recording_asr_quit.assert_called_once()
+        restore()
+        store.update.assert_any_call(dict(ai_enabled=True,recording_asr_paused=False))
+
     def test_portable_paths_cannot_escape_output(self):
         archive=self.root/'package.zip'
         for name in ('../evil.exe','C:/evil.exe','a\\evil.exe','App/../evil.exe'):
