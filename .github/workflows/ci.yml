@@ -121,6 +121,17 @@ jobs:
           test "$(npm --version)" = "10.9.4"
       - name: 构建并验证未签名 .app
         run: scripts/build_macos_app.sh
+      - name: 原生运行 2.0 安装包前端与桥接
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from prepare_release_evidence import frontend_startup_gate
+          bundle = Path("dist/SJTU Learning Assistant.app")
+          _, report = frontend_startup_gate(bundle / "Contents/MacOS/SJTU Learning Assistant", bundle, "macos")
+          print("2.0 packaged WKWebView and bridge:", report["result"])
+          PY
       - name: 打包 artifact（不签名、不公证）
         run: ditto -c -k --sequesterRsrc --keepParent "dist/SJTU Learning Assistant.app" "dist/SJTU-Learning-Assistant-macOS-unsigned.zip"
       - uses: actions/upload-artifact@v4
@@ -166,6 +177,18 @@ jobs:
       - name: 构建 Windows portable 与安装器
         shell: pwsh
         run: scripts/build_windows_app.ps1
+      - name: 原生运行 2.0 安装包前端与桥接
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from prepare_release_evidence import frontend_startup_gate
+          bundle = Path("dist/SJTU Learning Assistant")
+          _, report = frontend_startup_gate(bundle / "SJTU Learning Assistant.exe", bundle, "windows")
+          print("2.0 packaged EdgeChromium and bridge:", report["result"])
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: SJTU-Learning-Assistant-Windows-x64
