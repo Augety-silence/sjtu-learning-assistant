@@ -1,5 +1,8 @@
 # SJTU Learning Assistant 学生端产品发展路线
 
+> 最新接续（2026-11-29，2.0.1 正式发行）：修复 Office 课件预览分流与容器成员限制、归档同行布局和 AI 个性化紧凑控件，纳入文档／PDF／在线观看字幕搜索与高亮。所有正式版本统一为 2.0.1，源提交 `8f9e502f150ec97d4e55aba22a17243885de057d` 创建不可变 `v2.0.1` 标签；[双平台 CI](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46170944015)与[正式发行](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46172606215)全部成功，[GitHub Release](https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v2.0.1)公开 Mac DMG、Windows 安装器与便携包。本机 2.0.1 已可回退安装，75 项前端资源和二进制一致，70,032 个保护文件安装期间零变化，AI 已恢复。Mac 真实 GitHub DMG 下载、SHA-256、独立原生 helper 替换、旧包保留及重启演练通过；元数据由已登录 gh 从官方 API 获取，安装包下载使用真实 HTTPS。未登录 API 本轮返回 403 限流，网页回退只能核对版本，没有校验信息时不会自动安装，需稍后重试；不把认证演练写成公开 API 已恢复。2.0.0 及更旧版本须先手动安装 2.0.1，从 2.0.1 起后续新版检查可自动下载、校验、安装及重启。Windows 完成原生 CI 构建与启动验收，自动升级仍待 Windows 真机演练，Outlook 双向同步仍待 Graph 授权。保留原设计修改，不移动旧标签或替换已发布附件。
+
+
 > 最新接续（2026-11-29，2.0.1 发行）：按用户指定统一正式版本为2.0.1，纳入此前本地2.0.2/2.0.3热修及文档/字幕搜索；修复Office Markdown分流、正常OOXML成员误拒与嵌入图表跳过、归档控件和AI个性化黑白灰样式。真实课件63页/12794字符可读，1000/760原生深浅色控件验收通过；本机完整Python1871项及843子测试（1跳过）、前端检查/构建通过。自动更新接入官方GitHub下载、精确大小/SHA-256、应用身份/隔离启动、在途排空、独立helper原子替换和回退；Windows采用同版portable ZIP并新增PE版本资源。继续进行本机安装、双平台CI、不可变v2.0.1发行与真实官方资产升级演练；最终发布状态以GitHub为准。2.0.0及更旧版本需先手动安装2.0.1，后续才可自动升级；学习资料和MCP配置不搬移。详见docs/releases/v2.0.1.md。
 
 

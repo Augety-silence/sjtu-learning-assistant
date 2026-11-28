@@ -15,7 +15,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--bundle',type=Path,required=True);parser.add_argument('--root',type=Path,required=True);parser.add_argument('--package',type=Path);parser.add_argument('--github',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--bundle',type=Path,required=True);parser.add_argument('--root',type=Path,required=True);parser.add_argument('--package',type=Path);mode=parser.add_mutually_exclusive_group();mode.add_argument('--github',action='store_true');mode.add_argument('--github-authenticated',action='store_true',help='通过已登录 gh 获取官方元数据；下载仍使用真实 HTTPS');args=parser.parse_args()
     if sys.platform!='darwin' or not args.root.is_absolute() or args.root.exists():raise RuntimeError('使用新的绝对隔离目录')
     args.root.mkdir(mode=0o700)
     support=args.root/'support'
@@ -37,7 +37,14 @@ def main():
     plist=target/'Contents/Info.plist';data=plistlib.loads(plist.read_bytes());data.update(CFBundleShortVersionString='2.0.0',CFBundleVersion='2.0.0');plist.write_bytes(plistlib.dumps(data))
     subprocess.run(['codesign','--force','--deep','--sign','-',str(target)],check=True)
     SettingsStore().update(dict(archive_root=str(args.root/'archive'), ai_enabled=False,current_term_md_enabled=False,course_markdown_enabled=False,recording_asr_enabled=False))
-    if args.github:
+    if args.github_authenticated:
+        from sjtu_learning_assistant.update_service import parse_release_metadata
+        class AuthenticatedMetadataService(UpdateService):
+            def fetch_release(self):
+                raw=subprocess.check_output(['gh','api','repos/Augety-silence/sjtu-learning-assistant/releases/latest'],timeout=30)
+                return parse_release_metadata(json.loads(raw))
+        service=AuthenticatedMetadataService('2.0.0')
+    elif args.github:
         service=UpdateService('2.0.0')
     else:
         import httpx
@@ -53,7 +60,8 @@ def main():
     updater=AutomaticUpdater(service,support/'updates',target,shutdown)
     sys.executable=str(target/'Contents/MacOS/SJTU Learning Assistant')
     state=updater.start(result.download_plan)
-    (args.root/'check.json').write_text(json.dumps(dict(source='GitHub' if args.github else 'isolated-local-package',available=result.update_available,version=result.latest_version,size=result.download_plan.size,sha256=result.download_plan.sha256,phase=state.get('phase'))))
+    source='GitHub-authenticated-metadata' if args.github_authenticated else 'GitHub' if args.github else 'isolated-local-package'
+    (args.root/'check.json').write_text(json.dumps(dict(source=source,available=result.update_available,version=result.latest_version,size=result.download_plan.size,sha256=result.download_plan.sha256,phase=state.get('phase'))))
     deadline=time.monotonic()+600
     while not ready.wait(.25):
         if updater.status().get('phase') in {'failed','cancelled'}:raise RuntimeError(updater.status().get('message'))
