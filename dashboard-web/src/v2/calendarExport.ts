@@ -1,3 +1,4 @@
+import { invoke } from "@/lib/api";
 import type { PersonalEvent } from "./calendarData";
 
 const encoder = new TextEncoder();
@@ -72,17 +73,9 @@ export function personalCalendarICS(events: PersonalEvent[], now = new Date()) {
   return `${lines.map(fold).join("\r\n")}\r\n`;
 }
 
-export function downloadPersonalCalendar(events: PersonalEvent[]) {
-  const url = URL.createObjectURL(
-    new Blob([personalCalendarICS(events)], {
-      type: "text/calendar;charset=utf-8",
-    }),
+export async function downloadPersonalCalendar(events: PersonalEvent[]) {
+  return invoke<{ filename: string; destination: "downloads" }>(
+    "personal_calendar_export_ics",
+    { content: personalCalendarICS(events) },
   );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "SJTU-个人日程.ics";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

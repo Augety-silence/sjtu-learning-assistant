@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { invoke } from "@/lib/api";
 import type { PersonalEvent } from "@/v2/calendarData";
-import { personalCalendarICS } from "@/v2/calendarExport";
+import {
+  downloadPersonalCalendar,
+  personalCalendarICS,
+} from "@/v2/calendarExport";
 
 const event: PersonalEvent = {
   id: "personal-1",
@@ -10,7 +14,24 @@ const event: PersonalEvent = {
   endAt: "2026-11-28T10:30:00+08:00",
   courseName: "个人日程",
 };
+vi.mock("@/lib/api", () => ({ invoke: vi.fn() }));
 describe("Windows ICS 兼容", () => {
+  it("通过桌面接口实际保存文件，并把失败传回界面", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      filename: "SJTU-个人日程.ics",
+      destination: "downloads",
+    });
+    expect((await downloadPersonalCalendar([event])).destination).toBe(
+      "downloads",
+    );
+    expect(invoke).toHaveBeenCalledWith("personal_calendar_export_ics", {
+      content: expect.stringContaining("BEGIN:VCALENDAR\r\n"),
+    });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("无法保存日程"));
+    await expect(downloadPersonalCalendar([event])).rejects.toThrow(
+      "无法保存日程",
+    );
+  });
   it("定时事件保留绝对时间，文本转义防止插入事件", () => {
     const result = personalCalendarICS(
       [event],

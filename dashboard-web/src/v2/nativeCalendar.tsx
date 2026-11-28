@@ -291,9 +291,13 @@ export function NativeCalendarConnection({
               <p>
                 系统日历双向同步尚未接入；导出文件不会自动更新，也不会自动创建系统提醒。
               </p>
-              <V2Button disabled={!count || !onExport} onClick={onExport}>
+              <V2Button
+                disabled={!count || !onExport || migrating}
+                onClick={onExport}
+              >
                 导出 {count} 项本机日程
               </V2Button>
+              <p>导出文件保存在下载文件夹，同名文件会自动编号。</p>
             </div>
           </AIFloatingMenu>
         )}

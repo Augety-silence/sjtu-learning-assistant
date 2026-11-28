@@ -370,14 +370,19 @@ export function V2Schedule({
             migrating={saving}
             count={personal.length}
             onExport={() => {
-              try {
-                downloadPersonalCalendar(personal);
-                setFormError("");
-              } catch (reason) {
-                setFormError(
-                  reason instanceof Error ? reason.message : "日程导出失败",
-                );
-              }
+              void (async () => {
+                setSaving(true);
+                try {
+                  await downloadPersonalCalendar(personal);
+                  setFormError("");
+                } catch (reason) {
+                  setFormError(
+                    reason instanceof Error ? reason.message : "日程导出失败",
+                  );
+                } finally {
+                  setSaving(false);
+                }
+              })();
             }}
             onImport={() => {
               void (async () => {

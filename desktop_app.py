@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from sjtu_learning_assistant.native_calendar import NativeCalendarError, native_calendar_service
+from sjtu_learning_assistant.calendar_export import CalendarExportError, save_calendar_ics
 
 import hashlib
 import copy
@@ -474,6 +475,7 @@ class DesktopBridge:
         self._drive_pending_downloads: dict[str, tuple[Any, tuple[str, ...], float]] = {}
         self._command_runner = command_runner or subprocess.run
         self._handlers: dict[str, Callable[[Mapping[str, Any]], Any]] = {
+            "personal_calendar_export_ics": self._personal_calendar_export_ics,
             **{f"native_calendar_{op}": (lambda payload, operation=op: native_calendar_service().call(operation, dict(payload))) for op in ("status", "connect", "disconnect", "calendars", "events", "get", "save", "delete")},
             "sync_automation_status": lambda payload: self._without_payload(payload, self._sync_automation_status),
             "health": lambda payload: self._without_payload(
@@ -670,6 +672,10 @@ class DesktopBridge:
     ) -> Any:
         _empty_payload(payload)
         return callback()
+
+    def _personal_calendar_export_ics(self, payload):
+        _only_keys(payload, {"content"})
+        return save_calendar_ics(payload.get("content"))
 
     def _material_move(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _only_keys(payload, {"source_id", "target_node_id"})
@@ -2186,6 +2192,7 @@ class DesktopBridge:
             CloudStorageError,
             TimetableError,
             NativeCalendarError,
+            CalendarExportError,
         ) as exc:
             # The 交大云盘 page branches on auth/not-found/conflict/network; other pages keep
             # the historical generic code.
