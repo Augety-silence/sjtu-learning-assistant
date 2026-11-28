@@ -34,6 +34,8 @@ datas = [
     *collect_data_files("pypdfium2"),
     *copy_metadata("pypdfium2"),
     *collect_data_files("tzdata"),
+    *copy_metadata("mcp"),
+    *copy_metadata("PyYAML"),
 ]
 
 hiddenimports = [

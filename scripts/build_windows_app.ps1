@@ -43,6 +43,7 @@ if ($LASTEXITCODE -ne 0) { throw "前端构建失败（退出码 $LASTEXITCODE�
     tests.test_native_calendar `
     tests.test_ai_extensions `
     tests.test_frontend_self_test `
+    tests.test_helper_stdio `
     tests.test_ffmpeg_packaging -v
 & $Python scripts/check_licenses.py
 node scripts/check_licenses.mjs

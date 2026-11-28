@@ -205,6 +205,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           if (-not (Test-Path -LiteralPath $env:SJTU_MSYS2_BASH)) { throw "setup-msys2 Bash not found" }
           ./scripts/build_windows_app.ps1
+      - name: Verify frozen MCP discovery and UTF-8 call without web requests
+        run: .venv/Scripts/python.exe scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant"
       # The identical full suite already ran on this same immutable commit in
       # windows-preflight; do not duplicate a ~10 minute run after packaging.
       - name: Execute native evidence gates and produce all checksum sidecars
@@ -267,6 +269,7 @@ jobs:
         run: |
           scripts/build_macos_app.sh
           .venv/bin/python -m pytest -vv -o faulthandler_timeout=120 tests
+          .venv/bin/python scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant.app"
           scripts/build_macos_dmg.sh
           .venv/bin/python scripts/prepare_release_evidence.py --platform macos \
             --tag "$RELEASE_TAG" --release-commit "$RELEASE_COMMIT" \

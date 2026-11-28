@@ -2934,6 +2934,10 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if sys.argv[1:2] in (["--web-search-mcp"], ["--mcp-stdio"]):
+        from sjtu_learning_assistant.helper_stdio import restore_helper_stdio
+        if not restore_helper_stdio():
+            return 2
     if tuple(sys.argv[1:2]) == ("--web-search-mcp",):
         from sjtu_learning_assistant.web_search_mcp import main as web_search_main
         return web_search_main()

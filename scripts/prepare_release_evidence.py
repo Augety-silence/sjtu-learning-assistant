@@ -34,6 +34,7 @@ CODE_PATHS = (
     ".github/workflows/release.yml",
     "desktop_app.py", "sjtu_learning_assistant/frontend_startup.py",
     "sjtu_learning_assistant/frontend_self_test.py",
+    "sjtu_learning_assistant/helper_stdio.py", "scripts/check_packaged_mcp.py",
 )
 
 

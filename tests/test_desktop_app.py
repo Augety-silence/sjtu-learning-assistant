@@ -1065,12 +1065,12 @@ class DesktopMcpStdioTests(unittest.TestCase):
         with (
             patch("desktop_app.sys.stdin", None),
             patch("desktop_app.sys.stdout", None),
+            patch("sjtu_learning_assistant.helper_stdio.restore_helper_stdio", return_value=False),
             patch("desktop_app._report_startup_error") as report,
             patch("desktop_app.create_database_engine") as create_engine,
         ):
             self.assertEqual(2, main())
-        report.assert_called_once()
-        self.assertIn("标准输入", report.call_args.args[0])
+        report.assert_not_called()  # CLI pipe failure must not open a desktop dialog.
         create_engine.assert_not_called()
 
 
