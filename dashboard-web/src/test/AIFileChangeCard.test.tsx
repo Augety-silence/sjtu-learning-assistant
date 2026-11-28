@@ -8,6 +8,7 @@ import {
   applyAiFileChange,
   getAiFileChange,
   listAiAttachments,
+  rejectAiFileChange,
   saveAiSkill,
 } from "@/lib/api";
 import { cleanup, fireEvent, render, screen, waitFor } from "@/test/render";
@@ -56,9 +57,74 @@ vi.mock("@/lib/api", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(getAiFileChange).mockResolvedValue(pending);
+  vi.mocked(applyAiFileChange).mockResolvedValue({
+    ...pending,
+    status: "applied",
+  });
 });
 
 describe("file change card", () => {
+  it("确认按钮在放弃右侧，新建提示不声称已备份不存在的原件", async () => {
+    vi.mocked(getAiFileChange).mockResolvedValueOnce({
+      ...pending,
+      mode: "create",
+    });
+    const { container } = render(
+      <AIFileChangeCard changeId={"a".repeat(32)} />,
+    );
+    await screen.findByText("待确认");
+    expect(
+      [...container.querySelectorAll(".ai-file-change-actions button")].map(
+        (e) => e.textContent,
+      ),
+    ).toEqual(["放弃", "确认写入"]);
+    expect(screen.getByText("确认后在工作区新建文件。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "放弃" }));
+    await screen.findByText("已放弃");
+    expect(rejectAiFileChange).toHaveBeenCalledWith("a".repeat(32));
+    expect(applyAiFileChange).not.toHaveBeenCalled();
+  });
+  it("读取失败可重试，不能直接确认未知的提议", async () => {
+    vi.mocked(getAiFileChange).mockRejectedValueOnce(
+      new Error("文件提议暂不可读取"),
+    );
+    render(<AIFileChangeCard changeId={"a".repeat(32)} />);
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "确认写入" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
+    await screen.findByText("待确认");
+    expect(applyAiFileChange).not.toHaveBeenCalled();
+  });
+  it("写入中禁止重复提交，失败后保留差异与确认操作", async () => {
+    let reject!: (reason: Error) => void;
+    vi.mocked(applyAiFileChange).mockImplementationOnce(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    render(<AIFileChangeCard changeId={"a".repeat(32)} />);
+    fireEvent.click(await screen.findByRole("button", { name: "确认写入" }));
+    expect(
+      screen
+        .getByRole("button", { name: "正在写入…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "放弃" }).hasAttribute("disabled"),
+    ).toBe(true);
+    reject(new Error("文件已被修改"));
+    await screen.findByRole("alert");
+    expect(
+      screen.getByRole("button", { name: "确认写入" }).hasAttribute("disabled"),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "查看差异" }));
+    expect(screen.getByLabelText("修改差异").textContent).toContain(
+      "+新的小结",
+    );
+    expect(applyAiFileChange).toHaveBeenCalledTimes(1);
+  });
   it("collects unique change ids from proposal tool runs", () => {
     const run = (id: unknown, status = "ok") => ({
       tool_name: "propose_file_change",
@@ -86,10 +152,10 @@ describe("file change card", () => {
     expect(screen.getByLabelText("修改差异").textContent).toContain(
       "+新的小结",
     );
-    fireEvent.click(screen.getByRole("button", { name: "应用修改" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认写入" }));
     expect(await screen.findByText("已写入")).toBeTruthy();
     expect(applyAiFileChange).toHaveBeenCalledWith("a".repeat(32));
-    expect(screen.queryByRole("button", { name: "应用修改" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "确认写入" })).toBeNull();
     expect(getAiFileChange).toHaveBeenCalledTimes(1);
   });
 });

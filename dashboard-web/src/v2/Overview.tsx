@@ -5,8 +5,10 @@ import type { CalendarEventItem } from "@/components/CalendarView";
 import { getCalendar, getTimetableSchedule, invoke } from "@/lib/api";
 import { deadlineDistance, formatDateTime } from "@/lib/format";
 import type { Deadline, OverviewData, ViewName } from "@/lib/types";
-import { calendarEvent, dateKey, usePersonalEvents } from "./calendarData";
+import { calendarEvent, usePersonalEvents } from "./calendarData";
+import { useNativeCalendar } from "./nativeCalendar";
 import { V2Button, V2Section } from "./primitives";
+import { deadlineLabel, isAllDay, onDay } from "./ScheduleGrid";
 export function V2Overview({
   navigate,
   onAssignment,
@@ -65,9 +67,17 @@ export function V2Overview({
     void load();
     void loadSchedule();
   }, [load, loadSchedule]);
-  const today = [...schedule, ...personal]
-    .filter((e) => dateKey(e.startAt) === dateKey(new Date()))
-    .sort((a, b) => a.startAt.localeCompare(b.startAt));
+  const nativeCalendar = useNativeCalendar(new Date());
+  const calendarLoading = scheduleLoading || nativeCalendar.loading;
+  const calendarError =
+    scheduleError || (nativeCalendar.error ? "Apple 日历未能读取" : "");
+  const today = [...schedule, ...personal, ...nativeCalendar.events]
+    .filter((e) => onDay(e, new Date()))
+    .sort(
+      (a, b) =>
+        Number(isAllDay(b)) - Number(isAllDay(a)) ||
+        new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
+    );
   const deadlines = [...(data?.deadlines ?? [])].sort((a, b) =>
     (a.due_at ?? "9999").localeCompare(b.due_at ?? "9999"),
   );
@@ -131,13 +141,16 @@ export function V2Overview({
         <button type="button" onClick={() => navigate("calendar")}>
           <span>今日日程</span>
           <strong>
-            {scheduleLoading
+            {calendarLoading
               ? "…"
-              : scheduleError && today.length === 0
+              : calendarError && today.length === 0
                 ? "—"
                 : today.length}
           </strong>
-          <small>课表 · Canvas · 个人日程</small>
+          <small>
+            课表 · Canvas · 个人日程
+            {nativeCalendar.ready ? " · Apple 日历" : ""}
+          </small>
         </button>
       </div>
       <div className="v2-overview-grid">
@@ -235,6 +248,19 @@ export function V2Overview({
               tabIndex={0}
               aria-label="今日日程，可上下滚动"
             >
+              {calendarError && (
+                <div className="v2-inline-error" role="alert">
+                  <p>{calendarError}</p>
+                  <V2Button
+                    onClick={() => {
+                      void loadSchedule();
+                      void nativeCalendar.refresh();
+                    }}
+                  >
+                    重新读取日程
+                  </V2Button>
+                </div>
+              )}
               {today.map((e) => (
                 <button
                   type="button"
@@ -248,33 +274,36 @@ export function V2Overview({
                   }}
                 >
                   <time>
-                    {new Date(e.startAt).toLocaleTimeString("zh-CN", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                    {e.endAt
+                    {isAllDay(e)
+                      ? deadlineLabel(e) || "全天"
+                      : new Date(e.startAt).toLocaleTimeString("zh-CN", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                    {!isAllDay(e) && e.endAt
                       ? `–${new Date(e.endAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
                       : ""}
                   </time>
                   <strong>{e.title}</strong>
                   <small>
                     {e.location || e.courseName} ·{" "}
-                    {"personal" in e
-                      ? "个人日程"
-                      : e.eventType === "course"
-                        ? "课表"
-                        : "Canvas"}
+                    {e.source === "native"
+                      ? "Apple 日历"
+                      : "personal" in e
+                        ? "个人日程"
+                        : e.eventType === "course"
+                          ? "课表"
+                          : "Canvas"}
                   </small>
                 </button>
               ))}
               {!today.length && (
                 <div className="v2-empty">
-                  {scheduleError || "今天暂无日程"}
-                  {scheduleError && (
-                    <V2Button onClick={() => void loadSchedule()}>
-                      重试
-                    </V2Button>
-                  )}
+                  {calendarLoading
+                    ? "正在读取日程…"
+                    : calendarError
+                      ? "日程尚未完整读取"
+                      : "今天暂无日程"}
                 </div>
               )}
             </div>

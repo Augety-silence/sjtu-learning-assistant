@@ -6,7 +6,11 @@ const classicScope = {
   postcssPlugin: "sjtu-classic-scope",
   OnceExit(root, { result }) {
     root.walkRules((rule) => {
-      const file = rule.source?.input.file ?? result.opts.from ?? "";
+      const file = (
+        rule.source?.input.file ??
+        result.opts.from ??
+        ""
+      ).replaceAll("\\", "/");
       if (!file.includes("/src/") || file.includes("node_modules")) return;
       let parent = rule.parent;
       while (parent) {

@@ -56,6 +56,7 @@ import "@/message-center.css";
 import "@/aime-chat.css";
 import "@/v2/extensions.css";
 import "@/v2/monochrome.css";
+import "@/v2/file-changes.css";
 
 declare global {
   interface Window {
@@ -334,6 +335,20 @@ const aiSession: AIChatSession = {
     },
   ],
 };
+
+if (params.has("file_change")) {
+  const proposal = {
+    tool_name: "propose_file_change",
+    phase: "model" as const,
+    status: "ok" as const,
+    arguments_summary: { path: "08_Skills/arxiv-guide.md" },
+    result_summary: { change_id: "a".repeat(32), added: 32, removed: 0 },
+  };
+  aiSession.messages[0].content = "请把这份技能说明整理成 Markdown 文件。";
+  aiSession.messages[1].content = "文件修改提议已生成，请查看差异后确认写入。";
+  aiSession.messages[1].tool_runs = [proposal];
+  aiSession.traces![0].tool_runs = [proposal];
+}
 
 const backupStatus: BackupStatus = {
   status: "idle",
@@ -666,6 +681,7 @@ const readActions = new Set([
   "ai_mcp_list",
   "sync_automation_status",
   "native_calendar_status",
+  "ai_file_change_get",
   "ai_chat_sessions",
   "ai_chat_session",
   "media",
@@ -914,6 +930,28 @@ function fixtureData(action: string, payload: Record<string, unknown> = {}) {
       return { items: [aiSessionSummary] };
     case "ai_chat_session":
       return aiSession;
+    case "ai_file_change_get":
+      return {
+        change_id: "a".repeat(32),
+        path: params.has("long_file")
+          ? "08_Skills/课程资料与学术论文阅读笔记/" +
+            "完整说明文件".repeat(12) +
+            ".md"
+          : "08_Skills/arxiv-guide.md",
+        workspace: "Trial",
+        mode: "create",
+        summary: "将技能整理为规范的 Markdown 文档，保留原始结构和说明。",
+        added: 32,
+        removed: 0,
+        diff:
+          "--- /dev/null\n+++ b/08_Skills/arxiv-guide.md\n@@ -0,0 +1,32 @@\n" +
+          Array.from(
+            { length: 100 },
+            (_, i) => `+第 ${i + 1} 行：学习文档的完整内容与阅读说明。`,
+          ).join("\n"),
+        diff_truncated: false,
+        status: "pending",
+      };
     case "media":
       return media;
     case "ai_capabilities":
@@ -1124,10 +1162,30 @@ async function localInvoke<T>(
                   id: `visual-native-${i}`,
                   calendar_id: "visual-calendar",
                   calendar_title: "个人日程",
-                  title: `全天安排 ${i + 1}`,
-                  start_at: day.toISOString(),
-                  end_at: next.toISOString(),
-                  all_day: true,
+                  title:
+                    params.has("overview_evening") && i === 0
+                      ? "晚间 Apple 日程"
+                      : `全天安排 ${i + 1}`,
+                  start_at:
+                    params.has("overview_evening") && i === 0
+                      ? new Date(
+                          day.getFullYear(),
+                          day.getMonth(),
+                          day.getDate(),
+                          18,
+                        ).toISOString()
+                      : day.toISOString(),
+                  end_at:
+                    params.has("overview_evening") && i === 0
+                      ? new Date(
+                          day.getFullYear(),
+                          day.getMonth(),
+                          day.getDate(),
+                          18,
+                          30,
+                        ).toISOString()
+                      : next.toISOString(),
+                  all_day: !(params.has("overview_evening") && i === 0),
                   timezone: "Asia/Shanghai",
                   location: "",
                   notes: "",

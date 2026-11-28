@@ -45,6 +45,7 @@ export function asPersonal(event: NativeEvent): NativePersonalEvent {
     title: event.title,
     startAt: event.start_at,
     endAt: event.end_at,
+    allDay: event.all_day,
     courseName: event.calendar_title,
     location: event.location,
     description: event.notes,
@@ -57,6 +58,7 @@ export function useNativeCalendar(month: Date) {
   const [calendarId, setCalendarId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const monthKey = `${month.getFullYear()}-${month.getMonth()}`;
   const generation = useRef(0);
   const ready = status?.enabled && status.authorization === "full_access";
@@ -68,6 +70,7 @@ export function useNativeCalendar(month: Date) {
       setStatus(next);
       if (!next.enabled || next.authorization !== "full_access") {
         setEvents([]);
+        setError("");
         return;
       }
       const start = new Date(month.getFullYear(), month.getMonth(), -6);
@@ -93,9 +96,12 @@ export function useNativeCalendar(month: Date) {
     } catch (reason) {
       if (token === generation.current)
         setError(reason instanceof Error ? reason.message : "Mac 日历读取失败");
+    } finally {
+      if (token === generation.current) setLoading(false);
     }
   }, [monthKey]);
   useEffect(() => {
+    setLoading(true);
     let pending = false;
     const load = async () => {
       if (pending || document.visibilityState === "hidden") return;
@@ -229,6 +235,7 @@ export function useNativeCalendar(month: Date) {
     setCalendarId,
     error,
     busy,
+    loading,
     connect,
     disconnect,
     refresh,

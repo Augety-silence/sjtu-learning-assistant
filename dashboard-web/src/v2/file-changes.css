@@ -1,0 +1,180 @@
+/* 真实文件提议组件的 2.0 样式，与正文共用阅读宽度。 */
+.ai-file-change {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: 16px 0 0;
+  padding: 16px;
+  border: 1px solid var(--v2-line);
+  border-radius: 10px;
+  background: var(--v2-bg);
+  color: var(--v2-ink);
+  font-size: 13px;
+  line-height: 1.6;
+  container-type: inline-size;
+}
+.ai-file-change > header {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+.ai-file-change-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--v2-soft);
+  border-radius: 7px;
+}
+.ai-file-change svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.ai-file-change-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.ai-file-change-title strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ai-file-change-title small {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ai-file-change-status {
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--v2-soft);
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ai-file-change .ai-file-change-summary {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ai-file-change-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.ai-file-change-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.ai-file-change button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--v2-line);
+  border-radius: 7px;
+  background: var(--v2-bg);
+  color: var(--v2-ink);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ai-file-change button:hover {
+  background: var(--v2-soft);
+}
+.ai-file-change button:focus-visible {
+  outline: 2px solid var(--v2-ink);
+  outline-offset: 3px;
+}
+.ai-file-change button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.ai-file-change button.is-primary {
+  background: var(--v2-ink);
+  color: var(--v2-bg);
+  border-color: var(--v2-ink);
+  font-weight: 600;
+}
+.ai-file-change button.is-primary:hover {
+  opacity: 0.85;
+}
+.ai-file-change .ai-file-change-toggle {
+  border-color: transparent;
+  padding-left: 0;
+  padding-right: 8px;
+}
+.ai-file-change-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.ai-file-change .ai-file-change-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ai-file-change .ai-file-change-error {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.ai-file-change .ai-file-diff {
+  max-height: min(320px, 40vh);
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 8px 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--v2-line);
+  border-radius: 7px;
+  background: var(--v2-soft);
+  color: var(--v2-ink);
+  font-size: 12px;
+  line-height: 1.7;
+  tab-size: 2;
+}
+.ai-file-change .ai-diff-line {
+  display: block;
+  padding: 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-file-change .ai-diff-line.is-add {
+  background: var(--v2-selected);
+}
+.ai-file-change .ai-diff-line.is-del {
+  text-decoration: line-through;
+}
+.ai-file-change.is-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@container (max-width: 360px) {
+  .ai-file-change > header {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+  .ai-file-change-icon {
+    width: 24px;
+    height: 28px;
+  }
+  .ai-file-change-footer {
+    gap: 8px;
+  }
+}

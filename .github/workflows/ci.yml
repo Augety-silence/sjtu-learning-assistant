@@ -133,7 +133,7 @@ jobs:
           print("2.0 packaged WKWebView and bridge:", report["result"])
           PY
       - name: 验证安装包 MCP 工具发现与 UTF-8 调用
-        run: python scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant.app"
+        run: .venv/bin/python scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant.app"
       - name: 打包 artifact（不签名、不公证）
         run: ditto -c -k --sequesterRsrc --keepParent "dist/SJTU Learning Assistant.app" "dist/SJTU-Learning-Assistant-macOS-unsigned.zip"
       - uses: actions/upload-artifact@v4
@@ -192,7 +192,7 @@ jobs:
           print("2.0 packaged EdgeChromium and bridge:", report["result"])
           PY
       - name: 验证安装包 MCP 工具发现与 UTF-8 调用
-        run: python scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant"
+        run: .venv/Scripts/python.exe scripts/check_packaged_mcp.py --bundle "dist/SJTU Learning Assistant"
       - uses: actions/upload-artifact@v4
         with:
           name: SJTU-Learning-Assistant-Windows-x64

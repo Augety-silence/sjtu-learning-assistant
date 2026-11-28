@@ -66,10 +66,13 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"apply" | "reject" | null>(null);
   const [open, setOpen] = useState(false);
+  const [reload, setReload] = useState(0);
   const diffId = useId();
 
   useEffect(() => {
     let cancelled = false;
+    setChange(null);
+    setError(null);
     getAiFileChange(changeId)
       .then((value) => {
         if (!cancelled) setChange(value);
@@ -83,7 +86,7 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [changeId]);
+  }, [changeId, reload]);
 
   const act = async (kind: "apply" | "reject") => {
     if (busy) return;
@@ -106,7 +109,14 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
     return (
       <section className="ai-file-change is-loading" aria-label="文件修改提议">
         <FilePen aria-hidden="true" />
-        <span>{error ?? "正在读取修改提议…"}</span>
+        <span role={error ? "alert" : "status"}>
+          {error ?? "正在读取修改提议…"}
+        </span>
+        {error && (
+          <button type="button" onClick={() => setReload((value) => value + 1)}>
+            重新读取
+          </button>
+        )}
       </section>
     );
   }
@@ -117,14 +127,16 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
       aria-label={`文件修改提议：${change.path}`}
     >
       <header>
-        <FilePen aria-hidden="true" />
+        <span className="ai-file-change-icon">
+          <FilePen aria-hidden="true" />
+        </span>
         <span className="ai-file-change-title">
           <strong title={change.path}>{change.path}</strong>
           <small>
             {change.mode === "create" ? "新建文件" : "修改文件"}
             {change.workspace ? ` · ${change.workspace}` : ""} ·{" "}
             <span className="ai-diff-count is-add">+{change.added}</span>{" "}
-            <span className="ai-diff-count is-del">−{change.removed}</span>
+            <span className="ai-diff-count is-del">−{change.removed}</span> 行
           </small>
         </span>
         <span className={`ai-file-change-status is-${change.status}`}>
@@ -134,16 +146,48 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
       {change.summary && (
         <p className="ai-file-change-summary">{change.summary}</p>
       )}
-      <button
-        type="button"
-        className="ai-file-change-toggle"
-        aria-expanded={open}
-        aria-controls={diffId}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <ChevronRight aria-hidden="true" />
-        {open ? "收起差异" : "查看差异"}
-      </button>
+      {(change.error || error) && (
+        <p className="ai-file-change-error" role="alert">
+          {change.error || error}
+        </p>
+      )}
+      <footer className="ai-file-change-footer">
+        <button
+          type="button"
+          className="ai-file-change-toggle"
+          aria-expanded={open}
+          aria-controls={diffId}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <ChevronRight aria-hidden="true" />
+          {open ? "收起差异" : "查看差异"}
+        </button>
+        {change.status === "pending" && (
+          <div className="ai-file-change-actions">
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void act("reject")}
+            >
+              <X aria-hidden="true" />
+              放弃
+            </button>
+            <button
+              type="button"
+              className="is-primary"
+              disabled={busy !== null}
+              onClick={() => void act("apply")}
+            >
+              {busy === "apply" ? (
+                <LoaderCircle className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Check aria-hidden="true" />
+              )}
+              {busy === "apply" ? "正在写入…" : "确认写入"}
+            </button>
+          </div>
+        )}
+      </footer>
       {open && (
         <div id={diffId}>
           <DiffView diff={change.diff} />
@@ -152,42 +196,19 @@ export function AIFileChangeCard({ changeId }: { changeId: string }) {
           )}
         </div>
       )}
-      {(change.error || error) && (
-        <p className="ai-file-change-error" role="alert">
-          {change.error || error}
+      {change.status === "pending" && (
+        <p className="ai-file-change-note">
+          {change.mode === "create"
+            ? "确认后在工作区新建文件。"
+            : "确认后写入，原文件会先备份。"}
         </p>
       )}
-      {change.status === "pending" ? (
-        <div className="ai-file-change-actions">
-          <button
-            type="button"
-            className="is-primary"
-            disabled={busy !== null}
-            onClick={() => void act("apply")}
-          >
-            {busy === "apply" ? (
-              <LoaderCircle className="animate-spin" aria-hidden="true" />
-            ) : (
-              <Check aria-hidden="true" />
-            )}
-            应用修改
-          </button>
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => void act("reject")}
-          >
-            <X aria-hidden="true" />
-            放弃
-          </button>
-          <small>写入前会备份原文件，不会删除或移动任何文件。</small>
-        </div>
-      ) : (
-        change.status === "applied" && (
-          <p className="ai-file-change-note">
-            已写入工作区，原文件已备份到应用数据目录。
-          </p>
-        )
+      {change.status === "applied" && (
+        <p className="ai-file-change-note">
+          {change.mode === "create"
+            ? "文件已创建到工作区。"
+            : "已写入工作区，原文件已备份。"}
+        </p>
       )}
     </section>
   );
