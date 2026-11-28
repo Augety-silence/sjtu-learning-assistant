@@ -78,7 +78,7 @@ def prepare_package(package: Path, target: Path, version: str, job: Path) -> Pat
     SemanticVersion.parse(version)
     if not target.is_dir() or target.is_symlink():
         raise UpdateServiceError('当前安装位置不可安全更新，请重新安装应用。')
-    staged = target.with_name('.' + target.name + '.update-' + uuid.uuid4().hex)
+    staged = target.with_name('.' + target.name + '.update-' + uuid.uuid4().hex + ('.app' if sys.platform == 'darwin' else ''))
     # 在下载完成后、退出前确认可写，避免退出后才发现 /Applications 权限不足。
     try:
         staged.mkdir(mode=0o700)
@@ -183,7 +183,7 @@ def apply_update(manifest: Path) -> int:
             return 2
         target, staged = Path(data['target']), Path(data['staged'])
         if (not target.is_absolute() or not staged.is_absolute() or target.is_symlink() or staged.is_symlink()
-                or target.parent != staged.parent or not re.fullmatch(r'\.' + re.escape(target.name) + r'\.update-[a-f0-9]{32}', staged.name)):
+                or target.parent != staged.parent or not re.fullmatch(r'\.' + re.escape(target.name) + r'\.update-[a-f0-9]{32}' + (r'\.app' if sys.platform == 'darwin' else ''), staged.name)):
             return 2
         if type(data['parent_pid']) is not int or data['parent_pid'] <= 1:
             return 2
