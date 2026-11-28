@@ -116,5 +116,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         for name in ('../evil.exe','C:/evil.exe','a\\evil.exe','App/../evil.exe'):
             with self.subTest(name=name):
                 with zipfile.ZipFile(archive,'w') as z:z.writestr(name,b'x')
+                if '\\' in name:
+                    archive.write_bytes(archive.read_bytes().replace(name.replace('\\','/').encode(),name.encode()))
                 with self.assertRaises(UpdateServiceError):extract_windows_package(archive,self.root/'out')
                 self.assertFalse((self.root/'evil.exe').exists())

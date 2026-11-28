@@ -52,7 +52,7 @@ def extract_windows_package(package: Path, output: Path) -> Path:
             raise UpdateServiceError('Windows 安装包超出解压预算。')
         seen = set()
         for info in infos:
-            name = info.filename
+            name = getattr(info, "orig_filename", info.filename)
             parts = PurePosixPath(name).parts
             if (not parts or name.startswith('/') or '\\' in name or ':' in name
                     or any(p in {'.', '..'} or p.endswith((' ', '.')) for p in parts)
