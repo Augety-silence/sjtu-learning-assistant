@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from sjtu_learning_assistant.agent_runtime.presets import AgentPreset, default_resource_root
 from sjtu_learning_assistant.agent_runtime.tools import LOCAL_TIMEZONE, AgentToolError, ReadOnlyToolRegistry, _clip
@@ -56,6 +57,30 @@ PREFETCH_CHAR_BUDGET = 30_000
 # 消息限制 14_000 字符（超限为不可重试的 validation 错误），合并后须低于该值。
 _SYSTEM_PART_SEPARATOR = "\n\n"
 _TRUNCATED_MARKER = "…（上下文过长，已截断）"
+
+
+def with_search_links(content, sources):
+    """只补充本轮工具实际返回的公开链接，不添加新的模型请求。"""
+    links = []
+    seen = set()
+    for source in sources:
+        url = source.get('url')
+        if not isinstance(url, str) or url in seen or url in content:
+            continue
+        seen.add(url)
+        try:
+            parsed = urlsplit(url)
+            valid = parsed.scheme in ('http', 'https') and parsed.hostname and not parsed.username and not parsed.password
+        except ValueError:
+            valid = False
+        if not valid or any(c.isspace() or c in '<>"' for c in url):
+            continue
+        title = str(source.get('title') or '网页来源')[:60].replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+        title = title.replace('\n', ' ').replace('\r', ' ')
+        links.append(f'- [{title}](<{url}>)')
+        if len(links) == 3:
+            break
+    return content + '\n\n本轮检索链接：\n\n' + '\n'.join(links) if links else content
 
 
 def _content_chars(content: Any) -> int:
@@ -599,6 +624,7 @@ class AgentLoop:
         step_limit = self.max_steps
         finalizing = False
         tool_definitions = deepcopy(definitions)
+        web_sources = []
         # 补充与参数修复共享固定恢复额度，不重置 Token、请求数、上下文或总时间。
         def recovery(reason, current_step):
             nonlocal step_limit
@@ -611,6 +637,8 @@ class AgentLoop:
                                               'recovery_rounds': step_limit - self.max_steps})
 
         def finish(content, reasoning, status, steps):
+            if scope.web_only and status == 'completed':
+                content = with_search_links(content, web_sources)
             if steering_control is not None:
                 pending = steering_control.finish_pending()
                 if pending:
@@ -630,6 +658,8 @@ class AgentLoop:
             for change in changes:
                 user_history.append({'role': 'user', 'content': change['content']})
             new_scope = resolve_turn_scope(user_history, changes[-1]['content'])
+            if new_scope.kind != scope.kind or new_scope.query != scope.query:
+                web_sources.clear()
             if new_scope.kind != scope.kind:
                 allowed_tools = scoped_tools(new_scope)
                 definitions = self.tools.definitions(allowed_tools)
@@ -802,6 +832,8 @@ class AgentLoop:
                 answer_parts.append(segment)
                 joined = "".join(answer_parts).strip()
                 visible = joined if joined else "模型未返回可显示内容。"
+                if scope.web_only:
+                    visible = with_search_links(visible, web_sources)
                 combined = "\n\n".join(reasoning_parts)[:12_000] or None
                 return AgentResult(visible, combined, "completed", min(step, self.max_steps), tuple(runs))
             available_slots = max(0, MAX_CHAT_MESSAGES - len(conversation) - 1)
@@ -890,6 +922,10 @@ class AgentLoop:
                 else:
                     runs.append({"tool_name": execution.name, "phase": "model", "status": "ok", "arguments_summary": execution.arguments_summary, "result_summary": execution.result_summary, "duration_ms": _elapsed_ms(tool_started)})
                     tool_result = execution.result
+                    if scope.web_only and execution.name in getattr(self.tools, 'web_tool_names', ()):
+                        items = tool_result.get('items')
+                        if isinstance(items, list):
+                            web_sources.extend(item for item in items if isinstance(item, dict))
                     if (scope.web_only and scope.brief and execution.name in getattr(self.tools, 'web_tool_names', ())
                         and tool_result.get('status') in {'no_relevant_matches', 'empty'}):
                         failed_web_tools.add(execution.name)

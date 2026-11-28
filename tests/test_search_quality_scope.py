@@ -206,3 +206,18 @@ def test_frozen_search_self_test_still_rejects_failed_evidence():
     exec(compile(Path(self_test.__file__).read_text(),self_test.__file__,'exec',optimize=1),namespace)
     with pytest.raises(RuntimeError,match='未取得证据'):
         namespace['require'](False,'未取得证据')
+
+def test_new_online_subject_does_not_append_previous_subject_links():
+    registry=Registry();control=Control();calls=[]
+    def execute(name,args,allowed):
+        calls.append(name)
+        url='https://example.test/old' if len(calls)==1 else 'https://example.test/new'
+        return SimpleNamespace(name=name,result={'status':'ready','items':[{'title':'来源','url':url}]},arguments_summary={},result_summary={})
+    registry.execute=execute
+    def change():
+        control.pending=[{'content':'在线搜索另一个对象','request_id':'different-subject'}]
+        raise ChatSteeringInterrupt()
+    client=Client([call('mcp_search'),change,call('mcp_search'),{'content':'本轮找到相关页面。'}])
+    result=run(client,registry,[{'role':'user','content':'在线搜索第一个对象'}],'在线搜索第一个对象',control)
+    assert 'https://example.test/new' in result.content
+    assert 'https://example.test/old' not in result.content

@@ -46,6 +46,43 @@ def command_path(command):
     return located
 
 
+def tool_authorized(row, tool):
+    """服务启用、工具勾选与权限判断在注册/筛选/执行时保持一致。"""
+    return bool(row.get('enabled') and tool.get('enabled') and
+                (row.get('permission') == 'all' or tool.get('read_only') is True))
+
+
+def normalize_web_result(raw, text, identity, name):
+    """兼容远程 JSON 和 stdio 的 Title/URL 搜索格式；业务错误不当成命中。"""
+    body = raw.get('structuredContent')
+    if not isinstance(body, dict):
+        try:
+            body = json.loads(text)
+        except (TypeError, ValueError):
+            body = None
+    failed = bool(raw.get('isError'))
+    if isinstance(body, dict):
+        code = str(body.get('code') or '').lower()
+        failed = failed or bool(body.get('error')) or body.get('status') in ('error', 'failed') or code.startswith(
+            ('monthly_cap_', 'invalid_api_key', 'unauthorized', 'rate_limit', 'quota_', 'request_limit'))
+        if isinstance(body.get('results'), list):
+            body = {**body, 'items': body['results'], 'count': len(body['results'])}
+    elif re.search(r'search', name, re.I):
+        items = []
+        for part in re.split(r'(?m)^Title:\s*', text)[1:]:
+            url = re.search(r'(?m)^URL:\s*(https?://\S+)', part)
+            if not url:
+                continue
+            content = re.search(r'(?m)^(?:Content|Highlights):\s*', part)
+            items.append({'title': part.splitlines()[0].strip(), 'url': url.group(1),
+                          'snippet': part[content.end():].strip()[:3000] if content else ''})
+        if items:
+            body = {'provider': identity, 'status': 'ready', 'items': items, 'count': len(items)}
+        if name.startswith('tavily_') and re.match(r'(?:Error|API error|Tavily API error):', text, re.I):
+            failed = True
+    return body, failed
+
+
 def tool_name(service_id: str, name: str):
     digest = hashlib.sha256((service_id+'\0'+name).encode()).hexdigest()[:12]
     return 'mcp_' + digest + '_' + re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:46]
@@ -206,22 +243,22 @@ class ExternalMCP:
         for identity,row in self.load().items():
             if not row.get('enabled'):continue
             for t in row.get('tools',[]):
-                if t.get('enabled') and (row.get('permission')=='all' or t['read_only']):
+                if tool_authorized(row, t):
                     result.append({'type':'function','function':dict(name=t['model_name'],description=f"MCP 服务 {identity}：{t['description']}",parameters=t['inputSchema'])})
         if len(result)>MAX_TOOLS:raise MCPClientError(f'已启用工具超过 {MAX_TOOLS} 个，请关闭部分工具。')
         return result
 
     def web_tool_names(self):
-        """在已授权的只读工具中定位网页检索/读取；不包含文件或日历服务。"""
+        """在已授权工具中定位网页检索/读取；未声明只读时遵循显式全部授权。"""
         names = []
         for identity, row in self.load().items():
             if not row.get('enabled'):
                 continue
             for tool in row.get('tools', []):
                 context = identity + ' ' + tool.get('description', '')
-                if (tool.get('enabled') and tool.get('read_only') and
-                    re.search(r'bing|duckduckgo|brave|tavily|网页|联网|互联网|web|internet', context, re.I) and
-                    re.search(r'search|fetch|browse|read_url|read_page', tool['name'], re.I)):
+                if (tool_authorized(row, tool) and
+                    re.search(r'bing|duckduckgo|brave|tavily|exa|jina|网页|联网|互联网|web|internet', context, re.I) and
+                    re.search(r'search|fetch|browse|extract|crawl|map|read_url|read_page', tool['name'], re.I)):
                     names.append(tool['model_name'])
         return tuple(names)
 
@@ -231,12 +268,13 @@ class ExternalMCP:
         for identity,row in self.load().items():
             for t in row.get('tools',[]):
                 if t['model_name'] != model_name:continue
-                if not row.get('enabled') or not t.get('enabled') or (row.get('permission')!='all' and not t['read_only']):
+                if not tool_authorized(row, t):
                     raise MCPClientError('此 MCP 工具已关闭或未获授权。')
                 raw=self.request(row['config'],t['name'],arguments)
                 text='\n'.join(b.get('text','') for b in raw.get('content',[]) if b.get('type')=='text')
                 ambiguous_search = t['name']=='search' and 'No results were found' in text and 'bot detection' in text
                 if ambiguous_search:
                     text='DuckDuckGo未返回可验证的搜索结果，上游可能拦截或限流；这不能证明关键词没有匹配。本轮不要反复更换关键词重试，可使用已启用的其他搜索服务。'
-                return {'text':text[:16000],'structuredContent':raw.get('structuredContent'), 'isError':bool(raw.get('isError')) or ambiguous_search}, {'service':identity,'tool':t['name']}
+                body, failed = normalize_web_result(raw, text, identity, t['name'])
+                return {'text':text[:16000],'structuredContent':body, 'isError':failed or ambiguous_search}, {'service':identity,'tool':t['name']}
         raise MCPClientError('MCP 工具不存在，请重新连接服务。')

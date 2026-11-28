@@ -19,6 +19,7 @@ def require(condition, message):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--query',required=True)
+    parser.add_argument('--service',help='只验证此已启用服务；不改变原始配置和权限')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args(sys.argv[2:])
     if sys.platform!='darwin' or not args.output.is_absolute() or args.output.exists():
@@ -45,10 +46,15 @@ def main():
     service=DashboardService(engine,agent_skills_path=work/'skills.json',ai_workspace_config_path=work/'workspace.json')
     original_mcp=ExternalMCP(APP_SUPPORT_DIR/'external-mcp.json')
     data=original_mcp.load()
+    web_names=set(original_mcp.web_tool_names())
+    eligible={name for name,row in data.items()
+              if any(t.get('model_name') in web_names for t in row.get('tools',[]))}
+    if args.service:
+        require(args.service in eligible,'指定服务没有已启用且获授权的网页工具')
+        eligible={args.service}
+    require(bool(eligible),'没有已启用且获授权的网页工具')
     for identity,row in data.items():
-        is_web=any(word in identity.casefold() for word in ('bing','duckduckgo','联网','搜索'))
-        row['enabled']=bool(is_web and row.get('enabled'))
-        row['permission']='read_only'
+        row['enabled']=bool(identity in eligible and row.get('enabled'))
         if 'bing' in identity.casefold() and row['config'].get('args',[])[:1]==['--web-search-mcp']:
             row['config']['command']=sys.executable
     write_json(work/'external-mcp.json',data)
@@ -74,7 +80,10 @@ def main():
         try:
             manager=service._external_mcp()
             for name,row in manager.load().items():
-                if row.get('enabled'):manager.connect(name)
+                if row.get('enabled'):
+                    choices={t['name']:bool(t.get('enabled')) for t in row.get('tools',[])}
+                    manager.connect(name)
+                    manager.update(name,tools=[t['name'] for t in manager.load()[name]['tools'] if choices.get(t['name'],False)])
             session=service.ai_chat_new('deepseek-chat','standard','general')
             with Session(engine) as db,db.begin():
                 db.add(AIChatMessage(session_id=session['id'],role='user',content=args.query+'是谁',sequence=1))
