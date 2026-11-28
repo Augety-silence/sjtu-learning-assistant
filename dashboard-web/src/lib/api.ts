@@ -584,7 +584,8 @@ function emitAIStreamEvents(
       event.kind === "content_delta" ||
       event.kind === "reasoning_delta" ||
       event.kind === "progress_delta" ||
-      event.kind === "answer_start"
+      event.kind === "answer_start" ||
+      event.kind === "response_reset"
     ) {
       emitAIStream({
         type: event.kind,

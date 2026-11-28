@@ -96,9 +96,11 @@ class AgentToolError(RuntimeError):
         *,
         category: str = "invalid_params",
         retryable: bool | None = None,
+        recovery: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
+        self.recovery = recovery
         self.retryable = category == "execution" if retryable is None else retryable
 
 
@@ -305,7 +307,7 @@ class ReadOnlyToolRegistry:
             result = self.native_calendar.call(operation, raw)
             return result, {"operation": operation}
         except NativeCalendarError as exc:
-            raise AgentToolError(str(exc), category="execution") from None
+            raise AgentToolError(str(exc), category="execution", recovery=exc.recovery) from None
 
     @property
     def names(self) -> frozenset[str]:

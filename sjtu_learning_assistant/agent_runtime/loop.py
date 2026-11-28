@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import re
 import time
 from dataclasses import dataclass
@@ -20,8 +21,10 @@ from sjtu_learning_assistant.ai_limits import (
 )
 from sjtu_learning_assistant.ai_classifier import AIClassificationError, AIToolsUnsupportedError
 from sjtu_learning_assistant.chat_steering import ChatSteeringInterrupt
+from .output_guard import ModelOutputLoopInterrupt, has_output_loop
 
 MAX_STEPS = 6
+MAX_RECOVERY_ROUNDS = 3
 # 整轮 Agent 的时间预算（在每一步开始前检查）；单次流式请求另有读超时与总时长上限。
 DEFAULT_TIMEOUT_SECONDS = 300.0
 MAX_TIMEOUT_SECONDS = 600.0
@@ -247,7 +250,9 @@ class AgentLoop:
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """发起一次模型请求；返回 (completion, 之后仍可用的工具定义)。"""
         streamed_parts: dict[str, list[str]] = {'content': [], 'reasoning': []}
+        next_loop_check = 700
         def on_delta(kind, value):
+            nonlocal next_loop_check
             streamed_parts.setdefault(kind, []).append(value)
             if steering_control is not None:
                 try:
@@ -257,6 +262,14 @@ class AgentLoop:
                                                 reasoning_content=''.join(streamed_parts['reasoning']),
                                                 response_metadata=dict(finish_reason='interrupted'))
                     raise
+            visible = ''.join(streamed_parts['content'])
+            if kind == 'content' and len(visible) >= next_loop_check:
+                next_loop_check = len(visible) + 128
+                if has_output_loop(visible):
+                    exc = ModelOutputLoopInterrupt('检测到模型重复输出，已中止本次流。')
+                    exc.partial_response = dict(content=visible, reasoning_content=''.join(streamed_parts['reasoning']),
+                                                response_metadata=dict(finish_reason='output_loop'))
+                    raise exc
             if event_callback is not None:
                 event_callback(("progress_delta" if definitions else "content_delta") if kind == "content" else "reasoning_delta",
                                {"delta": value})
@@ -274,7 +287,7 @@ class AgentLoop:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     system_prompt=False,
-                    on_delta=on_delta if event_callback is not None or steering_control is not None else None,
+                    on_delta=on_delta,
                     tools=definitions or None,
                     tool_choice="auto" if definitions else None,
                     **request_options,
@@ -289,6 +302,10 @@ class AgentLoop:
                     system_prompt=False,
                     **request_options,
                 )
+            if has_output_loop(str(completion.get('content') or '')):
+                exc = ModelOutputLoopInterrupt('检测到模型重复输出，已中止本次回复。')
+                exc.partial_response = completion
+                raise exc
             return completion, definitions
         except AIToolsUnsupportedError:
             if {"search_compiled_knowledge", "browse_knowledge_wiki"} & set(self.preset.allowed_tools) & self.tools.names:
@@ -550,6 +567,24 @@ class AgentLoop:
         continuations = 0
         fallback_state = {"calls": 0, "queries": set(), "reads": [], "originals": set()}
         failed_calls: dict[str, str] = {}
+        successful_reads: dict[str, Any] = {}
+        duplicate_rounds = 0
+        output_repairs = 0
+        continuation_messages: list[dict[str, Any]] = []
+        step_limit = self.max_steps
+        finalizing = False
+        tool_definitions = deepcopy(definitions)
+        # 补充与参数修复共享固定恢复额度，不重置 Token、请求数、上下文或总时间。
+        def recovery(reason, current_step):
+            nonlocal step_limit
+            extended = (self.max_steps + MAX_RECOVERY_ROUNDS if reason == "steering" else
+                        min(self.max_steps + MAX_RECOVERY_ROUNDS, max(step_limit, current_step + 3)))
+            if extended > step_limit:
+                step_limit = extended
+                if event_callback is not None:
+                    event_callback('status', {'state': 'recovering', 'reason': reason,
+                                              'recovery_rounds': step_limit - self.max_steps})
+
         def finish(content, reasoning, status, steps):
             if steering_control is not None:
                 pending = steering_control.finish_pending()
@@ -558,9 +593,10 @@ class AgentLoop:
                     content += '\n\n（已保存新的补充指令，但本轮已达到执行上限，补充尚未完成执行；请继续发送。）'
                     steering_control.ledger.append_event(steering_control.task_id, 'steering_deferred',
                                                         {'request_ids': [item['request_id'] for item in pending]})
-            return AgentResult(content, reasoning, status, steps, tuple(runs))
+            return AgentResult(content, reasoning, status, min(steps, self.max_steps), tuple(runs))
 
         def apply_steering():
+            nonlocal definitions, finalizing
             if steering_control is None:
                 return
             changes = steering_control.take_pending()
@@ -569,6 +605,12 @@ class AgentLoop:
             # 已执行的工具结果和原任务仍在 conversation 中，不重新预检索或重置预算。
             answer_parts.clear()
             reasoning_parts.clear()
+            conversation[:] = [m for m in conversation if not any(m is c for c in continuation_messages)]
+            continuation_messages.clear()
+            recovery('steering', step)
+            if finalizing:
+                definitions = deepcopy(tool_definitions)
+                finalizing = False
             for change in changes:
                 supplement = ('执行中的补充指令：保留此前任务和有效成果，按以下补充调整后续执行；'
                               '若明确取消或替换原目标，则遵循最新用户要求。\n' + change['content'])
@@ -580,7 +622,7 @@ class AgentLoop:
                 event_callback('steering_applied', {'messages': changes,
                                                     'request_ids': [change['request_id'] for change in changes]})
         step = 0
-        while step < self.max_steps:
+        while step < step_limit:
             apply_steering()
             step += 1
             # 证据不因补充被清空；超过上下文时明确停止，完整输入和结果仍在持久记录中。
@@ -589,11 +631,13 @@ class AgentLoop:
                 return finish('本轮上下文容量已达到上限，原任务、已读证据及补充消息均已保存，请缩小后续问题范围。',
                               None, 'max_steps', step - 1)
             near_context_limit = sum(_content_chars(m.get("content")) for m in conversation) > CONTEXT_CHAR_BUDGET - 8000
-            if (step == self.max_steps or near_context_limit) and not answer_parts and runs:
+            if (step == step_limit or near_context_limit or duplicate_rounds >= 2) and not answer_parts and runs:
                 # 最后一轮保留给有来源的回答，避免无限 next_offset 续读后丢掉已读证据。
+                finalizing = True
                 definitions = []
-                if len(conversation) < MAX_CHAT_MESSAGES and sum(_content_chars(m.get("content")) for m in conversation) + 200 < CONTEXT_CHAR_BUDGET:
-                    conversation.append({"role": "user", "content": "本轮最后一次请求用于整理结果，不再调用工具。直接回答原问题，仅依据已取得的真实数据和已读正文；没有查证、未取得、不完整或冲突的范围明确说明，不声称全库完成，不输出规划过程。"})
+            request_conversation = conversation
+            if finalizing:
+                request_conversation = [*conversation, {"role": "user", "content": "本轮最后一次请求用于整理结果，不再调用工具。直接回答原问题，仅依据已取得的真实数据和已读正文；没有查证、未取得、不完整或冲突的范围明确说明，不声称全库完成，不输出规划过程。"}]
             if self.clock() - started > self.timeout_seconds:
                 if answer_parts:
                     partial = "".join(answer_parts).strip() + "\n\n（回复较长，已达到本轮时间上限，后续内容未完成。）"
@@ -612,14 +656,34 @@ class AgentLoop:
                 try:
                     candidate_mode = bool(definitions)
                     completion, definitions = self._call_model(
-                        conversation, definitions, max_tokens, temperature, event_callback, steering_control
+                        request_conversation, definitions, max_tokens, temperature, event_callback, steering_control
                     )
                 except ChatSteeringInterrupt as exc:
                     partial = getattr(exc, 'partial_response', None)
                     if partial:
                         steering_control.record_response(partial)
                     apply_steering()
+                    request_conversation = conversation
                     # 重新使用同一 conversation 发请求；真实调用仍由原持久预算计数。
+                    continue
+                except ModelOutputLoopInterrupt as exc:
+                    if steering_control is not None:
+                        steering_control.record_response(exc.partial_response)
+                    if event_callback is not None:
+                        event_callback('status', {'state': 'output_loop_blocked', 'retrying': output_repairs == 0})
+                        event_callback('response_reset', {})
+                    if output_repairs:
+                        return finish('模型连续返回重复内容，本次已停止。已执行的操作与补充均已保存；未完成的操作没有执行。',
+                                      None, 'max_steps', step)
+                    output_repairs += 1
+                    answer_parts.clear()
+                    conversation[:] = [m for m in conversation if not any(m is c for c in continuation_messages)]
+                    continuation_messages.clear()
+                    recovery('output_loop', step)
+                    definitions = deepcopy(tool_definitions) if finalizing else definitions
+                    finalizing = False
+                    conversation.append({'role': 'user', 'content': '上一响应出现重复已停止。依据已有真实工具结果继续完成最新要求。标识符必须原样复制；参数失败请修正或重新读取工具，不猜测，不重复开场，不要求重复确认。'})
+                    request_conversation = conversation
                     continue
                 except BaseException as exc:
                     # 手动停止同样保留已收到的付费片段；错误处理仍由调用方负责。
@@ -669,8 +733,9 @@ class AgentLoop:
                     # 自动续写：不计入工具步数，界面上的流式文字自然衔接。
                     answer_parts.append(segment)
                     continuations += 1
-                    conversation.append({"role": "assistant", "content": tail[-room:] if room < len(tail) else tail})
-                    conversation.append({"role": "user", "content": CONTINUE_PROMPT})
+                    continuation_messages.extend([{"role": "assistant", "content": tail[-room:] if room < len(tail) else tail},
+                                                  {"role": "user", "content": CONTINUE_PROMPT}])
+                    conversation.extend(continuation_messages[-2:])
                     if event_callback is not None:
                         event_callback(
                             "status",
@@ -694,7 +759,7 @@ class AgentLoop:
                 joined = "".join(answer_parts).strip()
                 visible = joined if joined else "模型未返回可显示内容。"
                 combined = "\n\n".join(reasoning_parts)[:12_000] or None
-                return AgentResult(visible, combined, "completed", step, tuple(runs))
+                return AgentResult(visible, combined, "completed", min(step, self.max_steps), tuple(runs))
             available_slots = max(0, MAX_CHAT_MESSAGES - len(conversation) - 1)
             if available_slots == 0:
                 return finish("本轮工具交互达到消息数量上限，请缩小问题范围后重试。", "\n\n".join(reasoning_parts)[:12_000] or None, "max_steps", step)
@@ -710,6 +775,7 @@ class AgentLoop:
                 if event_callback is not None:
                     event_callback("tool", dict(skipped))
             knowledge_requests = []
+            executed_this_round = 0
             for index, call in enumerate(tool_calls):
                 if steering_control is not None and steering_control.has_pending():
                     # 未执行的工具调用仍需配对，不能把残缺 tool_calls 送到下一次请求。
@@ -730,16 +796,54 @@ class AgentLoop:
                     request_key = json.dumps([name, arguments], ensure_ascii=False, sort_keys=True)
                     if request_key in failed_calls:
                         raise AgentToolError("相同请求本轮已失败，不重复执行。" + failed_calls[request_key], category="duplicate_failure", retryable=False)
-                    execution = self.tools.execute(name, arguments, self.preset.allowed_tools)
+                    if steering_control is not None:
+                        # 停止在非网络工具边界同样生效，禁止接着发起旧写操作。
+                        try:
+                            steering_control.check_request()
+                        except ChatSteeringInterrupt:
+                            for skipped in tool_calls[index:]:
+                                fn = skipped.get('function') or {}
+                                conversation.append({'role': 'tool', 'tool_call_id': skipped.get('id') or f'call-{step}-{index}',
+                                                     'name': fn.get('name') or 'unknown', 'content': '新补充已到达，此工具调用尚未执行。'})
+                            break
+                    if request_key in successful_reads:
+                        cached = successful_reads[request_key]
+                        execution = cached
+                        reused = True
+                    else:
+                        reused = False
+                        execution = self.tools.execute(name, arguments, self.preset.allowed_tools)
+                        executed_this_round += 1
+                        if name in {"list_courses", "list_course_files", "search_course_files", "get_material_tree",
+                                    "get_knowledge_status", "browse_knowledge_wiki", "list_compiled_knowledge",
+                                    "search_compiled_knowledge", "read_compiled_knowledge", "read_course_file_text",
+                                    "search_messages", "get_message_detail", "get_deadlines"}:
+                            successful_reads[request_key] = execution
                 except AgentToolError as exc:
                     error = str(exc)[:240]
                     if request_key and not exc.retryable:
                         failed_calls.setdefault(request_key, error)
                     runs.append({"tool_name": str(name or "unknown")[:80], "phase": "model", "status": "rejected", "arguments_summary": {}, "result_summary": {"status": "error", "error": error, "category": exc.category, "retryable": exc.retryable}, "duration_ms": _elapsed_ms(tool_started)})
-                    tool_result: dict[str, Any] = {"error": error}
+                    tool_result: dict[str, Any] = {"error": error, "category": exc.category,
+                                                   "retryable": exc.retryable, "executed": False}
+                    if exc.recovery:
+                        tool_result['recovery'] = exc.recovery
+                    if str(name).startswith('native_calendar_') and exc.retryable:
+                        recovery('calendar_parameters', step)
+                        tool_result['next_action'] = '根据错误提示修正参数后继续；时间含时区，日历 id 原样复制。未指定提醒可使用 []，已有明确确认无需重复询问。'
                 else:
                     runs.append({"tool_name": execution.name, "phase": "model", "status": "ok", "arguments_summary": execution.arguments_summary, "result_summary": execution.result_summary, "duration_ms": _elapsed_ms(tool_started)})
                     tool_result = execution.result
+                    if reused:
+                        runs[-1]['reused'] = True
+                        runs[-1]['duration_ms'] = 0
+                    if execution.name == 'native_calendar_calendars':
+                        ids = [c['id'] for c in tool_result.get('items', []) if c.get('writable')]
+                        if ids:
+                            for definition in definitions:
+                                if definition['function']['name'] == 'native_calendar_save':
+                                    definition['function']['parameters']['properties']['calendar_id']['enum'] = ids
+                            tool_definitions = deepcopy(definitions)
                     if execution.name in {"search_course_files", "search_compiled_knowledge"}:
                         knowledge_requests.append((execution.name, arguments, tool_result))
                     if execution.name == "propose_file_change" and isinstance(function, dict):
@@ -779,6 +883,7 @@ class AgentLoop:
             if steering_control is not None and steering_control.has_pending():
                 step -= 1
                 continue
+            duplicate_rounds = duplicate_rounds + 1 if not executed_this_round else 0
             self._knowledge_fallback(knowledge_requests, conversation, runs, fallback_state, started, event_callback)
         combined = "\n\n".join(reasoning_parts)[:12_000] or None
         return finish("已达到本轮工具调用上限，请缩小问题范围后重试。", combined, "max_steps", self.max_steps)

@@ -147,7 +147,7 @@ describe("per-turn execution details", () => {
     expect(detail?.textContent).toContain("检索课程文件按关键词 · 限定课程");
     expect(detail?.textContent).toContain("命中 4 项 · 0.2 秒");
     expect(detail?.textContent).toContain("未执行：附件不属于本轮消息。");
-    expect(detail?.textContent).toContain("模型请求 3 次");
+    expect(detail?.textContent).toContain("模型调用记录见 Activity");
     fireEvent.click(
       screen.getByRole("button", { name: /在 Activity 查看完整记录/ }),
     );

@@ -20,7 +20,8 @@ from sjtu_learning_assistant.database import APP_SUPPORT_DIR
 from sjtu_learning_assistant.local_settings import SettingsStore
 
 APP = Path("/Applications/SJTU Learning Assistant.app")
-TARGET = "2.0.0"
+from sjtu_learning_assistant import __version__
+TARGET = __version__
 
 
 def active_requests():
@@ -79,7 +80,7 @@ def main():
             raise RuntimeError("部署状态已存在，不覆盖")
         settings = store.load()
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        backup = Path.home() / "Applications/SJTU App Backups" / ("before-2.0.0-" + stamp)
+        backup = Path.home() / "Applications/SJTU App Backups" / ("before-" + TARGET + "-" + stamp)
         write_state(args.state, dict(ai_enabled=settings.ai_enabled, backup=str(backup), paused_at=time.time(), installed=False))
         store.save(replace(settings, ai_enabled=False))
         print(json.dumps(dict(paused=True, **active_requests())))
@@ -103,10 +104,10 @@ def main():
     with (bundle / "Contents/Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     if info.get("CFBundleShortVersionString") != TARGET or bundle.suffix != ".app":
-        raise RuntimeError("应用版本不是2.0.0")
+        raise RuntimeError("应用版本不符合目标 " + TARGET)
     subprocess.run(("codesign", "--verify", "--deep", "--strict", str(bundle)), check=True)
     if running():
-        subprocess.run(("osascript", "-e", 'tell application "SJTU Learning Assistant" to quit'), check=True)
+        subprocess.run(("osascript", "-e", f'tell application "{APP}" to quit'), check=True)
     deadline = time.monotonic() + 45
     while running():
         if time.monotonic() > deadline:
@@ -141,7 +142,7 @@ def main():
     webview = APP_SUPPORT_DIR / "webview"
     if webview.exists():
         shutil.copytree(webview, backup / "webview", symlinks=True)
-    staged = APP.with_name("SJTU Learning Assistant 2.0.0 staging.app")
+    staged = APP.with_name("SJTU Learning Assistant " + TARGET + " staging.app")
     if staged.exists():
         raise RuntimeError("暂存路径已存在，不覆盖")
     subprocess.run(("ditto", str(bundle), str(staged)), check=True)
@@ -154,7 +155,7 @@ def main():
             raise RuntimeError("安装期间学习文件发生变化，回退应用")
     except BaseException:
         if APP.exists():
-            os.replace(APP, backup / "failed-2.0.0.app")
+            os.replace(APP, backup / ("failed-" + TARGET + ".app"))
         os.replace(old, APP)
         raise
     state.update(installed=True, installed_at=time.time(), protected_files=len(before))

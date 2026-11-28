@@ -193,3 +193,6 @@ GitHub 上的版本均按 **正式 Release** 发布并标记为 Latest，不使�
 参与开发前，请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 和 [AGENT.md](AGENT.md)。
 
 Agent接续与改进规划：[改进图谱与日志](docs/improvement-map/README.md) · [作业默认全部实施规格（待实现）](docs/improvement-map/assignments-default-all.md)。图谱区分已验证事实、用户明确需求、工程建议与实验假设。许可证及第三方依赖声明见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+
+本地补丁 2.0.1（2026-11-28）：修复会话停止、执行中补充、日历参数纠正与循环输出；本机部署和真实验收记录见 [修复记录](docs/releases/v2.0.1-chat-interruption.md)。GitHub 正式发行仍为 v2.0.0。

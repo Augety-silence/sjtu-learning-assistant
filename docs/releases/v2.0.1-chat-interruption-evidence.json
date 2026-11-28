@@ -1,0 +1,133 @@
+{
+  "backend": {
+    "ok": true,
+    "native": "AppKit + EventKit",
+    "model": "deepseek-chat",
+    "output_stop_seconds": 0.211,
+    "output_stop_model_calls": 1,
+    "paid_fragment_saved": true,
+    "no_revival": true,
+    "three_supplements_applied_once": true,
+    "calendar_model_calls": 5
+  },
+  "calendar": {
+    "writes": 1,
+    "readback": true,
+    "date": "2026-11-28",
+    "time": "20:30–21:00",
+    "timezone": "Asia/Shanghai",
+    "calendar_title": "大三上（交大调休智能版）",
+    "matches": 1
+  },
+  "recorded_loop": {
+    "actual_failure_detected": true,
+    "samples": 1,
+    "original_content_exported": false
+  },
+  "ui": {
+    "ok": true,
+    "native": "WKWebView",
+    "model": "deepseek-chat",
+    "isolated_task_ledger": true,
+    "scenarios": [
+      {
+        "name": "输出中补充",
+        "ok": true,
+        "model_calls": 2
+      },
+      {
+        "name": "首包前停止与切页恢复",
+        "ok": true,
+        "stop_seconds": 0.112,
+        "no_revival": true
+      }
+    ],
+    "created_sessions": 1,
+    "calendar_writes": 0,
+    "permission_requests": 0,
+    "stage": "JavaScript: window.__chatSteeringFixtureErrors || []",
+    "bridge_calls": {
+      "ai_presets": {
+        "started": 2,
+        "finished": 2
+      },
+      "ai_chat_sessions": {
+        "started": 3,
+        "finished": 3
+      },
+      "settings_status": {
+        "started": 2,
+        "finished": 2
+      },
+      "ai_workspace_status": {
+        "started": 2,
+        "finished": 2
+      },
+      "ai_chat_new": {
+        "started": 1,
+        "finished": 1
+      },
+      "ai_chat_stream_start": {
+        "started": 1,
+        "finished": 1
+      },
+      "ai_task_status": {
+        "started": 33,
+        "finished": 33
+      },
+      "ai_task_cancel": {
+        "started": 1,
+        "finished": 1
+      },
+      "ai_chat_session": {
+        "started": 1,
+        "finished": 1
+      }
+    },
+    "javascript_errors": [],
+    "separate_ui_runs": true
+  },
+  "installation": {
+    "version": "2.0.1",
+    "startup": "passed",
+    "binary_matches_build": true,
+    "frontend_files_verified": 76,
+    "protected_files": 69987,
+    "protected_files_changed": 0,
+    "ai_restored": true,
+    "native_calendar": {
+      "ok": true,
+      "read_only": true,
+      "calendar_writes": 0,
+      "permission_requests": 1,
+      "event_titles_exported": false,
+      "date": "2026-11-28",
+      "status": {
+        "supported": true,
+        "enabled": true,
+        "authorization": "full_access"
+      },
+      "today_events": 5,
+      "evening_events": 4,
+      "evening_time_windows": [
+        [
+          "18:00",
+          "18:30"
+        ],
+        [
+          "19:00",
+          "19:30"
+        ],
+        [
+          "20:30",
+          "21:00"
+        ],
+        [
+          "20:30",
+          "21:00"
+        ]
+      ],
+      "truncated": false
+    }
+  }
+}

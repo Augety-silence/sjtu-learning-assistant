@@ -381,7 +381,10 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
       if (!task || (task.taskId && task.taskId !== taskId)) return;
       if (!task.taskId && detail.type !== "start") return;
       const streamId = `stream-${taskId}`;
-      if (detail.type === "steering_applied") {
+      if (
+        detail.type === "steering_applied" ||
+        detail.type === "response_reset"
+      ) {
         setActive((current) =>
           current?.id === sessionId
             ? {
@@ -407,7 +410,9 @@ export function AIChatView({ onBack }: { onBack: () => void }) {
         if (
           value.state !== "model_call" &&
           value.state !== "retrying" &&
-          value.state !== "continuing"
+          value.state !== "continuing" &&
+          value.state !== "recovering" &&
+          value.state !== "output_loop_blocked"
         )
           return;
         const number = (key: string) =>

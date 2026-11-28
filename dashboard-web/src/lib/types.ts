@@ -104,7 +104,12 @@ export interface AIToolRun {
 
 /** 后端推送的本轮进度（模型请求、自动重试）。 */
 export interface AIAgentLiveStatus {
-  state: "model_call" | "retrying" | "continuing";
+  state:
+    | "model_call"
+    | "retrying"
+    | "continuing"
+    | "recovering"
+    | "output_loop_blocked";
   /** continuing：当前是长回答的第几段 / 最多几段。 */
   part?: number;
   max_parts?: number;

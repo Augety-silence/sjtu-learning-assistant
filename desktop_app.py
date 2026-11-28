@@ -2951,6 +2951,9 @@ def main() -> int:
     if tuple(sys.argv[1:2]) == ("--extensions-self-test",):
         from sjtu_learning_assistant.extensions_self_test import main as extensions_main
         return extensions_main()
+    if tuple(sys.argv[1:2]) == ("--chat-self-test",):
+        from sjtu_learning_assistant.chat_self_test import main as chat_main
+        return chat_main()
     if tuple(sys.argv[1:2]) == ("--calendar-self-test",):
         from sjtu_learning_assistant.calendar_self_test import main as calendar_main
         return calendar_main()

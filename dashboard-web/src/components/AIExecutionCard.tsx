@@ -80,6 +80,8 @@ export function liveStepText({
   }
   const waited = waitedMs === null ? 0 : Math.floor(waitedMs / 1000);
   const step = status.step && status.step > 1 ? `（第 ${status.step} 步）` : "";
+  if (status.state === "output_loop_blocked") return "检测到重复输出，正在纠正";
+  if (status.state === "recovering") return "已接收调整，继续执行";
   if (status.state === "retrying") {
     const delay = Math.max(0, Math.ceil(status.delay_seconds ?? 0) - waited);
     const attempt =
@@ -269,9 +271,7 @@ export function InlineAgentExecution({
           )}
           {!running && (
             <div className="ai-turn-trace-footer">
-              {trace && trace.steps > 0 && (
-                <span>模型请求 {trace.steps} 次</span>
-              )}
+              {trace && trace.steps > 0 && <span>模型调用记录见 Activity</span>}
               <button type="button" onClick={onOpenActivity}>
                 <Activity aria-hidden="true" />在 Activity 查看完整记录
               </button>

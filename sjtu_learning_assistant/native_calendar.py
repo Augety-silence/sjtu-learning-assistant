@@ -16,19 +16,22 @@ from platformdirs import user_data_path
 
 
 class NativeCalendarError(RuntimeError):
-    pass
+    def __init__(self, message, *, recovery=None):
+        super().__init__(message)
+        self.recovery = recovery
+
 
 
 def _date(value):
     if not isinstance(value, str) or len(value) > 80:
-        raise NativeCalendarError("请输入带时区的 ISO 日期时间。")
+        raise NativeCalendarError("请输入带时区的 ISO 日期时间，例如 2026-11-28T20:30:00+08:00；Asia/Shanghai 对应 +08:00。")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             raise ValueError
         return parsed
     except ValueError:
-        raise NativeCalendarError("请输入带时区的 ISO 日期时间。") from None
+        raise NativeCalendarError("请输入带时区的 ISO 日期时间，例如 2026-11-28T20:30:00+08:00；Asia/Shanghai 对应 +08:00。") from None
 
 
 def _revision(row):
@@ -305,7 +308,8 @@ class NativeCalendarService:
                 if not isinstance(alarms, list) or len(alarms)>5 or any(type(a) not in (int,float) or not -604800<=a<=0 for a in alarms):
                     raise NativeCalendarError("alarms 必须是秒数数组，使用非正数，最多五项；提前30分钟为 [-1800]，无提醒为 []，范围 [-604800, 0]。")
                 if not any(c["id"] == data["calendar_id"] and c["writable"] for c in adapter.calendars()):
-                    raise NativeCalendarError("目标日历只读或不存在。")
+                    raise NativeCalendarError("目标日历只读或不存在。请原样使用返回的可写日历 id，禁止猜测或改写。",
+                                              recovery={"writable_calendars": [c for c in adapter.calendars() if c["writable"]]})
                 data["request_id"] = request
                 recovered = adapter.find_request(data, request) if not event_id and hasattr(adapter, "find_request") else None
                 result = recovered or adapter.save(data, event_id, span, raw.get("occurrence_start"))
@@ -323,11 +327,14 @@ def native_calendar_service():
         return _shared
 
 
+CALENDAR_DATETIME = {"type": "string", "format": "date-time",
+                     "description": "带时区的 ISO 8601 日期时间；上海例如 2026-11-28T20:30:00+08:00。不得省略偏移。"}
+
 CALENDAR_SCHEMAS = {
     "native_calendar_status": ("读取 Mac 原生日历连接状态，不弹出授权请求。", {"type":"object","properties":{},"additionalProperties":False}),
     "native_calendar_calendars": ("列出已授权的 Mac 日历及只读状态。", {"type":"object","properties":{},"additionalProperties":False}),
-    "native_calendar_events": ("实时读取 Mac 日历事件，与系统日历双向共享；查询范围最长一年。", {"type":"object","properties":{"start_at":{"type":"string"},"end_at":{"type":"string"},"calendar_ids":{"type":"array","items":{"type":"string"}}},"required":["start_at","end_at"],"additionalProperties":False}),
+    "native_calendar_events": ("实时读取 Mac 日历事件，与系统日历双向共享；查询范围最长一年。", {"type":"object","properties":{"start_at":dict(CALENDAR_DATETIME),"end_at":dict(CALENDAR_DATETIME),"calendar_ids":{"type":"array","items":{"type":"string"}}},"required":["start_at","end_at"],"additionalProperties":False}),
     "native_calendar_get": ("读取指定系统日程与最新 revision，修改前必须读取。重复日程需提供 occurrence_start 指定本次开始时间。", {"type":"object","properties":{"id":{"type":"string"},"occurrence_start":{"type":"string"}},"required":["id"],"additionalProperties":False}),
-    "native_calendar_save": ("按用户明确指示创建或更新已授权 Mac 日程。写后返回原生事件与 revision。更新需要 id 与最新 revision；request_id 使用 UUID，重试复用。重复日程需要 occurrence_start，默认仅本次，future 修改此后全部需用户明确指定。不会邀请参会人。", {"type":"object","properties":{**{k:{"type":"string"} for k in ("id","revision","request_id","calendar_id","title","start_at","end_at","timezone","location","notes","occurrence_start")},"all_day":{"type":"boolean"},"alarms":{"type":"array","description":"相对开始时间的秒数数组，必须为非正数。提前30分钟 [-1800]，提前15分钟 [-900]，开始时 [0]，无提醒 []。最多5项，最早提前7天。不得传提醒对象、字符串或正分钟数。","maxItems":5,"items":{"type":"number","minimum":-604800,"maximum":0}},"span":{"type":"string","enum":["this","future"]}},"required":["request_id"],"additionalProperties":False}),
+    "native_calendar_save": ("按用户明确指示创建或更新已授权 Mac 日程。写后返回原生事件与 revision。更新需要 id 与最新 revision；request_id 使用 UUID，重试复用。重复日程需要 occurrence_start，默认仅本次，future 修改此后全部需用户明确指定。不会邀请参会人。", {"type":"object","properties":{**{k:{"type":"string"} for k in ("id","revision","request_id","calendar_id","title","start_at","end_at","timezone","location","notes","occurrence_start")},"start_at":dict(CALENDAR_DATETIME),"end_at":dict(CALENDAR_DATETIME),"calendar_id":{"type":"string","description":"原样复制 native_calendar_calendars 返回的可写日历 id，不可猜测、缩写或手工重拼。"},"all_day":{"type":"boolean"},"alarms":{"type":"array","description":"相对开始时间的秒数数组，必须为非正数。提前30分钟 [-1800]，提前15分钟 [-900]，开始时 [0]，无提醒 []。最多5项，最早提前7天。不得传提醒对象、字符串或正分钟数。","maxItems":5,"items":{"type":"number","minimum":-604800,"maximum":0}},"span":{"type":"string","enum":["this","future"]}},"required":["request_id"],"additionalProperties":False}),
     "native_calendar_delete": ("按用户明确指示删除系统日程；需要最新 revision 与唯一 UUID request_id。默认仅本次；future 需要用户指定。", {"type":"object","properties":{**{k:{"type":"string"} for k in ("id","revision","request_id","occurrence_start")},"span":{"type":"string","enum":["this","future"]}},"required":["id","revision","request_id"],"additionalProperties":False}),
 }

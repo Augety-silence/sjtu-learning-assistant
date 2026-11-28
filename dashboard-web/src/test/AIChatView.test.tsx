@@ -1700,63 +1700,74 @@ describe("AIChatView", () => {
     expect(sendAiChatMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("补充指令已应用时清除旧流正文并保留工具结果", async () => {
-    vi.mocked(sendAiChatMessage).mockImplementationOnce(
-      (_session, _content, _model, _depth, _preset, _attachments, options) => {
-        options?.onTaskStart?.("task-steer-stream");
-        return new Promise(() => undefined);
-      },
-    );
-    const { container } = render(<AIChatView onBack={vi.fn()} />);
-    const input = await screen.findByRole("textbox", { name: "输入问题" });
-    fireEvent.change(input, { target: { value: "读取课件" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findByRole("button", { name: "停止本次任务" });
-    const emit = (detail: Record<string, unknown>) =>
-      window.dispatchEvent(
-        new CustomEvent("sjtu-ai-chat-stream", {
-          detail: {
-            ...detail,
-            session_id: "session-1",
-            task_id: "task-steer-stream",
-          },
-        }),
+  it.each(["steering_applied", "response_reset"])(
+    "%s 清除旧流正文并保留工具结果",
+    async (resetEvent) => {
+      vi.mocked(sendAiChatMessage).mockImplementationOnce(
+        (
+          _session,
+          _content,
+          _model,
+          _depth,
+          _preset,
+          _attachments,
+          options,
+        ) => {
+          options?.onTaskStart?.("task-steer-stream");
+          return new Promise(() => undefined);
+        },
       );
-    emit({
-      type: "tool",
-      run: {
-        tool_name: "list_courses",
-        phase: "model",
-        status: "ok",
-        arguments_summary: {},
-        result_summary: { count: 2 },
-      },
-    });
-    emit({ type: "content_delta", delta: "旧答案" });
-    await waitFor(() =>
+      const { container } = render(<AIChatView onBack={vi.fn()} />);
+      const input = await screen.findByRole("textbox", { name: "输入问题" });
+      fireEvent.change(input, { target: { value: "读取课件" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByRole("button", { name: "停止本次任务" });
+      const emit = (detail: Record<string, unknown>) =>
+        window.dispatchEvent(
+          new CustomEvent("sjtu-ai-chat-stream", {
+            detail: {
+              ...detail,
+              session_id: "session-1",
+              task_id: "task-steer-stream",
+            },
+          }),
+        );
+      emit({
+        type: "tool",
+        run: {
+          tool_name: "list_courses",
+          phase: "model",
+          status: "ok",
+          arguments_summary: {},
+          result_summary: { count: 2 },
+        },
+      });
+      emit({ type: "content_delta", delta: "旧答案" });
+      await waitFor(() =>
+        expect(
+          container.querySelector(".ai-message-assistant .ai-markdown")
+            ?.textContent,
+        ).toBe("旧答案"),
+      );
+      emit({ type: resetEvent, request_ids: ["supplement-1"] });
+      await waitFor(() =>
+        expect(
+          container.querySelector(".ai-message-assistant .ai-markdown"),
+        ).toBeNull(),
+      );
+      emit({ type: "content_delta", delta: "补充后的答案" });
+      await waitFor(() =>
+        expect(
+          container.querySelector(".ai-message-assistant .ai-markdown")
+            ?.textContent,
+        ).toBe("补充后的答案"),
+      );
       expect(
-        container.querySelector(".ai-message-assistant .ai-markdown")
+        container.querySelector(".ai-message-assistant .ai-turn-trace")
           ?.textContent,
-      ).toBe("旧答案"),
-    );
-    emit({ type: "steering_applied", request_ids: ["supplement-1"] });
-    await waitFor(() =>
-      expect(
-        container.querySelector(".ai-message-assistant .ai-markdown"),
-      ).toBeNull(),
-    );
-    emit({ type: "content_delta", delta: "补充后的答案" });
-    await waitFor(() =>
-      expect(
-        container.querySelector(".ai-message-assistant .ai-markdown")
-          ?.textContent,
-      ).toBe("补充后的答案"),
-    );
-    expect(
-      container.querySelector(".ai-message-assistant .ai-turn-trace")
-        ?.textContent,
-    ).toContain("读取课程列表");
-  });
+      ).toContain("读取课程列表");
+    },
+  );
 
   it("restores the failed request and offers a real retry", async () => {
     const failure = new Error("AI 服务暂时不可用") as Error & {

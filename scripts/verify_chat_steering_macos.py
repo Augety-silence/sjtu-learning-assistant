@@ -239,7 +239,7 @@ def main():
             wait("Boolean(document.querySelector('.ui2-config-page'))")
             assert not window.evaluate_js("Boolean(document.querySelector('aside .ui2-skill-library'))")
             click('外部技能')
-            assert window.evaluate_js("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='新建技能')")
+            assert window.evaluate_js("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='导入 ZIP')")
             window.evaluate_js("document.querySelector('[aria-label=返回对话]').click()")
             wait("!document.querySelector('.ui2-config-page')")
             assert window.evaluate_js("document.querySelector('[aria-label=输入问题]').value==='中央配置切换草稿'")
