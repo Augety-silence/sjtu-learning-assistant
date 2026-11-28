@@ -1,5 +1,7 @@
 # SJTU Learning Assistant 学生端产品发展路线
 
+> 最新接续（2026-11-28，2.0.0 已正式发行）：本机安装、确认卡片和概览 Apple 日程读取均已验收，AI开关恢复、学习文件核对零变化。源提交 `9d6a10afd99c3caf0befa7005ac82b9c802f655d` 已创建不可变 `v2.0.0` 标签；[双平台CI](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46129656101)与[正式发行流程](https://github.com/Augety-silence/sjtu-learning-assistant/actions/runs/46131243488)全部成功，三个安装包已在[GitHub Release](https://github.com/Augety-silence/sjtu-learning-assistant/releases/tag/v2.0.0)公开。Windows 目前为本机个人日程与手动ICS导出，Outlook双向同步待Microsoft Graph委托授权接入。后续继续真实Windows账户体验验收及Graph增量、删除与冲突同步；本轮不移动标签、不合并旧主分支。
+
 > 最新接续（2026-11-28，本机 2.0.0 最终反馈）：确认卡片与概览 Apple 日程修复已安装；75个前端资源及二进制与本机构建一致，69,941个学习文件核对零变化，AI开关已恢复。临时签名更新后通过系统原生授权取得完整访问；App自身只读读取当天2项Apple日程，晚间1项18:00–18:30，未创建或修改事件。Windows原生启动清理发现WebView2短暂文件占用，父级临时目录仅针对共享锁进行30秒内等待；长期锁及其他权限错误继续失败，不关闭其他浏览器。当前继续在原工作分支完成双平台CI与正式Release，发布结果以GitHub为准。
 
 > 最新接续（2026-11-28，发行前 UI 反馈）：文件读写提议此前真实组件为 `.ai-file-change`，2.0误用了另一选择器，导致确认区失去样式；现补完整独立样式，文件/状态分层、差异局部滚动、左放弃右确认、读失败重试及忙状态。概览此前漏接原生日历；现与日历页共用读取钩子，保留全天/跨日归属、原生日程跳转标识、5秒与焦点刷新及失败提示。新增定向回归后继续原生窗口、本机部署及同提交 GitHub 打包验证；正式状态以最终验收和 Release 为准。
