@@ -36,10 +36,13 @@ def read_only_check(service, now):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--read-only', action='store_true', help='只读当前日程，不申请权限或创建事件')
+    parser.add_argument('--request-access', action='store_true', help='经用户明确授权，先唤起系统日历授权；不创建事件')
     parser.add_argument('--output', help='将只读摘要保存到一个尚不存在的绝对路径')
     args = parser.parse_args(sys.argv[2:])
     if args.output and (not args.read_only or not os.path.isabs(args.output)):
         parser.error('--output requires --read-only and an absolute path')
+    if args.request_access and not args.read_only:
+        parser.error('--request-access requires --read-only')
     from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
     from Foundation import NSDate, NSRunLoop
     from sqlalchemy import create_engine
@@ -56,7 +59,12 @@ def main():
         created = None
         try:
             if args.read_only:
+                requested = False
+                if args.request_access:
+                    requested = service.call('status')['authorization'] != 'full_access'
+                    service.call('connect')
                 result.update(read_only_check(service, datetime.now().astimezone()))
+                result['permission_requests'] = int(requested)
                 return
             service.call('connect')
             calendars = service.call('calendars')['items']
