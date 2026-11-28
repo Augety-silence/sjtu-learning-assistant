@@ -18,6 +18,7 @@ import "./selection-indicator.css";
 import "./v2/design.css";
 import "./v2/Schedule.css";
 import "./v2/features.css";
+import "./v2/settings-controls.css";
 import "./v2/video.css";
 import "./ui-2.css";
 import "./v2/file-changes.css";

@@ -1,8 +1,4 @@
-"""面向桌面应用的只检查、不自更新的安全更新服务。
-
-服务只访问固定 HTTPS 主机，使用有界超时读取 GitHub Release 元数据。它返回下载
-计划而不会下载、执行或覆盖当前应用；调用方在自行下载后必须显式执行 SHA-256 校验。
-"""
+"""固定 GitHub 仓库的安全版本检查与下载计划；安装由桌面协调器完成。"""
 
 from __future__ import annotations
 
@@ -441,6 +437,7 @@ def select_release_asset(
     asset_name: str | None = None,
     system: str | None = None,
     machine: str | None = None,
+    prefer_portable: bool = False,
 ) -> ReleaseAsset:
     installable = [
         asset
@@ -477,6 +474,8 @@ def select_release_asset(
                 raise InvalidUpdateMetadataError(
                     "无法唯一确定当前平台的 Release asset。"
                 )
+            elif prefer_portable and len(portable_matches) == 1:
+                matches = portable_matches
             elif len(setup_matches) == 1:
                 matches = setup_matches
     if not matches:
@@ -750,6 +749,7 @@ class UpdateService:
         system: str | None = None,
         machine: str | None = None,
         fetch_checksum: bool = True,
+        prefer_portable: bool = False,
     ) -> UpdateCheck:
         current_semver = SemanticVersion.parse(current_version or self.current_version)
         current = str(current_semver)
@@ -770,6 +770,7 @@ class UpdateService:
                     asset_name=asset_name,
                     system=system,
                     machine=machine,
+                    prefer_portable=prefer_portable,
                 )
             except _NoMatchingReleaseAssetError:
                 if asset_name is not None:

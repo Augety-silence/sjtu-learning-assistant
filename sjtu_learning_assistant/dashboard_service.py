@@ -533,7 +533,7 @@ class DashboardService:
         """Expose feature availability without granting permissions from renderer claims."""
         result: dict[str, Any] = {
             "media": self.media_features.capabilities(),
-            "update": {"check_only": True, "automatic_install": False},
+            "update": {"check_only": not bool(getattr(self, "automatic_updater", None)), "automatic_install": bool(getattr(self, "automatic_updater", None))},
             "mcp": {"transport": "stdio", "read_only": False, "calendar_write_requires_connection": True},
         }
         result["courses"] = self.course_capabilities(course_id)
@@ -1450,13 +1450,21 @@ class DashboardService:
         return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
     def update_check(self) -> dict[str, Any]:
-        """Check metadata and return a plan; this method never installs an update."""
+        """正式桌面版本检查到新版后立即启动唯一后台下载。"""
         from sjtu_learning_assistant.sync_diagnostics import diagnostic_run, diagnostic_stage
 
         with diagnostic_run(source="update"), diagnostic_stage("update", "release_metadata"):
-            result = self.update_service.check()
+            updater = getattr(self, "automatic_updater", None)
+            result = self.update_service.check(prefer_portable=True) if updater else self.update_service.check()
         payload = self._dto(result)
-        payload["automatic_install"] = False
+        payload["automatic_install"] = bool(updater)
+        if updater:
+            if result.update_available and result.download_plan:
+                payload["installation"] = updater.start(result.download_plan)
+            else:
+                payload["installation"] = updater.status()
+                if result.update_available:
+                    payload["installation"] = dict(phase="failed", message="官方发布记录未提供可校验的本机安装包，请查看发布页。")
         return payload
 
     @staticmethod
@@ -2736,10 +2744,14 @@ class DashboardService:
             raise DashboardError("本地目标不是普通文件，已拒绝打开。")
         return resolved
 
-    def material_preview(self, source_id: str) -> dict[str, str]:
+    def material_preview(self, source_id: str) -> dict[str, Any]:
+        from sjtu_learning_assistant.pdf_preview_search import pdf_preview_search
+
         record = self._material_record(source_id)
         markdown = self._temporary_markdown_path(source_id)
         if markdown is not None:
+            if material_preview_kind(record.display_name or record.filename or "文件", record.content_type) == "structured":
+                return {"kind": "text", "name": record.display_name + " · MD", "text": markdown.read_text(encoding="utf-8")}
             try:
                 self._resolve_local_file(source_id)
             except NotFoundError:
@@ -2826,6 +2838,7 @@ class DashboardService:
             "kind": kind,
             "name": name,
             "data_url": f"data:{media_type};base64,{encoded}",
+            **(pdf_preview_search(payload) if kind == "pdf" else {}),
         }
 
     def open_material(self, source_id: str) -> dict[str, str]:
@@ -3752,6 +3765,8 @@ class DashboardService:
             raise DashboardError("对话标识无效。")
         if type(content) is not str or not content.strip() or len(content) > 4000:
             raise DashboardError("消息不能为空或超过 4000 字。")
+        if getattr(self, "_updating", False):
+            raise DashboardError("正在准备应用更新，请等待重启后发送。")
         context = normalize_page_context(page_context)
         from .skill_packages import SkillPackageError
         try:self._skill_packages().selected(skill_ids)
@@ -4759,6 +4774,8 @@ class DashboardService:
             self._sync_lock.release()
 
     def trigger_sync(self) -> dict[str, str]:
+        if getattr(self, "_updating", False):
+            raise DashboardError("正在准备应用更新，请稍后同步。")
         if not self._sync_lock.acquire(blocking=False):
             return {"status": "already_running", "mode": "in_app"}
         try:

@@ -2,6 +2,7 @@ import { motion, useIsPresent, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ContentReveal } from "@/components/ContentReveal";
+import { PdfSearchPreview } from "@/components/PdfSearchPreview";
 import { RichPreviewContent } from "@/components/RichPreviewContent";
 import { Button } from "@/components/ui/Button";
 import { motionDuration, motionEase } from "@/lib/motion";
@@ -97,6 +98,16 @@ function renderPreview(
     );
   }
   if (preview.kind === "pdf" && !pdfSource) return null;
+  if (preview.kind === "pdf" && pdfSource && preview.search_pages) {
+    return (
+      <PdfSearchPreview
+        sourceUrl={pdfSource}
+        title={preview.name}
+        pages={preview.search_pages}
+        note={preview.search_note}
+      />
+    );
+  }
   return (
     <RichPreviewContent
       kind={previewer}

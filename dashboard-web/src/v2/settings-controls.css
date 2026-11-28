@@ -1,0 +1,63 @@
+:root[data-ui-release="2"] .settings-toggle-row > .heading-with-info {
+  flex-direction: row; align-items: center; gap: 8px;
+}
+:root[data-ui-release="2"] .settings-toggle-row label { display: block; }
+:root[data-ui-release="2"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input) {
+  appearance: none; position: relative; width: 36px; height: 21px; padding: 0; margin: 0;
+  flex: 0 0 36px; border: 1px solid var(--v2-line); border-radius: 20px;
+  background: var(--v2-soft); cursor: pointer; transition: background .15s;
+}
+:root[data-ui-release="2"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input)::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px;
+  background: var(--v2-ink); border-radius: 50%; transition: transform .15s;
+}
+:root[data-ui-release="2"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input):checked {
+  background: var(--v2-ink); border-color: var(--v2-ink);
+}
+:root[data-ui-release="2"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input):checked::after {
+  transform: translateX(15px); background: var(--v2-bg);
+}
+:root[data-ui-release="2"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input):focus-visible {
+  outline: 2px solid var(--v2-ink); outline-offset: 3px;
+}
+:root[data-ui-release="2"] .settings-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 18px; }
+:root[data-ui-release="2"] .settings-actions > :is(p,span,small) { flex-basis: 100%; font-size: 12px; line-height: 1.6; }
+:root[data-ui-release="2"] .ai-personalization { position: relative; min-width: 0; }
+:root[data-ui-release="2"] .ai-personalization-panel {
+  position: absolute; bottom: calc(100% + 8px); left: 0; width: 340px;
+  max-width: calc(100vw - 40px); max-height: min(620px,calc(100dvh - 48px));
+  display: flex; flex-direction: column; overflow: hidden; z-index: 90;
+  border: 1px solid var(--v2-line); border-radius: 10px; background: var(--v2-bg); color: var(--v2-ink); box-shadow: var(--shadow-popover);
+}
+:root[data-ui-release="2"] .ai-personalization-panel.is-embedded { position: static; width: 100%; max-width: none; max-height: none; box-shadow: none; }
+:root[data-ui-release="2"] .ai-personalization-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--v2-line); }
+:root[data-ui-release="2"] .ai-personalization-panel > header > span { display: grid; gap: 3px; }
+:root[data-ui-release="2"] .ai-personalization-panel strong { font-size: 13px; line-height: 1.6; }
+:root[data-ui-release="2"] .ai-personalization-panel small { display: block; font-size: 11px; line-height: 1.6; color: var(--v2-ink); }
+:root[data-ui-release="2"] .ai-personalization-scroll { min-height: 0; padding: 4px 16px; overflow-y: auto; }
+:root[data-ui-release="2"] .ai-preference-group { min-width: 0; border: 0; padding: 12px 0; margin: 0; border-bottom: 1px solid var(--v2-line); }
+:root[data-ui-release="2"] .ai-preference-group legend { padding: 0; font-size: 12px; font-weight: 600; line-height: 1.6; }
+:root[data-ui-release="2"] .ai-preference-options { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 5px; }
+:root[data-ui-release="2"] .ai-preference-options button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 32px; padding: 5px 9px;
+  border: 1px solid transparent; border-radius: 7px; background: var(--v2-soft); color: var(--v2-ink); font-size: 12px; line-height: 20px; white-space: nowrap;
+}
+:root[data-ui-release="2"] .ai-preference-options button[aria-checked="true"] { border-color: var(--v2-line); background: var(--v2-selected); font-weight: 600; }
+:root[data-ui-release="2"] .ai-preference-options button:hover { background: var(--v2-selected); }
+:root[data-ui-release="2"] .ai-preference-options button > span:not(.selection-indicator) { position: relative; z-index: 1; }
+:root[data-ui-release="2"] .ai-preference-options button > svg { width: 12px; height: 12px; flex: none; position: relative; z-index: 1; }
+:root[data-ui-release="2"] .ai-preference-indicator { background: var(--v2-selected); }
+:root[data-ui-release="2"] .ai-preference-note { margin: 10px 0; font-size: 11px; line-height: 1.6; }
+:root[data-ui-release="2"] .ai-preference-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--v2-line); cursor: pointer; }
+:root[data-ui-release="2"] .ai-preference-toggle > span { min-width: 0; display: grid; gap: 2px; }
+:root[data-ui-release="2"] .ai-personalization-status { padding: 10px 16px; font-size: 11px; border-top: 1px solid var(--v2-line); }
+:root[data-ui-release="2"] .ai-workspace-setting { display: grid; gap: 8px; padding: 12px 0; }
+:root[data-ui-release="2"] .ai-workspace-setting > div { display: flex; flex-wrap: wrap; gap: 6px; }
+:root[data-ui-release="2"] .ai-workspace-setting button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--v2-line); border-radius: 6px; font-size: 12px; }
+:root[data-ui-release="2"] .ai-workspace-setting code { font-size: 11px; overflow-wrap: anywhere; }
+:root[data-ui-release="2"] .app-update-status { display: grid; gap: 8px; margin-top: 10px; font-size: 12px; line-height: 1.6; }
+:root[data-ui-release="2"] .app-update-status progress { width: 100%; height: 6px; accent-color: var(--v2-ink); }
+:root[data-ui-release="2"][data-theme="dark"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input):checked {
+  background: #e9e9e9; border-color: #e9e9e9;
+}
+:root[data-ui-release="2"][data-theme="dark"] :is(.settings-toggle-row input[role="switch"], .ai-preference-toggle input):checked::after { background: #191919; }

@@ -107,7 +107,7 @@ function records(value: unknown): Record<string, unknown>[] {
 }
 
 function structuredPreviewText(preview: MediaPreviewResult) {
-  const suffix = preview.truncated ? "\n\n（预览内容已按安全上限截断）" : "";
+  const suffix = `${preview.truncated ? "\n\n（预览内容已按安全上限截断）" : ""}${typeof preview.note === "string" ? `\n\n${preview.note}` : ""}`;
   if (preview.kind === "docx")
     return `${String(preview.text ?? "")} ${suffix}`.trim();
   if (preview.kind === "pptx")

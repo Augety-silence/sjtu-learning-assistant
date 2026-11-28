@@ -445,7 +445,13 @@ export interface MaterialNode {
 export type MaterialPreview =
   | { kind: "text"; name: string; text: string }
   | { kind: "image"; name: string; data_url: string }
-  | { kind: "pdf"; name: string; data_url: string };
+  | {
+      kind: "pdf";
+      name: string;
+      data_url: string;
+      search_pages?: { page: number; text: string }[];
+      search_note?: string;
+    };
 
 export interface MaterialTree {
   root: MaterialNode;
@@ -1288,7 +1294,16 @@ export interface MediaPreviewResult extends Record<string, unknown> {
   data_url?: string;
 }
 
+export interface AppInstallationStatus {
+  phase: string;
+  message: string;
+  version?: string;
+  received?: number;
+  total?: number;
+}
+
 export interface UpdateCheckResult extends Record<string, unknown> {
+  installation?: AppInstallationStatus;
   current_version: string;
   latest_version: string;
   update_available: boolean;

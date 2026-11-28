@@ -631,6 +631,8 @@ class DesktopBridge:
             "transcript_artifact_reveal": self._transcript_artifact_reveal,
             "update": self._update_check,
             "update_check": self._update_check,
+            "update_status": self._update_status,
+            "update_cancel": self._update_cancel,
             "mcp": self._mcp_config,
             "mcp_config": self._mcp_config,
             "open_external": self._open_external,
@@ -2144,6 +2146,18 @@ class DesktopBridge:
         _empty_payload(payload)
         return self._service.update_check()
 
+    def _update_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        updater = getattr(self._service, "automatic_updater", None)
+        return updater.status() if updater else dict(phase="idle", message="开发环境不自动安装。")
+
+    def _update_cancel(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _empty_payload(payload)
+        updater = getattr(self._service, "automatic_updater", None)
+        if not updater:
+            raise DashboardError("当前环境不支持自动安装。")
+        return updater.cancel()
+
     def _mcp_config(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         _empty_payload(payload)
         return self._service.mcp_config()
@@ -2881,6 +2895,26 @@ def run_desktop_app() -> int:
         if windows_frontend:
             windows_frontend.attach(window)
         _install_recording_asr_quit_guard(window, service)
+        from sjtu_learning_assistant.automatic_update import AutomaticUpdater, installed_target
+        from sjtu_learning_assistant.update_shutdown import prepare_update_shutdown
+        target = installed_target()
+        if target:
+            def shutdown_for_update(launch_helper):
+                restore = prepare_update_shutdown(service, scheduler)
+                try:
+                    launch_helper()
+                    restore()
+                    if sys.platform == "darwin":
+                        import AppKit
+                        from PyObjCTools import AppHelper
+                        AppHelper.callAfter(AppKit.NSApplication.sharedApplication().terminate_, None)
+                    else:
+                        window.destroy()
+                except Exception:
+                    restore()
+                    service._updating = False
+                    raise
+            service.automatic_updater = AutomaticUpdater(service.update_service, APP_SUPPORT_DIR / "updates", target, shutdown_for_update)
         scheduler.start()
         current_term_start = getattr(service, "start_current_term_markdown", None)
         if callable(current_term_start):
@@ -2941,6 +2975,11 @@ def run_desktop_app() -> int:
 
 def main() -> int:
     """Dispatch frozen helper modes without opening a desktop window."""
+    if sys.argv[1:2] == ["--apply-update"]:
+        if len(sys.argv) != 3:
+            return 2
+        from sjtu_learning_assistant.update_installer import apply_update
+        return apply_update(Path(sys.argv[2]))
     if sys.argv[1:2] in (["--web-search-mcp"], ["--mcp-stdio"]):
         from sjtu_learning_assistant.helper_stdio import restore_helper_stdio
         if not restore_helper_stdio():

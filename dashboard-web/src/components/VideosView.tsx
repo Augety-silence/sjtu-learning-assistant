@@ -2309,6 +2309,7 @@ export function VideosView({
     if (tab === "transcript" && subtitleVtt)
       return (
         <VideoTranscript
+          sourceId={selected?.id}
           cues={subtitleCues}
           playbackTime={playbackTime}
           onSeek={seekToTime}

@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { ContentSearch, useSearchHighlight } from "@/components/ContentSearch";
 import { Button } from "@/components/ui/Button";
 import type { CompiledKnowledgePage } from "@/lib/types";
 
@@ -17,6 +18,33 @@ export function KnowledgeDocumentReader({
   position: { ref: RefObject<HTMLDivElement | null>; onScroll: () => void };
   onContinue: () => void;
 }) {
+  return (
+    <ContentSearch
+      resetKey={page?.id}
+      className="knowledge-reader-search"
+      note={
+        page?.next_offset != null
+          ? "搜索已加载正文，继续阅读后会包含后续内容。"
+          : undefined
+      }
+    >
+      <KnowledgeDocumentBody
+        page={page}
+        reading={reading}
+        position={position}
+        onContinue={onContinue}
+      />
+    </ContentSearch>
+  );
+}
+
+function KnowledgeDocumentBody({
+  page,
+  reading,
+  position,
+  onContinue,
+}: Parameters<typeof KnowledgeDocumentReader>[0]) {
+  const highlight = useSearchHighlight();
   return (
     <div
       ref={position.ref}
@@ -45,6 +73,7 @@ export function KnowledgeDocumentReader({
                     maxSize: 10,
                   },
                 ],
+                highlight,
               ]}
               skipHtml
               components={{

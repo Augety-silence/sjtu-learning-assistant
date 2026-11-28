@@ -57,6 +57,7 @@ import "@/aime-chat.css";
 import "@/v2/extensions.css";
 import "@/v2/monochrome.css";
 import "@/v2/file-changes.css";
+import "@/v2/settings-controls.css";
 
 declare global {
   interface Window {

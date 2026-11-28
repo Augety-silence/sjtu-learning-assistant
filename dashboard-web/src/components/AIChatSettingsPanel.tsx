@@ -290,8 +290,7 @@ export function AIChatSettingsPanel({
                 }
               />
               <p className="ai-preference-note">
-                回复语言与附件预算会保存为偏好；当前 Agent
-                运行时尚未提供安全扩展点，因此不会改写既有请求契约。
+                语言与附件预算偏好已保存；实际回复仍取决于当前模型与任务。
               </p>
               {onPickWorkspace && (
                 <section

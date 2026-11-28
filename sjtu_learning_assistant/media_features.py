@@ -23,7 +23,7 @@ import tempfile
 import unicodedata
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -764,6 +764,12 @@ def structured_preview(
 ) -> dict[str, Any]:
     """返回可 JSON 序列化的安全结构化预览；不提取文件到磁盘。"""
     payload = _as_bytes(data, limits.max_file_size)
+    # 普通 ZIP 保留 256 项上限；仅经容器结构确认的 OOXML 使用较高成员预算。
+    # 所有路径、压缩比、单项大小与 XML 防护仍生效，不提取/执行嵌入对象。
+    if limits == DEFAULT_LIMITS and payload.startswith(b"PK\x03\x04"):
+        office_limits = replace(limits, max_archive_entries=8192)
+        if _zip_container_kind(payload, office_limits) in {"docx", "pptx", "xlsx"}:
+            limits = office_limits
     detected = detect_file_type(filename, content_type, payload, limits=limits)
     kind = detected["kind"]
     if kind == "office_macro" or detected["active_content"]:
@@ -780,7 +786,11 @@ def structured_preview(
     archive, infos, active_content = _open_archive(payload, limits)
     try:
         if active_content:
-            raise MediaFeatureError("归档包含宏、嵌入对象或 ActiveX 内容，已拒绝预览。")
+            unsafe = any(re.search(r"(?:^|/)(?:vbaproject\.bin|macros?/|activeX/|customUI/)", info.filename, re.I) for info in infos)
+            if kind == "zip" or unsafe:
+                raise MediaFeatureError("归档包含宏或 ActiveX 内容，已拒绝预览。")
+            # Office 图表可能含嵌入工作簿。仅读取正文 XML，不打开嵌入文件。
+
         if kind == "docx":
             result = _docx_preview(archive, infos, limits)
         elif kind == "pptx":
@@ -805,6 +815,8 @@ def structured_preview(
     finally:
         archive.close()
     result.update({"name": _clean_name(filename), "file_type": detected})
+    if active_content:
+        result["note"] = "嵌入图表与对象未加载，当前展示可搜索文字。"
     return result
 
 

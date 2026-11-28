@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { ContentReveal } from "@/components/ContentReveal";
+import { RichPreviewContent } from "@/components/RichPreviewContent";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { VideoTranscript } from "@/components/VideoTranscript";
@@ -356,26 +357,28 @@ export function TranscriptDetailDrawer({
               parseVttCues(content[artifact.id] ?? "").length > 0) ? (
               onSeek ? (
                 <VideoTranscript
+                  sourceId={job.id}
                   cues={parseVttCues(content[artifact.id] ?? "")}
                   playbackTime={playbackTime}
                   onSeek={onSeek}
                 />
               ) : (
-                <pre className="transcript-raw" style={{ userSelect: "text" }}>
-                  {content[artifact.id] ?? ""}
-                </pre>
+                <RichPreviewContent
+                  kind="text"
+                  title={job.title}
+                  content={content[artifact.id] ?? ""}
+                />
               )
             ) : (
               <div
                 className="ai-markdown transcript-markdown"
                 style={{ userSelect: "text" }}
               >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[rehypeSanitize]}
-                >
-                  {content[artifact.id] ?? ""}
-                </ReactMarkdown>
+                <RichPreviewContent
+                  kind="markdown"
+                  title={job.title}
+                  content={content[artifact.id] ?? ""}
+                />
               </div>
             )
           ) : (

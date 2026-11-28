@@ -1,5 +1,6 @@
 import { ArrowUp, FileText, Folder } from "lucide-react";
 import { useEffect, useState } from "react";
+import { HighlightedText } from "@/components/ContentSearch";
 import { KnowledgeFolders } from "@/components/KnowledgeFolders";
 import type {
   CompiledKnowledgeDocument,
@@ -164,9 +165,16 @@ export function V2KnowledgeFiles({
               >
                 <FileText />
                 <span>
-                  <strong>{doc.title}</strong>
+                  <strong>
+                    <HighlightedText text={doc.title} query={query} />
+                  </strong>
                   <small>
-                    {query && doc.snippet ? doc.snippet : doc.relative_path}
+                    <HighlightedText
+                      text={
+                        query && doc.snippet ? doc.snippet : doc.relative_path
+                      }
+                      query={query}
+                    />
                   </small>
                 </span>
                 <small>Markdown</small>

@@ -30,6 +30,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import settingsFirstConfigIllustration from "@/assets/empty-states/settings-first-config.webp";
+import { AppUpdateStatus } from "@/components/AppUpdateStatus";
 import { ASRSettingsPanel } from "@/components/ASRSettingsPanel";
 import { ErrorState, LoadingState } from "@/components/States";
 import { useToast } from "@/components/Toast";
@@ -359,7 +360,9 @@ export function SettingsView({
         id: "update-check",
         kind: result.update_available ? "info" : "success",
         message: result.update_available
-          ? `发现新版本 ${result.latest_version}。`
+          ? result.automatic_install
+            ? `发现新版本 ${result.latest_version}，已开始自动更新。`
+            : `发现新版本 ${result.latest_version}。`
           : "当前已是最新版本。",
       });
     } catch (reason) {
@@ -722,6 +725,7 @@ export function SettingsView({
             )}
           </div>
         </div>
+        <AppUpdateStatus initial={updateResult?.installation} />
       </section>
 
       <AnimatePresence initial={false}>

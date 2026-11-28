@@ -137,6 +137,25 @@ class ArchivePreviewTests(unittest.TestCase):
         self.assertEqual("成绩 单", sheet["name"])
         self.assertEqual(["张 三", "100"], sheet["rows"][1])
 
+    def test_large_normal_office_package_uses_independent_entry_budget(self):
+        entries = {f"ppt/media/image{i}.png": b"image" for i in range(350)}
+        entries.update({"ppt/presentation.xml": b"<presentation/>",
+                        "ppt/slides/slide1.xml": b"<sld><t>Searchable lecture</t></sld>",
+                        "ppt/embeddings/chart.xlsx": b"untrusted embedded object"})
+        payload = make_zip(entries)
+        original = zipfile.ZipFile.open
+        opened = []
+        def track(archive, name, *args, **kwargs):
+            opened.append(name)
+            return original(archive, name, *args, **kwargs)
+        with patch.object(zipfile.ZipFile, "open", track):
+            result = structured_preview(payload, "course.pptx")
+        self.assertEqual(result["kind"], "pptx")
+        self.assertEqual(result["slides"][0]["text"], "Searchable lecture")
+        self.assertNotIn("ppt/embeddings/chart.xlsx", opened)
+        with self.assertRaisesRegex(UnsafeArchiveError, "条目数量"):
+            structured_preview(make_zip({f"x{i}": b"x" for i in range(350)}), "renamed.pptx")
+
     def test_active_content_in_office_container_is_rejected(self) -> None:
         payload = make_zip(
             {

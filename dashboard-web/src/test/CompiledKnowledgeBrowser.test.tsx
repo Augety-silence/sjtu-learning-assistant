@@ -444,7 +444,7 @@ describe("CompiledKnowledgeBrowser", () => {
   it("检索正文并按返回的字符位置继续读取", async () => {
     render(<CompiledKnowledgeBrowser />);
     await screen.findByText("关系代数");
-    fireEvent.change(screen.getByRole("searchbox"), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索知识点" }), {
       target: { value: "关系代数" },
     });
     fireEvent.click(screen.getByRole("button", { name: "搜索正文" }));
@@ -460,7 +460,7 @@ describe("CompiledKnowledgeBrowser", () => {
   it("后续结果使用已提交关键词，不使用未搜索的新输入", async () => {
     render(<CompiledKnowledgeBrowser />);
     await screen.findByText("关系代数");
-    fireEvent.change(screen.getByRole("searchbox"), {
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索知识点" }), {
       target: { value: "未提交词" },
     });
     fireEvent.click(screen.getByRole("button", { name: "下一组结果" }));

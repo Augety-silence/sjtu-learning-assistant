@@ -13,6 +13,7 @@ subprocess.run(
 )
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.win32.versioninfo import VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable, StringStruct, VarFileInfo, VarStruct
 
 from sjtu_learning_assistant import __version__
 
@@ -112,6 +113,12 @@ exe = EXE(
     upx=False,
     console=False,
     icon=str(ICON),
+    version=VSVersionInfo(
+        ffi=FixedFileInfo(filevers=tuple(int(part) for part in __version__.split(".")) + (0,),
+                          prodvers=tuple(int(part) for part in __version__.split(".")) + (0,),
+                          mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+        kids=[StringFileInfo([StringTable("040904B0", [StringStruct("FileVersion", __version__), StringStruct("ProductVersion", __version__), StringStruct("ProductName", APP_NAME)])]),
+              VarFileInfo([VarStruct("Translation", [1033,1200])])]),
 )
 collection = COLLECT(
     exe,

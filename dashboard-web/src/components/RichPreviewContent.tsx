@@ -1,6 +1,12 @@
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import {
+  ContentSearch,
+  HighlightedText,
+  useSearchHighlight,
+} from "@/components/ContentSearch";
+import { findTextMatches } from "@/lib/contentSearch";
 
 export type RichPreviewKind =
   | "markdown"
@@ -217,7 +223,49 @@ export function sanitizePreviewHtml(markup: string) {
   return container.innerHTML;
 }
 
-export function RichPreviewContent({
+export function RichPreviewContent(props: RichPreviewContentProps) {
+  if (
+    props.content &&
+    ["markdown", "html", "text", "code"].includes(props.kind)
+  ) {
+    return (
+      <ContentSearch resetKey={props.title}>
+        <RichPreviewBody {...props} />
+      </ContentSearch>
+    );
+  }
+  return <RichPreviewBody {...props} />;
+}
+
+function highlightHtml(markup: string, query: string, scope: string) {
+  if (!query || typeof DOMParser === "undefined") return markup;
+  const parsed = new DOMParser().parseFromString(markup, "text/html");
+  const walker = parsed.createTreeWalker(parsed.body, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  let index = 0;
+  for (const node of nodes) {
+    const text = node.textContent ?? "";
+    const matches = findTextMatches(text, query);
+    if (!matches.length) continue;
+    const fragment = parsed.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      fragment.append(parsed.createTextNode(text.slice(offset, match.start)));
+      const mark = parsed.createElement("mark");
+      mark.className = "content-search-hit";
+      mark.dataset.searchHit = `${scope}:${index++}`;
+      mark.textContent = text.slice(match.start, match.end);
+      fragment.append(mark);
+      offset = match.end;
+    }
+    fragment.append(parsed.createTextNode(text.slice(offset)));
+    node.replaceWith(fragment);
+  }
+  return parsed.body.innerHTML;
+}
+
+function RichPreviewBody({
   kind,
   title = "内容预览",
   content,
@@ -226,6 +274,7 @@ export function RichPreviewContent({
   language,
   emptyLabel = "暂无可预览内容",
 }: RichPreviewContentProps) {
+  const highlight = useSearchHighlight();
   if (kind === "image" && sourceUrl && safeUrl(sourceUrl)) {
     return (
       <div
@@ -271,7 +320,7 @@ export function RichPreviewContent({
       >
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeSanitize]}
+          rehypePlugins={[rehypeSanitize, highlight]}
           urlTransform={safeMarkdownUrl}
           components={{
             a: ({ node: _node, ...props }) => (
@@ -303,7 +352,13 @@ export function RichPreviewContent({
         aria-label={title}
         tabIndex={0}
         // The source is sanitized locally; scripts, inline handlers and unsafe URLs are removed.
-        dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(content) }}
+        dangerouslySetInnerHTML={{
+          __html: highlightHtml(
+            sanitizePreviewHtml(content),
+            highlight[1].query,
+            highlight[1].scope,
+          ),
+        }}
       />
     );
   }
@@ -317,7 +372,7 @@ export function RichPreviewContent({
         aria-label={language ? `${title}，${language}` : title}
         tabIndex={0}
       >
-        {content}
+        <HighlightedText text={content} />
       </pre>
     );
   }
